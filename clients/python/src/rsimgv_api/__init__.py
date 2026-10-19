@@ -13,6 +13,8 @@
         print(name, info.size)
     client.files.select("holiday.jpg")
     client.navigate.up()
+    client.action.video.seek(-30)          # an action that takes a value
+    client.screenshot().save("frame.png")  # what the viewer shows
 """
 
 from .client import (
@@ -24,10 +26,12 @@ from .client import (
     NavigateNamespace,
     FileInfo,
     IpcError,
+    NoMedia,
     NoSuchFile,
     NoSuchTab,
     NotAFolder,
     RsimgvError,
+    Screenshot,
     TabsNamespace,
     UnknownAction,
 )
@@ -50,9 +54,11 @@ __all__ = [
     "FilesNamespace",
     "NavigateNamespace",
     "IpcError",
+    "NoMedia",
     "NoSuchFile",
     "NoSuchTab",
     "NotAFolder",
+    "Screenshot",
     "RequestRefused",
     "RsimgvError",
     "BookmarksNamespace",
