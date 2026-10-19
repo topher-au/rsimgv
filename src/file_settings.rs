@@ -1,8 +1,8 @@
 //! Settings kept for each file, such as where a video was left. They are found by the file's contents rather
 //! than its path, so they follow a file that is moved or renamed.
 //!
-//! A file is known by its movie hash (see `moviehash`), and its settings are a YAML mapping in
-//! `file_settings/<first character>/<second character>/<hash>` in the config directory:
+//! A file is known by its movie hash (see `moviehash`), and its settings are one YAML file,
+//! `file_settings/<first character>/<hash>.yaml` in the config directory, with every value at its root:
 //!
 //! ```yaml
 //! position: 93.5
@@ -50,10 +50,8 @@ pub fn moviehash(path: &Path) -> std::io::Result<String> {
 
 /// Where the settings for the file with movie hash `hash` are kept.
 pub fn settings_file(hash: &str) -> PathBuf {
-    let mut characters = hash.chars();
-    let first = characters.next().unwrap_or('0').to_string();
-    let second = characters.next().unwrap_or('0').to_string();
-    config_path().with_file_name("file_settings").join(first).join(second).join(hash)
+    let first = hash.chars().next().unwrap_or('0').to_string();
+    config_path().with_file_name("file_settings").join(first).join(format!("{hash}.yaml"))
 }
 
 /// One file's settings, read from its settings file and written back on each change.
@@ -152,12 +150,12 @@ mod tests {
     #[test]
     fn settings_are_kept_under_the_hash_characters() {
         let file = settings_file("b5345e8b0a374deb");
-        assert!(file.ends_with("file_settings/b/5/b5345e8b0a374deb"));
+        assert!(file.ends_with("file_settings/b/b5345e8b0a374deb.yaml"));
     }
 
     #[test]
     fn settings_round_trip_and_an_empty_file_is_removed() {
-        let file = std::env::temp_dir().join(format!("rsimgv-file-settings-{}", std::process::id())).join("a/b/ab");
+        let file = std::env::temp_dir().join(format!("rsimgv-file-settings-{}", std::process::id())).join("a/ab.yaml");
         let mut settings = FileSettings::at(file.clone());
         settings.set("position", 93.5).unwrap();
         settings.set("note", "kept").unwrap();
@@ -167,6 +165,6 @@ mod tests {
         settings.remove("position").unwrap();
         settings.remove("note").unwrap();
         assert!(!file.exists());
-        let _ = std::fs::remove_dir_all(file.parent().unwrap().parent().unwrap().parent().unwrap());
+        let _ = std::fs::remove_dir_all(file.parent().unwrap().parent().unwrap());
     }
 }
