@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<interface>
+  <template class="RsimgvMediaViewer" parent="GtkBox">
+    <property name="orientation">vertical</property>
+    <property name="hexpand">true</property>
+    <property name="vexpand">true</property>
+    <property name="focusable">true</property>
+    <style><class name="media-viewer"/></style>
+    <child>
+      <object class="GtkOverlay" id="overlay">
+        <property name="hexpand">true</property>
+        <property name="vexpand">true</property>
+        <property name="child">
+          <object class="GtkStack" id="pages">
+            <property name="hexpand">true</property>
+            <property name="vexpand">true</property>
+            <child>
+              <object class="GtkPicture" id="picture">
+                <property name="content-fit">contain</property>
+                <property name="hexpand">true</property>
+                <property name="vexpand">true</property>
+              </object>
+            </child>
+            <child>
+              <object class="RsimgvImageCanvas" id="canvas">
+                <property name="hexpand">true</property>
+                <property name="vexpand">true</property>
+              </object>
+            </child>
+          </object>
+        </property>
+        <child type="overlay">
+          <object class="GtkRevealer" id="header">
+            <property name="valign">start</property>
+            <property name="halign">start</property>
+            <property name="transition-type">crossfade</property>
+            <child>
+              <object class="GtkBox">
+                <property name="orientation">horizontal</property>
+                <property name="spacing">12</property>
+                <property name="margin-top">12</property>
+                <property name="margin-start">12</property>
+                <property name="margin-end">12</property>
+                <child>
+                  <object class="GtkButton" id="back_button">
+                    <property name="child">
+                      <object class="AdwButtonContent">
+                        <property name="icon-name">go-previous-symbolic</property>
+                        <property name="label">Back</property>
+                      </object>
+                    </property>
+                    <style><class name="osd"/></style>
+                  </object>
+                </child>
+                <child>
+                  <object class="GtkLabel" id="filename">
+                    <property name="ellipsize">middle</property>
+                    <property name="max-width-chars">80</property>
+                    <style><class name="osd"/></style>
+                  </object>
+                </child>
+              </object>
+            </child>
+          </object>
+        </child>
+        <child type="overlay">
+          <object class="GtkRevealer" id="controls_revealer">
+            <property name="valign">end</property>
+            <property name="halign">center</property>
+            <property name="margin-bottom">24</property>
+            <property name="transition-type">crossfade</property>
+            <child>
+              <object class="RsimgvMediaControls" id="controls"/>
+            </child>
+          </object>
+        </child>
+      </object>
+    </child>
+  </template>
+</interface>

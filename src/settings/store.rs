@@ -69,6 +69,11 @@ const LAYOUT: &[(&str, &str, &str)] = &[
     ("window-width", "window", "width"),
     ("window-height", "window", "height"),
     ("window-maximized", "window", "maximized"),
+    ("sidebar-width", "window", "sidebar-width"),
+    ("start-location", "general", "start-location"),
+    ("start-directory", "general", "start-directory"),
+    ("last-directory", "general", "last-directory"),
+    ("last-file", "general", "last-file"),
     ("open-fullscreen", "general", "open-fullscreen"),
     ("auto-hide-cursor", "general", "auto-hide-cursor"),
     ("smooth-scrolling", "general", "smooth-scrolling"),
@@ -80,6 +85,13 @@ const LAYOUT: &[(&str, &str, &str)] = &[
     ("expand-up-to", "view", "expand-up-to"),
     ("scaling-filter", "view", "scaling-filter"),
     ("smooth-upscaling", "view", "smooth-upscaling"),
+    ("viewer-blurred-background", "view", "blurred-background"),
+    ("viewer-thumbnail-bar", "view", "thumbnail-bar"),
+    ("viewer-thumbnail-bar-shown", "view", "thumbnail-bar-shown"),
+    ("viewer-thumbnail-bar-overlay", "view", "thumbnail-bar-overlay"),
+    ("ipc-socket", "ipc", "socket"),
+    ("ipc-tcp-port", "ipc", "tcp-port"),
+    ("ipc-http-port", "ipc", "http-port"),
 ];
 
 /// The group for a setting that is not in `LAYOUT`. Its name is the schema key.

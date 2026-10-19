@@ -1,0 +1,27 @@
+// The media viewer fills the window, so its background is black whatever the picture's shape.
+.media-viewer {
+  background-color: #000;
+}
+
+// The thumbnail bar beside the picture, dark like the viewer, with the item shown highlighted.
+thumbnail-bar {
+  background-color: rgba(0, 0, 0, 0.85);
+
+  .thumbnail-bar-list {
+    background: none;
+    padding: 6px;
+
+    > row {
+      padding: 4px;
+      border-radius: 6px;
+
+      &:selected {
+        background-color: #{"color-mix(in srgb, var(--accent-bg-color) 60%, transparent)"};
+      }
+    }
+  }
+}
+
+thumbnail-bar.dragging {
+  opacity: 0.6;
+}

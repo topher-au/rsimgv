@@ -3,6 +3,8 @@
 
 mod store;
 
+pub use store::config_path;
+
 /// Checks how settings are laid out in the file.
 #[cfg(test)]
 pub(crate) fn store_layout_tests() {

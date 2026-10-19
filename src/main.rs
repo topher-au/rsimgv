@@ -1,9 +1,14 @@
 mod fs;
+mod ipc;
+mod remote;
+mod bookmarks;
+mod keybindings;
 mod settings;
 mod ui;
 
 use adw::prelude::*;
 use gtk::{gdk, gio};
+use std::time::Duration;
 
 const APP_ID: &str = "au.topher.rimgv";
 
@@ -21,9 +26,20 @@ fn main() -> glib::ExitCode {
         .application_id(APP_ID)
         .resource_base_path("/au/topher/rimgv")
         .build();
-    app.connect_startup(|app| {
+    let startup_settings = settings.clone();
+    app.connect_startup(move |app| {
         load_css();
         register_icons();
+        keybindings::load();
+        bookmarks::load();
+        let config = ipc::Config {
+            socket: startup_settings.boolean("ipc-socket"),
+            tcp_port: startup_settings.int("ipc-tcp-port") as u16,
+            http_port: startup_settings.int("ipc-http-port") as u16,
+        };
+        if config.any_enabled() {
+            serve_ipc(app, &config);
+        }
 
         let quit = gio::SimpleAction::new("quit", None);
         let weak = app.downgrade();
@@ -63,4 +79,22 @@ fn load_css() {
         &provider,
         gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
     );
+}
+
+/// Starts the transports `config` enables, and carries out their calls on the active window, here on the GTK
+/// thread, which polls for them.
+fn serve_ipc(app: &adw::Application, config: &ipc::Config) {
+    let calls = ipc::start(config);
+    let weak = app.downgrade();
+    glib::timeout_add_local(Duration::from_millis(20), move || {
+        let Some(app) = weak.upgrade() else { return glib::ControlFlow::Break };
+        while let Ok(call) = calls.try_recv() {
+            let answer = match app.active_window().and_downcast::<ui::Window>() {
+                Some(window) => remote::handle(&window, &call.method, &call.params),
+                None => Err(ipc::Error::new("no_window", "no window is open")),
+            };
+            call.respond(answer);
+        }
+        glib::ControlFlow::Continue
+    });
 }

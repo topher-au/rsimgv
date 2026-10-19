@@ -1,0 +1,514 @@
+//! Thumbnails of pictures and videos, kept in the app's own cache (`~/.cache/rsimgv`). A thumbnail is made
+//! on a worker thread at the smallest size that covers the item, and written as a PNG. A picture whose
+//! thumbnail is current for its modification time is not decoded again.
+//!
+//! A video's still thumbnail is a frame a tenth of the way in. Hovering a video asks for a sequence of up
+//! to `MAX_FRAMES` frames spread through it, cached beside the thumbnails. Frames come from the `ffmpeg`
+//! and `ffprobe` programs; without them, videos keep their icon.
+//!
+//! Like Nautilus's thumbnailer, only a few are made at a time, and a request that no item on screen
+//! wants any more is dropped before it runs.
+
+use std::cell::{Cell, RefCell};
+use std::collections::{HashMap, VecDeque};
+use std::fs::DirBuilder;
+use std::os::unix::fs::DirBuilderExt;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::rc::Rc;
+
+use gtk::prelude::PaintableExt;
+use gtk::{gdk, gdk_pixbuf, gio, glib};
+
+/// Thumbnails made at the same time.
+const MAX_JOBS: usize = 4;
+/// Bytes of thumbnails kept in memory; the oldest go first. A 2048-pixel thumbnail alone is 16 MB.
+const MAX_BYTES: usize = 256 * 1024 * 1024;
+/// The sizes thumbnails are made at, in pixels. An item is shown from the smallest one that covers it.
+pub const SIZES: [i32; 7] = [32, 64, 128, 256, 512, 1024, 2048];
+/// Most frames in a video's hover sequence.
+pub const MAX_FRAMES: usize = 10;
+
+/// A thumbnail size, in pixels, one of `SIZES`.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct Size(i32);
+
+impl Size {
+    /// The smallest size that covers `pixels`: the next size up, which is then scaled down for the item.
+    pub fn for_pixels(pixels: i32) -> Self {
+        Self(SIZES.iter().copied().find(|&size| size >= pixels).unwrap_or(SIZES[SIZES.len() - 1]))
+    }
+
+    pub fn pixels(self) -> i32 {
+        self.0
+    }
+
+    fn dir_name(self) -> String {
+        self.0.to_string()
+    }
+}
+
+/// What a thumbnail is of.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum Media {
+    Picture,
+    Video,
+}
+
+/// What a job makes: one still thumbnail, or the frames of a video's hover sequence.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+enum Job {
+    Still(Media),
+    Frames,
+}
+
+/// One thing to make: the file, its modification time in seconds, the size class, and what to make.
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct Key {
+    path: PathBuf,
+    mtime: i64,
+    size: Size,
+    job: Job,
+}
+
+/// Receives the textures of a finished job.
+type OnReady = dyn FnOnce(&[gdk::Texture]);
+
+/// A request for a thumbnail. `wanted` says whether it is still needed.
+struct Waiter {
+    wanted: Rc<dyn Fn() -> bool>,
+    on_ready: Box<OnReady>,
+}
+
+/// What has been made, by job.
+type TextureCache = HashMap<Key, Vec<gdk::Texture>>;
+
+#[derive(Default)]
+struct Inner {
+    root: PathBuf,
+    /// What has been made in this process, by file.
+    textures: RefCell<TextureCache>,
+    /// The order things were made in, for evicting the oldest.
+    made: RefCell<VecDeque<Key>>,
+    /// The bytes the textures in `textures` take up.
+    bytes: Cell<usize>,
+    /// Requests waiting for each thing, whether it is queued or being made.
+    waiters: RefCell<HashMap<Key, Vec<Waiter>>>,
+    queue: RefCell<VecDeque<Key>>,
+    running: Cell<usize>,
+}
+
+thread_local! {
+    static SHARED: Thumbnails = Thumbnails::with_root(glib::user_cache_dir().join("rsimgv"));
+}
+
+/// The thumbnails of the app: one per process, like the file store.
+#[derive(Clone)]
+pub struct Thumbnails {
+    inner: Rc<Inner>,
+}
+
+impl Thumbnails {
+    /// The thumbnails of this app, in the user's thumbnail cache.
+    pub fn shared() -> Self {
+        SHARED.with(Self::clone)
+    }
+
+    fn with_root(root: PathBuf) -> Self {
+        Self {
+            inner: Rc::new(Inner {
+                root,
+                ..Inner::default()
+            }),
+        }
+    }
+
+    /// Calls `on_ready` with the still thumbnail of the file at `path`, modified at `mtime`, once it is made.
+    /// A thumbnail already made is given at once.
+    pub fn request_still(
+        &self,
+        path: &Path,
+        mtime: i64,
+        media: Media,
+        size: Size,
+        wanted: impl Fn() -> bool + 'static,
+        on_ready: impl FnOnce(&gdk::Texture) + 'static,
+    ) {
+        let key = key(path, mtime, size, Job::Still(media));
+        self.request(key, wanted, move |textures| on_ready(&textures[0]));
+    }
+
+    /// Calls `on_ready` with the frames of the video at `path`, spread through it, once they are made.
+    pub fn request_frames(
+        &self,
+        path: &Path,
+        mtime: i64,
+        size: Size,
+        wanted: impl Fn() -> bool + 'static,
+        on_ready: impl FnOnce(&[gdk::Texture]) + 'static,
+    ) {
+        self.request(key(path, mtime, size, Job::Frames), wanted, on_ready);
+    }
+
+    fn request(&self, key: Key, wanted: impl Fn() -> bool + 'static, on_ready: impl FnOnce(&[gdk::Texture]) + 'static) {
+        if let Some(textures) = self.inner.textures.borrow().get(&key).cloned() {
+            on_ready(&textures);
+            return;
+        }
+        let waiter = Waiter {
+            wanted: Rc::new(wanted),
+            on_ready: Box::new(on_ready),
+        };
+        let mut waiters = self.inner.waiters.borrow_mut();
+        if let Some(list) = waiters.get_mut(&key) {
+            list.push(waiter);
+            drop(waiters);
+            // Asked for again while queued, so it is wanted now: it moves to the front of the queue.
+            let mut queue = self.inner.queue.borrow_mut();
+            if let Some(position) = queue.iter().position(|queued| queued == &key) {
+                queue.remove(position);
+                queue.push_back(key);
+            }
+            return;
+        }
+        waiters.insert(key.clone(), vec![waiter]);
+        drop(waiters);
+        self.inner.queue.borrow_mut().push_back(key);
+        self.start_jobs();
+    }
+
+    /// Starts queued jobs while there is room for them.
+    fn start_jobs(&self) {
+        while self.inner.running.get() < MAX_JOBS {
+            let Some(key) = self.next_wanted() else { return };
+            self.inner.running.set(self.inner.running.get() + 1);
+            glib::spawn_future_local(run(self.clone(), key));
+        }
+    }
+
+    /// The newest queued job that something on screen still wants. The queue is newest first: items
+    /// that just came into view are requested last, so they are made first. A job nothing wants any
+    /// more, because its item has scrolled away, is dropped without being made.
+    fn next_wanted(&self) -> Option<Key> {
+        loop {
+            let key = self.inner.queue.borrow_mut().pop_back()?;
+            let wanted = self
+                .inner
+                .waiters
+                .borrow()
+                .get(&key)
+                .is_some_and(|list| list.iter().any(|waiter| (waiter.wanted)()));
+            if wanted {
+                return Some(key);
+            }
+            self.inner.waiters.borrow_mut().remove(&key);
+        }
+    }
+
+    /// Hands what was made to the requests that still want it.
+    fn finish(&self, key: Key, textures: Option<Vec<gdk::Texture>>) {
+        self.inner.running.set(self.inner.running.get() - 1);
+        let waiters = self.inner.waiters.borrow_mut().remove(&key).unwrap_or_default();
+        if let Some(textures) = textures {
+            self.remember(key, textures.clone());
+            for waiter in waiters {
+                if (waiter.wanted)() {
+                    (waiter.on_ready)(&textures);
+                }
+            }
+        }
+        self.start_jobs();
+    }
+
+    fn remember(&self, key: Key, textures: Vec<gdk::Texture>) {
+        let mut made = self.inner.made.borrow_mut();
+        let mut cached = self.inner.textures.borrow_mut();
+        let mut bytes = self.inner.bytes.get() + bytes_of(&textures);
+        made.push_back(key.clone());
+        cached.insert(key, textures);
+        while bytes > MAX_BYTES && made.len() > 1 {
+            if let Some(old) = made.pop_front() {
+                if let Some(removed) = cached.remove(&old) {
+                    bytes -= bytes_of(&removed);
+                }
+            }
+        }
+        self.inner.bytes.set(bytes);
+    }
+}
+
+/// The memory the pixels of `textures` take up, at four bytes a pixel.
+fn bytes_of(textures: &[gdk::Texture]) -> usize {
+    textures
+        .iter()
+        .map(|texture| {
+            texture.intrinsic_width().max(0) as usize * texture.intrinsic_height().max(0) as usize * 4
+        })
+        .sum()
+}
+
+fn key(path: &Path, mtime: i64, size: Size, job: Job) -> Key {
+    Key {
+        path: path.to_path_buf(),
+        mtime,
+        size,
+        job,
+    }
+}
+
+/// Makes one job on a worker thread, then shows it on the main loop.
+async fn run(thumbnails: Thumbnails, key: Key) {
+    let root = thumbnails.inner.root.clone();
+    let work = key.clone();
+    let made = gio::spawn_blocking(move || make(&root, &work))
+        .await
+        .ok()
+        .flatten();
+    let textures = made.and_then(|parts| {
+        parts
+            .iter()
+            .map(|bytes| gdk::Texture::from_bytes(bytes).ok())
+            .collect::<Option<Vec<_>>>()
+    });
+    thumbnails.finish(key, textures);
+}
+
+/// The PNGs of a job: from the cache under `root` where they are current, or made and cached now.
+/// `None` if the file cannot be decoded.
+fn make(root: &Path, key: &Key) -> Option<Vec<glib::Bytes>> {
+    let uri = glib::filename_to_uri(&key.path, None).ok()?;
+    let digest = glib::compute_checksum_for_string(glib::ChecksumType::Md5, uri.as_str())?;
+    match key.job {
+        Job::Still(media) => {
+            let file = root.join(key.size.dir_name()).join(format!("{digest}.png"));
+            let still = cached_or_made(&file, &uri, key.mtime, || still_pixbuf(&key.path, key.size, media))?;
+            Some(vec![still])
+        }
+        Job::Frames => {
+            let duration = video_duration(&key.path)?;
+            // Frames are spread evenly through the video, at most a second apart, and at most MAX_FRAMES.
+            let count = (duration as usize).clamp(1, MAX_FRAMES);
+            (0..count)
+                .map(|index| {
+                    let file = root.join("frames").join(key.size.dir_name()).join(format!("{digest}-{index}.png"));
+                    let at = duration * (index as f64 + 0.5) / count as f64;
+                    cached_or_made(&file, &uri, key.mtime, || frame_pixbuf(&key.path, at, key.size))
+                })
+                .collect()
+        }
+    }
+}
+
+/// The still thumbnail's picture: the picture scaled down, or a frame a tenth of the way into a video.
+fn still_pixbuf(path: &Path, size: Size, media: Media) -> Option<gdk_pixbuf::Pixbuf> {
+    match media {
+        Media::Picture => {
+            let pixels = size.pixels();
+            gdk_pixbuf::Pixbuf::from_file_at_scale(path, pixels, pixels, true).ok()
+        }
+        Media::Video => {
+            let at = video_duration(path).map_or(0.0, |duration| duration * 0.1);
+            frame_pixbuf(path, at, size)
+        }
+    }
+}
+
+/// The frame of the video at `path` at `seconds`, scaled to fit the size class.
+fn frame_pixbuf(path: &Path, seconds: f64, size: Size) -> Option<gdk_pixbuf::Pixbuf> {
+    let pixels = size.pixels();
+    let output = Command::new("ffmpeg")
+        .args(["-v", "error", "-ss", &format!("{seconds:.3}"), "-i"])
+        .arg(path)
+        .args([
+            "-frames:v",
+            "1",
+            "-vf",
+            &format!("scale={pixels}:{pixels}:force_original_aspect_ratio=decrease"),
+            "-f",
+            "image2pipe",
+            "-c:v",
+            "png",
+            "-",
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() || output.stdout.is_empty() {
+        return None;
+    }
+    let stream = gio::MemoryInputStream::from_bytes(&glib::Bytes::from_owned(output.stdout));
+    gdk_pixbuf::Pixbuf::from_stream(&stream, None::<&gio::Cancellable>).ok()
+}
+
+/// The length of the video at `path` in seconds, if `ffprobe` knows it.
+fn video_duration(path: &Path) -> Option<f64> {
+    let output = Command::new("ffprobe")
+        .args(["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0"])
+        .arg(path)
+        .output()
+        .ok()?;
+    String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .parse::<f64>()
+        .ok()
+        .filter(|seconds| *seconds > 0.0)
+}
+
+/// The PNG at `file` if it was made from the file at `mtime`. Otherwise the pixbuf from `produce`, saved
+/// as a thumbnail with its metadata, and cached at `file`.
+fn cached_or_made(
+    file: &Path,
+    uri: &str,
+    mtime: i64,
+    produce: impl FnOnce() -> Option<gdk_pixbuf::Pixbuf>,
+) -> Option<glib::Bytes> {
+    // A cached thumbnail is current only if the file has not changed since it was made.
+    if let Ok(cached) = gdk_pixbuf::Pixbuf::from_file(file) {
+        if cached.option("tEXt::Thumb::MTime").and_then(|value| value.parse::<i64>().ok()) == Some(mtime) {
+            return std::fs::read(file).ok().map(glib::Bytes::from_owned);
+        }
+    }
+
+    let picture = produce()?;
+    let mtime_text = mtime.to_string();
+    let data = picture
+        .save_to_bufferv(
+            "png",
+            &[
+                ("tEXt::Thumb::URI", uri),
+                ("tEXt::Thumb::MTime", mtime_text.as_str()),
+                ("tEXt::Thumb::Software", "rsimgv"),
+            ],
+        )
+        .ok()?;
+    // A cache that cannot be written only costs the next run its decode.
+    let _ = write_atomically(file, &data);
+    Some(glib::Bytes::from_owned(data))
+}
+
+/// Writes `data` to `file` through a temporary file, so a reader never sees half of it.
+fn write_atomically(file: &Path, data: &[u8]) -> std::io::Result<()> {
+    let dir = file.parent().ok_or(std::io::ErrorKind::InvalidInput)?;
+    DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
+    let temporary = file.with_extension(format!("png.{}.tmp", std::process::id()));
+    std::fs::write(&temporary, data)?;
+    std::fs::rename(&temporary, file)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A fresh folder for one test: its cache directory, and the path of a file in it.
+    fn folder(name: &str) -> (PathBuf, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("rsimgv-thumbs-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        (dir.join("cache"), dir)
+    }
+
+    fn picture(dir: &Path, width: i32, height: i32) -> PathBuf {
+        let path = dir.join("picture.png");
+        let pixbuf = gdk_pixbuf::Pixbuf::new(gdk_pixbuf::Colorspace::Rgb, false, 8, width, height).unwrap();
+        pixbuf.fill(0x3366ccff);
+        pixbuf.savev(&path, "png", &[]).unwrap();
+        path
+    }
+
+    /// A short test video, or `None` when `ffmpeg` is not installed.
+    fn video(dir: &Path) -> Option<PathBuf> {
+        let path = dir.join("clip.mkv");
+        let status = Command::new("ffmpeg")
+            .args(["-v", "error", "-y", "-f", "lavfi", "-i", "testsrc=duration=4:size=320x240:rate=10", "-c:v", "mpeg4"])
+            .arg(&path)
+            .status()
+            .ok()?;
+        status.success().then_some(path)
+    }
+
+    #[test]
+    fn makes_a_thumbnail_once_and_reuses_it_while_the_picture_is_unchanged() {
+        let (root, dir) = folder("reuse");
+        let path = picture(&dir, 600, 300);
+        let key = |mtime| key(&path, mtime, Size::for_pixels(128), Job::Still(Media::Picture));
+        let first = make(&root, &key(1000)).expect("made");
+        let file = root.join("128").read_dir().unwrap().next().unwrap().unwrap().path();
+        let made = gdk_pixbuf::Pixbuf::from_file(&file).unwrap();
+        assert!(made.width() <= 128 && made.height() <= 128);
+        assert_eq!(made.option("tEXt::Thumb::MTime").as_deref(), Some("1000"));
+        assert!(made.option("tEXt::Thumb::URI").unwrap().starts_with("file://"));
+
+        // Same modification time: the cached file is used, so it is not rewritten.
+        let modified = std::fs::metadata(&file).unwrap().modified().unwrap();
+        let again = make(&root, &key(1000)).expect("read");
+        assert_eq!(first[0].as_ref(), again[0].as_ref());
+        assert_eq!(std::fs::metadata(&file).unwrap().modified().unwrap(), modified);
+
+        // A changed picture makes a new thumbnail.
+        make(&root, &key(2000)).expect("remade");
+        let remade = gdk_pixbuf::Pixbuf::from_file(&file).unwrap();
+        assert_eq!(remade.option("tEXt::Thumb::MTime").as_deref(), Some("2000"));
+    }
+
+    #[test]
+    fn the_newest_wanted_job_goes_first_and_unwanted_ones_are_dropped() {
+        let thumbnails = Thumbnails::with_root(PathBuf::new());
+        let job = |name: &str| key(Path::new(name), 1, Size::for_pixels(128), Job::Still(Media::Picture));
+        let waiter = |wanted: bool| Waiter {
+            wanted: Rc::new(move || wanted),
+            on_ready: Box::new(|_| {}),
+        };
+        let (old, scrolled_away, newest) = (job("old.png"), job("away.png"), job("new.png"));
+        {
+            let mut waiters = thumbnails.inner.waiters.borrow_mut();
+            waiters.insert(old.clone(), vec![waiter(true)]);
+            waiters.insert(scrolled_away.clone(), vec![waiter(false)]);
+            waiters.insert(newest.clone(), vec![waiter(true)]);
+        }
+        thumbnails.inner.queue.borrow_mut().extend([old.clone(), scrolled_away.clone(), newest.clone()]);
+
+        assert!(thumbnails.next_wanted() == Some(newest));
+        assert!(thumbnails.next_wanted() == Some(old));
+        assert!(thumbnails.next_wanted().is_none());
+        assert!(!thumbnails.inner.waiters.borrow().contains_key(&scrolled_away));
+    }
+
+    #[test]
+    fn sizes_are_the_next_one_up_from_the_item() {
+        assert_eq!(Size::for_pixels(20).pixels(), 32);
+        assert_eq!(Size::for_pixels(96).pixels(), 128);
+        assert_eq!(Size::for_pixels(128).pixels(), 128);
+        assert_eq!(Size::for_pixels(200).pixels(), 256);
+        assert_eq!(Size::for_pixels(1500).pixels(), 2048);
+        assert_eq!(Size::for_pixels(9000).pixels(), 2048);
+    }
+
+    #[test]
+    fn a_file_that_is_not_a_picture_makes_no_thumbnail() {
+        let (root, dir) = folder("not-picture");
+        let path = dir.join("text.png");
+        std::fs::write(&path, b"not an image").unwrap();
+        assert!(make(&root, &key(&path, 1, Size::for_pixels(128), Job::Still(Media::Picture))).is_none());
+    }
+
+    #[test]
+    fn a_video_gives_a_still_and_a_sequence_of_frames() {
+        let (root, dir) = folder("video");
+        let Some(path) = video(&dir) else {
+            eprintln!("ffmpeg is not installed; skipping");
+            return;
+        };
+        let still = make(&root, &key(&path, 7, Size::for_pixels(128), Job::Still(Media::Video))).expect("still");
+        assert_eq!(still.len(), 1);
+        let frames = make(&root, &key(&path, 7, Size::for_pixels(128), Job::Frames)).expect("frames");
+        // A four-second clip gives one frame a second.
+        assert_eq!(frames.len(), 4);
+        for frame in &frames {
+            let pixbuf = gdk_pixbuf::Pixbuf::from_stream(
+                &gio::MemoryInputStream::from_bytes(frame),
+                None::<&gio::Cancellable>,
+            )
+            .unwrap();
+            assert!(pixbuf.width() <= 128 && pixbuf.height() <= 128);
+        }
+    }
+}

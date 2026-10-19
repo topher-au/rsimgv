@@ -32,6 +32,50 @@
       <default>false</default>
       <summary>Whether the window was maximized when it was last closed</summary>
     </key>
+    <key name="start-location" type="s">
+      <choices>
+        <choice value="last"/>
+        <choice value="root"/>
+        <choice value="home"/>
+        <choice value="specific"/>
+      </choices>
+      <default>'last'</default>
+      <summary>Where a new window starts: the last open folder, the root folder, the home folder, or start-directory</summary>
+    </key>
+    <key name="start-directory" type="s">
+      <default>''</default>
+      <summary>The folder a new window starts in when start-location is specific</summary>
+    </key>
+    <key name="last-directory" type="s">
+      <default>''</default>
+      <summary>The folder open when the last window closed, used when start-location is last</summary>
+    </key>
+    <key name="last-file" type="s">
+      <default>''</default>
+      <summary>The item selected in last-directory when the last window closed, reselected on start</summary>
+    </key>
+    <key name="sidebar-width" type="i">
+      <default>-1</default>
+      <summary>Sidebar width chosen by dragging, in pixels; -1 uses the default width</summary>
+    </key>
+    <key name="viewer-thumbnail-bar" type="s">
+      <choices>
+        <choice value="top"/>
+        <choice value="left"/>
+        <choice value="bottom"/>
+        <choice value="right"/>
+      </choices>
+      <default>'bottom'</default>
+      <summary>The side of the viewer the thumbnail bar is on</summary>
+    </key>
+    <key name="viewer-thumbnail-bar-shown" type="b">
+      <default>true</default>
+      <summary>Show the thumbnail bar in the viewer</summary>
+    </key>
+    <key name="viewer-thumbnail-bar-overlay" type="b">
+      <default>false</default>
+      <summary>Float the thumbnail bar over the picture, showing it only while the pointer is near its edge</summary>
+    </key>
     <key name="open-fullscreen" type="b">
       <default>false</default>
       <summary>Open the viewer in fullscreen</summary>
@@ -129,6 +173,24 @@
     <key name="info-fields" type="as">
       <default>['size', 'modified']</default>
       <summary>Details shown under each item's name</summary>
+    </key>
+    <key name="ipc-socket" type="b">
+      <default>false</default>
+      <summary>Serve the JSON IPC on a Unix socket in the runtime directory</summary>
+    </key>
+    <key name="ipc-tcp-port" type="i">
+      <default>0</default>
+      <range min="0" max="65535"/>
+      <summary>Serve the JSON IPC on this localhost TCP port; 0 turns it off</summary>
+    </key>
+    <key name="ipc-http-port" type="i">
+      <default>0</default>
+      <range min="0" max="65535"/>
+      <summary>Serve the JSON IPC over HTTP on this localhost port; 0 turns it off</summary>
+    </key>
+    <key name="viewer-blurred-background" type="b">
+      <default>false</default>
+      <summary>Show a blurred, dimmed, cropped copy of the picture behind it in the viewer</summary>
     </key>
   </schema>
 </schemalist>

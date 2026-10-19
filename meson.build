@@ -18,10 +18,21 @@ else
   cargo_profile = 'release'
 endif
 
-# Compile the SASS entry point to CSS; partials are resolved next to it.
+# Compile the SASS entry point to CSS; partials are resolved next to it. The partials are listed so
+# that editing one rebuilds the stylesheet.
+style_partials = files(
+  'data/style/_browse_view.scss',
+  'data/style/_content_pane.scss',
+  'data/style/_file_tree.scss',
+  'data/style/_media_viewer.scss',
+  'data/style/_path_bar.scss',
+  'data/style/_resizable_split_view.scss',
+  'data/style/_variables.scss',
+)
 style_css = custom_target('style',
   input: 'data/style/main.scss',
   output: 'style.css',
+  depend_files: style_partials,
   command: [sassc, '--style=expanded', '@INPUT@', '@OUTPUT@'],
 )
 

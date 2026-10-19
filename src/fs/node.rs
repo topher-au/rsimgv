@@ -1,16 +1,15 @@
-//! A directory entry in `FsTree`. Children are read on demand, off the main loop.
+//! A directory entry in `FsTree`. Children are read on demand, through the shared `FileStore`.
 
 use std::cell::{Cell, OnceCell, RefCell};
 use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 use futures_channel::oneshot;
 use gio::prelude::*;
 use glib::subclass::prelude::*;
 
-use super::natural_cmp;
-
-const QUERY_ATTRIBUTES: &str = "standard::name,standard::display-name,standard::type";
+use super::{natural_cmp, FileEntry, FileStore};
 
 #[derive(Default)]
 enum LoadState {
@@ -159,7 +158,7 @@ impl FsNode {
 
         *state = LoadState::Loading(vec![tx]);
         drop(state);
-        glib::spawn_future_local(load(self.clone()));
+        load(self.clone());
     }
 
     fn finish_loading(&self) {
@@ -172,76 +171,70 @@ impl FsNode {
     }
 }
 
-/// Reads entries until the first visible subdirectory turns up. Hidden subdirectories are
-/// remembered but do not stop the scan, so a directory with only hidden subdirectories is read
-/// to the end.
-async fn check_subdirs(dir: PathBuf) -> Subdirs {
-    let mut found = Subdirs::default();
-    let file = gio::File::for_path(&dir);
-    let Ok(enumerator) = file
-        .enumerate_children_future(QUERY_ATTRIBUTES, gio::FileQueryInfoFlags::NONE, glib::Priority::DEFAULT)
-        .await
-    else {
-        return found;
+/// Reads this directory through the shared store and fills in the subdirectories once the read ends.
+fn load(node: FsNode) {
+    let found = Rc::new(RefCell::new(Vec::new()));
+    let on_batch = {
+        let found = found.clone();
+        move |batch: &[FileEntry]| found.borrow_mut().extend(batch.iter().filter(|entry| entry.is_dir()).cloned())
     };
-    loop {
-        let Ok(batch) = enumerator.next_files_future(64, glib::Priority::DEFAULT).await else {
-            break;
-        };
-        if batch.is_empty() {
-            break;
-        }
-        for info in &batch {
-            if info.file_type() != gio::FileType::Directory {
-                continue;
+    let on_done = {
+        let node = node.clone();
+        move |result: Result<(), String>| {
+            if let Err(err) = result {
+                eprintln!("rsimgv: failed to read {}: {err}", node.path().display());
             }
-            if info.display_name().starts_with('.') {
-                found.hidden = true;
-            } else {
-                found.plain = true;
-                return found;
-            }
-        }
-    }
-    found
-}
-
-async fn load(node: FsNode) {
-    let dir = gio::File::for_path(node.path());
-    match read_dir(&dir).await {
-        Ok(mut infos) => {
             // The tree shows directories only; files are dropped here.
-            infos.retain(|info| info.file_type() == gio::FileType::Directory);
-            infos.sort_by(|a, b| natural_cmp(&a.display_name(), &b.display_name()));
-            let children: Vec<FsNode> = infos
+            let mut entries = std::mem::take(&mut *found.borrow_mut());
+            entries.sort_by(|a, b| natural_cmp(&a.name(), &b.name()));
+            let children: Vec<FsNode> = entries
                 .iter()
-                .map(|info| FsNode::new(node.path().join(info.name()), true))
+                .map(|entry| FsNode::new(entry.path().to_path_buf(), true))
                 .collect();
             node.children().splice(0, 0, &children);
+            node.finish_loading();
         }
-        Err(err) => eprintln!("rsimgv: failed to read {}: {err}", node.path().display()),
-    }
-    node.finish_loading();
+    };
+    // The reading is not cancelled: the tree keeps the children it asked for.
+    FileStore::shared().read(node.path(), on_batch, on_done);
 }
 
-async fn read_dir(dir: &gio::File) -> Result<Vec<gio::FileInfo>, glib::Error> {
-    let enumerator = dir
-        .enumerate_children_future(
-            QUERY_ATTRIBUTES,
-            gio::FileQueryInfoFlags::NONE,
-            glib::Priority::DEFAULT,
-        )
-        .await?;
-
-    let mut infos = Vec::new();
-    loop {
-        let batch = enumerator
-            .next_files_future(256, glib::Priority::DEFAULT)
-            .await?;
-        if batch.is_empty() {
-            break;
+/// Reads entries through the shared store until the first visible subdirectory turns up. Hidden
+/// subdirectories are remembered but do not stop the read, so a directory with only hidden
+/// subdirectories is read to the end.
+async fn check_subdirs(dir: PathBuf) -> Subdirs {
+    let found = Rc::new(Cell::new(Subdirs::default()));
+    let (tx, rx) = oneshot::channel::<()>();
+    let tx = Rc::new(RefCell::new(Some(tx)));
+    let stop: Rc<dyn Fn()> = Rc::new(move || {
+        if let Some(tx) = tx.borrow_mut().take() {
+            let _ = tx.send(());
         }
-        infos.extend(batch);
-    }
-    Ok(infos)
+    });
+    let reading = FileStore::shared().read(
+        &dir,
+        {
+            let found = found.clone();
+            let stop = stop.clone();
+            move |batch: &[FileEntry]| {
+                for entry in batch.iter().filter(|entry| entry.is_dir()) {
+                    let mut subdirs = found.get();
+                    if entry.name().starts_with('.') {
+                        subdirs.hidden = true;
+                    } else {
+                        subdirs.plain = true;
+                    }
+                    found.set(subdirs);
+                }
+                if found.get().plain {
+                    stop();
+                }
+            }
+        },
+        move |_| stop(),
+    );
+    let _ = rx.await;
+    // Stop reading as soon as the answer is known, unless another reader still wants the listing.
+    reading.cancel();
+    found.get()
 }

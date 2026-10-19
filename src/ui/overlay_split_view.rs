@@ -36,14 +36,14 @@ mod imp {
         pub(super) pin_sidebar: Cell<bool>,
         pub(super) enable_show_gesture: Cell<bool>,
         pub(super) enable_hide_gesture: Cell<bool>,
-        pub(super) min_sidebar_width: Cell<f64>,
-        pub(super) max_sidebar_width: Cell<f64>,
-        pub(super) sidebar_width_fraction: Cell<f64>,
-        pub(super) sidebar_width_unit: Cell<adw::LengthUnit>,
+        pub(super) min_sidebar_width: Cell<i32>,
+        pub(super) max_sidebar_width: Cell<i32>,
+        /// Default sidebar width; -1 when the layout chooses it from the available width.
+        pub(super) sidebar_width: Cell<i32>,
         /// 0 hidden, 1 fully shown; the spring animation drives it.
         pub(super) show_progress: Cell<f64>,
         /// Last sidebar width laid out, including the handle.
-        pub(super) sidebar_width: Cell<i32>,
+        pub(super) laid_out_width: Cell<i32>,
         /// Width set by dragging, including the handle; -1 when the layout chooses it.
         pub(super) user_sidebar_width: Cell<i32>,
         pub(super) drag_start: Cell<i32>,
@@ -78,12 +78,11 @@ mod imp {
                 pin_sidebar: Cell::new(false),
                 enable_show_gesture: Cell::new(true),
                 enable_hide_gesture: Cell::new(true),
-                min_sidebar_width: Cell::new(180.0),
-                max_sidebar_width: Cell::new(280.0),
-                sidebar_width_fraction: Cell::new(0.25),
-                sidebar_width_unit: Cell::new(adw::LengthUnit::Sp),
+                min_sidebar_width: Cell::new(180),
+                max_sidebar_width: Cell::new(480),
+                sidebar_width: Cell::new(200),
                 show_progress: Cell::new(1.0),
-                sidebar_width: Cell::new(0),
+                laid_out_width: Cell::new(0),
                 user_sidebar_width: Cell::new(-1),
                 drag_start: Cell::new(0),
             }
@@ -100,10 +99,29 @@ mod imp {
         fn class_init(klass: &mut Self::Class) {
             klass.set_layout_manager_type::<layout::SplitLayout>();
             klass.set_css_name("overlay-split-view");
+
         }
     }
 
     impl ObjectImpl for OverlaySplitView {
+        fn properties() -> &'static [glib::ParamSpec] {
+            static PROPERTIES: LazyLock<Vec<glib::ParamSpec>> = LazyLock::new(|| {
+                vec![
+                    glib::ParamSpecInt::builder("min-sidebar-width")
+                        .minimum(64)
+                        .maximum(1000)
+                        .default_value(180)
+                        .build(),
+                    glib::ParamSpecInt::builder("max-sidebar-width")
+                        .minimum(128)
+                        .maximum(2000)
+                        .default_value(480)
+                        .build(),
+                ]
+            });
+            PROPERTIES.as_ref()
+        }
+
         fn signals() -> &'static [Signal] {
             static SIGNALS: LazyLock<Vec<Signal>> = LazyLock::new(|| {
                 vec![Signal::builder("show-sidebar-changed")
@@ -178,13 +196,24 @@ mod imp {
             });
             obj.add_controller(keys);
 
-            // Dragging the handle sets the sidebar width.
+            // Dragging the handle sets the sidebar width. The gesture is on the view rather than the
+            // handle: the handle moves as the sidebar resizes, so offsets measured from it would
+            // feed back into the width and make it judder.
             let drag = gtk::GestureDrag::new();
             let weak = obj.downgrade();
-            drag.connect_drag_begin(move |_, _, _| {
-                if let Some(view) = weak.upgrade() {
-                    view.imp().drag_start.set(view.imp().sidebar_width.get());
+            drag.connect_drag_begin(move |gesture, x, y| {
+                let Some(view) = weak.upgrade() else { return };
+                let handle = &view.imp().handle;
+                let on_handle = handle.is_drawable()
+                    && handle
+                        .compute_bounds(&view)
+                        .is_some_and(|bounds| bounds.contains_point(&gtk::graphene::Point::new(x as f32, y as f32)));
+                if !on_handle {
+                    gesture.set_state(gtk::EventSequenceState::Denied);
+                    return;
                 }
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+                view.imp().drag_start.set(view.laid_out_width());
             });
             let weak = obj.downgrade();
             drag.connect_drag_update(move |_, offset_x, _| {
@@ -192,7 +221,7 @@ mod imp {
                     view.drag_sidebar(view.imp().drag_start.get(), offset_x as i32);
                 }
             });
-            self.handle.add_controller(drag);
+            obj.add_controller(drag);
 
             obj.update_handle_side();
         }
@@ -201,6 +230,23 @@ mod imp {
             self.content.unparent();
             self.shield.unparent();
             self.sidebar_box.unparent();
+        }
+
+        fn set_property(&self, id: usize, value: &glib::Value, _pspec: &glib::ParamSpec) {
+            match id {
+                1 => self.min_sidebar_width.set(value.get().unwrap_or(180)),
+                2 => self.max_sidebar_width.set(value.get().unwrap_or(480)),
+                _ => unimplemented!(),
+            }
+            self.obj().queue_resize();
+        }
+
+        fn property(&self, id: usize, _pspec: &glib::ParamSpec) -> glib::Value {
+            match id {
+                1 => self.min_sidebar_width.get().to_value(),
+                2 => self.max_sidebar_width.get().to_value(),
+                _ => unimplemented!(),
+            }
         }
     }
 
@@ -362,32 +408,38 @@ impl OverlaySplitView {
         self.imp().enable_hide_gesture.set(enable);
     }
 
-    pub fn min_sidebar_width(&self) -> f64 {
+    pub fn min_sidebar_width(&self) -> i32 {
         self.imp().min_sidebar_width.get()
     }
 
-    pub fn set_min_sidebar_width(&self, width: f64) {
-        self.imp().min_sidebar_width.set(width.max(0.0));
+    pub fn set_min_sidebar_width(&self, width: i32) {
+        self.set_property("min-sidebar-width", width);
         self.queue_resize();
     }
 
-    pub fn max_sidebar_width(&self) -> f64 {
+    pub fn max_sidebar_width(&self) -> i32 {
         self.imp().max_sidebar_width.get()
     }
 
-    pub fn set_max_sidebar_width(&self, width: f64) {
-        self.imp().max_sidebar_width.set(width.max(0.0));
+    pub fn set_max_sidebar_width(&self, width: i32) {
+        self.set_property("max-sidebar-width", width);
         self.queue_resize();
     }
 
-    pub fn set_sidebar_width_fraction(&self, fraction: f64) {
-        self.imp().sidebar_width_fraction.set(fraction.clamp(0.0, 1.0));
+    /// The default sidebar width in pixels, when the user hasn't dragged to resize.
+    pub fn sidebar_width(&self) -> i32 {
+        self.imp().sidebar_width.get()
+    }
+
+    /// Sets the default sidebar width in pixels. The actual width is clamped to the min/max.
+    pub fn set_sidebar_width(&self, width: i32) {
+        self.imp().sidebar_width.set(width);
         self.queue_resize();
     }
 
-    pub fn set_sidebar_width_unit(&self, unit: adw::LengthUnit) {
-        self.imp().sidebar_width_unit.set(unit);
-        self.queue_resize();
+    /// The sidebar width last laid out, including the handle.
+    pub fn laid_out_width(&self) -> i32 {
+        self.imp().laid_out_width.get()
     }
 
     /// The sidebar width chosen by dragging, including the handle, or `None` for the layout's own.
@@ -399,11 +451,6 @@ impl OverlaySplitView {
     pub fn set_user_sidebar_width(&self, width: Option<i32>) {
         self.imp().user_sidebar_width.set(width.unwrap_or(-1).max(-1));
         self.queue_resize();
-    }
-
-    /// The sidebar width last laid out, including the handle.
-    pub fn sidebar_width(&self) -> i32 {
-        self.imp().sidebar_width.get()
     }
 
     /// Sets the sidebar to `start_width` plus a drag of `offset` pixels, clamped to the limits.
@@ -418,13 +465,13 @@ impl OverlaySplitView {
         self.set_user_sidebar_width(Some((start_width + delta).clamp(min, max)));
     }
 
-    /// The width the sidebar gets for a split of `width`, as the C layout computes it.
+    /// The width the sidebar gets for a split of `width`, as the layout computes it.
     pub fn sidebar_width_for(&self, width: i32, collapsed: bool) -> i32 {
         let (min, max) = self.sidebar_limits();
         let wanted = match self.user_sidebar_width() {
             Some(width) => width,
             None if collapsed => width,
-            None => (f64::from(width) * self.imp().sidebar_width_fraction.get()) as i32,
+            None => self.imp().sidebar_width.get(),
         };
         wanted.clamp(min, max)
     }
@@ -492,26 +539,12 @@ impl OverlaySplitView {
         }
     }
 
-    /// Converts a length in `unit` to pixels. Font-relative units follow the `gtk-xft-dpi` setting.
-    fn length_to_px(&self, unit: adw::LengthUnit, value: f64) -> f64 {
-        let dpi = gtk::Settings::default()
-            .map(|settings| settings.property::<i32>("gtk-xft-dpi"))
-            .filter(|dpi| *dpi > 0)
-            .map_or(96.0, |dpi| f64::from(dpi) / 1024.0);
-        match unit {
-            adw::LengthUnit::Pt => value * dpi / 72.0,
-            adw::LengthUnit::Sp => value * dpi / 96.0,
-            _ => value,
-        }
-    }
-
     /// The sidebar's pixel limits. The maximum is never below the minimum.
     fn sidebar_limits(&self) -> (i32, i32) {
         let imp = self.imp();
-        let unit = imp.sidebar_width_unit.get();
         let (measured_min, _, _, _) = imp.sidebar_box.measure(gtk::Orientation::Horizontal, -1);
-        let min = measured_min.max(self.length_to_px(unit, imp.min_sidebar_width.get()).ceil() as i32);
-        let max = min.max(self.length_to_px(unit, imp.max_sidebar_width.get()).ceil() as i32);
+        let min = measured_min.max(imp.min_sidebar_width.get());
+        let max = min.max(imp.max_sidebar_width.get());
         (min, max)
     }
 
@@ -531,10 +564,7 @@ impl OverlaySplitView {
             return (content_min.max(min_limit), content_nat.max(nat), -1, -1);
         }
 
-        // The sidebar's own natural width is ignored; it is estimated from the content and fraction.
-        let fraction = imp.sidebar_width_fraction.get();
-        let estimate = (f64::from(content_nat) * fraction / (1.0 - fraction).max(f64::EPSILON)).ceil();
-        let mut nat = (estimate as i32).clamp(min_limit, max_limit);
+        let mut nat = imp.sidebar_width.get().clamp(min_limit, max_limit);
         if let Some(width) = self.user_sidebar_width() {
             nat = width.clamp(min_limit, max_limit);
         }
@@ -552,7 +582,7 @@ impl OverlaySplitView {
         if !self.collapsed() {
             let (content_min, _, _, _) = imp.content.measure(gtk::Orientation::Horizontal, -1);
             let sidebar_width = self.sidebar_width_for(width, false).min(width - content_min).max(0);
-            imp.sidebar_width.set(sidebar_width);
+            imp.laid_out_width.set(sidebar_width);
 
             let mut offset = (f64::from(sidebar_width) * progress) as i32;
             let mut sidebar_alloc = sidebar_width;
@@ -578,7 +608,7 @@ impl OverlaySplitView {
         }
 
         let sidebar_width = self.sidebar_width_for(width, true);
-        imp.sidebar_width.set(sidebar_width);
+        imp.laid_out_width.set(sidebar_width);
         let offset = (f64::from(sidebar_width) * progress) as i32;
 
         let (mut pos, mut alloc) = if self.sidebar_position() != gtk::PackType::End {
@@ -608,32 +638,39 @@ pub(crate) mod tests {
     use super::*;
 
     pub(crate) fn run_scenarios() {
-        widths_follow_fraction_and_limits();
+        sidebar_uses_default_and_limits();
         drag_resizes_within_limits();
         collapse_hides_unless_pinned();
     }
 
-    fn widths_follow_fraction_and_limits() {
+    fn sidebar_uses_default_and_limits() {
         let view = OverlaySplitView::new();
         view.set_sidebar(Some(&gtk::Label::new(Some("side"))));
         view.set_content(Some(&gtk::Label::new(Some("content"))));
 
-        // Defaults: 25% of the width, between 180 and 280 sp (96 dpi gives px = sp).
-        assert_eq!(view.sidebar_width_for(400, false), 180, "25% is below the minimum");
+        // Defaults: 200px between 180 and 480.
+        assert_eq!(view.sidebar_width_for(400, false), 200, "default width is used");
         assert_eq!(view.sidebar_width_for(800, false), 200);
-        assert_eq!(view.sidebar_width_for(2000, false), 280, "clamped to the maximum");
+        assert_eq!(view.sidebar_width_for(2000, false), 200);
 
         // Collapsed, the sidebar takes the available width within the limits.
-        assert_eq!(view.sidebar_width_for(1000, true), 280);
+        assert_eq!(view.sidebar_width_for(1000, true), 480);
         assert_eq!(view.sidebar_width_for(200, true), 200);
+
+        // Custom sidebar width and limits.
+        view.set_sidebar_width(300);
+        view.set_min_sidebar_width(250);
+        view.set_max_sidebar_width(400);
+        assert_eq!(view.sidebar_width_for(800, false), 300, "custom width is used");
+        view.set_sidebar_width(450);
+        assert_eq!(view.sidebar_width_for(800, false), 400, "clamped to the maximum");
     }
 
     fn drag_resizes_within_limits() {
         let view = OverlaySplitView::new();
         view.set_sidebar(Some(&gtk::Label::new(Some("side"))));
-        view.set_min_sidebar_width(150.0);
-        view.set_max_sidebar_width(400.0);
-        view.set_sidebar_width_unit(adw::LengthUnit::Px);
+        view.set_min_sidebar_width(150);
+        view.set_max_sidebar_width(400);
 
         assert_eq!(view.user_sidebar_width(), None, "the layout chooses by default");
         view.drag_sidebar(300, 50);

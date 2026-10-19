@@ -4,9 +4,10 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use adw::prelude::AdwDialogExt;
+use adw::prelude::{AdwDialogExt, PreferencesGroupExt, PreferencesPageExt};
 use adw::subclass::prelude::*;
 
+use super::keybinding_list::KeybindingList;
 use super::browse_view::InfoField;
 use gtk::prelude::*;
 use gtk::{gio, glib};
@@ -19,6 +20,20 @@ mod imp {
     pub struct PreferencesDialog {
         #[template_child]
         pub show_hidden_row: TemplateChild<adw::SwitchRow>,
+        #[template_child]
+        pub ipc_socket_row: TemplateChild<adw::SwitchRow>,
+        #[template_child]
+        pub thumbnail_bar_row: TemplateChild<adw::ComboRow>,
+        #[template_child]
+        pub thumbnail_bar_shown_row: TemplateChild<adw::SwitchRow>,
+        #[template_child]
+        pub thumbnail_bar_overlay_row: TemplateChild<adw::SwitchRow>,
+        #[template_child]
+        pub blurred_background_row: TemplateChild<adw::SwitchRow>,
+        #[template_child]
+        pub ipc_tcp_row: TemplateChild<adw::SpinRow>,
+        #[template_child]
+        pub ipc_http_row: TemplateChild<adw::SpinRow>,
         #[template_child]
         pub collapse_on_navigate_row: TemplateChild<adw::SwitchRow>,
         #[template_child]
@@ -35,6 +50,12 @@ mod imp {
         pub add_info_button: TemplateChild<gtk::MenuButton>,
         #[template_child]
         pub media_only_row: TemplateChild<adw::SwitchRow>,
+        #[template_child]
+        pub start_location_row: TemplateChild<adw::ComboRow>,
+        #[template_child]
+        pub start_directory_row: TemplateChild<adw::ActionRow>,
+        #[template_child]
+        pub start_directory_button: TemplateChild<gtk::Button>,
         #[template_child]
         pub open_fullscreen_row: TemplateChild<adw::SwitchRow>,
         #[template_child]
@@ -57,6 +78,8 @@ mod imp {
         pub scaling_filter_row: TemplateChild<adw::ComboRow>,
         #[template_child]
         pub smooth_upscaling_row: TemplateChild<adw::SwitchRow>,
+        #[template_child]
+        pub keybindings_page: TemplateChild<adw::PreferencesPage>,
         /// The handler that keeps the size row in step with the setting; removed when the dialog closes.
         pub(super) size_handler: RefCell<Option<glib::SignalHandlerId>>,
         /// The handler that rebuilds the info list when the setting changes; removed when the dialog closes.
@@ -95,12 +118,19 @@ impl PreferencesDialog {
         let dialog: Self = glib::Object::new();
         let imp = dialog.imp();
 
+        dialog.build_keybindings_page();
+
         settings.bind("show-hidden", &*imp.show_hidden_row, "active").build();
         settings.bind("collapse-on-navigate", &*imp.collapse_on_navigate_row, "active").build();
         settings.bind("media-only", &*imp.media_only_row, "active").build();
+        settings.bind("ipc-socket", &*imp.ipc_socket_row, "active").build();
+        settings.bind("viewer-blurred-background", &*imp.blurred_background_row, "active").build();
+        bind_port(settings, &imp.ipc_tcp_row, "ipc-tcp-port");
+        bind_port(settings, &imp.ipc_http_row, "ipc-http-port");
 
         bind_switches(settings, dialog.imp());
         bind_choices(settings, dialog.imp());
+        dialog.bind_start_directory(settings);
         bind_info_fields(settings, &dialog);
         settings
             .bind("expand-up-to", &*imp.expand_up_to_scale, "value")
@@ -152,6 +182,8 @@ fn bind_switches(settings: &gio::Settings, imp: &imp::PreferencesDialog) {
         ("image-info-in-title", &imp.image_info_in_title_row),
         ("keep-fit-mode", &imp.keep_fit_mode_row),
         ("smooth-upscaling", &imp.smooth_upscaling_row),
+        ("viewer-thumbnail-bar-shown", &imp.thumbnail_bar_shown_row),
+        ("viewer-thumbnail-bar-overlay", &imp.thumbnail_bar_overlay_row),
     ];
     for (key, row) in switches {
         settings.bind(key, &**row, "active").build();
@@ -160,7 +192,9 @@ fn bind_switches(settings: &gio::Settings, imp: &imp::PreferencesDialog) {
 
 /// Binds each combo row to a string setting whose value is one of `choices`, by position in the row.
 fn bind_choices(settings: &gio::Settings, imp: &imp::PreferencesDialog) {
-    let combos: [(&str, &glib::Object, &[&str]); 7] = [
+    let combos: [(&str, &glib::Object, &[&str]); 9] = [
+        ("viewer-thumbnail-bar", imp.thumbnail_bar_row.upcast_ref(), &["top", "left", "bottom", "right"]),
+        ("start-location", imp.start_location_row.upcast_ref(), &["last", "root", "home", "specific"]),
         ("filename-display", imp.filename_row.upcast_ref(), &["off", "wrapped", "ellipsized"]),
         ("show-directories", imp.show_directories_row.upcast_ref(), &["none", "first-last", "inline"]),
         ("zoom-indicator", imp.zoom_indicator_row.upcast_ref(), &["on", "off", "auto"]),
@@ -300,5 +334,62 @@ pub(crate) mod tests {
         assert!(!dialog.imp().media_only_row.is_active());
         settings.set_boolean("media-only", true).unwrap();
         settings.set_int("item-size", 128).unwrap();
+    }
+}
+
+impl PreferencesDialog {
+    /// Puts the keybindings editor on the keybindings page.
+    fn build_keybindings_page(&self) {
+        let group = adw::PreferencesGroup::new();
+        group.add(&KeybindingList::new());
+        self.imp().keybindings_page.add(&group);
+    }
+}
+
+/// Keeps a port row in step with an integer setting, in both directions.
+fn bind_port(settings: &gio::Settings, row: &adw::SpinRow, key: &'static str) {
+    row.set_value(f64::from(settings.int(key)));
+    let settings = settings.clone();
+    row.connect_value_notify(move |row| {
+        let _ = settings.set_int(key, row.value() as i32);
+    });
+}
+
+impl PreferencesDialog {
+    /// Shows the start directory row only for a specific start location, with the chosen folder as
+    /// its subtitle, and lets its button pick the folder.
+    fn bind_start_directory(&self, settings: &gio::Settings) {
+        let imp = self.imp();
+        settings
+            .bind("start-location", &*imp.start_directory_row, "visible")
+            .mapping(|variant, _| Some((variant.str()? == "specific").to_value()))
+            .get_only()
+            .build();
+        settings
+            .bind("start-directory", &*imp.start_directory_row, "subtitle")
+            .mapping(|variant, _| {
+                let path = variant.str()?;
+                Some(if path.is_empty() { "None chosen".to_value() } else { path.to_value() })
+            })
+            .get_only()
+            .build();
+
+        let settings = settings.clone();
+        let weak = self.downgrade();
+        imp.start_directory_button.connect_clicked(move |_| {
+            let Some(dialog) = weak.upgrade() else { return };
+            let root = dialog.root().and_downcast::<gtk::Window>();
+            let chooser = gtk::FileDialog::builder().title("Start Directory").build();
+            let current = settings.string("start-directory");
+            if !current.is_empty() {
+                chooser.set_initial_folder(Some(&gio::File::for_path(current.as_str())));
+            }
+            let settings = settings.clone();
+            chooser.select_folder(root.as_ref(), None::<&gio::Cancellable>, move |result| {
+                if let Some(path) = result.ok().and_then(|folder| folder.path()) {
+                    let _ = settings.set_string("start-directory", &path.to_string_lossy());
+                }
+            });
+        });
     }
 }
