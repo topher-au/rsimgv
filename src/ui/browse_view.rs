@@ -694,13 +694,16 @@ impl BrowseView {
     /// The height of one item: the visual, then the name and info lines as the settings lay them out.
     fn cell_height(&self) -> i32 {
         let builder = gtk::Builder::from_resource("/au/topher/rimgv/ui/browse_item.ui");
-        let (Some(cell), Some(name), Some(info)) = (
+        let (Some(cell), Some(visual), Some(name), Some(info)) = (
             builder.object::<gtk::Box>("cell"),
+            builder.object::<gtk::Box>("visual"),
             builder.object::<gtk::Label>("name"),
             builder.object::<gtk::Label>("info"),
         ) else {
             return self.item_size();
         };
+        // The visual is the item's square, as style_item sizes it.
+        visual.set_size_request(self.item_size(), self.item_size());
         cell.set_size_request(self.item_size(), -1);
         // Two lines of text are measured when names wrap and when info is stacked, so the rows fit them.
         let name_lines = if self.filename_display() == "wrapped" { "Ag\nAg" } else { "Ag" };
