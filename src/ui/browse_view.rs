@@ -151,6 +151,12 @@ mod imp {
     pub struct BrowseView {
         #[template_child]
         pub grid: TemplateChild<gtk::GridView>,
+        #[template_child]
+        pub floating_bar: TemplateChild<gtk::Box>,
+        #[template_child]
+        pub spinner: TemplateChild<gtk::Spinner>,
+        #[template_child]
+        pub status: TemplateChild<gtk::Label>,
         pub(super) store: OnceCell<gio::ListStore>,
         pub(super) filter: OnceCell<gtk::CustomFilter>,
         pub(super) sorter: OnceCell<gtk::CustomSorter>,
@@ -513,6 +519,8 @@ impl BrowseView {
         }
         let saved = imp.scroll_memory.borrow().get(path).copied().unwrap_or(0.0);
         imp.path.replace(Some(path.to_path_buf()));
+        imp.spinner.start();
+        self.update_status();
         if let Some(store) = imp.store.get() {
             store.remove_all();
         }
@@ -533,6 +541,8 @@ impl BrowseView {
             if let Some(selection) = view.imp().selection.get() {
                 view.imp().grid.set_model(Some(selection));
             }
+            view.imp().spinner.stop();
+            view.update_status();
             if let Some(scroller) = scroller {
                 restore_scroll_after_layout(&scroller, saved);
             }
@@ -628,6 +638,32 @@ impl BrowseView {
         if let Some(filter) = self.imp().filter.get() {
             filter.changed(gtk::FilterChange::Different);
         }
+        self.update_status();
+    }
+
+    /// Updates the floating bar: a spinner while the folder loads, then the item count and the free
+    /// space on the folder's filesystem.
+    fn update_status(&self) {
+        let imp = self.imp();
+        if imp.spinner.is_spinning() {
+            imp.status.set_label("Loading…");
+            return;
+        }
+        let count = imp.selection.get().map_or(0, |selection| selection.n_items());
+        let noun = if count == 1 { "item" } else { "items" };
+        let free = self
+            .path()
+            .and_then(|path| {
+                gio::File::for_path(path)
+                    .query_filesystem_info("filesystem::free", gio::Cancellable::NONE)
+                    .ok()
+            })
+            .map(|info| glib::format_size(info.attribute_uint64("filesystem::free")).to_string());
+        let text = match free {
+            Some(free) => format!("{count} {noun}, Free space: {free}"),
+            None => format!("{count} {noun}"),
+        };
+        imp.status.set_label(&text);
     }
 
     /// Rebinds every item so a size or layout change shows, keeping the item at the top of the view

@@ -3,3 +3,11 @@
   border-radius: 8px;
   background-color: color-mix(in srgb, currentColor 6%, transparent);
 }
+
+// The floating bar over the items, showing the item count and free space.
+.rsimgv-floating-bar {
+  padding: 6px 14px;
+  border-radius: 999px;
+  background-color: @card_bg_color;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.25);
+}

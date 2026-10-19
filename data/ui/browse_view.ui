@@ -3,14 +3,35 @@
   <template class="RsimgvBrowseView" parent="GtkBox">
     <property name="orientation">vertical</property>
     <child>
-      <object class="GtkScrolledWindow">
+      <object class="GtkOverlay">
         <property name="hexpand">true</property>
         <property name="vexpand">true</property>
         <property name="child">
-          <object class="GtkGridView" id="grid">
-            <property name="single-click-activate">false</property>
+          <object class="GtkScrolledWindow">
+            <property name="hexpand">true</property>
+            <property name="vexpand">true</property>
+            <property name="child">
+              <object class="GtkGridView" id="grid">
+                <property name="single-click-activate">false</property>
+              </object>
+            </property>
           </object>
         </property>
+        <child type="overlay">
+          <object class="GtkBox" id="floating_bar">
+            <property name="halign">center</property>
+            <property name="valign">end</property>
+            <property name="margin-bottom">12</property>
+            <property name="spacing">8</property>
+            <style><class name="rsimgv-floating-bar"/></style>
+            <child>
+              <object class="GtkSpinner" id="spinner"/>
+            </child>
+            <child>
+              <object class="GtkLabel" id="status"/>
+            </child>
+          </object>
+        </child>
       </object>
     </child>
   </template>
