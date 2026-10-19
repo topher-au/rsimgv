@@ -70,15 +70,17 @@ them installed separately.
 Settings are stored as YAML in `~/.config/rsimgv/rsimgv.conf`. Set `RSIMGV_CONFIG` to use another file.
 
 ```yaml
-settings:
+window:
+  width: 960
+  height: 640
+  maximized: false
+browse:
   show-hidden: false
   media-only: true
   item-size: 128
   wrap-names: false
+tree:
   collapse-on-navigate: false
-  window-width: 960
-  window-height: 640
-  window-maximized: false
 ```
 
 They are read and written through GSettings, using a backend that stores them in that file, so changes
