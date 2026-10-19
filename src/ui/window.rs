@@ -548,27 +548,26 @@ impl Window {
                 }
             }
         });
-        // The tab context menu is built for the tab that was right-clicked.
-        imp.tab_view.connect_setup_menu(|view, page| {
-            let Some(id) = page.and_then(tab_id) else {
-                view.set_menu_model(None::<&gio::MenuModel>);
-                return;
-            };
+        // The tab context menu is one menu object, set on the view up front so the bar always has it.
+        // Each time it is about to show, its items are rebuilt for the tab that was right-clicked.
+        let tab_menu = gio::Menu::new();
+        imp.tab_view.set_menu_model(Some(&tab_menu));
+        imp.tab_view.connect_setup_menu(move |_, page| {
+            tab_menu.remove_all();
+            let Some(id) = page.and_then(tab_id) else { return };
             let target = id.to_variant();
             let item = |label: &str, action: &str| {
                 let item = gio::MenuItem::new(Some(label), None);
                 item.set_action_and_target_value(Some(action), Some(&target));
                 item
             };
-            let menu = gio::Menu::new();
-            menu.append_item(&item("_Duplicate Tab", "win.tab-duplicate"));
-            menu.append_item(&item("Open in New _Window", "win.tab-new-window"));
-            menu.append_item(&item("Copy _Path", "win.tab-copy-path"));
+            tab_menu.append_item(&item("_Duplicate Tab", "win.tab-duplicate"));
+            tab_menu.append_item(&item("Open in New _Window", "win.tab-new-window"));
+            tab_menu.append_item(&item("Copy _Path", "win.tab-copy-path"));
             let close = gio::Menu::new();
             close.append_item(&item("Close _Other Tabs", "win.tab-close-others"));
             close.append_item(&item("_Close Tab", "win.tab-close"));
-            menu.append_section(None, &close);
-            view.set_menu_model(Some(&menu));
+            tab_menu.append_section(None, &close);
         });
         imp.tab_view.connect_close_page({
             let weak = weak.clone();
