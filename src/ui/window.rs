@@ -9,6 +9,7 @@ use gtk::prelude::*;
 use gtk::{gdk, gio, glib};
 
 use super::fs_tree::TreeSnapshot;
+use super::path_bar::OpenTarget;
 use super::{BrowseView, FsTree, HeaderBar, NavigationBar, OverlaySplitView, PathBar, PreferencesDialog};
 
 mod imp {
@@ -173,6 +174,7 @@ impl Window {
         });
         window.add_action(&settings.create_action("show-hidden"));
 
+        window.add_context_actions();
         window.connect_sources();
         window.open_tab(&glib::home_dir());
         window
@@ -212,6 +214,93 @@ impl Window {
         }
         imp.updating.set(false);
         true
+    }
+
+    /// The actions behind the context menus. Each takes the path it works on as its parameter.
+    fn add_context_actions(&self) {
+        let weak = self.downgrade();
+        for name in ["open-folder", "open-in-new-tab", "open-in-new-window", "copy-path", "show-properties"] {
+            let action = gio::SimpleAction::new(name, Some(glib::VariantTy::STRING));
+            let weak = weak.clone();
+            action.connect_activate(move |_, parameter| {
+                let (Some(window), Some(path)) = (weak.upgrade(), parameter.and_then(|p| p.get::<String>())) else {
+                    return;
+                };
+                let path = PathBuf::from(path);
+                match name {
+                    "open-folder" => {
+                        window.navigate(&path);
+                    }
+                    "open-in-new-tab" if path.is_dir() => window.open_tab(&path),
+                    "open-in-new-window" => window.open_in_new_window(&path),
+                    "copy-path" => window.clipboard().set_text(&path.to_string_lossy()),
+                    "show-properties" => window.show_properties(&path),
+                    _ => {}
+                }
+            });
+            self.add_action(&action);
+        }
+    }
+
+    /// Shows a context menu for a folder or file at (`x`, `y`) within `parent`. Folders can be opened in a tab or a window.
+    fn show_context_menu(&self, parent: &gtk::Widget, path: &Path, is_dir: bool, x: f64, y: f64) {
+        let target = path.to_string_lossy().into_owned();
+        let item = |label: &str, action: &str| {
+            let item = gio::MenuItem::new(Some(label), None);
+            item.set_action_and_target_value(Some(action), Some(&target.to_variant()));
+            item
+        };
+        let menu = gio::Menu::new();
+        if is_dir {
+            menu.append_item(&item("Open", "win.open-folder"));
+            menu.append_item(&item("Open in New Tab", "win.open-in-new-tab"));
+            menu.append_item(&item("Open in New Window", "win.open-in-new-window"));
+        }
+        let details = gio::Menu::new();
+        details.append_item(&item("Copy Path", "win.copy-path"));
+        details.append_item(&item("Properties", "win.show-properties"));
+        menu.append_section(None, &details);
+
+        let popover = gtk::PopoverMenu::from_model(Some(&menu));
+        popover.set_parent(parent);
+        popover.set_has_arrow(false);
+        popover.set_pointing_to(Some(&gtk::gdk::Rectangle::new(x as i32, y as i32, 0, 0)));
+        popover.connect_closed(|popover| popover.unparent());
+        popover.popup();
+    }
+
+    /// Opens a second window at `path`.
+    fn open_in_new_window(&self, path: &Path) {
+        let Some(app) = self.application().and_downcast::<adw::Application>() else { return };
+        let Some(settings) = self.imp().settings.get() else { return };
+        let window = Window::new(&app, settings);
+        window.navigate(path);
+        gtk::prelude::GtkWindowExt::present(&window);
+    }
+
+    /// Shows a folder's or file's name, type, size, and when it was modified.
+    fn show_properties(&self, path: &Path) {
+        let file = gio::File::for_path(path);
+        let attributes = "standard::display-name,standard::size,standard::content-type,time::modified";
+        let (heading, body) = match file.query_info(attributes, gio::FileQueryInfoFlags::NONE, gio::Cancellable::NONE) {
+            Ok(info) => {
+                let mut lines = vec![format!("Location: {}", path.parent().map_or_else(String::new, |p| p.display().to_string()))];
+                if let Some(kind) = info.content_type() {
+                    lines.push(format!("Type: {}", gio::content_type_get_description(&kind)));
+                }
+                if info.file_type() != gio::FileType::Directory {
+                    lines.push(format!("Size: {}", glib::format_size(info.size() as u64)));
+                }
+                if let Some(time) = info.modification_date_time().and_then(|t| t.format("%Y-%m-%d %H:%M").ok()) {
+                    lines.push(format!("Modified: {time}"));
+                }
+                (info.display_name().to_string(), lines.join("\n"))
+            }
+            Err(err) => (path.display().to_string(), err.to_string()),
+        };
+        let dialog = adw::AlertDialog::new(Some(&heading), Some(&body));
+        adw::prelude::AlertDialogExt::add_response(&dialog, "close", "Close");
+        adw::prelude::AdwDialogExt::present(&dialog, Some(self));
     }
 
     /// Shows `path` in the path bar, the browse view, and the tab's title. It does not change the
@@ -300,12 +389,24 @@ impl Window {
                 }
             }
         });
-        // New tabs and windows are not implemented yet, so every target navigates in this window.
         imp.path_bar.connect_open_location({
             let weak = weak.clone();
-            move |_, path, _| {
+            move |_, path, target| {
+                let Some(window) = weak.upgrade() else { return };
+                match target {
+                    OpenTarget::Here => {
+                        window.navigate(path);
+                    }
+                    OpenTarget::NewTab => window.open_tab(path),
+                    OpenTarget::NewWindow => window.open_in_new_window(path),
+                }
+            }
+        });
+        imp.path_bar.connect_properties_requested({
+            let weak = weak.clone();
+            move |_, path| {
                 if let Some(window) = weak.upgrade() {
-                    window.navigate(path);
+                    window.show_properties(path);
                 }
             }
         });
@@ -383,6 +484,22 @@ impl Window {
                 if let Some(window) = weak.upgrade() {
                     let path = window.current_path().unwrap_or_else(glib::home_dir);
                     window.open_tab(&path);
+                }
+            }
+        });
+        imp.tree.connect_item_context_requested({
+            let weak = weak.clone();
+            move |tree, node, x, y| {
+                if let Some(window) = weak.upgrade() {
+                    window.show_context_menu(tree.upcast_ref(), node.path(), node.is_dir(), x, y);
+                }
+            }
+        });
+        imp.browse.connect_item_context_requested({
+            let weak = weak.clone();
+            move |browse, path, is_dir, x, y| {
+                if let Some(window) = weak.upgrade() {
+                    window.show_context_menu(browse.upcast_ref(), path, is_dir, x, y);
                 }
             }
         });
@@ -529,6 +646,27 @@ pub(crate) mod tests {
     }
 
 
+    /// The context menu actions act on the path they are given.
+    fn context_actions_work(app: &adw::Application, settings: &gio::Settings) {
+        let root = std::env::temp_dir().join(format!("rsimgv-context-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("docs")).unwrap();
+
+        let window = Window::new(app, settings);
+        let tabs = window.imp().tab_view.clone();
+        let before = tabs.n_pages();
+        let folder = root.join("docs").to_string_lossy().into_owned().to_variant();
+        gtk::prelude::WidgetExt::activate_action(&window, "win.open-in-new-tab", Some(&folder)).expect("open in a new tab");
+        assert_eq!(tabs.n_pages(), before + 1, "a folder opens in a new tab");
+        assert_eq!(window.current_path(), Some(root.join("docs")));
+
+        gtk::prelude::WidgetExt::activate_action(&window, "win.open-folder", Some(&root.to_string_lossy().into_owned().to_variant())).expect("open folder");
+        assert_eq!(window.current_path(), Some(root.clone()), "open navigates to the folder");
+
+        window.destroy();
+        let _ = fs::remove_dir_all(&root);
+    }
+
     /// Each tab keeps its own folder and history; switching tabs shows the one chosen.
     fn tabs_keep_their_own_state(app: &adw::Application, settings: &gio::Settings) {
         let root = std::env::temp_dir().join(format!("rsimgv-tabs-{}", std::process::id()));
@@ -616,6 +754,7 @@ pub(crate) mod tests {
         gio::prelude::ApplicationExt::register(&app, gio::Cancellable::NONE).expect("register test application");
         let settings = crate::settings::open("au.topher.rimgv");
         tabs_keep_their_own_state(&app, &settings);
+        context_actions_work(&app, &settings);
         window_size_is_saved(&app, &settings);
         size_change_is_saved_without_closing(&app, &settings);
         let window = Window::new(&app, &settings);
