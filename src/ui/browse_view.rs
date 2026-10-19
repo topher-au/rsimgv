@@ -434,9 +434,17 @@ impl BrowseView {
     fn refresh_items(&self) {
         let imp = self.imp();
         let anchor = top_item_anchor(&imp.grid);
-        if let Some(store) = imp.store.get() {
-            let count = store.n_items();
-            store.items_changed(0, count, count);
+        // Restyle the items on screen directly: rebinding through the model does not reach them.
+        if let Some(model) = imp.grid.model() {
+            let mut child = imp.grid.first_child();
+            while let Some(widget) = child {
+                child = widget.next_sibling();
+                let Some(cell) = widget.first_child().and_downcast::<gtk::Box>() else { continue };
+                let Ok(position) = cell.widget_name().parse::<u32>() else { continue };
+                if let Some(entry) = model.item(position).and_downcast::<FileEntry>() {
+                    style_item(self, &cell, &entry);
+                }
+            }
         }
         if let Some(anchor) = anchor {
             restore_top_item_after_layout(&imp.grid, anchor);
@@ -463,7 +471,66 @@ pub(crate) mod tests {
         }
     }
 
+    /// Runs the main context for about `frames` frames, so layout and item binding happen.
+    fn pump_frames(frames: u32) {
+        let ctx = glib::MainContext::default();
+        for _ in 0..frames {
+            while ctx.iteration(false) {}
+            std::thread::sleep(std::time::Duration::from_millis(16));
+        }
+    }
+
+    /// The visual box (the icon's frame) of every rendered item.
+    fn rendered_visuals(view: &BrowseView) -> Vec<gtk::Box> {
+        let mut visuals = Vec::new();
+        let mut child = view.imp().grid.first_child();
+        while let Some(widget) = child {
+            child = widget.next_sibling();
+            if let Some(visual) = widget
+                .first_child()
+                .and_then(|cell| cell.first_child())
+                .and_downcast::<gtk::Box>()
+            {
+                visuals.push(visual);
+            }
+        }
+        visuals
+    }
+
+    /// Changing the size updates items that are already on screen, not just the next ones bound.
+    fn item_size_change_reaches_rendered_items() {
+        let root = std::env::temp_dir().join(format!("rsimgv-browse-size-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("one")).unwrap();
+        fs::create_dir_all(root.join("two")).unwrap();
+        fs::write(root.join("three.mp4"), "x").unwrap();
+
+        let view = BrowseView::new();
+        let window = gtk::Window::new();
+        window.set_default_size(600, 400);
+        window.set_child(Some(&view));
+        window.present();
+        view.set_path(&root);
+        wait_for("listing", || view.item_count() == 3);
+        pump_frames(60);
+
+        view.set_item_size(128);
+        pump_frames(60);
+        let visuals = rendered_visuals(&view);
+        assert!(!visuals.is_empty(), "items are rendered");
+        assert!(visuals.iter().all(|v| v.size_request() == (128, 128)), "128px before the change");
+
+        view.set_item_size(64);
+        pump_frames(60);
+        let visuals = rendered_visuals(&view);
+        assert!(visuals.iter().all(|v| v.size_request() == (64, 64)), "64px after the change");
+
+        window.destroy();
+        let _ = fs::remove_dir_all(&root);
+    }
+
     pub(crate) fn run_scenarios() {
+        item_size_change_reaches_rendered_items();
         let root = std::env::temp_dir().join(format!("rsimgv-browse-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("sub")).unwrap();
