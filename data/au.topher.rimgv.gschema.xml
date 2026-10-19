@@ -36,5 +36,72 @@
       <default>false</default>
       <summary>Whether the window was maximized when it was last closed</summary>
     </key>
+    <key name="open-fullscreen" type="b">
+      <default>false</default>
+      <summary>Open the viewer in fullscreen</summary>
+    </key>
+    <key name="auto-hide-cursor" type="b">
+      <default>true</default>
+      <summary>Hide the mouse cursor while the viewer is idle</summary>
+    </key>
+    <key name="smooth-scrolling" type="b">
+      <default>true</default>
+      <summary>Scroll images smoothly</summary>
+    </key>
+    <key name="image-info-in-title" type="b">
+      <default>false</default>
+      <summary>Show the image's file name and details in the window title</summary>
+    </key>
+    <key name="zoom-indicator" type="s">
+      <choices>
+        <choice value="on"/>
+        <choice value="off"/>
+        <choice value="auto"/>
+      </choices>
+      <default>'auto'</default>
+      <summary>Show the zoom level: on, off, or only when the image is zoomed</summary>
+    </key>
+    <key name="image-fit" type="s">
+      <choices>
+        <choice value="fit-window"/>
+        <choice value="stretch-width"/>
+        <choice value="one-to-one"/>
+        <choice value="fit-stretch"/>
+      </choices>
+      <default>'fit-window'</default>
+      <summary>How an image is sized when it is opened</summary>
+    </key>
+    <key name="one-to-one-focus" type="s">
+      <choices>
+        <choice value="top"/>
+        <choice value="center"/>
+        <choice value="cursor"/>
+      </choices>
+      <default>'center'</default>
+      <summary>Where the view is focused when an image is shown at 1:1</summary>
+    </key>
+    <key name="scaling-filter" type="s">
+      <choices>
+        <choice value="nearest"/>
+        <choice value="bilinear"/>
+        <choice value="bicubic"/>
+        <choice value="lanczos"/>
+      </choices>
+      <default>'bicubic'</default>
+      <summary>Filter used to scale images</summary>
+    </key>
+    <key name="keep-fit-mode" type="b">
+      <default>true</default>
+      <summary>Keep the fit mode when switching images</summary>
+    </key>
+    <key name="expand-up-to" type="i">
+      <default>200</default>
+      <range min="100" max="1000"/>
+      <summary>Largest zoom, in percent, that small images are expanded to fill the window</summary>
+    </key>
+    <key name="smooth-upscaling" type="b">
+      <default>true</default>
+      <summary>Smooth pixels when images are enlarged</summary>
+    </key>
   </schema>
 </schemalist>

@@ -23,6 +23,28 @@ mod imp {
         pub item_size_row: TemplateChild<adw::SpinRow>,
         #[template_child]
         pub media_only_row: TemplateChild<adw::SwitchRow>,
+        #[template_child]
+        pub open_fullscreen_row: TemplateChild<adw::SwitchRow>,
+        #[template_child]
+        pub auto_hide_cursor_row: TemplateChild<adw::SwitchRow>,
+        #[template_child]
+        pub smooth_scrolling_row: TemplateChild<adw::SwitchRow>,
+        #[template_child]
+        pub image_info_in_title_row: TemplateChild<adw::SwitchRow>,
+        #[template_child]
+        pub zoom_indicator_row: TemplateChild<adw::ComboRow>,
+        #[template_child]
+        pub image_fit_row: TemplateChild<adw::ComboRow>,
+        #[template_child]
+        pub keep_fit_mode_row: TemplateChild<adw::SwitchRow>,
+        #[template_child]
+        pub one_to_one_focus_row: TemplateChild<adw::ComboRow>,
+        #[template_child]
+        pub expand_up_to_scale: TemplateChild<gtk::Scale>,
+        #[template_child]
+        pub scaling_filter_row: TemplateChild<adw::ComboRow>,
+        #[template_child]
+        pub smooth_upscaling_row: TemplateChild<adw::SwitchRow>,
         /// The handler that keeps the size row in step with the setting; removed when the dialog closes.
         pub(super) size_handler: RefCell<Option<glib::SignalHandlerId>>,
     }
@@ -63,6 +85,14 @@ impl PreferencesDialog {
         settings.bind("collapse-on-navigate", &*imp.collapse_on_navigate_row, "active").build();
         settings.bind("media-only", &*imp.media_only_row, "active").build();
 
+        bind_switches(settings, dialog.imp());
+        bind_choices(settings, dialog.imp());
+        settings
+            .bind("expand-up-to", &*imp.expand_up_to_scale, "value")
+            .mapping(|variant, _| variant.get::<i32>().map(|size| f64::from(size).to_value()))
+            .set_mapping(|value, _| value.get::<f64>().ok().map(|size| (size.round() as i32).to_variant()))
+            .build();
+
         // The spin row holds a double and the key an integer, so the size is converted by hand.
         imp.item_size_row.set_value(f64::from(settings.int("item-size")));
         let row = imp.item_size_row.downgrade();
@@ -92,6 +122,46 @@ impl PreferencesDialog {
             }
         });
         dialog
+    }
+}
+
+/// Binds each switch row to its boolean setting.
+fn bind_switches(settings: &gio::Settings, imp: &imp::PreferencesDialog) {
+    let switches = [
+        ("open-fullscreen", &imp.open_fullscreen_row),
+        ("auto-hide-cursor", &imp.auto_hide_cursor_row),
+        ("smooth-scrolling", &imp.smooth_scrolling_row),
+        ("image-info-in-title", &imp.image_info_in_title_row),
+        ("keep-fit-mode", &imp.keep_fit_mode_row),
+        ("smooth-upscaling", &imp.smooth_upscaling_row),
+    ];
+    for (key, row) in switches {
+        settings.bind(key, &**row, "active").build();
+    }
+}
+
+/// Binds each combo row to a string setting whose value is one of `choices`, by position in the row.
+fn bind_choices(settings: &gio::Settings, imp: &imp::PreferencesDialog) {
+    let combos: [(&str, &adw::ComboRow, &[&str]); 4] = [
+        ("zoom-indicator", &imp.zoom_indicator_row, &["on", "off", "auto"]),
+        ("image-fit", &imp.image_fit_row, &["fit-window", "stretch-width", "one-to-one", "fit-stretch"]),
+        ("one-to-one-focus", &imp.one_to_one_focus_row, &["top", "center", "cursor"]),
+        ("scaling-filter", &imp.scaling_filter_row, &["nearest", "bilinear", "bicubic", "lanczos"]),
+    ];
+    for (key, row, choices) in combos {
+        let choices: &'static [&'static str] = choices;
+        settings
+            .bind(key, row, "selected")
+            .mapping(move |variant, _| {
+                let name = variant.str()?;
+                let index = choices.iter().position(|choice| *choice == name).unwrap_or(0);
+                Some((index as u32).to_value())
+            })
+            .set_mapping(move |value, _| {
+                let index = value.get::<u32>().ok()? as usize;
+                choices.get(index).map(|choice| choice.to_variant())
+            })
+            .build();
     }
 }
 

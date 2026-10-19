@@ -3,6 +3,7 @@
   <template class="RsimgvPreferencesDialog" parent="AdwPreferencesDialog">
     <child>
       <object class="AdwPreferencesPage">
+        <property name="title">Browsing</property>
         <child>
           <object class="AdwPreferencesGroup">
             <property name="title">Browsing</property>
@@ -32,6 +33,144 @@
                     <property name="value">128</property>
                   </object>
                 </property>
+              </object>
+            </child>
+          </object>
+        </child>
+      </object>
+    </child>
+    <child>
+      <object class="AdwPreferencesPage">
+        <property name="title">General</property>
+        <property name="icon-name">preferences-system-symbolic</property>
+        <child>
+          <object class="AdwPreferencesGroup">
+            <child>
+              <object class="AdwSwitchRow" id="open_fullscreen_row">
+                <property name="title">Open in fullscreen</property>
+              </object>
+            </child>
+            <child>
+              <object class="AdwSwitchRow" id="auto_hide_cursor_row">
+                <property name="title">Auto hide cursor</property>
+              </object>
+            </child>
+            <child>
+              <object class="AdwSwitchRow" id="smooth_scrolling_row">
+                <property name="title">Smooth scrolling</property>
+              </object>
+            </child>
+            <child>
+              <object class="AdwSwitchRow" id="image_info_in_title_row">
+                <property name="title">Image info in window title</property>
+              </object>
+            </child>
+            <child>
+              <object class="AdwComboRow" id="zoom_indicator_row">
+                <property name="title">Zoom indicator</property>
+                <property name="model">
+                  <object class="GtkStringList">
+                    <items>
+                      <item>On</item>
+                      <item>Off</item>
+                      <item>Auto</item>
+                    </items>
+                  </object>
+                </property>
+              </object>
+            </child>
+          </object>
+        </child>
+      </object>
+    </child>
+    <child>
+      <object class="AdwPreferencesPage">
+        <property name="title">View</property>
+        <property name="icon-name">view-grid-symbolic</property>
+        <child>
+          <object class="AdwPreferencesGroup">
+            <child>
+              <object class="AdwComboRow" id="image_fit_row">
+                <property name="title">Image fit</property>
+                <property name="model">
+                  <object class="GtkStringList">
+                    <items>
+                      <item>Fit to window</item>
+                      <item>Stretch to width</item>
+                      <item>1:1</item>
+                      <item>Fit to window (stretch)</item>
+                    </items>
+                  </object>
+                </property>
+              </object>
+            </child>
+            <child>
+              <object class="AdwSwitchRow" id="keep_fit_mode_row">
+                <property name="title">Keep fit mode when switching images</property>
+              </object>
+            </child>
+            <child>
+              <object class="AdwComboRow" id="one_to_one_focus_row">
+                <property name="title">Focus in 1:1 mode</property>
+                <property name="model">
+                  <object class="GtkStringList">
+                    <items>
+                      <item>Top</item>
+                      <item>Center</item>
+                      <item>Cursor</item>
+                    </items>
+                  </object>
+                </property>
+              </object>
+            </child>
+            <child>
+              <object class="AdwActionRow">
+                <property name="title">Expand images up to</property>
+                <property name="subtitle">Largest zoom that small images are enlarged to</property>
+                <child type="suffix">
+                  <object class="GtkScale" id="expand_up_to_scale">
+                    <property name="orientation">horizontal</property>
+                    <property name="width-request">200</property>
+                    <property name="valign">center</property>
+                    <property name="draw-value">true</property>
+                    <property name="value-pos">left</property>
+                    <property name="digits">0</property>
+                    <property name="adjustment">
+                      <object class="GtkAdjustment">
+                        <property name="lower">100</property>
+                        <property name="upper">1000</property>
+                        <property name="step-increment">10</property>
+                        <property name="page-increment">100</property>
+                        <property name="value">200</property>
+                      </object>
+                    </property>
+                  </object>
+                </child>
+              </object>
+            </child>
+          </object>
+        </child>
+        <child>
+          <object class="AdwPreferencesGroup">
+            <property name="title">Scaling</property>
+            <child>
+              <object class="AdwComboRow" id="scaling_filter_row">
+                <property name="title">Filter</property>
+                <property name="model">
+                  <object class="GtkStringList">
+                    <items>
+                      <item>Nearest</item>
+                      <item>Bilinear</item>
+                      <item>Bicubic</item>
+                      <item>Lanczos</item>
+                    </items>
+                  </object>
+                </property>
+              </object>
+            </child>
+            <child>
+              <object class="AdwSwitchRow" id="smooth_upscaling_row">
+                <property name="title">Smooth upscaling</property>
               </object>
             </child>
           </object>

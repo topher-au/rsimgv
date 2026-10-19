@@ -66,6 +66,17 @@ const LAYOUT: &[(&str, &str, &str)] = &[
     ("window-width", "window", "width"),
     ("window-height", "window", "height"),
     ("window-maximized", "window", "maximized"),
+    ("open-fullscreen", "general", "open-fullscreen"),
+    ("auto-hide-cursor", "general", "auto-hide-cursor"),
+    ("smooth-scrolling", "general", "smooth-scrolling"),
+    ("image-info-in-title", "general", "image-info-in-title"),
+    ("zoom-indicator", "general", "zoom-indicator"),
+    ("image-fit", "view", "image-fit"),
+    ("keep-fit-mode", "view", "keep-fit-mode"),
+    ("one-to-one-focus", "view", "one-to-one-focus"),
+    ("expand-up-to", "view", "expand-up-to"),
+    ("scaling-filter", "view", "scaling-filter"),
+    ("smooth-upscaling", "view", "smooth-upscaling"),
 ];
 
 /// The group for a setting that is not in `LAYOUT`. Its name is the schema key.
