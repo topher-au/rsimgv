@@ -157,7 +157,7 @@ fn bind_switches(settings: &gio::Settings, imp: &imp::PreferencesDialog) {
 fn bind_choices(settings: &gio::Settings, imp: &imp::PreferencesDialog) {
     let combos: [(&str, &adw::ComboRow, &[&str]); 6] = [
         ("filename-display", &imp.filename_row, &["off", "wrapped", "ellipsized"]),
-        ("show-directories", &imp.show_directories_row, &["none", "first", "last", "inline"]),
+        ("show-directories", &imp.show_directories_row, &["none", "first-last", "inline"]),
         ("zoom-indicator", &imp.zoom_indicator_row, &["on", "off", "auto"]),
         ("image-fit", &imp.image_fit_row, &["fit-window", "stretch-width", "one-to-one", "fit-stretch"]),
         ("one-to-one-focus", &imp.one_to_one_focus_row, &["top", "center", "cursor"]),

@@ -117,8 +117,7 @@
                   <object class="GtkStringList">
                     <items>
                       <item>None</item>
-                      <item>First</item>
-                      <item>Last</item>
+                      <item>First/Last</item>
                       <item>Inline</item>
                     </items>
                   </object>

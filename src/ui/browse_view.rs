@@ -126,7 +126,7 @@ mod imp {
         /// How item names are shown: `off`, `wrapped` (two lines) or `ellipsized` (one line).
         #[property(get, set)]
         filename_display: RefCell<String>,
-        /// Where folders are listed: `none`, `first`, `last`, or `inline` among the files.
+        /// Where folders are listed: `none`, `first-last` (before the files), or `inline` among them.
         /// Width and height of the visual part of each item, in pixels.
         #[property(get, set)]
         item_size: Cell<i32>,
@@ -179,7 +179,7 @@ mod imp {
             self.item_size.set(DEFAULT_ITEM_SIZE);
             self.media_only.set(true);
             self.filename_display.replace("ellipsized".to_owned());
-            self.show_directories.replace("first".to_owned());
+            self.show_directories.replace("first-last".to_owned());
             self.info_fields
                 .replace(vec![InfoField::Size, InfoField::Modified]);
 
@@ -199,7 +199,7 @@ mod imp {
                 visible_when_hidden && visible_when_media && visible_when_listed
             });
 
-            // Folders go first, last, or among the files, as the show-directories setting says.
+            // Folders go before the files, or among them when show-directories is inline.
             let sorter = gtk::CustomSorter::new({
                 let view = obj.downgrade();
                 move |a, b| {
@@ -211,7 +211,6 @@ mod imp {
                     let mode = view.show_directories();
                     let rank = |entry: &FileEntry| match (mode.as_str(), entry.is_dir()) {
                         ("inline", _) => 0,
-                        ("last", is_dir) => u8::from(is_dir),
                         (_, is_dir) => u8::from(!is_dir),
                     };
                     match rank(a).cmp(&rank(b)).then_with(|| natural_cmp(&a.name(), &b.name())) {

@@ -111,12 +111,11 @@
     <key name="show-directories" type="s">
       <choices>
         <choice value="none"/>
-        <choice value="first"/>
-        <choice value="last"/>
+        <choice value="first-last"/>
         <choice value="inline"/>
       </choices>
-      <default>'first'</default>
-      <summary>Where folders are listed: not at all, first, last, or among the files</summary>
+      <default>'first-last'</default>
+      <summary>Where folders are listed: not at all, before and after the files as the sort order says, or among the files</summary>
     </key>
     <key name="info-fields" type="as">
       <default>['size', 'modified']</default>

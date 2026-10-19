@@ -79,7 +79,7 @@ browse:
   media-only: true
   item-size: 128
   filename-display: ellipsized
-  show-directories: first
+  show-directories: first-last
   info-fields: [size, modified]
 tree:
   collapse-on-navigate: false
