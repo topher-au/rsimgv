@@ -28,6 +28,8 @@
 //!   files.select    {"file"}                 -> {"selected": name}   in the selected tab
 //!   files.select_index {"index"}             -> {"selected": name}   negative counts from the end
 //!   files.selected  {}                       -> {"name", "index"}   of the selected tab; null when nothing is selected
+//!   view.screenshot {}                       -> {"format": "png", "width", "height", "data"}
+//!                   The picture or video frame the viewer shows, at its own size, as base64-encoded PNG.
 //!
 //! "tab" in tabs.files and tabs.select is a tab id, or "current" for the selected tab. "index" is a tab's
 //! position, counted from 0 in tab order.
@@ -35,6 +37,8 @@
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
+use gtk::glib;
+use gtk::prelude::*;
 use serde_json::{json, Value};
 
 use crate::bookmarks;
@@ -70,6 +74,18 @@ pub fn handle(window: &Window, method: &str, params: &Value) -> Result<Value, Er
             } else {
                 Err(Error::new("not_run", format!("the window did not run {name}")))
             }
+        }
+        "view.screenshot" => {
+            let Some(texture) = window.viewer_screenshot() else {
+                return Err(Error::new("no_media", "the viewer is not showing a picture or a video frame"));
+            };
+            let png = texture.save_to_png_bytes();
+            Ok(json!({
+                "format": "png",
+                "width": texture.width(),
+                "height": texture.height(),
+                "data": glib::base64_encode(&png).as_str(),
+            }))
         }
         "window.info" => Ok(json!({
             "current_path": window.current_path().map(|path| path.to_string_lossy().into_owned()),

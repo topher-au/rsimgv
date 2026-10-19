@@ -590,6 +590,27 @@ impl MediaViewer {
         })
     }
 
+    /// The item shown, at its own size: the picture, or the video's current frame. `None` when nothing is
+    /// shown, or a video has no frame yet.
+    pub fn screenshot(&self) -> Option<gdk::Texture> {
+        let imp = self.imp();
+        let Some(media) = imp.media.borrow().clone() else { return imp.canvas.texture() };
+        let frame = media.current_image();
+        if let Ok(texture) = frame.clone().downcast::<gdk::Texture>() {
+            return Some(texture);
+        }
+        // Any other frame is drawn at its own size and rendered to a texture by the window's renderer.
+        let (width, height) = (frame.intrinsic_width(), frame.intrinsic_height());
+        if width <= 0 || height <= 0 {
+            return None;
+        }
+        let snapshot = gtk::Snapshot::new();
+        frame.snapshot(&snapshot, f64::from(width), f64::from(height));
+        let node = snapshot.to_node()?;
+        let renderer = self.native()?.renderer()?;
+        Some(renderer.render_texture(node, Some(&gtk::graphene::Rect::new(0.0, 0.0, width as f32, height as f32))))
+    }
+
     /// Whether the item shown is a video.
     pub fn shows_video(&self) -> bool {
         self.imp().media.borrow().is_some()

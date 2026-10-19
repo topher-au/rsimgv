@@ -813,6 +813,14 @@ impl Window {
     }
 
     /// Whether the media viewer is open.
+    /// The media the viewer shows, at its own size, while it is open.
+    pub fn viewer_screenshot(&self) -> Option<gdk::Texture> {
+        if !self.viewer_is_open() {
+            return None;
+        }
+        self.imp().viewer.screenshot()
+    }
+
     pub fn viewer_is_open(&self) -> bool {
         self.imp().viewer_open.get()
     }

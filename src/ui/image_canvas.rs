@@ -289,6 +289,11 @@ impl ImageCanvas {
         self.snap();
     }
 
+    /// The picture shown, at its own size, if there is one.
+    pub fn texture(&self) -> Option<gdk::Texture> {
+        self.imp().texture.borrow().clone()
+    }
+
     /// Calls `callback` with the scale the picture is drawn at, relative to its own size, when it changes.
     pub fn connect_scale_changed<F: Fn(&Self, f64) + 'static>(&self, callback: F) -> glib::SignalHandlerId {
         self.connect_local("scale-changed", false, move |values| {
