@@ -325,6 +325,7 @@ impl Window {
         }
         if let Some(page) = imp.tab_view.selected_page() {
             page.set_title(&folder_name(path));
+            page.set_icon(Some(&gio::ThemedIcon::new("folder-symbolic")));
         }
     }
 
@@ -356,6 +357,7 @@ impl Window {
         self.attach_browse(&browse);
         let page = imp.tab_view.append(&browse);
         page.set_title(&folder_name(path));
+        page.set_icon(Some(&gio::ThemedIcon::new("folder-symbolic")));
         // A tab opened in the background loads its folder now; its history and tree wait in its state.
         if !select && imp.tab_view.n_pages() > 1 {
             browse.set_path(path);
