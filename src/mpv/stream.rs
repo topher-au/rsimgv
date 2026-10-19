@@ -187,6 +187,11 @@ impl MpvStream {
         }
     }
 
+    /// The speed it plays at, as a multiple of normal.
+    pub fn speed(&self) -> Option<f64> {
+        self.imp().player.borrow().as_ref()?.get_double("speed")
+    }
+
     /// Handles the events waiting from libmpv.
     fn handle_events(&self) {
         loop {

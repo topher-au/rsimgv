@@ -585,8 +585,23 @@ impl MediaViewer {
     }
 
     /// Moves the video's position by `micros` microseconds.
+    /// Changes the playback speed by `change`, from the video's own speed, kept within the speeds allowed.
+    pub fn adjust_speed(&self, change: f64) {
+        let imp = self.imp();
+        let current = imp
+            .media
+            .borrow()
+            .as_ref()
+            .and_then(|media| media.downcast_ref::<crate::mpv::MpvStream>().and_then(crate::mpv::MpvStream::speed))
+            .or(imp.speed.get())
+            .unwrap_or(1.0);
+        self.set_speed(current + change);
+    }
+
     /// Plays videos at `speed` times normal speed, this one and later ones. Only the mpv player can change speed.
     pub fn set_speed(&self, speed: f64) {
+        use crate::keybindings::actions::{MAX_SPEED, MIN_SPEED};
+        let speed = speed.clamp(MIN_SPEED, MAX_SPEED);
         let imp = self.imp();
         imp.speed.set(Some(speed));
         if let Some(stream) = imp.media.borrow().as_ref().and_then(|media| media.downcast_ref::<crate::mpv::MpvStream>()) {

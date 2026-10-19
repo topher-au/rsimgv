@@ -80,6 +80,10 @@ pub struct ActionInfo {
     pub defaults: &'static [&'static str],
 }
 
+/// The slowest and fastest playback speeds, as multiples of normal.
+pub const MIN_SPEED: f64 = 0.05;
+pub const MAX_SPEED: f64 = 16.0;
+
 /// The value a binding passes to an action that takes one: what it is called, the range it is kept within, the
 /// step the editor moves it by, how many decimals it shows, and what it is when the binding gives none.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -97,7 +101,8 @@ pub fn value_info(name: &str) -> Option<ValueInfo> {
     match name {
         "video.seek" => Some(ValueInfo { label: "Seconds", min: -3600.0, max: 3600.0, step: 1.0, digits: 1, default: 10.0 }),
         "video.volume" => Some(ValueInfo { label: "Percent", min: -100.0, max: 100.0, step: 1.0, digits: 0, default: 5.0 }),
-        "video.speed" => Some(ValueInfo { label: "Speed", min: 0.05, max: 16.0, step: 0.25, digits: 2, default: 1.0 }),
+        "video.set-speed" => Some(ValueInfo { label: "Speed", min: MIN_SPEED, max: MAX_SPEED, step: 0.25, digits: 2, default: 1.0 }),
+        "video.adjust-speed" => Some(ValueInfo { label: "Change", min: -MAX_SPEED, max: MAX_SPEED, step: 0.05, digits: 2, default: 0.25 }),
         _ => None,
     }
 }
@@ -274,7 +279,10 @@ pub const ACTIONS: &[ActionInfo] = &[
         name: "video.seek", description: "Move the playback position by the number of seconds bound; a negative number goes back.", icon: "media-seek-forward-symbolic", label: "Seek", scope: Scope::Video, defaults: &[],
     },
     ActionInfo {
-        name: "video.speed", description: "Play at the speed bound, such as 2 for double speed or 0.5 for half; 1 is normal.", icon: "power-profile-performance-symbolic", label: "Set Speed", scope: Scope::Video, defaults: &[],
+        name: "video.set-speed", description: "Play at the speed bound, such as 2 for double speed or 0.5 for half; 1 is normal.", icon: "power-profile-performance-symbolic", label: "Set Speed", scope: Scope::Video, defaults: &[],
+    },
+    ActionInfo {
+        name: "video.adjust-speed", description: "Change the playback speed by the amount bound, such as 0.25 faster; a negative amount slows it.", icon: "power-profile-balanced-symbolic", label: "Adjust Speed", scope: Scope::Video, defaults: &[],
     },
     ActionInfo {
         name: "video.volume-up", description: "Raise the volume.", icon: "audio-volume-high-symbolic", label: "Volume Up", scope: Scope::Video, defaults: &["up"],
