@@ -41,6 +41,11 @@
                 </property>
               </object>
             </child>
+            <child>
+              <object class="AdwSwitchRow" id="collapse_on_navigate_row">
+                <property name="title">Collapse other folders when navigating</property>
+              </object>
+            </child>
           </object>
         </child>
       </object>
@@ -128,16 +133,6 @@
             <child>
               <object class="AdwSwitchRow" id="media_only_row">
                 <property name="title">Only show compatible media files</property>
-              </object>
-            </child>
-          </object>
-        </child>
-        <child>
-          <object class="AdwPreferencesGroup">
-            <property name="title">Folder tree</property>
-            <child>
-              <object class="AdwSwitchRow" id="collapse_on_navigate_row">
-                <property name="title">Collapse other folders when navigating</property>
               </object>
             </child>
           </object>

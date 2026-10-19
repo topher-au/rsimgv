@@ -546,6 +546,21 @@ impl Window {
         });
         imp.location_entry.add_controller(keys);
 
+        // P opens preferences. Typing in the location entry or elsewhere takes the key first, so it only
+        // reaches here when nothing else wanted it.
+        let shortcuts = gtk::EventControllerKey::new();
+        let prefs_weak = weak.clone();
+        shortcuts.connect_key_pressed(move |_, key, _, state| {
+            let plain = !state.intersects(gdk::ModifierType::CONTROL_MASK | gdk::ModifierType::ALT_MASK | gdk::ModifierType::SUPER_MASK);
+            if !plain || !matches!(key, gdk::Key::p | gdk::Key::P) {
+                return glib::Propagation::Proceed;
+            }
+            let Some(window) = prefs_weak.upgrade() else { return glib::Propagation::Proceed };
+            window.show_preferences();
+            glib::Propagation::Stop
+        });
+        self.add_controller(shortcuts);
+
         // Each tab keeps its own folder, history, and tree. Switching saves the one left and shows the one chosen.
         imp.tab_view.connect_selected_page_notify({
             let weak = weak.clone();
