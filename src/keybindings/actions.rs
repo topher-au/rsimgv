@@ -87,9 +87,9 @@ pub const MAX_SPEED: f64 = 16.0;
 /// What a binding's value counts, which decides how it is shown.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Unit {
-    /// Shown as `n second(s)`.
+    /// A change in time, shown as `+ns` or `-ns`.
     Seconds,
-    /// Shown as `n%`.
+    /// A change, shown as `+n%` or `-n%`.
     Percent,
     /// A multiple, shown as `n×`.
     Times,
@@ -115,10 +115,11 @@ impl ValueInfo {
         if number.contains('.') {
             number = number.trim_end_matches('0').trim_end_matches('.').to_owned();
         }
+        // Changes always show their sign.
+        let signed = if value >= 0.0 { format!("+{number}") } else { number.clone() };
         match self.unit {
-            Unit::Seconds if number == "1" || number == "-1" => format!("{number} second"),
-            Unit::Seconds => format!("{number} seconds"),
-            Unit::Percent => format!("{number}%"),
+            Unit::Seconds => format!("{signed}s"),
+            Unit::Percent => format!("{signed}%"),
             Unit::Times => format!("{number}\u{d7}"),
         }
     }
