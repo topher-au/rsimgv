@@ -1,13 +1,19 @@
 //! YAML storage for the `yaml` GSettings backend (see backend.c).
 //!
-//! The file is `~/.config/rsimgv/rsimgv.conf` unless `RSIMGV_CONFIG` names another path. Settings live
-//! under one `settings` mapping, keyed by the schema key's name:
+//! The file is `~/.config/rsimgv/rsimgv.conf` unless `RSIMGV_CONFIG` names another path. Settings are
+//! grouped by what they belong to, and each setting is named within its group:
 //!
 //! ```yaml
-//! settings:
+//! window:
+//!   width: 960
+//!   height: 640
+//!   maximized: false
+//! browse:
 //!   item-size: 128
 //!   media-only: true
 //! ```
+//!
+//! A file in the older layout, with every setting under one `settings` mapping, still loads.
 //!
 //! Values are read back as the type GSettings asks for. Changes made in the file while the app runs
 //! are picked up by a file monitor, which tells GSettings about every key that changed.
@@ -50,31 +56,78 @@ fn short_key(key: &str) -> &str {
     key.strip_prefix(PATH_PREFIX).unwrap_or(key)
 }
 
-/// Reads the settings mapping from `file`. A missing or empty file has no settings.
+/// Where each setting is kept in the file: its schema key, then its group and its name in that group.
+const LAYOUT: &[(&str, &str, &str)] = &[
+    ("show-hidden", "browse", "show-hidden"),
+    ("media-only", "browse", "media-only"),
+    ("item-size", "browse", "item-size"),
+    ("wrap-names", "browse", "wrap-names"),
+    ("collapse-on-navigate", "tree", "collapse-on-navigate"),
+    ("window-width", "window", "width"),
+    ("window-height", "window", "height"),
+    ("window-maximized", "window", "maximized"),
+];
+
+/// The group for a setting that is not in `LAYOUT`. Its name is the schema key.
+const FALLBACK_GROUP: &str = "settings";
+
+/// The group and name a schema key is saved under.
+fn location(key: &str) -> (String, String) {
+    LAYOUT
+        .iter()
+        .find(|(schema_key, _, _)| *schema_key == key)
+        .map_or_else(
+            || (FALLBACK_GROUP.to_owned(), key.to_owned()),
+            |(_, group, name)| ((*group).to_owned(), (*name).to_owned()),
+        )
+}
+
+/// The schema key stored under `group` and `name`, if there is one.
+fn schema_key(group: &str, name: &str) -> Option<String> {
+    LAYOUT
+        .iter()
+        .find(|(_, layout_group, layout_name)| *layout_group == group && *layout_name == name)
+        .map(|(key, _, _)| (*key).to_owned())
+        .or_else(|| (group == FALLBACK_GROUP).then(|| name.to_owned()))
+}
+
+/// Reads the settings from `file`. A missing or empty file has no settings.
 fn load(file: &Path) -> BTreeMap<String, Value> {
     let Ok(text) = std::fs::read_to_string(file) else {
         return BTreeMap::new();
     };
     let root: Value = serde_yaml_ng::from_str(&text).unwrap_or(Value::Null);
-    root.get("settings")
-        .and_then(Value::as_mapping)
-        .map(|mapping| {
-            mapping
-                .iter()
-                .filter_map(|(key, value)| Some((key.as_str()?.to_owned(), value.clone())))
-                .collect()
-        })
-        .unwrap_or_default()
+    let mut values = BTreeMap::new();
+    let Some(groups) = root.as_mapping() else {
+        return values;
+    };
+    for (group, group_value) in groups {
+        let (Some(group), Some(names)) = (group.as_str(), group_value.as_mapping()) else {
+            continue;
+        };
+        for (name, value) in names {
+            let Some(name) = name.as_str() else { continue };
+            if let Some(key) = schema_key(group, name) {
+                values.insert(key, value.clone());
+            }
+        }
+    }
+    values
 }
 
 /// Writes the settings to `file` through a temporary file, so a crash never leaves it half-written.
 fn save(file: &Path, values: &BTreeMap<String, Value>) -> std::io::Result<()> {
-    let mut settings = Mapping::new();
-    for (key, value) in values {
-        settings.insert(Value::String(key.clone()), value.clone());
-    }
     let mut root = Mapping::new();
-    root.insert(Value::String("settings".into()), Value::Mapping(settings));
+    for (key, value) in values {
+        let (group, name) = location(key);
+        let group_key = Value::String(group);
+        if root.get(&group_key).is_none() {
+            root.insert(group_key.clone(), Value::Mapping(Mapping::new()));
+        }
+        if let Some(Value::Mapping(names)) = root.get_mut(&group_key) {
+            names.insert(Value::String(name), value.clone());
+        }
+    }
     let text = serde_yaml_ng::to_string(&Value::Mapping(root)).map_err(std::io::Error::other)?;
 
     if let Some(parent) = file.parent() {
@@ -235,3 +288,31 @@ pub extern "C" fn rsimgv_store_reset(key: *const std::ffi::c_char) {
 /// Saves any pending settings. Writes already save as they happen, so this has nothing to do.
 #[no_mangle]
 pub extern "C" fn rsimgv_store_sync() {}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+
+    /// Settings are written under their groups, and read back from them.
+    pub(crate) fn run_scenarios() {
+        let file = std::env::temp_dir().join(format!("rsimgv-layout-{}.conf", std::process::id()));
+        let mut values = BTreeMap::new();
+        values.insert("window-height".to_owned(), Value::Number(Number::from(640)));
+        values.insert("window-width".to_owned(), Value::Number(Number::from(960)));
+        values.insert("item-size".to_owned(), Value::Number(Number::from(128)));
+        values.insert("show-hidden".to_owned(), Value::Bool(false));
+        values.insert("unlisted".to_owned(), Value::Bool(true));
+        save(&file, &values).unwrap();
+
+        let text = std::fs::read_to_string(&file).unwrap();
+        let root: Value = serde_yaml_ng::from_str(&text).unwrap();
+        assert_eq!(root["window"]["height"], Value::Number(Number::from(640)), "window.height");
+        assert_eq!(root["window"]["width"], Value::Number(Number::from(960)), "window.width");
+        assert_eq!(root["browse"]["item-size"], Value::Number(Number::from(128)), "browse.item-size");
+        assert_eq!(root["browse"]["show-hidden"], Value::Bool(false), "browse.show-hidden");
+        assert_eq!(root["settings"]["unlisted"], Value::Bool(true), "unlisted keys fall back to settings");
+
+        assert_eq!(load(&file), values, "the file reads back to the same values");
+        let _ = std::fs::remove_file(&file);
+    }
+}

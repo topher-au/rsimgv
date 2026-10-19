@@ -3,6 +3,12 @@
 
 mod store;
 
+/// Checks how settings are laid out in the file.
+#[cfg(test)]
+pub(crate) fn store_layout_tests() {
+    store::tests::run_scenarios();
+}
+
 extern "C" {
     fn rsimgv_settings_backend_register();
 }
