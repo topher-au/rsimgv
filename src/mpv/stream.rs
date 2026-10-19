@@ -167,6 +167,15 @@ impl MpvStream {
             return None;
         }
         stream.imp().player.replace(Some(player));
+        // A wakeup may have come before the player was stored, when there was nothing to read the events; libmpv
+        // does not wake again while they wait, so they are read now.
+        let weak = stream.downgrade();
+        glib::idle_add_local_once(move || {
+            if let Some(stream) = weak.upgrade() {
+                stream.handle_events();
+                stream.render_frame();
+            }
+        });
         Some(stream)
     }
 
