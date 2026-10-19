@@ -102,6 +102,7 @@
               <object class="AdwToolbarView">
                 <child type="top">
                   <object class="AdwTabBar" id="tab_bar">
+                    <property name="view">tab_view</property>
                     <property name="autohide">false</property>
                     <property name="end-action-widget">
                       <object class="GtkButton" id="new_tab_button">
