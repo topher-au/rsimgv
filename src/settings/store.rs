@@ -161,6 +161,14 @@ fn from_yaml(value: &Value, ty: &glib::VariantTy) -> Option<glib::Variant> {
         "t" => value.as_u64().map(|n| n.to_variant()),
         "d" => value.as_f64().map(|n| n.to_variant()),
         "s" => value.as_str().map(|s| s.to_variant()),
+        "as" => value
+            .as_sequence()?
+            .iter()
+            .map(|item| item.as_str().map(str::to_owned))
+            .collect::<Option<Vec<String>>>()
+            .map(|list| list.to_variant())
+            // Lists saved as GVariant text by earlier versions still load.
+            .or_else(|| value.as_str().and_then(|text| glib::Variant::parse(Some(ty), text).ok())),
         // Anything else is stored as GVariant text.
         _ => value
             .as_str()
@@ -178,6 +186,7 @@ fn to_yaml(value: &glib::Variant) -> Value {
         "t" => value.get::<u64>().map(|n| Value::Number(Number::from(n))),
         "d" => value.get::<f64>().map(|n| Value::Number(Number::from(n))),
         "s" => value.get::<String>().map(Value::String),
+        "as" => value.get::<Vec<String>>().map(|list| list.into_iter().map(Value::String).collect()).map(Value::Sequence),
         _ => None,
     }
     .unwrap_or_else(|| Value::String(value.print(true).to_string()))
@@ -327,5 +336,25 @@ pub(crate) mod tests {
 
         assert_eq!(load(&file), values, "the file reads back to the same values");
         let _ = std::fs::remove_file(&file);
+    }
+}
+
+#[cfg(test)]
+mod string_list_tests {
+    use super::*;
+
+    #[test]
+    fn string_lists_are_yaml_sequences() {
+        let list = ["size", "modified"].map(str::to_owned).to_variant();
+        let yaml = to_yaml(&list);
+        assert_eq!(yaml, Value::Sequence(vec![Value::String("size".into()), Value::String("modified".into())]));
+        assert_eq!(from_yaml(&yaml, glib::VariantTy::new("as").unwrap()), Some(list));
+    }
+
+    #[test]
+    fn old_text_lists_still_load() {
+        let text = Value::String("['size']".to_owned());
+        let loaded = from_yaml(&text, glib::VariantTy::new("as").unwrap());
+        assert_eq!(loaded, Some(vec!["size".to_owned()].to_variant()));
     }
 }
