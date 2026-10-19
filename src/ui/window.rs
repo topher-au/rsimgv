@@ -1,4 +1,5 @@
 use std::cell::{Cell, RefCell};
+use std::collections::BTreeMap;
 use std::rc::Rc;
 use std::path::{Path, PathBuf};
 
@@ -7,6 +8,7 @@ use gio::prelude::StaticType;
 use gtk::prelude::*;
 use gtk::{gdk, gio, glib};
 
+use super::fs_tree::TreeSnapshot;
 use super::{BrowseView, FsTree, HeaderBar, NavigationBar, OverlaySplitView, PathBar, PreferencesDialog};
 
 mod imp {
@@ -35,6 +37,17 @@ mod imp {
         pub location_entry: TemplateChild<gtk::Entry>,
         #[template_child]
         pub browse: TemplateChild<BrowseView>,
+        #[template_child]
+        pub tab_view: TemplateChild<adw::TabView>,
+        #[template_child]
+        pub tab_bar: TemplateChild<adw::TabBar>,
+        #[template_child]
+        pub new_tab_button: TemplateChild<gtk::Button>,
+        /// What each tab shows when it is not the active one, keyed by tab id.
+        pub(super) tabs: RefCell<BTreeMap<u64, TabState>>,
+        /// The tab whose state is in the widgets now.
+        pub(super) active_tab: Cell<Option<u64>>,
+        pub(super) next_tab: Cell<u64>,
         /// The folder the window shows. Every navigation goes through `Window::navigate`.
         pub(super) current_path: RefCell<Option<PathBuf>>,
         /// Set while the window pushes a path into its widgets, so the signals that come back are ignored.
@@ -161,7 +174,7 @@ impl Window {
         window.add_action(&settings.create_action("show-hidden"));
 
         window.connect_sources();
-        window.navigate(&glib::home_dir());
+        window.open_tab(&glib::home_dir());
         window
     }
 
@@ -191,18 +204,78 @@ impl Window {
         }
 
         imp.updating.set(true);
-        imp.current_path.replace(Some(path.to_path_buf()));
         imp.navigation.set_location(path);
-        if let Err(err) = imp.path_bar.set_path(path) {
-            eprintln!("rsimgv: {err:#}");
-        }
+        self.show_path(path);
         match reveal {
             Reveal::Expand => imp.tree.reveal_path(path),
             Reveal::SelectOnly => imp.tree.reveal_path_selecting_only(path),
         }
-        imp.browse.set_path(path);
         imp.updating.set(false);
         true
+    }
+
+    /// Shows `path` in the path bar, the browse view, and the tab's title. It does not change the
+    /// history or the tree; navigation and tab switching do that.
+    fn show_path(&self, path: &Path) {
+        let imp = self.imp();
+        imp.current_path.replace(Some(path.to_path_buf()));
+        if let Err(err) = imp.path_bar.set_path(path) {
+            eprintln!("rsimgv: {err:#}");
+        }
+        imp.browse.set_path(path);
+        if let Some(page) = imp.tab_view.selected_page() {
+            page.set_title(&folder_name(path));
+        }
+    }
+
+    /// Opens a new tab at `path` and switches to it.
+    pub fn open_tab(&self, path: &Path) {
+        let imp = self.imp();
+        let id = imp.next_tab.get();
+        imp.next_tab.set(id + 1);
+        imp.tabs.borrow_mut().insert(
+            id,
+            TabState {
+                path: Some(path.to_path_buf()),
+                history: vec![path.to_path_buf()],
+                index: 0,
+                tree: TreeSnapshot::revealing(path),
+            },
+        );
+        let child = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        child.set_widget_name(&id.to_string());
+        let page = imp.tab_view.append(&child);
+        page.set_title(&folder_name(path));
+        imp.tab_view.set_selected_page(&page);
+        if imp.active_tab.get() != Some(id) {
+            self.switch_to_tab(id);
+        }
+    }
+
+    /// Records what the active tab shows, so switching away from it keeps it.
+    fn save_active_tab(&self) {
+        let imp = self.imp();
+        let Some(id) = imp.active_tab.get() else { return };
+        let (history, index) = imp.navigation.history_state();
+        let state = TabState {
+            path: self.current_path(),
+            history,
+            index,
+            tree: imp.tree.snapshot(),
+        };
+        imp.tabs.borrow_mut().insert(id, state);
+    }
+
+    /// Shows tab `id`: its history, its folder, and its tree.
+    fn switch_to_tab(&self, id: u64) {
+        let imp = self.imp();
+        let Some(state) = imp.tabs.borrow().get(&id).cloned() else { return };
+        imp.active_tab.set(Some(id));
+        imp.navigation.set_history_state(state.history, state.index);
+        if let Some(path) = &state.path {
+            self.show_path(path);
+        }
+        imp.tree.restore(state.tree);
     }
 
     /// Routes every widget's request to navigate into the window's signal handling.
@@ -274,6 +347,45 @@ impl Window {
         });
         imp.location_entry.add_controller(keys);
 
+        // Each tab keeps its own folder, history, and tree. Switching saves the one left and shows the one chosen.
+        imp.tab_view.connect_selected_page_notify({
+            let weak = weak.clone();
+            move |view| {
+                let Some(window) = weak.upgrade() else { return };
+                window.save_active_tab();
+                if let Some(id) = view.selected_page().and_then(|page| tab_id(&page)) {
+                    window.switch_to_tab(id);
+                }
+            }
+        });
+        imp.tab_view.connect_close_page({
+            let weak = weak.clone();
+            move |view, page| {
+                let Some(window) = weak.upgrade() else { return glib::Propagation::Stop };
+                // The last tab stays open.
+                if view.n_pages() <= 1 {
+                    view.close_page_finish(page, false);
+                    return glib::Propagation::Stop;
+                }
+                if let Some(id) = tab_id(page) {
+                    window.imp().tabs.borrow_mut().remove(&id);
+                    if window.imp().active_tab.get() == Some(id) {
+                        window.imp().active_tab.set(None);
+                    }
+                }
+                view.close_page_finish(page, true);
+                glib::Propagation::Stop
+            }
+        });
+        imp.new_tab_button.connect_clicked({
+            let weak = weak.clone();
+            move |_| {
+                if let Some(window) = weak.upgrade() {
+                    let path = window.current_path().unwrap_or_else(glib::home_dir);
+                    window.open_tab(&path);
+                }
+            }
+        });
         imp.browse.connect_directory_activated(move |_, path| {
             if let Some(window) = weak.upgrade() {
                 window.navigate(path);
@@ -348,6 +460,26 @@ fn schedule_window_save(window: &Window, settings: &gio::Settings, pending: &Rc<
     pending.set(Some(id));
 }
 
+/// The state a tab keeps while it is not the active one.
+#[derive(Clone, Default)]
+struct TabState {
+    path: Option<PathBuf>,
+    history: Vec<PathBuf>,
+    index: usize,
+    tree: TreeSnapshot,
+}
+
+/// The id of the tab on `page`, stored as the name of its child.
+fn tab_id(page: &adw::TabPage) -> Option<u64> {
+    page.child().widget_name().parse().ok()
+}
+
+/// The name shown for a folder in a tab title.
+fn folder_name(path: &Path) -> String {
+    path.file_name()
+        .map_or_else(|| "/".to_owned(), |name| name.to_string_lossy().into_owned())
+}
+
 /// How much of the tree a navigation reveals.
 #[derive(Clone, Copy)]
 enum Reveal {
@@ -396,6 +528,35 @@ pub(crate) mod tests {
         panic!("no segment for {}", path.display());
     }
 
+
+    /// Each tab keeps its own folder and history; switching tabs shows the one chosen.
+    fn tabs_keep_their_own_state(app: &adw::Application, settings: &gio::Settings) {
+        let root = std::env::temp_dir().join(format!("rsimgv-tabs-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("alpha")).unwrap();
+        fs::create_dir_all(root.join("gamma")).unwrap();
+
+        let window = Window::new(app, settings);
+        let tabs = window.imp().tab_view.clone();
+        let first = tabs.nth_page(0);
+        window.navigate(&root.join("alpha"));
+        window.open_tab(&root.join("gamma"));
+        assert_eq!(tabs.n_pages(), 2, "a second tab is open");
+        assert_eq!(window.current_path(), Some(root.join("gamma")), "the new tab shows its folder");
+
+        tabs.set_selected_page(&first);
+        assert_eq!(window.current_path(), Some(root.join("alpha")), "the first tab shows its own folder");
+        assert_eq!(window.imp().path_bar.path(), Some(root.join("alpha")));
+        assert_eq!(window.imp().navigation.location(), Some(root.join("alpha")), "and its history");
+
+        let second = tabs.nth_page(1);
+        tabs.set_selected_page(&second);
+        assert_eq!(window.current_path(), Some(root.join("gamma")), "the second tab shows its folder again");
+        assert_eq!(window.imp().navigation.location(), Some(root.join("gamma")));
+
+        window.destroy();
+        let _ = fs::remove_dir_all(&root);
+    }
 
     /// A size change is saved shortly after it happens, without waiting for the window to close.
     fn size_change_is_saved_without_closing(app: &adw::Application, settings: &gio::Settings) {
@@ -454,6 +615,7 @@ pub(crate) mod tests {
         // Windows may only be created once the application has started.
         gio::prelude::ApplicationExt::register(&app, gio::Cancellable::NONE).expect("register test application");
         let settings = crate::settings::open("au.topher.rimgv");
+        tabs_keep_their_own_state(&app, &settings);
         window_size_is_saved(&app, &settings);
         size_change_is_saved_without_closing(&app, &settings);
         let window = Window::new(&app, &settings);
