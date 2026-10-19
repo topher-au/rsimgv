@@ -76,6 +76,9 @@ settings:
   item-size: 128
   wrap-names: false
   collapse-on-navigate: false
+  window-width: 960
+  window-height: 640
+  window-maximized: false
 ```
 
 They are read and written through GSettings, using a backend that stores them in that file, so changes
