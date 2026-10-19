@@ -167,6 +167,7 @@ impl Window {
         window.add_action(&settings.create_action("show-hidden"));
 
         window.add_context_actions();
+        window.add_tab_actions();
         window.connect_sources();
         window.navigate(&glib::home_dir());
         window
@@ -241,6 +242,68 @@ impl Window {
                 }
             });
             self.add_action(&action);
+        }
+    }
+
+    /// The actions behind the tab context menu. Each takes the id of the tab it works on.
+    fn add_tab_actions(&self) {
+        let weak = self.downgrade();
+        for name in ["tab-duplicate", "tab-new-window", "tab-copy-path", "tab-close-others", "tab-close"] {
+            let action = gio::SimpleAction::new(name, Some(glib::VariantTy::UINT64));
+            let weak = weak.clone();
+            action.connect_activate(move |_, parameter| {
+                let (Some(window), Some(id)) = (weak.upgrade(), parameter.and_then(|p| p.get::<u64>())) else {
+                    return;
+                };
+                let Some(page) = window.page_for_tab(id) else { return };
+                let path = window.tab_path(id);
+                match name {
+                    "tab-duplicate" => {
+                        if let Some(path) = path {
+                            window.open_tab(&path);
+                        }
+                    }
+                    "tab-new-window" => {
+                        if let Some(path) = path {
+                            window.open_in_new_window(&path);
+                        }
+                    }
+                    "tab-copy-path" => {
+                        if let Some(path) = path {
+                            window.clipboard().set_text(&path.to_string_lossy());
+                        }
+                    }
+                    "tab-close-others" => {
+                        let tab_view = window.imp().tab_view.clone();
+                        for other in tab_view.pages().iter::<adw::TabPage>().flatten() {
+                            if other != page {
+                                tab_view.close_page(&other);
+                            }
+                        }
+                    }
+                    "tab-close" => window.imp().tab_view.close_page(&page),
+                    _ => {}
+                }
+            });
+            self.add_action(&action);
+        }
+    }
+
+    /// The page of the tab with `id`.
+    fn page_for_tab(&self, id: u64) -> Option<adw::TabPage> {
+        let tab_view = &self.imp().tab_view;
+        (0..tab_view.n_pages())
+            .map(|position| tab_view.nth_page(position))
+            .find(|page| tab_id(page) == Some(id))
+    }
+
+    /// The folder a tab shows: the current one for the active tab, the saved one otherwise.
+    fn tab_path(&self, id: u64) -> Option<PathBuf> {
+        let imp = self.imp();
+        if imp.active_tab.get() == Some(id) {
+            self.current_path()
+        } else {
+            imp.tabs.borrow().get(&id).and_then(|state| state.path.clone())
         }
     }
 
@@ -324,8 +387,7 @@ impl Window {
             }
         }
         if let Some(page) = imp.tab_view.selected_page() {
-            page.set_title(&folder_name(path));
-            page.set_icon(Some(&gio::ThemedIcon::new("folder-symbolic")));
+            label_page(&page, path);
         }
     }
 
@@ -356,8 +418,7 @@ impl Window {
         browse.set_widget_name(&id.to_string());
         self.attach_browse(&browse);
         let page = imp.tab_view.append(&browse);
-        page.set_title(&folder_name(path));
-        page.set_icon(Some(&gio::ThemedIcon::new("folder-symbolic")));
+        label_page(&page, path);
         // A tab opened in the background loads its folder now; its history and tree wait in its state.
         if !select && imp.tab_view.n_pages() > 1 {
             browse.set_path(path);
@@ -486,6 +547,28 @@ impl Window {
                     window.switch_to_tab(id);
                 }
             }
+        });
+        // The tab context menu is built for the tab that was right-clicked.
+        imp.tab_view.connect_setup_menu(|view, page| {
+            let Some(id) = page.and_then(tab_id) else {
+                view.set_menu_model(None::<&gio::MenuModel>);
+                return;
+            };
+            let target = id.to_variant();
+            let item = |label: &str, action: &str| {
+                let item = gio::MenuItem::new(Some(label), None);
+                item.set_action_and_target_value(Some(action), Some(&target));
+                item
+            };
+            let menu = gio::Menu::new();
+            menu.append_item(&item("_Duplicate Tab", "win.tab-duplicate"));
+            menu.append_item(&item("Open in New _Window", "win.tab-new-window"));
+            menu.append_item(&item("Copy _Path", "win.tab-copy-path"));
+            let close = gio::Menu::new();
+            close.append_item(&item("Close _Other Tabs", "win.tab-close-others"));
+            close.append_item(&item("_Close Tab", "win.tab-close"));
+            menu.append_section(None, &close);
+            view.set_menu_model(Some(&menu));
         });
         imp.tab_view.connect_close_page({
             let weak = weak.clone();
@@ -628,6 +711,13 @@ struct TabState {
 /// The id of the tab on `page`, stored as the name of its child.
 fn tab_id(page: &adw::TabPage) -> Option<u64> {
     page.child().widget_name().parse().ok()
+}
+
+/// Titles a tab page with its folder's name and icon, and its tooltip with the folder's full path.
+fn label_page(page: &adw::TabPage, path: &Path) {
+    page.set_title(&folder_name(path));
+    page.set_icon(Some(&gio::ThemedIcon::new("folder-symbolic")));
+    page.set_tooltip(&path.to_string_lossy());
 }
 
 /// The name shown for a folder in a tab title.
