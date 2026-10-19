@@ -3,7 +3,6 @@
   <template class="RsimgvHeaderBar" parent="GtkBox">
     <property name="orientation">horizontal</property>
     <property name="spacing">0</property>
-    <style><class name="titlebar"/></style>
     <child>
       <object class="GtkBox" id="start">
         <property name="spacing">0</property>

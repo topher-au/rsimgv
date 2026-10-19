@@ -112,7 +112,7 @@
             </child>
             <property name="content">
               <object class="AdwToolbarView">
-                <child type="top">
+                <child type="bottom">
                   <object class="AdwTabBar" id="tab_bar">
                     <property name="view">tab_view</property>
                     <property name="autohide">true</property>
