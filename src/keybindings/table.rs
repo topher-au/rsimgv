@@ -218,7 +218,7 @@ mod tests {
         let mut table = BindingTable::defaults();
         // Binding space to a viewer action clashes with the video action, which is inside the viewer.
         assert!(table.add("view.next", "space"));
-        assert_eq!(table.conflicts("view.next", "space").iter().map(|(a, _)| a.name).collect::<Vec<_>>(), vec!["video.play-pause"]);
+        assert_eq!(table.conflicts("view.next", "space").iter().map(|a| a.name).collect::<Vec<_>>(), vec!["video.play-pause"]);
         // Browsing and the viewer never overlap, so the viewer's left is not a conflict with browsing's.
         assert!(table.conflicts("view.previous", "left").iter().all(|action| action.scope != Scope::Browse));
     }

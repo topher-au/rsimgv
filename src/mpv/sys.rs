@@ -19,6 +19,8 @@ pub const MPV_FORMAT_STRING: c_int = 1;
 pub const MPV_FORMAT_FLAG: c_int = 3;
 pub const MPV_FORMAT_INT64: c_int = 4;
 pub const MPV_FORMAT_DOUBLE: c_int = 5;
+pub const MPV_FORMAT_NODE_MAP: c_int = 8;
+pub const MPV_FORMAT_BYTE_ARRAY: c_int = 9;
 
 pub const MPV_EVENT_NONE: c_int = 0;
 pub const MPV_EVENT_SHUTDOWN: c_int = 1;
@@ -76,6 +78,36 @@ unsafe extern "C" {
     pub fn setlocale(category: c_int, locale: *const c_char) -> *mut c_char;
 }
 
+/// A value in a node: which field of the union holds it is given by `format`.
+#[repr(C)]
+pub union mpv_node_value {
+    pub string: *mut c_char,
+    pub flag: c_int,
+    pub int64: i64,
+    pub double_: f64,
+    pub list: *mut mpv_node_list,
+    pub ba: *mut mpv_byte_array,
+}
+
+#[repr(C)]
+pub struct mpv_node {
+    pub u: mpv_node_value,
+    pub format: c_int,
+}
+
+#[repr(C)]
+pub struct mpv_node_list {
+    pub num: c_int,
+    pub values: *mut mpv_node,
+    pub keys: *mut *mut c_char,
+}
+
+#[repr(C)]
+pub struct mpv_byte_array {
+    pub data: *mut c_void,
+    pub size: usize,
+}
+
 pub type wakeup_fn = unsafe extern "C" fn(*mut c_void);
 
 #[link(name = "mpv")]
@@ -86,6 +118,8 @@ unsafe extern "C" {
     pub fn mpv_error_string(error: c_int) -> *const c_char;
     pub fn mpv_set_option_string(ctx: *mut mpv_handle, name: *const c_char, data: *const c_char) -> c_int;
     pub fn mpv_command(ctx: *mut mpv_handle, args: *mut *const c_char) -> c_int;
+    pub fn mpv_command_ret(ctx: *mut mpv_handle, args: *mut *const c_char, result: *mut mpv_node) -> c_int;
+    pub fn mpv_free_node_contents(node: *mut mpv_node);
     pub fn mpv_command_async(ctx: *mut mpv_handle, reply_userdata: u64, args: *mut *const c_char) -> c_int;
     pub fn mpv_set_property(ctx: *mut mpv_handle, name: *const c_char, format: c_int, data: *mut c_void) -> c_int;
     pub fn mpv_set_property_async(

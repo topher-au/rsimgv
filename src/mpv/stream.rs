@@ -226,6 +226,20 @@ impl MpvStream {
         }
     }
 
+    /// The current frame at the video's own size, captured by mpv, if it is playing for this stream.
+    pub fn screenshot(&self) -> Option<gdk::Texture> {
+        let player = self.imp().player.borrow().clone()?;
+        let frame = match player.screenshot() {
+            Ok(frame) => frame,
+            Err(err) => {
+                eprintln!("rsimgv: mpv: could not capture a frame: {err}");
+                return None;
+            }
+        };
+        let bytes = glib::Bytes::from_owned(frame.pixels);
+        Some(gdk::MemoryTexture::new(frame.width, frame.height, gdk::MemoryFormat::B8g8r8a8, &bytes, frame.stride).upcast())
+    }
+
     /// The speed it plays at, as a multiple of normal.
     pub fn speed(&self) -> Option<f64> {
         self.imp().player.borrow().as_ref()?.get_double("speed")

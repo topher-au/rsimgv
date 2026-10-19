@@ -623,11 +623,15 @@ impl MediaViewer {
         })
     }
 
-    /// The item shown, at its own size: the picture, or the video's current frame. `None` when nothing is
-    /// shown, or a video has no frame yet.
+    /// The item shown, at its own size: the picture, or the video's current frame, captured by mpv when it plays
+    /// the video. `None` when nothing is shown, or a video has no frame yet.
     pub fn screenshot(&self) -> Option<gdk::Texture> {
         let imp = self.imp();
         let Some(media) = imp.media.borrow().clone() else { return imp.canvas.texture() };
+        // mpv captures the frame itself, at the video's own size.
+        if let Some(stream) = media.downcast_ref::<crate::mpv::MpvStream>() {
+            return stream.screenshot();
+        }
         let frame = media.current_image();
         if let Ok(texture) = frame.clone().downcast::<gdk::Texture>() {
             return Some(texture);

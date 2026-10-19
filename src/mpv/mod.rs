@@ -81,6 +81,49 @@ pub fn parse_options(text: &str) -> Vec<(String, String)> {
     options
 }
 
+/// A captured frame: its size, the bytes from one row to the next, and its pixels.
+pub struct Frame {
+    pub width: i32,
+    pub height: i32,
+    pub stride: usize,
+    pub pixels: Vec<u8>,
+}
+
+/// The frame in a `screenshot-raw` result: a map with `w`, `h`, `stride` and the `data` bytes.
+///
+/// # Safety
+/// `node` must be a result libmpv filled in and has not freed.
+unsafe fn read_frame(node: &sys::mpv_node) -> Result<Frame, String> {
+    if node.format != sys::MPV_FORMAT_NODE_MAP {
+        return Err("mpv did not return a frame".to_owned());
+    }
+    let (mut width, mut height, mut stride, mut pixels) = (None, None, None, None);
+    // SAFETY: a node map holds `num` keys and values, valid while the node is.
+    unsafe {
+        let list = &*node.u.list;
+        for index in 0..list.num.max(0) as usize {
+            let key = CStr::from_ptr(*list.keys.add(index)).to_string_lossy();
+            let value = &*list.values.add(index);
+            match (key.as_ref(), value.format) {
+                ("w", sys::MPV_FORMAT_INT64) => width = Some(value.u.int64),
+                ("h", sys::MPV_FORMAT_INT64) => height = Some(value.u.int64),
+                ("stride", sys::MPV_FORMAT_INT64) => stride = Some(value.u.int64),
+                ("data", sys::MPV_FORMAT_BYTE_ARRAY) => {
+                    let bytes = &*value.u.ba;
+                    pixels = Some(std::slice::from_raw_parts(bytes.data as *const u8, bytes.size).to_vec());
+                }
+                _ => {}
+            }
+        }
+    }
+    match (width, height, stride, pixels) {
+        (Some(width), Some(height), Some(stride), Some(pixels)) if width > 0 && height > 0 && pixels.len() >= (stride * height) as usize => {
+            Ok(Frame { width: width as i32, height: height as i32, stride: stride as usize, pixels })
+        }
+        _ => Err("mpv returned an incomplete frame".to_owned()),
+    }
+}
+
 /// A libmpv player with a software render context.
 pub struct Player {
     handle: *mut sys::mpv_handle,
@@ -154,6 +197,21 @@ impl Player {
         let mut pointers: Vec<*const c_char> = args.iter().map(|arg| arg.as_ptr()).chain(std::iter::once(std::ptr::null())).collect();
         // SAFETY: a null-terminated array of strings that outlive the call.
         check(unsafe { sys::mpv_command_async(self.handle, 0, pointers.as_mut_ptr()) })
+    }
+
+    /// The video's current frame, at its own size, as mpv's `screenshot-raw` command captures it, with
+    /// subtitles as they are shown. Its pixels are 4 bytes each, in BGRA order.
+    pub fn screenshot(&self) -> Result<Frame, String> {
+        let args: Vec<CString> = ["screenshot-raw", "subtitles", "bgra"].iter().map(|arg| CString::new(*arg).expect("no nul")).collect();
+        let mut pointers: Vec<*const c_char> = args.iter().map(|arg| arg.as_ptr()).chain(std::iter::once(std::ptr::null())).collect();
+        // SAFETY: the node is filled in by libmpv, read while it is valid, and freed once read.
+        unsafe {
+            let mut node: sys::mpv_node = std::mem::zeroed();
+            check(sys::mpv_command_ret(self.handle, pointers.as_mut_ptr(), &mut node))?;
+            let frame = read_frame(&node);
+            sys::mpv_free_node_contents(&mut node);
+            frame
+        }
     }
 
     pub fn set_flag(&self, name: &str, value: bool) {
