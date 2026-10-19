@@ -1,4 +1,12 @@
 // Browse view: the visual part of each item (icon or thumbnail) sits in a rounded frame.
+.rsimgv-item {
+  border-radius: 8px;
+}
+
+.rsimgv-item.selected {
+  background-color: color-mix(in srgb, var(--accent-bg-color) 25%, transparent);
+}
+
 .rsimgv-visual {
   border-radius: 8px;
   background-color: color-mix(in srgb, currentColor 6%, transparent);

@@ -11,9 +11,7 @@
             <property name="hexpand">true</property>
             <property name="vexpand">true</property>
             <property name="child">
-              <object class="GtkGridView" id="grid">
-                <property name="single-click-activate">false</property>
-              </object>
+              <object class="RsimgvItemGrid" id="grid"/>
             </property>
           </object>
         </property>

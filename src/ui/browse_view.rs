@@ -150,7 +150,7 @@ mod imp {
     #[template(resource = "/au/topher/rimgv/ui/browse_view.ui")]
     pub struct BrowseView {
         #[template_child]
-        pub grid: TemplateChild<gtk::GridView>,
+        pub grid: TemplateChild<super::super::ItemGrid>,
         #[template_child]
         pub floating_bar: TemplateChild<super::super::FloatingBar>,
         /// Whether a folder is loading. Its listing is stopped by the floating bar's stop button.
@@ -194,8 +194,9 @@ mod imp {
         type ParentType = gtk::Box;
 
         fn class_init(klass: &mut Self::Class) {
-            // The floating bar is built from the template, so its type must be registered first.
+            // The floating bar and the grid are built from the template, so their types must be registered first.
             super::super::FloatingBar::static_type();
+            super::super::ItemGrid::static_type();
             klass.bind_template();
         }
 
@@ -305,12 +306,10 @@ mod imp {
             let _ = self.filter.set(filter);
             let _ = self.sorter.set(sorter);
 
-            let factory = gtk::SignalListItemFactory::new();
-            factory.connect_setup(|_, obj| {
-                let item = obj.downcast_ref::<gtk::ListItem>().expect("ListItem");
-                let builder = gtk::Builder::from_resource("/au/topher/rimgv/ui/browse_item.ui");
-                let cell: gtk::Box = builder.object("cell").expect("browse_item.ui defines `cell`");
-                item.set_child(Some(&cell));
+            self.grid.set_builders(
+                || {
+                    let builder = gtk::Builder::from_resource("/au/topher/rimgv/ui/browse_item.ui");
+                    let cell: gtk::Box = builder.object("cell").expect("browse_item.ui defines `cell`");
 
                 // Right-click on an item asks for its context menu.
                 let click = gtk::GestureClick::new();
@@ -357,22 +356,18 @@ mod imp {
                     }
                 });
                 cell.add_controller(middle);
-            });
-            let view = obj.downgrade();
-            factory.connect_bind(move |_, obj| {
-                let item = obj.downcast_ref::<gtk::ListItem>().expect("ListItem");
-                let (Some(entry), Some(cell), Some(view)) = (
-                    item.item().and_downcast::<FileEntry>(),
-                    item.child().and_downcast::<gtk::Box>(),
-                    view.upgrade(),
-                ) else {
-                    return;
-                };
-                // The cell remembers its item's position, so a scroll anchor can find it again.
-                cell.set_widget_name(&item.position().to_string());
-                style_item(&view, &cell, &entry);
-            });
-            self.grid.set_factory(Some(&factory));
+                    cell.upcast()
+                },
+                {
+                    let view = obj.downgrade();
+                    move |widget, entry, _| {
+                        let (Some(cell), Some(view)) = (widget.downcast_ref::<gtk::Box>(), view.upgrade()) else {
+                            return;
+                        };
+                        style_item(&view, cell, entry);
+                    }
+                },
+            );
 
             let view = obj.downgrade();
             self.grid.connect_activate(move |_, position| {
@@ -408,15 +403,14 @@ struct TopItem {
 }
 
 /// Finds the rendered item nearest the top edge of the grid's scroller, and where it sits.
-fn top_item_anchor(grid: &gtk::GridView) -> Option<TopItem> {
-    let scroller = grid.parent()?;
+fn top_item_anchor(grid: &super::ItemGrid) -> Option<TopItem> {
+    let scroller = grid.ancestor(gtk::ScrolledWindow::static_type())?;
     let mut rendered = Vec::new();
     let mut child = grid.first_child();
-    while let Some(widget) = child {
-        child = widget.next_sibling();
-        let Some(cell) = widget.first_child() else { continue };
+    while let Some(cell) = child {
+        child = cell.next_sibling();
         let Ok(position) = cell.widget_name().parse::<u32>() else { continue };
-        let Some(bounds) = widget.compute_bounds(&scroller) else { continue };
+        let Some(bounds) = cell.compute_bounds(&scroller) else { continue };
         rendered.push((position, f64::from(bounds.y())));
     }
     // Prefer the last item at or above the top edge; otherwise the first one below it.
@@ -432,14 +426,13 @@ fn top_item_anchor(grid: &gtk::GridView) -> Option<TopItem> {
 }
 
 /// Current position of the anchored item within the grid's scroller, if it is rendered.
-fn anchored_item_y(grid: &gtk::GridView, position: u32) -> Option<f64> {
-    let scroller = grid.parent()?;
+fn anchored_item_y(grid: &super::ItemGrid, position: u32) -> Option<f64> {
+    let scroller = grid.ancestor(gtk::ScrolledWindow::static_type())?;
     let mut child = grid.first_child();
-    while let Some(widget) = child {
-        child = widget.next_sibling();
-        let Some(cell) = widget.first_child() else { continue };
+    while let Some(cell) = child {
+        child = cell.next_sibling();
         if cell.widget_name() == position.to_string() {
-            return widget.compute_bounds(&scroller).map(|bounds| f64::from(bounds.y()));
+            return cell.compute_bounds(&scroller).map(|bounds| f64::from(bounds.y()));
         }
     }
     None
@@ -448,7 +441,7 @@ fn anchored_item_y(grid: &gtk::GridView, position: u32) -> Option<f64> {
 /// Scrolls the grid so the anchored item is back at its old offset. Layout can take a few frames
 /// and the scroll may be clamped along the way, so the correction is re-applied for a while; once
 /// the item is where it was, re-applying changes nothing.
-fn restore_top_item_after_layout(grid: &gtk::GridView, anchor: TopItem) {
+fn restore_top_item_after_layout(grid: &super::ItemGrid, anchor: TopItem) {
     const FRAMES: u32 = 8;
     let grid = grid.clone();
     let frames = Cell::new(0u32);
@@ -457,7 +450,7 @@ fn restore_top_item_after_layout(grid: &gtk::GridView, anchor: TopItem) {
         if frames.get() < 2 {
             return glib::ControlFlow::Continue;
         }
-        if let (Some(scroller), Some(y)) = (grid.parent(), anchored_item_y(&grid, anchor.position)) {
+        if let (Some(scroller), Some(y)) = (grid.ancestor(gtk::ScrolledWindow::static_type()), anchored_item_y(&grid, anchor.position)) {
             if let Some(scroller) = scroller.downcast_ref::<gtk::ScrolledWindow>() {
                 let adjustment = scroller.vadjustment();
                 adjustment.set_value(adjustment.value() + (y - anchor.offset));
@@ -532,7 +525,7 @@ impl BrowseView {
         let imp = self.imp();
         let generation = imp.generation.get() + 1;
         imp.generation.set(generation);
-        let scroller = imp.grid.parent().and_downcast::<gtk::ScrolledWindow>();
+        let scroller = imp.grid.ancestor(gtk::ScrolledWindow::static_type()).and_downcast::<gtk::ScrolledWindow>();
         if let (Some(old), Some(scroller)) = (imp.path.borrow().clone(), &scroller) {
             imp.scroll_memory.borrow_mut().insert(old, scroller.vadjustment().value());
         }
@@ -698,23 +691,34 @@ impl BrowseView {
         imp.floating_bar.set_visible(true);
     }
 
+    /// The height of one item: the visual, then the name and info lines as the settings lay them out.
+    fn cell_height(&self) -> i32 {
+        let builder = gtk::Builder::from_resource("/au/topher/rimgv/ui/browse_item.ui");
+        let (Some(cell), Some(name), Some(info)) = (
+            builder.object::<gtk::Box>("cell"),
+            builder.object::<gtk::Label>("name"),
+            builder.object::<gtk::Label>("info"),
+        ) else {
+            return self.item_size();
+        };
+        cell.set_size_request(self.item_size(), -1);
+        // Two lines of text are measured when names wrap and when info is stacked, so the rows fit them.
+        let name_lines = if self.filename_display() == "wrapped" { "Ag\nAg" } else { "Ag" };
+        name.set_label(name_lines);
+        name.set_visible(self.filename_display() != "off");
+        let info_lines = if self.info_layout() == "stacked" { "Ag\nAg" } else { "Ag" };
+        info.set_label(info_lines);
+        info.set_visible(self.info_layout() != "disabled");
+        cell.measure(gtk::Orientation::Vertical, self.item_size()).1
+    }
+
     /// Rebinds every item so a size or layout change shows, keeping the item at the top of the view
     /// where it was.
     fn refresh_items(&self) {
         let imp = self.imp();
         let anchor = top_item_anchor(&imp.grid);
-        // Restyle the items on screen directly: rebinding through the model does not reach them.
-        if let Some(model) = imp.grid.model() {
-            let mut child = imp.grid.first_child();
-            while let Some(widget) = child {
-                child = widget.next_sibling();
-                let Some(cell) = widget.first_child().and_downcast::<gtk::Box>() else { continue };
-                let Ok(position) = cell.widget_name().parse::<u32>() else { continue };
-                if let Some(entry) = model.item(position).and_downcast::<FileEntry>() {
-                    style_item(self, &cell, &entry);
-                }
-            }
-        }
+        imp.grid.set_cell_size(self.item_size(), self.cell_height());
+        imp.grid.refresh();
         if let Some(anchor) = anchor {
             restore_top_item_after_layout(&imp.grid, anchor);
         }
@@ -757,7 +761,6 @@ pub(crate) mod tests {
             child = widget.next_sibling();
             if let Some(visual) = widget
                 .first_child()
-                .and_then(|cell| cell.first_child())
                 .and_downcast::<gtk::Box>()
             {
                 visuals.push(visual);
