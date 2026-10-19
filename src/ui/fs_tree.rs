@@ -19,7 +19,8 @@ const HIDDEN_CLASS: &str = "rsimgv-hidden-dir";
 pub struct TreeSnapshot {
     pub expanded: Vec<PathBuf>,
     pub selected: Option<PathBuf>,
-    pub scroll: f64,
+    /// The saved scroll position, or `None` for a tree that has never been shown, which is framed on its selection.
+    pub scroll: Option<f64>,
 }
 
 impl TreeSnapshot {
@@ -28,7 +29,7 @@ impl TreeSnapshot {
         Self {
             expanded: path.ancestors().skip(1).map(Path::to_path_buf).collect(),
             selected: Some(path.to_path_buf()),
-            scroll: 0.0,
+            scroll: None,
         }
     }
 }
@@ -436,12 +437,12 @@ impl FsTree {
         TreeSnapshot {
             expanded,
             selected: self.selected_path(),
-            scroll: imp.scroller.vadjustment().value(),
+            scroll: Some(imp.scroller.vadjustment().value()),
         }
     }
 
     /// Shows a snapshot: collapses the tree to its root, expands the saved folders, and selects the saved
-    /// folder once its row has loaded. Nothing is scrolled into view; the saved scroll position is restored.
+    /// folder once its row has loaded. A saved scroll position is restored; a tree without one frames the selection.
     pub fn restore(&self, snapshot: TreeSnapshot) {
         let imp = self.imp();
         if let Some(model) = imp.tree_model.borrow().clone() {
@@ -456,13 +457,15 @@ impl FsTree {
         glib::spawn_future_local(async move {
             if let Some(selected) = snapshot.selected {
                 for _ in 0..200 {
-                    if tree.select_path(&selected) {
+                    if tree.select_row(&selected, snapshot.scroll.is_none()) {
                         break;
                     }
                     glib::timeout_future(std::time::Duration::from_millis(10)).await;
                 }
             }
-            tree.imp().scroller.vadjustment().set_value(snapshot.scroll);
+            if let Some(scroll) = snapshot.scroll {
+                tree.imp().scroller.vadjustment().set_value(scroll);
+            }
         });
     }
 
