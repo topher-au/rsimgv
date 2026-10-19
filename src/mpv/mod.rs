@@ -1,6 +1,6 @@
 //! A small, safe wrapper over libmpv: a player that loads files, takes commands and properties, reports
 //! events, and renders frames in software into memory for GTK to show. Each player listens for mpv JSON IPC on
-//! `rsimgv-mpv.sock` in the runtime directory. See `stream` for the GTK side.
+//! `/tmp/rsimgv-mpv-<pid in hex>`. See `stream` for the GTK side.
 
 mod stream;
 mod sys;
@@ -44,9 +44,9 @@ fn check(code: c_int) -> Result<(), String> {
     if code < 0 { Err(error_text(code)) } else { Ok(()) }
 }
 
-/// Where the player's mpv IPC socket is: `rsimgv-mpv.sock` in the user's runtime directory.
+/// Where the player's mpv IPC socket is: `/tmp/rsimgv-mpv-<pid>`, with the process id in lowercase hex.
 pub fn ipc_socket_path() -> std::path::PathBuf {
-    gtk::glib::user_runtime_dir().join("rsimgv-mpv.sock")
+    std::path::PathBuf::from(format!("/tmp/rsimgv-mpv-{:x}", std::process::id()))
 }
 
 /// A libmpv player with a software render context.
