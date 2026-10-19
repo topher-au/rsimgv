@@ -5,7 +5,7 @@ from __future__ import annotations
 import base64
 import itertools
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Union
 
@@ -71,7 +71,8 @@ class Screenshot:
     format: str
     width: int
     height: int
-    data: bytes
+    # Left out of the repr, as an image is too long to print.
+    data: bytes = field(repr=False)
 
     def save(self, path: str | os.PathLike[str]) -> Path:
         """Writes the image to ``path`` and returns it."""
