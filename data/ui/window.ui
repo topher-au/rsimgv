@@ -34,6 +34,7 @@
         </child>
         <child type="content">
           <object class="AdwToolbarView">
+            <style><class name="content-pane"/></style>
             <child type="top">
               <object class="RsimgvHeaderBar" id="content_header">
                 <child type="start">
