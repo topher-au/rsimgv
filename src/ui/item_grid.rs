@@ -1,5 +1,6 @@
-//! The grid of browse items. It is a plain widget with its own layout: each item keeps its size,
-//! rows are filled left to right and centred, and only the items on screen have widgets.
+//! The grid of browse items. It is a plain widget with its own layout: each item keeps its width,
+//! rows are filled left to right and centred, every item in a row is as tall as the tallest one there,
+//! and only the items on screen have widgets.
 //!
 //! It sits in a `GtkScrolledWindow`, which does the scrolling. The grid is as tall as all its rows,
 //! so the scroller offsets it; the grid reads the scroller's adjustment to know what is visible.
@@ -24,45 +25,79 @@ pub struct Builders {
     bind: Box<dyn Fn(&gtk::Widget, &FileEntry, u32)>,
 }
 
-/// Where items go for a given width.
-#[derive(Clone, Copy)]
-struct Geometry {
+/// How many items fit across for a width.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct Columns {
     cell_w: i32,
-    cell_h: i32,
-    columns: i32,
+    count: i32,
 }
 
-impl Geometry {
-    fn new(cell: (i32, i32), width: i32) -> Self {
-        let (cell_w, cell_h) = (cell.0.max(1), cell.1.max(1));
-        let columns = ((width + SPACING_X) / (cell_w + SPACING_X)).max(1);
-        Self { cell_w, cell_h, columns }
+impl Columns {
+    fn new(cell_w: i32, width: i32) -> Self {
+        let cell_w = cell_w.max(1);
+        Self {
+            cell_w,
+            count: ((width + SPACING_X) / (cell_w + SPACING_X)).max(1),
+        }
     }
 
-    fn row_height(&self) -> i32 {
-        self.cell_h + SPACING_Y
+    fn rows(self, items: u32) -> usize {
+        (items as usize).div_ceil(self.count as usize)
+    }
+}
+
+/// The height of each row and where each row starts. A row is as tall as its tallest item, once it has
+/// been measured; rows not yet measured use the default item height.
+struct RowTable {
+    /// Where each row starts, with one extra entry for the end of the last row.
+    tops: Vec<i32>,
+    heights: Vec<i32>,
+}
+
+impl RowTable {
+    fn new(columns: Columns, items: u32, heights: &HashMap<usize, i32>, default: i32) -> Self {
+        let rows = columns.rows(items);
+        let heights: Vec<i32> = (0..rows).map(|row| heights.get(&row).copied().unwrap_or(default)).collect();
+        let mut tops = Vec::with_capacity(rows + 1);
+        let mut top = 0;
+        for height in &heights {
+            tops.push(top);
+            top += height + SPACING_Y;
+        }
+        tops.push(top);
+        Self { tops, heights }
     }
 
-    fn rows(&self, count: u32) -> i32 {
-        (count as i32 + self.columns - 1) / self.columns
+    /// The height of the grid: all rows, with the spacing between them.
+    fn total(&self) -> i32 {
+        match self.heights.len() {
+            0 => 0,
+            _ => self.tops[self.heights.len()] - SPACING_Y,
+        }
     }
 
-    /// The top-left corner of the item at `index`, out of `count` items. Each row is centred.
-    fn origin(&self, index: u32, count: u32, width: i32) -> (i32, i32) {
-        let index = index as i32;
-        let row = index / self.columns;
-        let col = index % self.columns;
-        let in_row = (count as i32 - row * self.columns).min(self.columns);
-        let row_width = in_row * self.cell_w + (in_row - 1) * SPACING_X;
+    /// The row that contains the height `y`, clamped to the grid.
+    fn row_at(&self, y: f64) -> usize {
+        let rows = self.heights.len();
+        let after = self.tops[..rows].partition_point(|top| f64::from(*top) <= y);
+        after.saturating_sub(1).min(rows.saturating_sub(1))
+    }
+
+    /// The top-left corner of the item at `index` in a grid `width` wide. Each row is centred.
+    fn origin(&self, columns: Columns, index: u32, items: u32, width: i32) -> (i32, i32) {
+        let row = index as usize / columns.count as usize;
+        let col = index as i32 % columns.count;
+        let in_row = (items as i32 - (row as i32) * columns.count).min(columns.count);
+        let row_width = in_row * columns.cell_w + (in_row - 1) * SPACING_X;
         let x0 = ((width - row_width) / 2).max(0);
-        (x0 + col * (self.cell_w + SPACING_X), row * self.row_height())
+        (x0 + col * (columns.cell_w + SPACING_X), self.tops[row])
     }
 }
 
 mod layout {
     use super::*;
 
-    /// Lays out an `ItemGrid`: measures it as its rows, and places each child at its item's origin.
+    /// Lays out an `ItemGrid`: measures it as its rows, and places each child in its row.
     #[derive(Default)]
     pub struct ItemLayout;
 
@@ -80,12 +115,13 @@ mod layout {
             let Some(grid) = widget.downcast_ref::<super::ItemGrid>() else {
                 return (0, 0, -1, -1);
             };
-            let geometry = Geometry::new(grid.cell_size(), for_size);
             match orientation {
-                gtk::Orientation::Horizontal => (geometry.cell_w, geometry.cell_w, -1, -1),
+                gtk::Orientation::Horizontal => {
+                    let width = grid.cell_size().0;
+                    (width, width, -1, -1)
+                }
                 _ => {
-                    let rows = geometry.rows(grid.item_count());
-                    let height = if rows == 0 { 0 } else { rows * geometry.row_height() - SPACING_Y };
+                    let height = grid.table(for_size).total();
                     (height, height, -1, -1)
                 }
             }
@@ -95,15 +131,17 @@ mod layout {
             let Some(grid) = widget.downcast_ref::<super::ItemGrid>() else { return };
             // The items on screen are settled first, so the ones shown are the ones placed.
             grid.update_shown(width);
-            let geometry = Geometry::new(grid.cell_size(), width);
-            let count = grid.item_count();
+            let columns = grid.columns(width);
+            let items = grid.item_count();
+            let table = grid.table(width);
             let mut child = widget.first_child();
             while let Some(cell) = child {
                 child = cell.next_sibling();
                 let Ok(index) = cell.widget_name().parse::<u32>() else { continue };
-                let (x, y) = geometry.origin(index, count, width);
+                let row = index as usize / columns.count as usize;
+                let (x, y) = table.origin(columns, index, items, width);
                 let transform = gsk::Transform::new().translate(&graphene::Point::new(x as f32, y as f32));
-                cell.allocate(geometry.cell_w, geometry.cell_h, -1, Some(transform));
+                cell.allocate(columns.cell_w, table.heights[row], -1, Some(transform));
             }
         }
     }
@@ -131,7 +169,11 @@ mod imp {
         pub(super) shown: RefCell<HashMap<u32, gtk::Widget>>,
         /// Widgets no longer shown, kept to be reused.
         pub(super) spare: RefCell<Vec<gtk::Widget>>,
+        /// The item width and the default item height, in pixels.
         pub(super) cell_size: Cell<(i32, i32)>,
+        /// The measured height of each row, by row number, for the columns in `measured_columns`.
+        pub(super) row_heights: RefCell<HashMap<usize, i32>>,
+        pub(super) measured_columns: Cell<i32>,
         /// The scroller's adjustment this grid listens to, and the handler on it.
         pub(super) adjustment: RefCell<Option<(glib::WeakRef<gtk::Adjustment>, glib::SignalHandlerId)>>,
         /// The selection whose changes are followed, so they are connected once.
@@ -203,7 +245,7 @@ mod imp {
 }
 
 glib::wrapper! {
-    /// A scrollable-by-its-parent grid of items, laid out as rows that are centred.
+    /// A scrollable-by-its-parent grid of items, laid out as centred rows of equal-height items.
     pub struct ItemGrid(ObjectSubclass<imp::ItemGrid>)
         @extends gtk::Widget,
         @implements gtk::Accessible, gtk::Buildable, gtk::ConstraintTarget;
@@ -223,7 +265,8 @@ impl ItemGrid {
         })));
     }
 
-    /// The width and height of each item, in pixels. Items are laid out on this grid.
+    /// The width of each item and its default height, in pixels. Rows that have not been measured use
+    /// the default height; a row is as tall as its tallest item once it is shown.
     pub fn set_cell_size(&self, width: i32, height: i32) {
         if self.imp().cell_size.get() != (width, height) {
             self.imp().cell_size.set((width, height));
@@ -241,7 +284,7 @@ impl ItemGrid {
 
     /// Shows the items of `selection`, or none. The selection's changes are followed until it is replaced.
     pub fn set_model(&self, selection: Option<&gtk::SingleSelection>) {
-        self.clear_children();
+        self.reset();
         self.imp().model.take();
         if let Some(selection) = selection {
             let already = self.imp().connected.borrow().as_ref().and_then(|weak| weak.upgrade());
@@ -257,25 +300,23 @@ impl ItemGrid {
     /// Follows the changes to `selection`: its items changing relays the grid out, and its selection
     /// changing redraws which item looks selected.
     fn follow_selection(&self, selection: &gtk::SingleSelection) {
-        {
-            selection.connect_items_changed({
-                let grid = self.downgrade();
-                move |_, _, _, _| {
-                    if let Some(grid) = grid.upgrade() {
-                        grid.clear_children();
-                        grid.queue_resize();
-                    }
+        selection.connect_items_changed({
+            let grid = self.downgrade();
+            move |_, _, _, _| {
+                if let Some(grid) = grid.upgrade() {
+                    grid.reset();
+                    grid.queue_resize();
                 }
-            });
-            selection.connect_selection_changed({
-                let grid = self.downgrade();
-                move |_, _, _| {
-                    if let Some(grid) = grid.upgrade() {
-                        grid.update_selected_classes();
-                    }
+            }
+        });
+        selection.connect_selection_changed({
+            let grid = self.downgrade();
+            move |_, _, _| {
+                if let Some(grid) = grid.upgrade() {
+                    grid.update_selected_classes();
                 }
-            });
-        }
+            }
+        });
     }
 
     pub fn item_count(&self) -> u32 {
@@ -284,8 +325,14 @@ impl ItemGrid {
 
     /// Rebinds every shown item and lays the grid out again, after its items or their look changed.
     pub fn refresh(&self) {
-        self.clear_children();
+        self.reset();
         self.queue_resize();
+    }
+
+    /// Removes the shown items and forgets the row heights measured for them.
+    fn reset(&self) {
+        self.clear_children();
+        self.imp().row_heights.borrow_mut().clear();
     }
 
     /// Selects the item at `position`, and scrolls it into view.
@@ -301,38 +348,42 @@ impl ItemGrid {
         let Some(scroller) = self.scroller() else { return };
         let adjustment = scroller.vadjustment();
         let width = self.width();
-        let geometry = Geometry::new(self.cell_size(), width);
-        let (_, top) = geometry.origin(position, self.item_count(), width);
-        let bottom = top + geometry.cell_h;
+        let columns = self.columns(width);
+        let table = self.table(width);
+        let row = position as usize / columns.count as usize;
+        let Some(&height) = table.heights.get(row) else { return };
+        let top = f64::from(table.tops[row]);
+        let bottom = top + f64::from(height);
         let page = adjustment.page_size();
-        if f64::from(top) < adjustment.value() {
-            adjustment.set_value(f64::from(top));
-        } else if f64::from(bottom) > adjustment.value() + page {
-            adjustment.set_value(bottom as f64 - page);
+        if top < adjustment.value() {
+            adjustment.set_value(top);
+        } else if bottom > adjustment.value() + page {
+            adjustment.set_value(bottom - page);
         }
     }
 
     /// The item at (`x`, `y`) in this grid, if there is one there.
     fn position_at(&self, x: f64, y: f64) -> Option<u32> {
-        let count = self.item_count();
-        let geometry = Geometry::new(self.cell_size(), self.width());
-        let row = (y as i32).div_euclid(geometry.row_height());
-        if row < 0 || row >= geometry.rows(count) {
+        let items = self.item_count();
+        let width = self.width();
+        let columns = self.columns(width);
+        let table = self.table(width);
+        if table.heights.is_empty() {
             return None;
         }
-        let first = (row * geometry.columns) as u32;
-        let in_row = (count - first).min(geometry.columns as u32);
-        for index in first..first + in_row {
-            let (left, top) = geometry.origin(index, count, self.width());
-            if x >= f64::from(left)
-                && x < f64::from(left + geometry.cell_w)
-                && y >= f64::from(top)
-                && y < f64::from(top + geometry.cell_h)
-            {
-                return Some(index);
-            }
+        let row = table.row_at(y);
+        if y >= f64::from(table.tops[row] + table.heights[row]) {
+            return None;
         }
-        None
+        let first = (row * columns.count as usize) as u32;
+        let in_row = (items - first).min(columns.count as u32);
+        (first..first + in_row).find(|&index| {
+            let (left, top) = table.origin(columns, index, items, width);
+            x >= f64::from(left)
+                && x < f64::from(left + columns.cell_w)
+                && y >= f64::from(top)
+                && y < f64::from(top + table.heights[row])
+        })
     }
 
     fn handle_key(&self, key: gdk::Key) -> glib::Propagation {
@@ -341,7 +392,7 @@ impl ItemGrid {
         if count == 0 {
             return glib::Propagation::Proceed;
         }
-        let columns = Geometry::new(self.cell_size(), self.width()).columns as u32;
+        let columns = self.columns(self.width()).count as u32;
         let current = model.selected();
         if key == gdk::Key::Return || key == gdk::Key::KP_Enter || key == gdk::Key::space {
             if current < count {
@@ -388,9 +439,23 @@ impl ItemGrid {
         self.ancestor(gtk::ScrolledWindow::static_type()).and_downcast()
     }
 
-    /// The rows on screen, given the scroller's position, as first and last item positions (inclusive
-    /// of a row either side, so scrolling does not reveal blanks).
-    fn visible_range(&self, geometry: Geometry, count: u32) -> (u32, u32) {
+    fn columns(&self, width: i32) -> Columns {
+        Columns::new(self.cell_size().0, width)
+    }
+
+    /// The row heights and positions for a grid `width` wide.
+    fn table(&self, width: i32) -> RowTable {
+        RowTable::new(
+            self.columns(width),
+            self.item_count(),
+            &self.imp().row_heights.borrow(),
+            self.cell_size().1,
+        )
+    }
+
+    /// The rows on screen, as first and last item positions (inclusive of a row either side, so
+    /// scrolling does not reveal blanks).
+    fn visible_range(&self, width: i32, count: u32) -> (u32, u32) {
         let (top, page) = match self.scroller() {
             Some(scroller) => {
                 let adjustment = scroller.vadjustment();
@@ -398,23 +463,33 @@ impl ItemGrid {
             }
             None => (0.0, f64::from(self.height())),
         };
-        let row_height = f64::from(geometry.row_height());
-        let first_row = ((top / row_height).floor() as i32 - 1).max(0);
-        let last_row = ((top + page) / row_height).ceil() as i32 + 1;
-        let first = (first_row * geometry.columns) as u32;
-        let end = (((last_row + 1) * geometry.columns) as u32).min(count);
+        let table = self.table(width);
+        let columns = self.columns(width).count as usize;
+        let rows = table.heights.len();
+        if rows == 0 {
+            return (0, 0);
+        }
+        let first_row = table.row_at(top).saturating_sub(1);
+        let last_row = (table.row_at(top + page) + 1).min(rows - 1);
+        let first = (first_row * columns) as u32;
+        let end = (((last_row + 1) * columns) as u32).min(count);
         (first, end)
     }
 
     /// Makes the shown widgets match the rows on screen: widgets for items that scrolled away are
-    /// put aside, and widgets for items that came into view are bound.
+    /// put aside, and widgets for items that came into view are bound and measured.
     fn update_shown(&self, width: i32) {
         self.follow_scroller();
         let imp = self.imp();
         let Some(model) = imp.model.borrow().clone() else { return };
         let count = model.n_items();
-        let geometry = Geometry::new(self.cell_size(), width);
-        let (first, end) = self.visible_range(geometry, count);
+        let columns = self.columns(width);
+        // Rows only mean the same items while the number of columns holds.
+        if imp.measured_columns.get() != columns.count {
+            self.reset();
+            imp.measured_columns.set(columns.count);
+        }
+        let (first, end) = self.visible_range(width, count);
 
         let gone: Vec<u32> = imp
             .shown
@@ -431,6 +506,7 @@ impl ItemGrid {
         }
 
         let Some(builders) = imp.builders.borrow().clone() else { return };
+        let mut fresh = Vec::new();
         for position in first..end {
             if imp.shown.borrow().contains_key(&position) {
                 continue;
@@ -443,6 +519,23 @@ impl ItemGrid {
             (builders.bind)(&widget, &entry, position);
             imp.shown.borrow_mut().insert(position, widget.clone());
             self.set_selected_class(&widget, position);
+            fresh.push((position, widget));
+        }
+
+        // Each row is as tall as its tallest item: measure the new items and keep the tallest per row.
+        let mut changed = false;
+        for (position, widget) in fresh {
+            let row = position as usize / columns.count as usize;
+            let height = widget.measure(gtk::Orientation::Vertical, columns.cell_w).1;
+            let mut heights = imp.row_heights.borrow_mut();
+            let tallest = heights.entry(row).or_insert(0);
+            if height > *tallest {
+                *tallest = height;
+                changed = true;
+            }
+        }
+        if changed {
+            self.queue_resize();
         }
     }
 
