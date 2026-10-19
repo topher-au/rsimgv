@@ -99,20 +99,24 @@
                 </child>
               </object>
             </child>
-            <child type="top">
-              <object class="AdwTabBar" id="tab_bar">
-                <property name="autohide">false</property>
-                <property name="end-action-widget">
-                  <object class="GtkButton" id="new_tab_button">
-                    <property name="icon-name">tab-new-symbolic</property>
-                    <property name="tooltip-text">New tab</property>
-                    <style><class name="flat"/></style>
+            <property name="content">
+              <object class="AdwToolbarView">
+                <child type="top">
+                  <object class="AdwTabBar" id="tab_bar">
+                    <property name="autohide">false</property>
+                    <property name="end-action-widget">
+                      <object class="GtkButton" id="new_tab_button">
+                        <property name="icon-name">tab-new-symbolic</property>
+                        <property name="tooltip-text">New tab</property>
+                        <style><class name="flat"/></style>
+                      </object>
+                    </property>
                   </object>
+                </child>
+                <property name="content">
+                  <object class="RsimgvBrowseView" id="browse"/>
                 </property>
               </object>
-            </child>
-            <property name="content">
-              <object class="RsimgvBrowseView" id="browse"/>
             </property>
           </object>
         </child>
