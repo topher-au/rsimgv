@@ -1,4 +1,5 @@
 use std::cell::{Cell, RefCell};
+use std::rc::Rc;
 use std::path::{Path, PathBuf};
 
 use adw::subclass::prelude::*;
@@ -84,6 +85,35 @@ impl Window {
         if settings.boolean("window-maximized") {
             window.maximize();
         }
+        // Save as the window changes, not only on close. A size change arrives on every step of a
+        // drag, so each save waits until the changes stop.
+        let pending: Rc<Cell<Option<glib::SourceId>>> = Rc::new(Cell::new(None));
+        let schedule: Rc<dyn Fn(&Window)> = {
+            let settings = settings.clone();
+            let pending = pending.clone();
+            Rc::new(move |window: &Window| schedule_window_save(window, &settings, &pending))
+        };
+        window.connect_maximized_notify({
+            let schedule = schedule.clone();
+            move |window| schedule(window)
+        });
+        window.connect_realize(move |window| {
+            let Some(surface) = window.surface() else { return };
+            let weak = window.downgrade();
+            let schedule_width = schedule.clone();
+            let weak_width = weak.clone();
+            surface.connect_width_notify(move |_| {
+                if let Some(window) = weak_width.upgrade() {
+                    schedule_width(&window);
+                }
+            });
+            let schedule_height = schedule.clone();
+            surface.connect_height_notify(move |_| {
+                if let Some(window) = weak.upgrade() {
+                    schedule_height(&window);
+                }
+            });
+        });
         let settings_on_close = settings.clone();
         window.connect_close_request(move |window| {
             save_window_state(window, &settings_on_close);
@@ -289,6 +319,27 @@ fn save_window_state(window: &Window, settings: &gio::Settings) {
     }
 }
 
+/// How long the window must stay unchanged before its state is saved.
+const WINDOW_SAVE_DELAY_MS: u64 = 400;
+
+/// Saves the window state once it has stopped changing for `WINDOW_SAVE_DELAY_MS`. A new change
+/// restarts the wait.
+fn schedule_window_save(window: &Window, settings: &gio::Settings, pending: &Rc<Cell<Option<glib::SourceId>>>) {
+    if let Some(id) = pending.take() {
+        id.remove();
+    }
+    let weak = window.downgrade();
+    let settings = settings.clone();
+    let slot = pending.clone();
+    let id = glib::timeout_add_local_once(std::time::Duration::from_millis(WINDOW_SAVE_DELAY_MS), move || {
+        slot.set(None);
+        if let Some(window) = weak.upgrade() {
+            save_window_state(&window, &settings);
+        }
+    });
+    pending.set(Some(id));
+}
+
 /// How much of the tree a navigation reveals.
 #[derive(Clone, Copy)]
 enum Reveal {
@@ -338,6 +389,27 @@ pub(crate) mod tests {
     }
 
 
+    /// A size change is saved shortly after it happens, without waiting for the window to close.
+    fn size_change_is_saved_without_closing(app: &adw::Application, settings: &gio::Settings) {
+        let window = Window::new(app, settings);
+        window.present();
+        let ctx = glib::MainContext::default();
+        let pump = |frames: u32| {
+            for _ in 0..frames {
+                while ctx.iteration(false) {}
+                std::thread::sleep(std::time::Duration::from_millis(16));
+            }
+        };
+        pump(60);
+        window.set_size_request(812, 520);
+        pump(150);
+        assert_eq!((window.width(), window.height()), (812, 520), "the window grew to the new size");
+        assert_eq!(settings.int("window-width"), 812, "the width is saved without closing");
+        assert_eq!(settings.int("window-height"), 520, "the height is saved without closing");
+        window.set_size_request(-1, -1);
+        window.destroy();
+    }
+
     /// Closing a window saves its size and that it is not maximized; a new window opens at that size.
     fn window_size_is_saved(app: &adw::Application, settings: &gio::Settings) {
         let window = Window::new(&app, &settings);
@@ -375,6 +447,7 @@ pub(crate) mod tests {
         gio::prelude::ApplicationExt::register(&app, gio::Cancellable::NONE).expect("register test application");
         let settings = crate::settings::open("au.topher.rimgv");
         window_size_is_saved(&app, &settings);
+        size_change_is_saved_without_closing(&app, &settings);
         let window = Window::new(&app, &settings);
         let imp = window.imp();
 
