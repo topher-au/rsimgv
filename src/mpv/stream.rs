@@ -146,10 +146,11 @@ fn main_thread_waker(stream: &MpvStream, handle: fn(&MpvStream)) -> impl Fn() + 
 }
 
 impl MpvStream {
-    /// A stream of the video in `path`, paused until it is played. `None` if libmpv could not start.
-    pub fn for_path(path: &Path) -> Option<Self> {
+    /// A stream of the video in `path`, paused until it is played, with the mpv command line options in
+    /// `options`. `None` if libmpv could not start.
+    pub fn for_path(path: &Path, options: &str) -> Option<Self> {
         let stream: Self = glib::Object::new();
-        let mut player = match Player::new() {
+        let mut player = match Player::new(options) {
             Ok(player) => player,
             Err(err) => {
                 eprintln!("rsimgv: mpv: {err}");

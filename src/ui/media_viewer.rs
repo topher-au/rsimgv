@@ -165,6 +165,8 @@ mod imp {
         pub(super) auto_advance: Cell<bool>,
         /// Whether videos are played by libmpv rather than GTK's own media backend.
         pub(super) use_mpv: Cell<bool>,
+        /// Extra mpv command line options for the mpv player.
+        pub(super) mpv_options: RefCell<String>,
         /// Whether the controls and the title stay shown, rather than hiding until the pointer comes near.
         pub(super) pinned: Cell<bool>,
         /// Whether the window is fullscreen, where the header floats over the picture and hides.
@@ -507,6 +509,11 @@ impl MediaViewer {
         self.imp().use_mpv.set(use_mpv);
     }
 
+    /// Gives later videos played by mpv the mpv command line options in `options`.
+    pub fn set_mpv_options(&self, options: &str) {
+        self.imp().mpv_options.replace(options.to_owned());
+    }
+
     /// Changes the volume of the video shown by `delta`.
     pub fn adjust_volume(&self, delta: f64) {
         self.imp().controls.adjust_volume(delta);
@@ -640,7 +647,7 @@ impl MediaViewer {
             let media: gtk::MediaStream = imp
                 .use_mpv
                 .get()
-                .then(|| crate::mpv::MpvStream::for_path(&path))
+                .then(|| crate::mpv::MpvStream::for_path(&path, &imp.mpv_options.borrow()))
                 .flatten()
                 .map(|stream| stream.upcast())
                 .unwrap_or_else(|| gtk::MediaFile::for_filename(&path).upcast());

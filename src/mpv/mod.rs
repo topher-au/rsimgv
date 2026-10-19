@@ -49,6 +49,38 @@ pub fn ipc_socket_path() -> std::path::PathBuf {
     std::path::PathBuf::from(format!("/tmp/rsimgv-mpv-{:x}", std::process::id()))
 }
 
+/// Options that would take the video out of rsimgv's window, so they are never applied from the user's options.
+const EMBEDDING_OPTIONS: &[&str] = &["vo", "wid", "gpu-context", "fs", "fullscreen"];
+
+/// mpv command line options as option names and values. Each option starts with `--` after a space or at the
+/// start, and runs to the next one, so a value may hold spaces. `--no-name` is `name=no`, and a bare `--name`
+/// is `name=yes`.
+pub fn parse_options(text: &str) -> Vec<(String, String)> {
+    let mut starts: Vec<usize> = text
+        .match_indices("--")
+        .map(|(index, _)| index)
+        .filter(|&index| index == 0 || text[..index].ends_with(char::is_whitespace))
+        .collect();
+    starts.dedup();
+    let mut options = Vec::new();
+    for (position, &start) in starts.iter().enumerate() {
+        let end = starts.get(position + 1).copied().unwrap_or(text.len());
+        let option = text[start + 2..end].trim();
+        if option.is_empty() {
+            continue;
+        }
+        let (name, value) = match option.split_once('=') {
+            Some((name, value)) => (name.to_owned(), value.to_owned()),
+            None => match option.strip_prefix("no-") {
+                Some(name) => (name.to_owned(), "no".to_owned()),
+                None => (option.to_owned(), "yes".to_owned()),
+            },
+        };
+        options.push((name, value));
+    }
+    options
+}
+
 /// A libmpv player with a software render context.
 pub struct Player {
     handle: *mut sys::mpv_handle,
@@ -59,8 +91,9 @@ pub struct Player {
 }
 
 impl Player {
-    /// A player set up to play without a window of its own, rendering into memory.
-    pub fn new() -> Result<Self, String> {
+    /// A player set up to play without a window of its own, rendering into memory, with the mpv command line
+    /// options in `extra` applied over rsimgv's own. Options that would give it a window are left out.
+    pub fn new(extra: &str) -> Result<Self, String> {
         // SAFETY: plain libmpv calls on a handle this function owns until it is returned.
         unsafe {
             // libmpv refuses to start unless numbers are formatted the C way, and GTK sets the locale from the
@@ -83,10 +116,19 @@ impl Player {
             ] {
                 player.set_option(name, value)?;
             }
-            // Other programs can drive the player through mpv's JSON IPC on this socket.
+            // Other programs can drive the player through mpv's JSON IPC on this socket, unless the user's
+            // options name another.
             let socket = ipc_socket_path();
             if let Err(err) = player.set_option("input-ipc-server", &socket.to_string_lossy()) {
                 eprintln!("rsimgv: mpv: could not open the IPC socket {}: {err}", socket.display());
+            }
+            for (name, value) in parse_options(extra) {
+                if EMBEDDING_OPTIONS.contains(&name.as_str()) {
+                    continue;
+                }
+                if let Err(err) = player.set_option(&name, &value) {
+                    eprintln!("rsimgv: mpv: could not set --{name}={value}: {err}");
+                }
             }
             check(sys::mpv_initialize(handle))?;
 
@@ -264,5 +306,17 @@ impl Drop for Player {
                 drop(Box::from_raw(callback));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn options_are_split_at_each_dashed_name() {
+        let options = parse_options("--no-quiet --hwdec=cuda-copy --sub-ass  --msg=a b--c --x=1 --empty=");
+        let pairs: Vec<(&str, &str)> = options.iter().map(|(name, value)| (name.as_str(), value.as_str())).collect();
+        assert_eq!(pairs, [("quiet", "no"), ("hwdec", "cuda-copy"), ("sub-ass", "yes"), ("msg", "a b--c"), ("x", "1"), ("empty", "")]);
     }
 }

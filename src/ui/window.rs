@@ -198,6 +198,15 @@ impl Window {
         window.connect_sources();
         window.refresh_bookmarks();
         window.imp().viewer.set_use_mpv(settings.string("video-backend") == "mpv");
+        window.imp().viewer.set_mpv_options(&settings.string("mpv-args"));
+        settings.connect_changed(Some("mpv-args"), {
+            let weak = window.downgrade();
+            move |settings, _| {
+                if let Some(window) = weak.upgrade() {
+                    window.imp().viewer.set_mpv_options(&settings.string("mpv-args"));
+                }
+            }
+        });
         settings.connect_changed(Some("video-backend"), {
             let weak = window.downgrade();
             move |settings, _| {
