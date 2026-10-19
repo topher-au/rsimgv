@@ -442,7 +442,7 @@ impl FsTree {
     }
 
     /// Shows a snapshot: collapses the tree to its root, expands the saved folders, and selects the saved
-    /// folder once its row has loaded. A saved scroll position is restored; a tree without one frames the selection.
+    /// folder once its row has loaded, then restores the saved scroll position.
     pub fn restore(&self, snapshot: TreeSnapshot) {
         let imp = self.imp();
         if let Some(model) = imp.tree_model.borrow().clone() {
@@ -453,19 +453,22 @@ impl FsTree {
         for path in &snapshot.expanded {
             self.expand_path_quietly(path);
         }
+        // A tree never shown before is revealed on its folder, as if the folder had just been navigated to.
+        if let (None, Some(selected)) = (snapshot.scroll, &snapshot.selected) {
+            self.reveal_path(selected);
+            return;
+        }
         let tree = self.clone();
         glib::spawn_future_local(async move {
             if let Some(selected) = snapshot.selected {
                 for _ in 0..200 {
-                    if tree.select_row(&selected, snapshot.scroll.is_none()) {
+                    if tree.select_path(&selected) {
                         break;
                     }
                     glib::timeout_future(std::time::Duration::from_millis(10)).await;
                 }
             }
-            if let Some(scroll) = snapshot.scroll {
-                tree.imp().scroller.vadjustment().set_value(scroll);
-            }
+            tree.imp().scroller.vadjustment().set_value(snapshot.scroll.unwrap_or(0.0));
         });
     }
 
