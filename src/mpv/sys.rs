@@ -69,6 +69,13 @@ pub struct mpv_render_param {
     pub data: *mut c_void,
 }
 
+/// `LC_NUMERIC` in glibc's `locale.h`.
+pub const LC_NUMERIC: c_int = 1;
+
+unsafe extern "C" {
+    pub fn setlocale(category: c_int, locale: *const c_char) -> *mut c_char;
+}
+
 pub type wakeup_fn = unsafe extern "C" fn(*mut c_void);
 
 #[link(name = "mpv")]

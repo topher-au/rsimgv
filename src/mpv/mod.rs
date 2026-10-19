@@ -57,6 +57,9 @@ impl Player {
     pub fn new() -> Result<Self, String> {
         // SAFETY: plain libmpv calls on a handle this function owns until it is returned.
         unsafe {
+            // libmpv refuses to start unless numbers are formatted the C way, and GTK sets the locale from the
+            // environment at startup. Only the number format changes; text and dates stay localised.
+            sys::setlocale(sys::LC_NUMERIC, c"C".as_ptr());
             let handle = sys::mpv_create();
             if handle.is_null() {
                 return Err("could not create the mpv player".to_owned());
