@@ -17,6 +17,11 @@
       </object>
     </child>
     <child>
+      <object class="GtkBox">
+        <property name="width-request">12</property>
+      </object>
+    </child>
+    <child>
       <object class="GtkButton" id="up_button">
         <property name="icon-name">go-up-symbolic</property>
         <property name="tooltip-text">Up</property>

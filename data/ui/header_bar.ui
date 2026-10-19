@@ -30,11 +30,6 @@
             <property name="spacing">0</property>
           </object>
         </child>
-        <child>
-          <object class="GtkWindowControls" id="controls">
-            <property name="side">end</property>
-          </object>
-        </child>
       </object>
     </child>
   </template>

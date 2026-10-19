@@ -48,52 +48,63 @@
                     </child>
                   </object>
                 </child>
-                <child type="start">
-                  <object class="RsimgvNavigationBar" id="navigation"/>
-                </child>
                 <child type="title">
-                  <object class="GtkStack" id="title_stack">
+                  <object class="GtkBox" id="toolbar_box">
+                    <property name="spacing">4</property>
                     <property name="hexpand">true</property>
                     <child>
-                      <object class="RsimgvPathBar" id="path_bar">
-                        <property name="hexpand">true</property>
-                      </object>
+                      <object class="RsimgvNavigationBar" id="navigation"/>
                     </child>
                     <child>
-                      <object class="GtkEntry" id="location_entry">
+                      <object class="GtkStack" id="title_stack">
                         <property name="hexpand">true</property>
-                        <property name="placeholder-text">Type a folder path</property>
+                        <child>
+                          <object class="RsimgvPathBar" id="path_bar">
+                            <property name="hexpand">true</property>
+                          </object>
+                        </child>
+                        <child>
+                          <object class="GtkEntry" id="location_entry">
+                            <property name="hexpand">true</property>
+                            <property name="placeholder-text">Type a folder path</property>
+                          </object>
+                        </child>
                       </object>
                     </child>
-                  </object>
-                </child>
-                <child type="end">
-                  <object class="GtkMenuButton" id="menu_button">
-                    <property name="icon-name">open-menu-symbolic</property>
-                    <property name="tooltip-text">Main menu</property>
-                    <style><class name="flat"/></style>
-                    <property name="menu-model">
-                      <menu id="main-menu">
-                        <section>
-                          <item>
-                            <attribute name="label">Show Hidden Directories</attribute>
-                            <attribute name="action">win.show-hidden</attribute>
-                          </item>
-                        </section>
-                        <section>
-                          <item>
-                            <attribute name="label">Preferences</attribute>
-                            <attribute name="action">app.preferences</attribute>
-                          </item>
-                        </section>
-                        <section>
-                          <item>
-                            <attribute name="label">Quit</attribute>
-                            <attribute name="action">app.quit</attribute>
-                          </item>
-                        </section>
-                      </menu>
-                    </property>
+                  <child type="end">
+                    <object class="GtkMenuButton" id="menu_button">
+                      <property name="icon-name">open-menu-symbolic</property>
+                      <property name="tooltip-text">Main menu</property>
+                      <style><class name="flat"/></style>
+                      <property name="menu-model">
+                        <menu id="main-menu">
+                          <section>
+                            <item>
+                              <attribute name="label">Show Hidden Directories</attribute>
+                              <attribute name="action">win.show-hidden</attribute>
+                            </item>
+                          </section>
+                          <section>
+                            <item>
+                              <attribute name="label">Preferences</attribute>
+                              <attribute name="action">app.preferences</attribute>
+                            </item>
+                          </section>
+                          <section>
+                            <item>
+                              <attribute name="label">Quit</attribute>
+                              <attribute name="action">app.quit</attribute>
+                            </item>
+                          </section>
+                        </menu>
+                      </property>
+                    </object>
+                    </child>
+                    <child>
+                      <object class="GtkWindowControls" id="controls">
+                        <property name="side">end</property>
+                      </object>
+                    </child>
                   </object>
                 </child>
               </object>
