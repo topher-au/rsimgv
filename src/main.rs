@@ -3,6 +3,7 @@ mod ipc;
 mod remote;
 mod bookmarks;
 mod keybindings;
+mod mpv;
 mod settings;
 mod ui;
 
