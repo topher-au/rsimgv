@@ -276,7 +276,12 @@ impl NavigationBar {
         }
         let popover = gtk::PopoverMenu::from_model(Some(&menu));
         popover.set_parent(button);
-        popover.connect_closed(|popover| popover.unparent());
+        // The menu activates its item's action after closing, so the popover must stay in the
+        // widget tree until then or actions like `win.open-in-new-tab` aren't found.
+        popover.connect_closed(|popover| {
+            let popover = popover.clone();
+            glib::idle_add_local_once(move || popover.unparent());
+        });
         popover.popup();
     }
 }

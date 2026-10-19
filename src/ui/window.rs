@@ -267,7 +267,12 @@ impl Window {
         popover.set_parent(parent);
         popover.set_has_arrow(false);
         popover.set_pointing_to(Some(&gtk::gdk::Rectangle::new(x as i32, y as i32, 0, 0)));
-        popover.connect_closed(|popover| popover.unparent());
+        // The menu activates its item's action after closing, so the popover must stay in the
+        // widget tree until then or actions like `win.open-in-new-tab` aren't found.
+        popover.connect_closed(|popover| {
+            let popover = popover.clone();
+            glib::idle_add_local_once(move || popover.unparent());
+        });
         popover.popup();
     }
 

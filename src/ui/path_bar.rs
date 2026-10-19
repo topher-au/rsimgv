@@ -534,7 +534,12 @@ impl PathBar {
         if let Some(point) = button.compute_point(self, &gtk::graphene::Point::new(x as f32, y as f32)) {
             popover.set_pointing_to(Some(&gdk::Rectangle::new(point.x() as i32, point.y() as i32, 0, 0)));
         }
-        popover.connect_closed(|popover| popover.unparent());
+        // The menu activates its item's action after closing, so the popover must stay in the
+        // widget tree until then or actions like `win.open-in-new-tab` aren't found.
+        popover.connect_closed(|popover| {
+            let popover = popover.clone();
+            glib::idle_add_local_once(move || popover.unparent());
+        });
         popover.popup();
     }
 }
