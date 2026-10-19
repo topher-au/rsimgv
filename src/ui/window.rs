@@ -40,8 +40,6 @@ mod imp {
         pub tab_view: TemplateChild<adw::TabView>,
         #[template_child]
         pub tab_bar: TemplateChild<adw::TabBar>,
-        #[template_child]
-        pub new_tab_button: TemplateChild<gtk::Button>,
         /// What each tab shows when it is not the active one, keyed by tab id.
         pub(super) tabs: RefCell<BTreeMap<u64, TabState>>,
         /// The tab whose state is in the widgets now.
@@ -475,15 +473,6 @@ impl Window {
                 }
                 view.close_page_finish(page, true);
                 glib::Propagation::Stop
-            }
-        });
-        imp.new_tab_button.connect_clicked({
-            let weak = weak.clone();
-            move |_| {
-                if let Some(window) = weak.upgrade() {
-                    let path = window.current_path().unwrap_or_else(glib::home_dir);
-                    window.open_tab(&path);
-                }
             }
         });
         imp.tree.connect_item_context_requested({
