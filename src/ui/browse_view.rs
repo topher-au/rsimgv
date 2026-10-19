@@ -101,26 +101,16 @@ fn info_text(entry: &FileEntry, fields: &[InfoField], separator: &str) -> String
         .join(separator)
 }
 
-/// The tooltip for an item: its full name and, for a file, its size in bytes.
+/// The tooltip for an item, as markup: its full name in bold, then its type and, for a file, its size.
 fn full_description(entry: &FileEntry) -> String {
-    if entry.is_dir() {
-        return entry.name().to_string();
+    let mut lines = vec![format!("<b>{}</b>", glib::markup_escape_text(&entry.name()))];
+    if let Some(kind) = InfoField::ContentType.text(entry) {
+        lines.push(glib::markup_escape_text(&kind).to_string());
     }
-    let bytes = entry.info().size() as u64;
-    format!("{}\n{} ({} bytes)", entry.name(), glib::format_size(bytes), group_digits(bytes))
-}
-
-/// `n` with a comma between each group of three digits, as in `2,306,867`.
-fn group_digits(n: u64) -> String {
-    let digits = n.to_string();
-    let mut out = String::new();
-    for (index, digit) in digits.chars().enumerate() {
-        if index > 0 && (digits.len() - index) % 3 == 0 {
-            out.push(',');
-        }
-        out.push(digit);
+    if let Some(size) = InfoField::Size.text(entry) {
+        lines.push(glib::markup_escape_text(&size).to_string());
     }
-    out
+    lines.join("\n")
 }
 
 /// Whether `entry` is a picture or a video, judged by its content type.
@@ -483,7 +473,7 @@ fn style_item(view: &BrowseView, cell: &gtk::Box, entry: &FileEntry) {
     let chars = (size / 8).max(4);
     name.set_max_width_chars(chars);
     info.set_max_width_chars(chars);
-    cell.set_tooltip_text(Some(&full_description(entry)));
+    cell.set_tooltip_markup(Some(&full_description(entry)));
 
     let fields = view.imp().info_fields.borrow().clone();
     let layout = view.info_layout();
