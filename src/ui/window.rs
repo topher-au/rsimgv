@@ -233,7 +233,7 @@ impl Window {
                     "open-folder" => {
                         window.navigate(&path);
                     }
-                    "open-in-new-tab" if path.is_dir() => window.open_tab(&path),
+                    "open-in-new-tab" if path.is_dir() => window.open_background_tab(&path),
                     "open-in-new-window" => window.open_in_new_window(&path),
                     "copy-path" => window.clipboard().set_text(&path.to_string_lossy()),
                     "show-properties" => window.show_properties(&path),
@@ -330,6 +330,15 @@ impl Window {
 
     /// Opens a new tab at `path` and switches to it.
     pub fn open_tab(&self, path: &Path) {
+        self.add_tab(path, true);
+    }
+
+    /// Opens a new tab at `path` behind the current one, leaving the current tab selected.
+    pub fn open_background_tab(&self, path: &Path) {
+        self.add_tab(path, false);
+    }
+
+    fn add_tab(&self, path: &Path, select: bool) {
         let imp = self.imp();
         let id = imp.next_tab.get();
         imp.next_tab.set(id + 1);
@@ -347,6 +356,11 @@ impl Window {
         self.attach_browse(&browse);
         let page = imp.tab_view.append(&browse);
         page.set_title(&folder_name(path));
+        // A tab opened in the background loads its folder now; its history and tree wait in its state.
+        if !select && imp.tab_view.n_pages() > 1 {
+            browse.set_path(path);
+            return;
+        }
         imp.tab_view.set_selected_page(&page);
         if imp.active_tab.get() != Some(id) {
             self.switch_to_tab(id);
@@ -409,7 +423,7 @@ impl Window {
                     OpenTarget::Here => {
                         window.navigate(path);
                     }
-                    OpenTarget::NewTab => window.open_tab(path),
+                    OpenTarget::NewTab => window.open_background_tab(path),
                     OpenTarget::NewWindow => window.open_in_new_window(path),
                 }
             }

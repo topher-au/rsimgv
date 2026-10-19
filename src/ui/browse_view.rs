@@ -106,6 +106,8 @@ mod imp {
         media_only: Cell<bool>,
         /// Bumped on every new folder, so a listing that finishes late is dropped.
         pub(super) generation: Cell<u64>,
+        /// How far each folder visited in this view was scrolled, so returning to one restores it.
+        pub(super) scroll_memory: RefCell<std::collections::HashMap<PathBuf, f64>>,
         pub(super) path: RefCell<Option<PathBuf>>,
         pub(super) info_fields: RefCell<Vec<InfoField>>,
         /// Width and height of the visual part of each item, in pixels.
@@ -374,6 +376,11 @@ impl BrowseView {
         let imp = self.imp();
         let generation = imp.generation.get() + 1;
         imp.generation.set(generation);
+        let scroller = imp.grid.parent().and_downcast::<gtk::ScrolledWindow>();
+        if let (Some(old), Some(scroller)) = (imp.path.borrow().clone(), &scroller) {
+            imp.scroll_memory.borrow_mut().insert(old, scroller.vadjustment().value());
+        }
+        let saved = imp.scroll_memory.borrow().get(path).copied().unwrap_or(0.0);
         imp.path.replace(Some(path.to_path_buf()));
         if let Some(store) = imp.store.get() {
             store.remove_all();
@@ -391,6 +398,9 @@ impl BrowseView {
             }
             if let Some(store) = view.imp().store.get() {
                 store.splice(0, 0, &entries);
+            }
+            if let Some(scroller) = scroller {
+                restore_scroll_after_layout(&scroller, saved);
             }
         });
     }
@@ -617,4 +627,20 @@ pub(crate) mod tests {
 
         let _ = fs::remove_dir_all(&root);
     }
+}
+
+/// Scrolls to `value` once the newly listed items have been laid out, over a few frames because the
+/// grid's height grows as it measures them.
+fn restore_scroll_after_layout(scroller: &gtk::ScrolledWindow, value: f64) {
+    const FRAMES: u32 = 8;
+    let frames = Cell::new(0u32);
+    scroller.add_tick_callback(move |scroller, _| {
+        frames.set(frames.get() + 1);
+        scroller.vadjustment().set_value(value);
+        if frames.get() < FRAMES {
+            glib::ControlFlow::Continue
+        } else {
+            glib::ControlFlow::Break
+        }
+    });
 }
