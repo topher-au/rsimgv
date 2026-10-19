@@ -43,6 +43,7 @@
                       <object class="GtkToggleButton" id="content_sidebar_toggle">
                         <property name="icon-name">sidebar-show-symbolic</property>
                         <property name="tooltip-text">Show sidebar</property>
+                        <property name="margin-end">4</property>
                         <style><class name="flat"/></style>
                       </object>
                     </child>
