@@ -12,6 +12,14 @@
               <object class="AdwHeaderBar">
                 <property name="show-start-title-buttons">false</property>
                 <property name="show-end-title-buttons">false</property>
+                <child type="start">
+                  <object class="GtkToggleButton" id="sidebar_header_toggle">
+                    <property name="icon-name">sidebar-show-symbolic</property>
+                    <property name="tooltip-text">Hide sidebar</property>
+                    <property name="active">true</property>
+                    <style><class name="flat"/></style>
+                  </object>
+                </child>
                 <child type="title">
                   <object class="AdwWindowTitle">
                     <property name="title">rsimgv</property>
@@ -29,6 +37,18 @@
             <child type="top">
               <object class="RsimgvHeaderBar" id="content_header">
                 <child type="start">
+                  <object class="GtkRevealer" id="content_revealer">
+                    <property name="transition-type">slide-right</property>
+                    <child>
+                      <object class="GtkToggleButton" id="content_sidebar_toggle">
+                        <property name="icon-name">sidebar-show-symbolic</property>
+                        <property name="tooltip-text">Show sidebar</property>
+                        <style><class name="flat"/></style>
+                      </object>
+                    </child>
+                  </object>
+                </child>
+                <child type="start">
                   <object class="RsimgvNavigationBar" id="navigation"/>
                 </child>
                 <child type="title">
@@ -45,14 +65,6 @@
                         <property name="placeholder-text">Type a folder path</property>
                       </object>
                     </child>
-                  </object>
-                </child>
-                <child type="end">
-                  <object class="GtkToggleButton" id="sidebar_toggle">
-                    <property name="icon-name">sidebar-show-symbolic</property>
-                    <property name="tooltip-text">Hide sidebar</property>
-                    <property name="active">true</property>
-                    <style><class name="flat"/></style>
                   </object>
                 </child>
                 <child type="end">

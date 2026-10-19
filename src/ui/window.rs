@@ -20,7 +20,11 @@ mod imp {
         #[template_child]
         pub split: TemplateChild<OverlaySplitView>,
         #[template_child]
-        pub sidebar_toggle: TemplateChild<gtk::ToggleButton>,
+        pub sidebar_header_toggle: TemplateChild<gtk::ToggleButton>,
+        #[template_child]
+        pub content_sidebar_toggle: TemplateChild<gtk::ToggleButton>,
+        #[template_child]
+        pub content_revealer: TemplateChild<gtk::Revealer>,
         #[template_child]
         pub navigation: TemplateChild<NavigationBar>,
         #[template_child]
@@ -121,18 +125,22 @@ impl Window {
         });
         let tree = (*imp.tree).clone();
         let split = (*imp.split).clone();
-        let sidebar_toggle = (*imp.sidebar_toggle).clone();
-
-        // The toggle shows and hides the sidebar, and follows the split view's state.
-        sidebar_toggle.set_active(split.show_sidebar());
-        sidebar_toggle.connect_toggled({
+        // Two toggles show and hide the sidebar: one in the sidebar's header, and one in the main
+        // header, which is hidden while the sidebar is open. Both follow the split view's state.
+        let toggles = [(*imp.sidebar_header_toggle).clone(), (*imp.content_sidebar_toggle).clone()];
+        for toggle in &toggles {
             let split = split.clone();
-            move |button| split.set_show_sidebar(button.is_active())
-        });
-        split.connect_show_sidebar_changed(move |_, shown| {
-            sidebar_toggle.set_active(shown);
-            sidebar_toggle.set_tooltip_text(Some(if shown { "Hide sidebar" } else { "Show sidebar" }));
-        });
+            toggle.connect_toggled(move |button| split.set_show_sidebar(button.is_active()));
+        }
+        let content_revealer = (*imp.content_revealer).clone();
+        let show_state = move |shown: bool| {
+            for toggle in &toggles {
+                toggle.set_active(shown);
+            }
+            content_revealer.set_reveal_child(!shown);
+        };
+        show_state(split.show_sidebar());
+        split.connect_show_sidebar_changed(move |_, shown| show_state(shown));
 
         if let Err(err) = tree.set_root_path(Path::new("/")) {
             eprintln!("rsimgv: {err:#}");
