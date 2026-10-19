@@ -1,0 +1,7 @@
+// Entry point: partials are imported here and compiled to a single stylesheet.
+@import "variables";
+@import "file_tree";
+@import "resizable_split_view";
+@import "path_bar";
+@import "browse_view";
+

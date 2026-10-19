@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<interface>
+  <template class="RsimgvPreferencesDialog" parent="AdwPreferencesDialog">
+    <child>
+      <object class="AdwPreferencesPage">
+        <child>
+          <object class="AdwPreferencesGroup">
+            <property name="title">Browsing</property>
+            <child>
+              <object class="AdwSwitchRow" id="show_hidden_row">
+                <property name="title">Show hidden directories</property>
+              </object>
+            </child>
+            <child>
+              <object class="AdwSwitchRow" id="collapse_on_navigate_row">
+                <property name="title">Collapse other folders when navigating</property>
+              </object>
+            </child>
+            <child>
+              <object class="AdwSwitchRow" id="media_only_row">
+                <property name="title">Only show media files</property>
+              </object>
+            </child>
+            <child>
+              <object class="AdwSpinRow" id="item_size_row">
+                <property name="title">Browse item size</property>
+                <property name="adjustment">
+                  <object class="GtkAdjustment">
+                    <property name="lower">64</property>
+                    <property name="upper">256</property>
+                    <property name="step-increment">16</property>
+                    <property name="value">128</property>
+                  </object>
+                </property>
+              </object>
+            </child>
+          </object>
+        </child>
+      </object>
+    </child>
+  </template>
+</interface>

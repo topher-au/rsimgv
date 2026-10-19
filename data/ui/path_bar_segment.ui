@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<interface>
+  <object class="GtkBox" id="container">
+    <child>
+      <object class="GtkImage" id="separator">
+        <property name="icon-name">pan-end-symbolic</property>
+        <style><class name="dim-label"/></style>
+      </object>
+    </child>
+    <child>
+      <object class="GtkButton" id="button">
+        <property name="focus-on-click">false</property>
+        <child>
+          <object class="GtkBox" id="content">
+            <property name="spacing">6</property>
+            <child>
+              <object class="GtkImage" id="icon"/>
+            </child>
+            <child>
+              <object class="GtkLabel" id="label">
+                <property name="ellipsize">middle</property>
+                <property name="xalign">0</property>
+              </object>
+            </child>
+          </object>
+        </child>
+      </object>
+    </child>
+  </object>
+</interface>

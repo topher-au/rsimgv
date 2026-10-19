@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<interface>
+  <template class="RsimgvFsTree" parent="GtkBox">
+    <property name="orientation">vertical</property>
+    <child>
+      <object class="GtkScrolledWindow" id="scroller">
+        <style><class name="rsimgv-tree-scroller"/></style>
+        <property name="hexpand">true</property>
+        <property name="vexpand">true</property>
+        <property name="child">
+          <object class="GtkListView" id="list_view">
+            <style><class name="rsimgv-tree-list"/></style>
+            <property name="show-separators">false</property>
+          </object>
+        </property>
+      </object>
+    </child>
+  </template>
+</interface>

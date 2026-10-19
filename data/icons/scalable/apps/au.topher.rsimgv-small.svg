@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  pyimgv application icon, small sizes (16 and 24).
+
+  At these sizes the full icon is unreadable: a 21-unit play badge lands on
+  about 2.6 physical pixels at 16px, and the whole mark collapses into a blue
+  tile with a white smudge. So the frame and glyph are enlarged and thickened,
+  and the badge is enlarged to r=28 - nearly a third of the icon across - which
+  is what keeps the play triangle legible when there is very little room.
+  Everything else matches au.topher.pyimgv.svg.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+
+  <defs>
+    <linearGradient id="background" gradientUnits="userSpaceOnUse"
+                    x1="0" y1="0" x2="0" y2="128">
+      <stop offset="0" stop-color="#62a0ea"/>
+      <stop offset="1" stop-color="#3584e4"/>
+    </linearGradient>
+
+    <clipPath id="frame-clip">
+      <rect x="18" y="22" width="92" height="84" rx="10"/>
+    </clipPath>
+  </defs>
+
+  <rect width="128" height="128" rx="28" fill="url(#background)"/>
+
+  <rect x="18" y="22" width="92" height="84" rx="10" fill="#ffffff"/>
+
+  <g clip-path="url(#frame-clip)" fill="url(#background)">
+    <circle cx="82" cy="46" r="9"/>
+    <path d="M26 100 L52 60 L70 82 L84 66 L102 100 Z"/>
+  </g>
+
+  <circle cx="94" cy="94" r="28" fill="#ffffff"
+          stroke="url(#background)" stroke-width="3"/>
+  <path d="M84 81 L84 107 L108 94 Z" fill="url(#background)"/>
+</svg>

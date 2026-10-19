@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gresources>
+  <gresource prefix="/au/topher/rimgv">
+    <file preprocess="xml-stripblanks">ui/window.ui</file>
+    <file preprocess="xml-stripblanks">ui/fs_tree.ui</file>
+    <file preprocess="xml-stripblanks">ui/fs_tree_row.ui</file>
+    <file preprocess="xml-stripblanks">ui/path_bar.ui</file>
+    <file preprocess="xml-stripblanks">ui/path_bar_segment.ui</file>
+    <file preprocess="xml-stripblanks">ui/navigation_bar.ui</file>
+    <file preprocess="xml-stripblanks">ui/preferences.ui</file>
+    <file preprocess="xml-stripblanks">ui/header_bar.ui</file>
+    <file preprocess="xml-stripblanks">ui/browse_view.ui</file>
+    <file preprocess="xml-stripblanks">ui/browse_item.ui</file>
+    <file alias="style.css">style.css</file>
+  </gresource>
+    <gresource prefix="/au/topher/rimgv/icons">
+      <file alias="hicolor/128x128/apps/au.topher.rsimgv.png">icons/hicolor/128x128/apps/au.topher.rsimgv.png</file>
+      <file alias="hicolor/16x16/apps/au.topher.rsimgv.png">icons/hicolor/16x16/apps/au.topher.rsimgv.png</file>
+      <file alias="hicolor/24x24/apps/au.topher.rsimgv.png">icons/hicolor/24x24/apps/au.topher.rsimgv.png</file>
+      <file alias="hicolor/256x256/apps/au.topher.rsimgv.png">icons/hicolor/256x256/apps/au.topher.rsimgv.png</file>
+      <file alias="hicolor/32x32/apps/au.topher.rsimgv.png">icons/hicolor/32x32/apps/au.topher.rsimgv.png</file>
+      <file alias="hicolor/48x48/apps/au.topher.rsimgv.png">icons/hicolor/48x48/apps/au.topher.rsimgv.png</file>
+      <file alias="hicolor/512x512/apps/au.topher.rsimgv.png">icons/hicolor/512x512/apps/au.topher.rsimgv.png</file>
+      <file alias="hicolor/64x64/apps/au.topher.rsimgv.png">icons/hicolor/64x64/apps/au.topher.rsimgv.png</file>
+      <file alias="hicolor/scalable/actions/rsimgv-sort-created-ascending-symbolic.svg">icons/hicolor/scalable/actions/rsimgv-sort-created-ascending-symbolic.svg</file>
+      <file alias="hicolor/scalable/actions/rsimgv-sort-created-descending-symbolic.svg">icons/hicolor/scalable/actions/rsimgv-sort-created-descending-symbolic.svg</file>
+      <file alias="hicolor/scalable/actions/rsimgv-sort-mtime-ascending-symbolic.svg">icons/hicolor/scalable/actions/rsimgv-sort-mtime-ascending-symbolic.svg</file>
+      <file alias="hicolor/scalable/actions/rsimgv-sort-mtime-descending-symbolic.svg">icons/hicolor/scalable/actions/rsimgv-sort-mtime-descending-symbolic.svg</file>
+      <file alias="hicolor/scalable/actions/rsimgv-sort-name-ascending-symbolic.svg">icons/hicolor/scalable/actions/rsimgv-sort-name-ascending-symbolic.svg</file>
+      <file alias="hicolor/scalable/actions/rsimgv-sort-name-descending-symbolic.svg">icons/hicolor/scalable/actions/rsimgv-sort-name-descending-symbolic.svg</file>
+      <file alias="hicolor/scalable/actions/rsimgv-sort-size-ascending-symbolic.svg">icons/hicolor/scalable/actions/rsimgv-sort-size-ascending-symbolic.svg</file>
+      <file alias="hicolor/scalable/actions/rsimgv-sort-size-descending-symbolic.svg">icons/hicolor/scalable/actions/rsimgv-sort-size-descending-symbolic.svg</file>
+      <file alias="hicolor/scalable/actions/rsimgv-sort-type-ascending-symbolic.svg">icons/hicolor/scalable/actions/rsimgv-sort-type-ascending-symbolic.svg</file>
+      <file alias="hicolor/scalable/actions/rsimgv-sort-type-descending-symbolic.svg">icons/hicolor/scalable/actions/rsimgv-sort-type-descending-symbolic.svg</file>
+    </gresource>
+</gresources>

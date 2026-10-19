@@ -1,0 +1,15 @@
+// Hidden (dot-prefixed) directories, shown when the toggle is on.
+.rsimgv-hidden-dir {
+  opacity: 0.5;
+}
+
+// The widget adds no padding of its own; the sidebar supplies the spacing.
+.rsimgv-fs-tree {
+  padding: 0;
+}
+
+// The tree is drawn on the sidebar's background, not on the list's own view colour.
+.rsimgv-fs-tree .rsimgv-tree-scroller,
+.rsimgv-fs-tree .rsimgv-tree-list {
+  background: transparent;
+}

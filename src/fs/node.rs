@@ -1,0 +1,247 @@
+//! A directory entry in `FsTree`. Children are read on demand, off the main loop.
+
+use std::cell::{Cell, OnceCell, RefCell};
+use std::future::Future;
+use std::path::{Path, PathBuf};
+
+use futures_channel::oneshot;
+use gio::prelude::*;
+use glib::subclass::prelude::*;
+
+use super::natural_cmp;
+
+const QUERY_ATTRIBUTES: &str = "standard::name,standard::display-name,standard::type";
+
+#[derive(Default)]
+enum LoadState {
+    #[default]
+    NotLoaded,
+    Loading(Vec<oneshot::Sender<()>>),
+    Loaded,
+}
+
+/// What a directory's entries contain. Each flag is only set once a subdirectory of that kind
+/// has been seen; the check stops early, so a `false` flag may just mean "not seen yet".
+#[derive(Clone, Copy, Default)]
+struct Subdirs {
+    plain: bool,
+    hidden: bool,
+}
+
+mod imp {
+    use super::*;
+
+    #[derive(Default)]
+    pub struct FsNode {
+        pub(super) path: OnceCell<PathBuf>,
+        pub(super) is_dir: Cell<bool>,
+        pub(super) children: OnceCell<gio::ListStore>,
+        pub(super) state: RefCell<LoadState>,
+        pub(super) subdirs: Cell<Option<Subdirs>>,
+        pub(super) checking: Cell<bool>,
+    }
+
+    #[glib::object_subclass]
+    impl ObjectSubclass for FsNode {
+        const NAME: &'static str = "RsimgvFsNode";
+        type Type = super::FsNode;
+    }
+
+    impl ObjectImpl for FsNode {}
+}
+
+glib::wrapper! {
+    pub struct FsNode(ObjectSubclass<imp::FsNode>);
+}
+
+impl FsNode {
+    pub fn new(path: PathBuf, is_dir: bool) -> Self {
+        let node: Self = glib::Object::new();
+        let imp = node.imp();
+        imp.path.set(path).expect("path is set once");
+        imp.is_dir.set(is_dir);
+        node
+    }
+
+    pub fn path(&self) -> &Path {
+        self.imp().path.get().expect("path is set in new")
+    }
+
+    pub fn name(&self) -> String {
+        let path = self.path();
+        path.file_name()
+            .unwrap_or(path.as_os_str())
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    /// Dot-prefixed entries are hidden; the tree filters them unless the toggle is on.
+    pub fn is_hidden(&self) -> bool {
+        self.name().starts_with('.')
+    }
+
+    /// Whether this directory has something to expand, or `None` until the check has run.
+    /// Hidden subdirectories count only when `show_hidden` is set.
+    pub fn expandable(&self, show_hidden: bool) -> Option<bool> {
+        if !self.is_dir() {
+            return Some(false);
+        }
+        self.imp()
+            .subdirs
+            .get()
+            .map(|found| found.plain || (show_hidden && found.hidden))
+    }
+
+    /// Checks for subdirectories in the background, once. `on_done` runs when the result is known.
+    pub fn start_check(&self, on_done: impl FnOnce() + 'static) {
+        let imp = self.imp();
+        if imp.checking.get() || imp.subdirs.get().is_some() {
+            return;
+        }
+        imp.checking.set(true);
+        let node = self.clone();
+        glib::spawn_future_local(async move {
+            let found = check_subdirs(node.path().to_path_buf()).await;
+            node.imp().subdirs.set(Some(found));
+            on_done();
+        });
+    }
+
+    pub fn is_dir(&self) -> bool {
+        self.imp().is_dir.get()
+    }
+
+    /// Model of this directory's entries. Empty until `loaded()` resolves.
+    pub fn children(&self) -> gio::ListStore {
+        self.imp()
+            .children
+            .get_or_init(|| gio::ListStore::new::<FsNode>())
+            .clone()
+    }
+
+    pub fn child_with_path(&self, path: &Path) -> Option<FsNode> {
+        let store = self.children();
+        (0..store.n_items())
+            .filter_map(|i| store.item(i)?.downcast::<FsNode>().ok())
+            .find(|node| node.path() == path)
+    }
+
+    /// Starts loading children in the background, if not already started.
+    pub fn start_loading(&self) {
+        let (tx, _rx) = oneshot::channel();
+        self.request_load(tx);
+    }
+
+    /// Resolves once `children()` is populated. Files resolve immediately.
+    pub fn loaded(&self) -> impl Future<Output = ()> {
+        let (tx, rx) = oneshot::channel();
+        self.request_load(tx);
+        async move {
+            let _ = rx.await;
+        }
+    }
+
+    fn request_load(&self, tx: oneshot::Sender<()>) {
+        if !self.is_dir() {
+            let _ = tx.send(());
+            return;
+        }
+
+        let mut state = self.imp().state.borrow_mut();
+        if let LoadState::Loaded = *state {
+            let _ = tx.send(());
+            return;
+        }
+        if let LoadState::Loading(waiters) = &mut *state {
+            waiters.push(tx);
+            return;
+        }
+
+        *state = LoadState::Loading(vec![tx]);
+        drop(state);
+        glib::spawn_future_local(load(self.clone()));
+    }
+
+    fn finish_loading(&self) {
+        let previous = std::mem::replace(&mut *self.imp().state.borrow_mut(), LoadState::Loaded);
+        if let LoadState::Loading(waiters) = previous {
+            for tx in waiters {
+                let _ = tx.send(());
+            }
+        }
+    }
+}
+
+/// Reads entries until the first visible subdirectory turns up. Hidden subdirectories are
+/// remembered but do not stop the scan, so a directory with only hidden subdirectories is read
+/// to the end.
+async fn check_subdirs(dir: PathBuf) -> Subdirs {
+    let mut found = Subdirs::default();
+    let file = gio::File::for_path(&dir);
+    let Ok(enumerator) = file
+        .enumerate_children_future(QUERY_ATTRIBUTES, gio::FileQueryInfoFlags::NONE, glib::Priority::DEFAULT)
+        .await
+    else {
+        return found;
+    };
+    loop {
+        let Ok(batch) = enumerator.next_files_future(64, glib::Priority::DEFAULT).await else {
+            break;
+        };
+        if batch.is_empty() {
+            break;
+        }
+        for info in &batch {
+            if info.file_type() != gio::FileType::Directory {
+                continue;
+            }
+            if info.display_name().starts_with('.') {
+                found.hidden = true;
+            } else {
+                found.plain = true;
+                return found;
+            }
+        }
+    }
+    found
+}
+
+async fn load(node: FsNode) {
+    let dir = gio::File::for_path(node.path());
+    match read_dir(&dir).await {
+        Ok(mut infos) => {
+            // The tree shows directories only; files are dropped here.
+            infos.retain(|info| info.file_type() == gio::FileType::Directory);
+            infos.sort_by(|a, b| natural_cmp(&a.display_name(), &b.display_name()));
+            let children: Vec<FsNode> = infos
+                .iter()
+                .map(|info| FsNode::new(node.path().join(info.name()), true))
+                .collect();
+            node.children().splice(0, 0, &children);
+        }
+        Err(err) => eprintln!("rsimgv: failed to read {}: {err}", node.path().display()),
+    }
+    node.finish_loading();
+}
+
+async fn read_dir(dir: &gio::File) -> Result<Vec<gio::FileInfo>, glib::Error> {
+    let enumerator = dir
+        .enumerate_children_future(
+            QUERY_ATTRIBUTES,
+            gio::FileQueryInfoFlags::NONE,
+            glib::Priority::DEFAULT,
+        )
+        .await?;
+
+    let mut infos = Vec::new();
+    loop {
+        let batch = enumerator
+            .next_files_future(256, glib::Priority::DEFAULT)
+            .await?;
+        if batch.is_empty() {
+            break;
+        }
+        infos.extend(batch);
+    }
+    Ok(infos)
+}

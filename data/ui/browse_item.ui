@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<interface>
+  <object class="GtkBox" id="cell">
+    <property name="orientation">vertical</property>
+    <property name="spacing">4</property>
+    <property name="halign">center</property>
+    <child>
+      <object class="GtkBox" id="visual">
+        <property name="halign">center</property>
+        <property name="valign">center</property>
+        <property name="overflow">hidden</property>
+        <style><class name="rsimgv-visual"/></style>
+        <child>
+          <object class="GtkImage" id="icon">
+            <property name="halign">center</property>
+            <property name="valign">center</property>
+            <property name="hexpand">true</property>
+            <property name="vexpand">true</property>
+          </object>
+        </child>
+      </object>
+    </child>
+    <child>
+      <object class="GtkLabel" id="name">
+        <property name="justify">center</property>
+        <property name="halign">center</property>
+        <property name="xalign">0.5</property>
+        <property name="wrap-mode">word-char</property>
+      </object>
+    </child>
+    <child>
+      <object class="GtkLabel" id="info">
+        <property name="justify">center</property>
+        <property name="halign">center</property>
+        <property name="xalign">0.5</property>
+        <property name="ellipsize">end</property>
+        <style><class name="dim-label"/><class name="caption"/></style>
+      </object>
+    </child>
+  </object>
+</interface>

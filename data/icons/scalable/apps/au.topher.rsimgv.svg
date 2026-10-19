@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  pyimgv application icon.
+
+  Geometry follows the GNOME app-icon conventions: a full-bleed rounded square
+  with a corner radius of 22% of the side (28 of 128). No drop shadow is baked
+  in, because the shell draws the icon where it needs one.
+
+  The mark reads as image *and* video at a glance: a photo frame holding a
+  mountain and sun, with a play badge cut out of its lower-right corner.
+
+  Two details that are load-bearing rather than decorative:
+
+  * Every blue in the mark - the glyph, the play triangle and the badge's ring
+    - is the *same* gradient as the tile, set to userSpaceOnUse so it runs
+    across the whole canvas. Cut-outs then match the background at every
+    height. Flat-filling them instead leaves a visible seam where the glyph
+    meets the tile, because the gradient is lighter up there.
+  * The glyph is inset from the frame (6px left and right, 4px below), so the
+    white frame keeps a closed outline instead of reading as open at the
+    bottom.
+
+  Palette: Adwaita blue. #3584e4 is the accent, #62a0ea its lighter step.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+
+  <defs>
+    <linearGradient id="background" gradientUnits="userSpaceOnUse"
+                    x1="0" y1="0" x2="0" y2="128">
+      <stop offset="0" stop-color="#62a0ea"/>
+      <stop offset="1" stop-color="#3584e4"/>
+    </linearGradient>
+
+    <!-- The frame also clips its glyph, so the mountains cannot spill past
+         the frame's rounded corners. -->
+    <clipPath id="frame-clip">
+      <rect x="26" y="30" width="76" height="62" rx="8"/>
+    </clipPath>
+  </defs>
+
+  <rect width="128" height="128" rx="28" fill="url(#background)"/>
+
+  <rect x="26" y="30" width="76" height="62" rx="8" fill="#ffffff"/>
+
+  <g clip-path="url(#frame-clip)" fill="url(#background)">
+    <circle cx="78" cy="48" r="7"/>
+    <path d="M32 88 L50 58 L64 76 L76 64 L96 88 Z"/>
+  </g>
+
+  <!-- The ring is the background colour: it separates the white badge from
+       the white frame, which would otherwise fuse into one shape. -->
+  <circle cx="94" cy="94" r="21" fill="#ffffff"
+          stroke="url(#background)" stroke-width="3"/>
+  <path d="M88 84.5 L88 103.5 L104 94 Z" fill="url(#background)"/>
+</svg>

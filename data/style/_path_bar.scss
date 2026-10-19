@@ -1,0 +1,56 @@
+// Path bar, ported from Nautilus (src/resources/style.css, "Path bar"), renamed to rsimgv-*.
+
+.rsimgv-pathbar {
+  background-color: color-mix(in srgb, currentColor 10%, transparent);
+  border-radius: 9px;
+}
+@media (prefers-contrast: more) {
+  .rsimgv-pathbar {
+    box-shadow: inset 0 0 0 1px var(--border-color);
+  }
+}
+
+.rsimgv-pathbar > menubutton {
+  margin: 0px;
+}
+
+.rsimgv-pathbar > scrolledwindow undershoot.left {
+  background: linear-gradient(to right, var(--headerbar-shade-color) 6px, transparent 24px);
+  border-left: solid 1px var(--border-color);
+}
+.rsimgv-pathbar > scrolledwindow undershoot.right {
+  background: linear-gradient(to left, var(--headerbar-shade-color) 6px, transparent 24px);
+  border-right: solid 1px var(--border-color);
+}
+
+// Match the sidebar's rounded corners on the "start" side.
+.rsimgv-pathbar > scrolledwindow:dir(ltr) undershoot.left {
+  border-radius: 9px 0px 0px 9px;
+}
+.rsimgv-pathbar > scrolledwindow:dir(rtl) undershoot.right {
+  border-radius: 0px 9px 9px 0px;
+}
+
+.rsimgv-path-button {
+  margin: 3px;
+  min-width: 8px;
+  border-radius: 7px;
+  padding-top: 0px;
+  padding-bottom: 0px;
+}
+
+.rsimgv-path-button:not(:hover),
+.rsimgv-path-button.current-dir {
+  background: none;
+}
+@media (prefers-contrast: more) {
+  .rsimgv-path-button:not(:hover):not(:drop(active)),
+  .rsimgv-path-button.current-dir:not(:drop(active)) {
+    box-shadow: none;
+  }
+}
+
+.rsimgv-path-button:not(.current-dir):not(:backdrop):hover label,
+.rsimgv-path-button:not(.current-dir):not(:backdrop):hover image {
+  opacity: 1;
+}

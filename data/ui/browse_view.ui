@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<interface>
+  <template class="RsimgvBrowseView" parent="GtkBox">
+    <property name="orientation">vertical</property>
+    <child>
+      <object class="GtkScrolledWindow">
+        <property name="hexpand">true</property>
+        <property name="vexpand">true</property>
+        <property name="child">
+          <object class="GtkGridView" id="grid">
+            <property name="single-click-activate">false</property>
+          </object>
+        </property>
+      </object>
+    </child>
+  </template>
+</interface>

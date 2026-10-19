@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<interface>
+  <template class="RsimgvHeaderBar" parent="GtkBox">
+    <property name="orientation">horizontal</property>
+    <property name="spacing">6</property>
+    <style><class name="titlebar"/></style>
+    <child>
+      <object class="GtkBox" id="start">
+        <property name="spacing">6</property>
+        <property name="margin-start">6</property>
+        <property name="margin-top">6</property>
+        <property name="margin-bottom">6</property>
+      </object>
+    </child>
+    <child>
+      <object class="GtkBox" id="title">
+        <property name="hexpand">true</property>
+        <property name="margin-top">6</property>
+        <property name="margin-bottom">6</property>
+      </object>
+    </child>
+    <child>
+      <object class="GtkBox" id="end_group">
+        <property name="spacing">6</property>
+        <property name="margin-end">6</property>
+        <property name="margin-top">6</property>
+        <property name="margin-bottom">6</property>
+        <child>
+          <object class="GtkBox" id="end">
+            <property name="spacing">6</property>
+          </object>
+        </child>
+        <child>
+          <object class="GtkWindowControls" id="controls">
+            <property name="side">end</property>
+          </object>
+        </child>
+      </object>
+    </child>
+  </template>
+</interface>

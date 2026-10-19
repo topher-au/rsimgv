@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<interface>
+  <template class="RsimgvNavigationBar" parent="GtkBox">
+    <property name="orientation">horizontal</property>
+    <child>
+      <object class="GtkButton" id="back_button">
+        <property name="icon-name">go-previous-symbolic</property>
+        <property name="tooltip-text">Back (hold for history)</property>
+        <style><class name="flat"/></style>
+      </object>
+    </child>
+    <child>
+      <object class="GtkButton" id="forward_button">
+        <property name="icon-name">go-next-symbolic</property>
+        <property name="tooltip-text">Forward (hold for history)</property>
+        <style><class name="flat"/></style>
+      </object>
+    </child>
+    <child>
+      <object class="GtkButton" id="up_button">
+        <property name="icon-name">go-up-symbolic</property>
+        <property name="tooltip-text">Up</property>
+        <style><class name="flat"/></style>
+      </object>
+    </child>
+  </template>
+</interface>
