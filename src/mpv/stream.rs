@@ -180,6 +180,13 @@ impl MpvStream {
         Some(stream)
     }
 
+    /// Plays at `speed` times normal speed.
+    pub fn set_speed(&self, speed: f64) {
+        if let Some(player) = self.imp().player.borrow().as_ref() {
+            player.set_double("speed", speed);
+        }
+    }
+
     /// Handles the events waiting from libmpv.
     fn handle_events(&self) {
         loop {

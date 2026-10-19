@@ -1,7 +1,7 @@
 //! The IPC methods, run on the GTK thread against the window. Each takes JSON parameters and returns JSON.
 //!
 //!   actions.list    {}                       -> {"actions": [{"name", "label", "description", "scope", "icon", "defaults"}, ...]}
-//!   actions.run     {"name"}                 -> {}
+//!   actions.run     {"name", "value"?}       -> {}   value is passed to an action that takes one
 //!   window.info     {}                       -> {"current_path", "selected_file", "show_sidebar"}
 //!   window.set_show_sidebar {"show"}         -> {}
 //!   tabs.list       {}                       -> {"tabs": [{"id", "index", "path", "active"}, ...]}
@@ -69,7 +69,8 @@ pub fn handle(window: &Window, method: &str, params: &Value) -> Result<Value, Er
             if find(name).is_none() {
                 return Err(Error::new("unknown_action", format!("no action named {name}")));
             }
-            if window.run_action(name) {
+            let value = params.get("value").and_then(Value::as_f64);
+            if window.run_action(name, value) {
                 Ok(json!({}))
             } else {
                 Err(Error::new("not_run", format!("the window did not run {name}")))

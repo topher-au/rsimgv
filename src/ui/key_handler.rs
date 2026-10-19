@@ -62,10 +62,10 @@ fn handle(window: &Window, key: gdk::Key, state: gdk::ModifierType) -> glib::Pro
         return glib::Propagation::Proceed;
     }
     let scopes = window.active_scopes();
-    let Some(action) = keybindings::with_table(|table| table.resolve(&chord.format(), &scopes)) else {
+    let Some((action, value)) = keybindings::with_table(|table| table.resolve(&chord.format(), &scopes)) else {
         return glib::Propagation::Stop;
     };
-    if gtk::prelude::WidgetExt::activate_action(window, action.name, None).is_ok() {
+    if window.run_action(action.name, value) {
         glib::Propagation::Stop
     } else {
         glib::Propagation::Proceed

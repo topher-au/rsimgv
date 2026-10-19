@@ -80,6 +80,28 @@ pub struct ActionInfo {
     pub defaults: &'static [&'static str],
 }
 
+/// The value a binding passes to an action that takes one: what it is called, the range it is kept within, the
+/// step the editor moves it by, how many decimals it shows, and what it is when the binding gives none.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ValueInfo {
+    pub label: &'static str,
+    pub min: f64,
+    pub max: f64,
+    pub step: f64,
+    pub digits: u32,
+    pub default: f64,
+}
+
+/// The value the action `name` takes from its bindings, if it takes one.
+pub fn value_info(name: &str) -> Option<ValueInfo> {
+    match name {
+        "video.seek" => Some(ValueInfo { label: "Seconds", min: -3600.0, max: 3600.0, step: 1.0, digits: 1, default: 10.0 }),
+        "video.volume" => Some(ValueInfo { label: "Percent", min: -100.0, max: 100.0, step: 1.0, digits: 0, default: 5.0 }),
+        "video.speed" => Some(ValueInfo { label: "Speed", min: 0.05, max: 16.0, step: 0.25, digits: 2, default: 1.0 }),
+        _ => None,
+    }
+}
+
 /// Every bindable action, in the order the editor lists them. The names, labels, icons and default keys
 /// follow pyimgv-gtk's catalogue. Actions that need a feature rsimgv does not have yet are left out.
 pub const ACTIONS: &[ActionInfo] = &[
@@ -249,10 +271,19 @@ pub const ACTIONS: &[ActionInfo] = &[
         name: "video.seek-backward", description: "Skip back 5 seconds.", icon: "media-seek-backward-symbolic", label: "Seek Backward", scope: Scope::Video, defaults: &["left"],
     },
     ActionInfo {
+        name: "video.seek", description: "Move the playback position by the number of seconds bound; a negative number goes back.", icon: "media-seek-forward-symbolic", label: "Seek", scope: Scope::Video, defaults: &[],
+    },
+    ActionInfo {
+        name: "video.speed", description: "Play at the speed bound, such as 2 for double speed or 0.5 for half; 1 is normal.", icon: "power-profile-performance-symbolic", label: "Set Speed", scope: Scope::Video, defaults: &[],
+    },
+    ActionInfo {
         name: "video.volume-up", description: "Raise the volume.", icon: "audio-volume-high-symbolic", label: "Volume Up", scope: Scope::Video, defaults: &["up"],
     },
     ActionInfo {
         name: "video.volume-down", description: "Lower the volume.", icon: "audio-volume-low-symbolic", label: "Volume Down", scope: Scope::Video, defaults: &["down"],
+    },
+    ActionInfo {
+        name: "video.volume", description: "Change the volume by the percentage bound; a negative number turns it down.", icon: "audio-volume-high-symbolic", label: "Adjust Volume", scope: Scope::Video, defaults: &[],
     },
     ActionInfo {
         name: "video.mute", description: "Mute the sound, or unmute it.", icon: "audio-volume-muted-symbolic", label: "Mute", scope: Scope::Video, defaults: &["m"],

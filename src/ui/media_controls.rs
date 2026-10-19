@@ -111,6 +111,8 @@ mod imp {
             // The slider lives in the same widget tree as the volume button, rather than in a popover on its
             // own surface, so the pointer moving from the button onto the slider is not read as leaving.
             let scale = gtk::Scale::with_range(gtk::Orientation::Vertical, 0.0, 1.0, 0.05);
+            // A vertical scale runs from its top down; inverted, loud is at the top, as a volume slider should be.
+            scale.set_inverted(true);
             scale.set_draw_value(false);
             scale.set_size_request(-1, 120);
             scale.set_value(1.0);

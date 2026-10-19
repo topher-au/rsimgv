@@ -167,6 +167,8 @@ mod imp {
         pub(super) use_mpv: Cell<bool>,
         /// Extra mpv command line options for the mpv player.
         pub(super) mpv_options: RefCell<String>,
+        /// The playback speed set by the speed action, kept for later videos; `None` leaves the player's own.
+        pub(super) speed: Cell<Option<f64>>,
         /// Whether the controls and the title stay shown, rather than hiding until the pointer comes near.
         pub(super) pinned: Cell<bool>,
         /// Whether the window is fullscreen, where the header floats over the picture and hides.
@@ -583,6 +585,15 @@ impl MediaViewer {
     }
 
     /// Moves the video's position by `micros` microseconds.
+    /// Plays videos at `speed` times normal speed, this one and later ones. Only the mpv player can change speed.
+    pub fn set_speed(&self, speed: f64) {
+        let imp = self.imp();
+        imp.speed.set(Some(speed));
+        if let Some(stream) = imp.media.borrow().as_ref().and_then(|media| media.downcast_ref::<crate::mpv::MpvStream>()) {
+            stream.set_speed(speed);
+        }
+    }
+
     pub fn seek(&self, micros: i64) {
         self.imp().controls.seek_by(micros);
     }
@@ -649,7 +660,12 @@ impl MediaViewer {
                 .get()
                 .then(|| crate::mpv::MpvStream::for_path(&path, &imp.mpv_options.borrow()))
                 .flatten()
-                .map(|stream| stream.upcast())
+                .map(|stream| {
+                    if let Some(speed) = imp.speed.get() {
+                        stream.set_speed(speed);
+                    }
+                    stream.upcast()
+                })
                 .unwrap_or_else(|| gtk::MediaFile::for_filename(&path).upcast());
             // The end of a video either repeats it or, with auto-advance on, moves to the next item. The step
             // waits until the notification has returned, since it releases the video that sent it.

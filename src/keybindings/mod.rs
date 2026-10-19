@@ -9,7 +9,7 @@ mod table;
 use std::cell::RefCell;
 use std::path::PathBuf;
 
-pub use table::BindingTable;
+pub use table::{Binding, BindingTable};
 
 use crate::settings::config_path;
 

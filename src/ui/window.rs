@@ -667,6 +667,9 @@ impl Window {
         bound_action(&video, &weak, "play-pause", |window| window.imp().viewer.toggle_playback());
         bound_action(&video, &weak, "seek-forward", |window| window.imp().viewer.seek(SEEK_STEP));
         bound_action(&video, &weak, "seek-backward", |window| window.imp().viewer.seek(-SEEK_STEP));
+        valued_action(&video, &weak, "video.seek", |window, seconds| window.imp().viewer.seek((seconds * 1_000_000.0) as i64));
+        valued_action(&video, &weak, "video.volume", |window, percent| window.imp().viewer.adjust_volume(percent / 100.0));
+        valued_action(&video, &weak, "video.speed", |window, speed| window.imp().viewer.set_speed(speed));
         bound_action(&video, &weak, "volume-up", |window| window.imp().viewer.adjust_volume(VOLUME_STEP));
         bound_action(&video, &weak, "volume-down", |window| window.imp().viewer.adjust_volume(-VOLUME_STEP));
         bound_action(&video, &weak, "mute", |window| window.imp().viewer.toggle_mute());
@@ -691,9 +694,10 @@ impl Window {
         self.insert_action_group("image", Some(&image));
     }
 
-    /// Runs the action `name` on this window, as a key binding would. Returns whether it ran.
-    pub fn run_action(&self, name: &str) -> bool {
-        WidgetExt::activate_action(self, name, None).is_ok()
+    /// Runs the action `name` on this window, as a key binding would, passing `value` if the action takes one.
+    /// Returns whether it ran.
+    pub fn run_action(&self, name: &str, value: Option<f64>) -> bool {
+        WidgetExt::activate_action(self, name, action_parameter(name, value).as_ref()).is_ok()
     }
 
     /// Asks for a name for the folder shown, then bookmarks it. The name defaults to the folder's own.
@@ -1719,6 +1723,27 @@ pub(crate) mod tests {
 
         let _ = fs::remove_dir_all(&root);
     }
+}
+
+/// The parameter to activate the action `name` with: `value` for an action that takes one, as a maybe-double,
+/// and nothing otherwise.
+pub fn action_parameter(name: &str, value: Option<f64>) -> Option<glib::Variant> {
+    crate::keybindings::actions::value_info(name).map(|_| value.to_variant())
+}
+
+/// Adds the action `full_name` (with its group, such as `video.seek`) to `map`, which is that group, running `run`
+/// on the window with the value it is activated with, or the action's default when it is given none.
+fn valued_action(map: &impl IsA<gio::ActionMap>, window: &glib::WeakRef<Window>, full_name: &'static str, run: fn(&Window, f64)) {
+    let name = full_name.split_once('.').map_or(full_name, |(_, name)| name);
+    let default = crate::keybindings::actions::value_info(full_name).map_or(0.0, |info| info.default);
+    let action = gio::SimpleAction::new(name, Some(glib::VariantTy::new("md").expect("a valid type")));
+    let window = window.clone();
+    action.connect_activate(move |_, parameter| {
+        let Some(window) = window.upgrade() else { return };
+        let value = parameter.and_then(|parameter| parameter.get::<Option<f64>>()).flatten();
+        run(&window, value.unwrap_or(default));
+    });
+    map.add_action(&action);
 }
 
 /// Adds an action named `name` to `map` that runs `run` on the window, if the window still exists.
