@@ -8,9 +8,8 @@
 //! position: 93.5
 //! speed: 1.25
 //! ```
-
-// Nothing reads or writes per-file settings yet; the first caller removes this.
-#![allow(dead_code)]
+//!
+//! The viewer keeps a video's play position and speed here, and a picture's zoom and pan.
 
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
@@ -96,6 +95,25 @@ impl FileSettings {
     /// Sets `key` to `value` and saves the settings.
     pub fn set(&mut self, key: &str, value: impl Into<Value>) -> std::io::Result<()> {
         self.values.insert(Value::String(key.to_owned()), value.into());
+        self.save()
+    }
+
+    /// Sets each key to its value, or unsets it for `None`, then saves the settings once.
+    pub fn apply<'a>(&mut self, changes: impl IntoIterator<Item = (&'a str, Option<Value>)>) -> std::io::Result<()> {
+        let before = self.values.clone();
+        for (key, value) in changes {
+            match value {
+                Some(value) => {
+                    self.values.insert(Value::String(key.to_owned()), value);
+                }
+                None => {
+                    self.values.remove(key);
+                }
+            }
+        }
+        if self.values == before {
+            return Ok(());
+        }
         self.save()
     }
 

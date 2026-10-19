@@ -152,6 +152,8 @@ impl Window {
         let settings_on_close = settings.clone();
         window.connect_close_request(move |window| {
             save_window_state(window, &settings_on_close);
+            // The item shown keeps where it was left, as leaving it would.
+            window.imp().viewer.close();
             if let Some(keys) = window.imp().key_handler.get() {
                 keys.uninstall();
             }

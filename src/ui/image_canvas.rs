@@ -33,6 +33,20 @@ pub enum Fit {
 }
 
 impl Fit {
+    /// The name the mode is saved under.
+    pub fn name(self) -> &'static str {
+        match self {
+            Fit::Window => "window",
+            Fit::Width => "width",
+            Fit::Height => "height",
+            Fit::Original => "original",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        [Fit::Window, Fit::Width, Fit::Height, Fit::Original].into_iter().find(|fit| fit.name() == name)
+    }
+
     /// The fit mode after this one, for cycling through them.
     pub fn next(self) -> Fit {
         match self {
@@ -51,6 +65,32 @@ pub struct Placement {
     fit: Option<Fit>,
     zoom: f64,
     offset: (f64, f64),
+}
+
+impl Placement {
+    /// The keys a placement is saved under in a file's settings.
+    const KEYS: [&'static str; 4] = ["fit", "zoom", "pan-x", "pan-y"];
+
+    /// The settings changes that save `placement`, or that clear a saved one for `None`.
+    pub fn to_settings(placement: Option<Placement>) -> Vec<(&'static str, Option<serde_yaml_ng::Value>)> {
+        let Some(placement) = placement else { return Self::KEYS.iter().map(|key| (*key, None)).collect() };
+        vec![
+            ("fit", placement.fit.map(|fit| fit.name().into())),
+            ("zoom", Some(placement.zoom.into())),
+            ("pan-x", Some(placement.offset.0.into())),
+            ("pan-y", Some(placement.offset.1.into())),
+        ]
+    }
+
+    /// The placement saved in `settings`, if there is one.
+    pub fn from_settings(settings: &crate::file_settings::FileSettings) -> Option<Placement> {
+        let zoom = settings.get_f64("zoom")?;
+        Some(Placement {
+            fit: settings.get_str("fit").and_then(Fit::from_name),
+            zoom,
+            offset: (settings.get_f64("pan-x").unwrap_or(0.0), settings.get_f64("pan-y").unwrap_or(0.0)),
+        })
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
