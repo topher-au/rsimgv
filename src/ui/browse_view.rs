@@ -26,11 +26,33 @@ pub enum InfoField {
     Size,
     Modified,
     ContentType,
+    Resolution,
+    Duration,
+    Framerate,
 }
 
 impl InfoField {
     /// Every field, in the order the preferences list them.
-    pub const ALL: [InfoField; 3] = [InfoField::Size, InfoField::Modified, InfoField::ContentType];
+    pub const ALL: [InfoField; 6] = [
+        InfoField::Size,
+        InfoField::Modified,
+        InfoField::ContentType,
+        InfoField::Resolution,
+        InfoField::Duration,
+        InfoField::Framerate,
+    ];
+
+    /// The name shown for a field in the preferences.
+    pub fn title(self) -> &'static str {
+        match self {
+            InfoField::Size => "Size",
+            InfoField::Modified => "Modified",
+            InfoField::ContentType => "Type",
+            InfoField::Resolution => "Resolution",
+            InfoField::Duration => "Duration",
+            InfoField::Framerate => "Frame rate",
+        }
+    }
 
     /// The name a field is saved under in the settings.
     pub fn key(self) -> &'static str {
@@ -38,6 +60,9 @@ impl InfoField {
             InfoField::Size => "size",
             InfoField::Modified => "modified",
             InfoField::ContentType => "content-type",
+            InfoField::Resolution => "resolution",
+            InfoField::Duration => "duration",
+            InfoField::Framerate => "framerate",
         }
     }
 
@@ -57,6 +82,12 @@ impl InfoField {
             InfoField::ContentType => info
                 .content_type()
                 .map(|kind| gio::content_type_get_description(&kind).to_string()),
+            // The size of an image, read from its header without decoding it.
+            InfoField::Resolution if entry.is_dir() => None,
+            InfoField::Resolution => gtk::gdk_pixbuf::Pixbuf::file_info(entry.path())
+                .map(|(_, width, height)| format!("{width} × {height}")),
+            // Video length and frame rate need a media reader, which the viewer will bring.
+            InfoField::Duration | InfoField::Framerate => None,
         }
     }
 }

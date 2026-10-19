@@ -28,11 +28,9 @@ mod imp {
         #[template_child]
         pub show_directories_row: TemplateChild<adw::ComboRow>,
         #[template_child]
-        pub info_size_row: TemplateChild<adw::SwitchRow>,
+        pub info_list: TemplateChild<gtk::ListBox>,
         #[template_child]
-        pub info_modified_row: TemplateChild<adw::SwitchRow>,
-        #[template_child]
-        pub info_content_type_row: TemplateChild<adw::SwitchRow>,
+        pub add_info_button: TemplateChild<gtk::MenuButton>,
         #[template_child]
         pub media_only_row: TemplateChild<adw::SwitchRow>,
         #[template_child]
@@ -59,6 +57,8 @@ mod imp {
         pub smooth_upscaling_row: TemplateChild<adw::SwitchRow>,
         /// The handler that keeps the size row in step with the setting; removed when the dialog closes.
         pub(super) size_handler: RefCell<Option<glib::SignalHandlerId>>,
+        /// The handler that rebuilds the info list when the setting changes; removed when the dialog closes.
+        pub(super) info_handler: RefCell<Option<glib::SignalHandlerId>>,
     }
 
     #[glib::object_subclass]
@@ -99,7 +99,7 @@ impl PreferencesDialog {
 
         bind_switches(settings, dialog.imp());
         bind_choices(settings, dialog.imp());
-        bind_info_fields(settings, dialog.imp());
+        bind_info_fields(settings, &dialog);
         settings
             .bind("expand-up-to", &*imp.expand_up_to_scale, "value")
             .mapping(|variant, _| variant.get::<i32>().map(|size| f64::from(size).to_value()))
@@ -131,6 +131,9 @@ impl PreferencesDialog {
         let _ = &handler;
         dialog.connect_closed(move |dialog: &PreferencesDialog| {
             if let Some(handler) = dialog.imp().size_handler.take() {
+                settings.disconnect(handler);
+            }
+            if let Some(handler) = dialog.imp().info_handler.take() {
                 settings.disconnect(handler);
             }
         });
@@ -180,46 +183,98 @@ fn bind_choices(settings: &gio::Settings, imp: &imp::PreferencesDialog) {
     }
 }
 
-/// Binds the info switches to the `info-fields` list: a switch on adds its field, off removes it.
-fn bind_info_fields(settings: &gio::Settings, imp: &imp::PreferencesDialog) {
-    let rows = [
-        (InfoField::Size, &imp.info_size_row),
-        (InfoField::Modified, &imp.info_modified_row),
-        (InfoField::ContentType, &imp.info_content_type_row),
-    ];
-    let shown = |settings: &gio::Settings, field: InfoField| settings.strv("info-fields").iter().any(|key| key == field.key());
-    for (field, row) in &rows {
-        row.set_active(shown(settings, *field));
-        row.connect_active_notify({
-            let settings = settings.clone();
-            let field = *field;
-            move |row| {
-                let mut keys: Vec<String> = settings.strv("info-fields").iter().map(|key| key.to_string()).collect();
-                let listed = keys.iter().any(|key| key == field.key());
-                if row.is_active() == listed {
-                    return;
-                }
-                if row.is_active() {
-                    keys.push(field.key().to_owned());
-                } else {
-                    keys.retain(|key| key != field.key());
-                }
-                // Keep the list in the order the fields are offered in.
-                keys.sort_by_key(|key| InfoField::ALL.iter().position(|f| f.key() == key));
-                let _ = settings.set_strv("info-fields", keys.as_slice());
-            }
-        });
+/// Fills the info list from the `info-fields` setting, one row per field in its order, and offers the
+/// fields not yet shown in the add menu. Called again whenever the setting changes.
+fn rebuild_info_list(settings: &gio::Settings, imp: &imp::PreferencesDialog) {
+    let list = &imp.info_list;
+    while let Some(child) = list.first_child() {
+        list.remove(&child);
     }
-    // A change made elsewhere, such as by editing the file, moves the switches.
-    let weak: Vec<(InfoField, glib::WeakRef<adw::SwitchRow>)> =
-        rows.iter().map(|(field, row)| (*field, row.downgrade())).collect();
-    settings.connect_changed(Some("info-fields"), move |settings, _| {
-        for (field, row) in &weak {
-            if let Some(row) = row.upgrade() {
-                row.set_active(shown(settings, *field));
+    let shown: Vec<String> = settings.strv("info-fields").iter().map(|key| key.to_string()).collect();
+    for (index, key) in shown.iter().enumerate() {
+        if let Some(field) = InfoField::from_key(key) {
+            list.append(&info_row(settings, index, field));
+        }
+    }
+
+    let menu = gio::Menu::new();
+    for field in InfoField::ALL.into_iter().filter(|field| !shown.iter().any(|key| key == field.key())) {
+        let item = gio::MenuItem::new(Some(field.title()), None);
+        item.set_action_and_target_value(Some("prefs.add-info"), Some(&field.key().to_variant()));
+        menu.append_item(&item);
+    }
+    imp.add_info_button.set_menu_model(Some(&menu));
+}
+
+/// One row of the info list: a drag handle, the field's name, and a remove button. Dropping another row
+/// onto it moves that field to this row's place.
+fn info_row(settings: &gio::Settings, index: usize, field: InfoField) -> gtk::Box {
+    let builder = gtk::Builder::from_resource("/au/topher/rimgv/ui/info_field_row.ui");
+    let row: gtk::Box = builder.object("row").expect("info_field_row.ui defines `row`");
+    let handle: gtk::Image = builder.object("handle").expect("info_field_row.ui defines `handle`");
+    let title: gtk::Label = builder.object("title").expect("info_field_row.ui defines `title`");
+    let remove: gtk::Button = builder.object("remove").expect("info_field_row.ui defines `remove`");
+    title.set_label(field.title());
+
+    let drag = gtk::DragSource::new();
+    drag.set_actions(gtk::gdk::DragAction::MOVE);
+    drag.connect_prepare(move |_, _, _| Some(gtk::gdk::ContentProvider::for_value(&field.key().to_value())));
+    handle.add_controller(drag);
+
+    let drop = gtk::DropTarget::new(String::static_type(), gtk::gdk::DragAction::MOVE);
+    drop.connect_drop({
+        let settings = settings.clone();
+        move |_, value, _, _| {
+            let Ok(dragged) = value.get::<String>() else { return false };
+            let mut keys: Vec<String> = settings.strv("info-fields").iter().map(|key| key.to_string()).collect();
+            let Some(from) = keys.iter().position(|key| *key == dragged) else { return false };
+            let moved = keys.remove(from);
+            keys.insert(index.min(keys.len()), moved);
+            let _ = settings.set_strv("info-fields", keys.as_slice());
+            true
+        }
+    });
+    row.add_controller(drop);
+
+    remove.connect_clicked({
+        let settings = settings.clone();
+        move |_| {
+            let keys: Vec<String> =
+                settings.strv("info-fields").iter().map(|key| key.to_string()).filter(|key| key != field.key()).collect();
+            let _ = settings.set_strv("info-fields", keys.as_slice());
+        }
+    });
+
+    row
+}
+
+/// Keeps the info list in step with the `info-fields` setting, and gives the add menu its action.
+fn bind_info_fields(settings: &gio::Settings, dialog: &PreferencesDialog) {
+    let imp = dialog.imp();
+    rebuild_info_list(settings, imp);
+    let weak = dialog.downgrade();
+    let handler = settings.connect_changed(Some("info-fields"), move |settings, _| {
+        if let Some(dialog) = weak.upgrade() {
+            rebuild_info_list(settings, dialog.imp());
+        }
+    });
+    imp.info_handler.replace(Some(handler));
+
+    let actions = gio::SimpleActionGroup::new();
+    let add = gio::SimpleAction::new("add-info", Some(glib::VariantTy::STRING));
+    add.connect_activate({
+        let settings = settings.clone();
+        move |_, key| {
+            let Some(key) = key.and_then(|key| key.get::<String>()) else { return };
+            let mut keys: Vec<String> = settings.strv("info-fields").iter().map(|key| key.to_string()).collect();
+            if !keys.contains(&key) {
+                keys.push(key);
+                let _ = settings.set_strv("info-fields", keys.as_slice());
             }
         }
     });
+    actions.add_action(&add);
+    dialog.insert_action_group("prefs", Some(&actions));
 }
 
 #[cfg(test)]

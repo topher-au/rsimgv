@@ -84,25 +84,23 @@
                 </property>
               </object>
             </child>
+          </object>
+        </child>
+        <child>
+          <object class="AdwPreferencesGroup">
+            <property name="title">Show info</property>
+            <property name="description">Details shown under each item's name, in this order</property>
             <child>
-              <object class="AdwExpanderRow">
-                <property name="title">Show info</property>
-                <property name="subtitle">Details shown under each item's name</property>
-                <child>
-                  <object class="AdwSwitchRow" id="info_size_row">
-                    <property name="title">Size</property>
-                  </object>
-                </child>
-                <child>
-                  <object class="AdwSwitchRow" id="info_modified_row">
-                    <property name="title">Modified</property>
-                  </object>
-                </child>
-                <child>
-                  <object class="AdwSwitchRow" id="info_content_type_row">
-                    <property name="title">Type</property>
-                  </object>
-                </child>
+              <object class="GtkListBox" id="info_list">
+                <property name="selection-mode">none</property>
+                <style><class name="boxed-list"/></style>
+              </object>
+            </child>
+            <child>
+              <object class="GtkMenuButton" id="add_info_button">
+                <property name="label">Add item</property>
+                <property name="halign">start</property>
+                <property name="margin-top">6</property>
               </object>
             </child>
           </object>
