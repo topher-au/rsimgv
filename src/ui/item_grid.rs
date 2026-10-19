@@ -121,7 +121,10 @@ mod layout {
                     (width, width, -1, -1)
                 }
                 _ => {
-                    let height = grid.table(for_size).total();
+                    // GTK asks for the height before the width is known, when `for_size` is -1. The grid is
+                    // then measured at the width it has, so the scroller gets the height of its real rows.
+                    let width = if for_size > 0 { for_size } else { widget.width().max(grid.cell_size().0) };
+                    let height = grid.table(width).total();
                     (height, height, -1, -1)
                 }
             }
