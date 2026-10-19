@@ -14,6 +14,25 @@ use std::sync::LazyLock;
 use crate::fs::FsNode;
 
 const HIDDEN_CLASS: &str = "rsimgv-hidden-dir";
+/// What a tree shows: the folders expanded in it, the selected folder, and the scroll position.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TreeSnapshot {
+    pub expanded: Vec<PathBuf>,
+    pub selected: Option<PathBuf>,
+    pub scroll: f64,
+}
+
+impl TreeSnapshot {
+    /// A tree with the folder at `path` selected and every folder above it expanded, so it is visible.
+    pub fn revealing(path: &Path) -> Self {
+        Self {
+            expanded: path.ancestors().skip(1).map(Path::to_path_buf).collect(),
+            selected: Some(path.to_path_buf()),
+            scroll: 0.0,
+        }
+    }
+}
+
 /// Indent per level below the root's children, in pixels.
 const LEVEL_INDENT: i32 = 16;
 
@@ -399,6 +418,70 @@ impl FsTree {
                 tree.select_row(&target, true);
             }
         });
+    }
+
+    /// What the tree shows now: its expanded folders, its selection, and its scroll position.
+    pub fn snapshot(&self) -> TreeSnapshot {
+        let imp = self.imp();
+        let expanded = match imp.tree_model.borrow().clone() {
+            Some(model) => (0..model.n_items())
+                .filter_map(|i| model.row(i))
+                .filter(|row| row.is_expanded())
+                .filter_map(|row| node_of(&row))
+                .filter(|node| node.is_dir())
+                .map(|node| node.path().to_path_buf())
+                .collect(),
+            None => Vec::new(),
+        };
+        TreeSnapshot {
+            expanded,
+            selected: self.selected_path(),
+            scroll: imp.scroller.vadjustment().value(),
+        }
+    }
+
+    /// Shows a snapshot: collapses the tree to its root, expands the saved folders, and selects the saved
+    /// folder once its row has loaded. Nothing is scrolled into view; the saved scroll position is restored.
+    pub fn restore(&self, snapshot: TreeSnapshot) {
+        let imp = self.imp();
+        if let Some(model) = imp.tree_model.borrow().clone() {
+            if let Some(root) = model.row(0).and_then(|row| node_of(&row)) {
+                collapse_except(&model, &[root.path().to_path_buf()]);
+            }
+        }
+        for path in &snapshot.expanded {
+            self.expand_path_quietly(path);
+        }
+        let tree = self.clone();
+        glib::spawn_future_local(async move {
+            if let Some(selected) = snapshot.selected {
+                for _ in 0..200 {
+                    if tree.select_path(&selected) {
+                        break;
+                    }
+                    glib::timeout_future(std::time::Duration::from_millis(10)).await;
+                }
+            }
+            tree.imp().scroller.vadjustment().set_value(snapshot.scroll);
+        });
+    }
+
+    /// Expands to `path` and loads it, without selecting it or scrolling.
+    fn expand_path_quietly(&self, path: &Path) {
+        let imp = self.imp();
+        let (Some(model), Some(root)) = (imp.tree_model.borrow().clone(), imp.root.borrow().clone()) else {
+            return;
+        };
+        if !path.is_absolute() || !path.starts_with(root.path()) {
+            return;
+        }
+        let mut chain: Vec<PathBuf> = path
+            .ancestors()
+            .take_while(|p| p.starts_with(root.path()))
+            .map(Path::to_path_buf)
+            .collect();
+        chain.reverse();
+        glib::spawn_future_local(expand_chain(model, root, chain, true));
     }
 
     /// Shows `path` in the tree: expands to it, selects it and scrolls it into view. Other folders

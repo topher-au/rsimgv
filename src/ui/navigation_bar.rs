@@ -207,6 +207,21 @@ impl NavigationBar {
         self.emit_location(&target);
     }
 
+    /// The visited locations and the index of the current one, for keeping a tab's history.
+    pub fn history_state(&self) -> (Vec<PathBuf>, usize) {
+        let imp = self.imp();
+        (imp.history.borrow().clone(), imp.index.get())
+    }
+
+    /// Replaces the history, as when switching to another tab. Emits nothing.
+    pub fn set_history_state(&self, history: Vec<PathBuf>, index: usize) {
+        let imp = self.imp();
+        let index = index.min(history.len().saturating_sub(1));
+        imp.history.replace(history);
+        imp.index.set(index);
+        self.update_buttons();
+    }
+
     /// The entries a menu in `direction` offers: each one's history index and path, nearest first.
     pub fn history_entries(&self, direction: Direction) -> Vec<(usize, PathBuf)> {
         let imp = self.imp();
