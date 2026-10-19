@@ -22,5 +22,19 @@
       <default>false</default>
       <summary>Collapse folders outside the current path when navigating</summary>
     </key>
+    <key name="window-width" type="i">
+      <default>960</default>
+      <range min="320" max="10000"/>
+      <summary>Width of the window when it is not maximized</summary>
+    </key>
+    <key name="window-height" type="i">
+      <default>640</default>
+      <range min="240" max="10000"/>
+      <summary>Height of the window when it is not maximized</summary>
+    </key>
+    <key name="window-maximized" type="b">
+      <default>false</default>
+      <summary>Whether the window was maximized when it was last closed</summary>
+    </key>
   </schema>
 </schemalist>

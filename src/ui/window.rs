@@ -78,6 +78,17 @@ impl Window {
         let window: Self = glib::Object::builder().property("application", app).build();
         let imp = window.imp();
         let _ = imp.settings.set(settings.clone());
+
+        // The window opens at the size and state it had when it was last closed.
+        window.set_default_size(settings.int("window-width"), settings.int("window-height"));
+        if settings.boolean("window-maximized") {
+            window.maximize();
+        }
+        let settings_on_close = settings.clone();
+        window.connect_close_request(move |window| {
+            save_window_state(window, &settings_on_close);
+            glib::Propagation::Proceed
+        });
         let tree = (*imp.tree).clone();
         let split = (*imp.split).clone();
         let sidebar_toggle = (*imp.sidebar_toggle).clone();
@@ -267,6 +278,17 @@ impl Window {
     }
 }
 
+/// Saves whether the window is maximized and, if it is not, its size. A maximized window is as big as
+/// the screen, so the size kept is the one from before it was maximized.
+fn save_window_state(window: &Window, settings: &gio::Settings) {
+    let maximized = window.is_maximized();
+    let _ = settings.set_boolean("window-maximized", maximized);
+    if !maximized && window.width() > 0 && window.height() > 0 {
+        let _ = settings.set_int("window-width", window.width());
+        let _ = settings.set_int("window-height", window.height());
+    }
+}
+
 /// How much of the tree a navigation reveals.
 #[derive(Clone, Copy)]
 enum Reveal {
@@ -316,6 +338,30 @@ pub(crate) mod tests {
     }
 
 
+    /// Closing a window saves its size and that it is not maximized; a new window opens at that size.
+    fn window_size_is_saved(app: &adw::Application, settings: &gio::Settings) {
+        let window = Window::new(&app, &settings);
+        window.set_default_size(700, 450);
+        window.present();
+        let ctx = glib::MainContext::default();
+        for _ in 0..60 {
+            while ctx.iteration(false) {}
+            std::thread::sleep(std::time::Duration::from_millis(16));
+        }
+        assert_eq!((window.width(), window.height()), (700, 450), "the window is the size it was set to");
+        window.close();
+        assert_eq!(settings.int("window-width"), 700, "the width is saved");
+        assert_eq!(settings.int("window-height"), 450, "the height is saved");
+        assert!(!settings.boolean("window-maximized"), "an unmaximized window is saved as such");
+
+        // A window opened afterwards starts at the saved size.
+        let reopened = Window::new(&app, &settings);
+        reopened.present();
+        assert_eq!(reopened.default_width(), 700);
+        assert_eq!(reopened.default_height(), 450);
+        reopened.destroy();
+    }
+
     pub(crate) fn run_scenarios() {
         let root = std::env::temp_dir().join(format!("rsimgv-window-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
@@ -328,6 +374,7 @@ pub(crate) mod tests {
         // Windows may only be created once the application has started.
         gio::prelude::ApplicationExt::register(&app, gio::Cancellable::NONE).expect("register test application");
         let settings = crate::settings::open("au.topher.rimgv");
+        window_size_is_saved(&app, &settings);
         let window = Window::new(&app, &settings);
         let imp = window.imp();
 
