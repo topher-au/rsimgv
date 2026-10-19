@@ -154,6 +154,8 @@ mod imp {
         pub(super) store: OnceCell<gio::ListStore>,
         pub(super) filter: OnceCell<gtk::CustomFilter>,
         pub(super) sorter: OnceCell<gtk::CustomSorter>,
+        /// The selection the grid shows. It is taken off the grid while a folder loads.
+        pub(super) selection: OnceCell<gtk::SingleSelection>,
         /// Show dot-prefixed files and folders.
         #[property(get, set)]
         show_hidden: Cell<bool>,
@@ -273,6 +275,7 @@ mod imp {
             let selection = gtk::SingleSelection::new(Some(visible));
             selection.set_autoselect(false);
             self.grid.set_model(Some(&selection));
+            let _ = self.selection.set(selection);
             let _ = self.store.set(store);
             let _ = self.filter.set(filter);
             let _ = self.sorter.set(sorter);
@@ -513,19 +516,22 @@ impl BrowseView {
         if let Some(store) = imp.store.get() {
             store.remove_all();
         }
+        // The grid is detached while the folder loads, so it does not lay out each item as it arrives.
+        imp.grid.set_model(None::<&gtk::SingleSelection>);
 
         let view = self.downgrade();
         let dir = path.to_path_buf();
         glib::spawn_future_local(async move {
-            let Ok(entries) = list_directory(dir).await else {
-                return;
-            };
+            let entries = list_directory(dir).await.unwrap_or_default();
             let Some(view) = view.upgrade() else { return };
             if view.imp().generation.get() != generation {
                 return;
             }
             if let Some(store) = view.imp().store.get() {
                 store.splice(0, 0, &entries);
+            }
+            if let Some(selection) = view.imp().selection.get() {
+                view.imp().grid.set_model(Some(selection));
             }
             if let Some(scroller) = scroller {
                 restore_scroll_after_layout(&scroller, saved);
