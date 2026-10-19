@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<interface>
+  <template class="RsimgvFloatingBar" parent="GtkBox">
+    <property name="orientation">horizontal</property>
+    <property name="spacing">8</property>
+    <property name="margin-top">4</property>
+    <property name="margin-bottom">4</property>
+    <property name="margin-start">4</property>
+    <property name="margin-end">4</property>
+    <style><class name="floating-bar"/></style>
+    <child>
+      <object class="AdwSpinner" id="spinner">
+        <property name="visible">false</property>
+        <property name="width-request">16</property>
+        <property name="height-request">16</property>
+        <property name="margin-start">8</property>
+      </object>
+    </child>
+    <child>
+      <object class="GtkBox">
+        <property name="orientation">horizontal</property>
+        <property name="spacing">6</property>
+        <property name="hexpand">true</property>
+        <property name="margin-top">2</property>
+        <property name="margin-bottom">2</property>
+        <property name="margin-start">8</property>
+        <property name="margin-end">8</property>
+        <child>
+          <object class="GtkLabel" id="primary">
+            <property name="ellipsize">middle</property>
+            <property name="single-line-mode">true</property>
+          </object>
+        </child>
+        <child>
+          <object class="GtkLabel" id="details">
+            <property name="single-line-mode">true</property>
+          </object>
+        </child>
+      </object>
+    </child>
+    <child>
+      <object class="GtkButton" id="stop_button">
+        <property name="icon-name">process-stop-symbolic</property>
+        <property name="tooltip-text">Stop</property>
+        <property name="valign">center</property>
+        <property name="visible">false</property>
+        <style><class name="circular"/><class name="flat"/></style>
+      </object>
+    </child>
+  </template>
+</interface>

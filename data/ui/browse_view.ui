@@ -18,18 +18,9 @@
           </object>
         </property>
         <child type="overlay">
-          <object class="GtkBox" id="floating_bar">
-            <property name="halign">center</property>
+          <object class="RsimgvFloatingBar" id="floating_bar">
+            <property name="halign">end</property>
             <property name="valign">end</property>
-            <property name="margin-bottom">12</property>
-            <property name="spacing">8</property>
-            <style><class name="rsimgv-floating-bar"/></style>
-            <child>
-              <object class="GtkSpinner" id="spinner"/>
-            </child>
-            <child>
-              <object class="GtkLabel" id="status"/>
-            </child>
           </object>
         </child>
       </object>

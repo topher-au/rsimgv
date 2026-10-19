@@ -152,11 +152,9 @@ mod imp {
         #[template_child]
         pub grid: TemplateChild<gtk::GridView>,
         #[template_child]
-        pub floating_bar: TemplateChild<gtk::Box>,
-        #[template_child]
-        pub spinner: TemplateChild<gtk::Spinner>,
-        #[template_child]
-        pub status: TemplateChild<gtk::Label>,
+        pub floating_bar: TemplateChild<super::super::FloatingBar>,
+        /// Whether a folder is loading. Its listing is stopped by the floating bar's stop button.
+        pub(super) loading: Cell<bool>,
         pub(super) store: OnceCell<gio::ListStore>,
         pub(super) filter: OnceCell<gtk::CustomFilter>,
         pub(super) sorter: OnceCell<gtk::CustomSorter>,
@@ -196,6 +194,8 @@ mod imp {
         type ParentType = gtk::Box;
 
         fn class_init(klass: &mut Self::Class) {
+            // The floating bar is built from the template, so its type must be registered first.
+            super::super::FloatingBar::static_type();
             klass.bind_template();
         }
 
@@ -281,6 +281,25 @@ mod imp {
             let selection = gtk::SingleSelection::new(Some(visible));
             selection.set_autoselect(false);
             self.grid.set_model(Some(&selection));
+            selection.connect_selection_changed({
+                let view = obj.downgrade();
+                move |_, _, _| {
+                    if let Some(view) = view.upgrade() {
+                        view.update_status();
+                    }
+                }
+            });
+            self.floating_bar.connect_stop({
+                let view = obj.downgrade();
+                move |_| {
+                    if let Some(view) = view.upgrade() {
+                        view.stop_loading();
+                    }
+                }
+            });
+            if let Some(overlay) = self.floating_bar.parent() {
+                self.floating_bar.attach_hover_hide(&overlay);
+            }
             let _ = self.selection.set(selection);
             let _ = self.store.set(store);
             let _ = self.filter.set(filter);
@@ -519,7 +538,8 @@ impl BrowseView {
         }
         let saved = imp.scroll_memory.borrow().get(path).copied().unwrap_or(0.0);
         imp.path.replace(Some(path.to_path_buf()));
-        imp.spinner.start();
+        imp.loading.set(true);
+        imp.floating_bar.cancel_hover_hide();
         self.update_status();
         if let Some(store) = imp.store.get() {
             store.remove_all();
@@ -541,7 +561,7 @@ impl BrowseView {
             if let Some(selection) = view.imp().selection.get() {
                 view.imp().grid.set_model(Some(selection));
             }
-            view.imp().spinner.stop();
+            view.imp().loading.set(false);
             view.update_status();
             if let Some(scroller) = scroller {
                 restore_scroll_after_layout(&scroller, saved);
@@ -641,29 +661,41 @@ impl BrowseView {
         self.update_status();
     }
 
-    /// Updates the floating bar: a spinner while the folder loads, then the item count and the free
-    /// space on the folder's filesystem.
+    /// Stops loading the folder: the listing is dropped and the grid shows what it had.
+    fn stop_loading(&self) {
+        let imp = self.imp();
+        imp.generation.set(imp.generation.get() + 1);
+        imp.loading.set(false);
+        if let Some(selection) = imp.selection.get() {
+            imp.grid.set_model(Some(selection));
+        }
+        self.update_status();
+    }
+
+    /// Updates the floating bar like Nautilus's: while a folder loads, a spinner and a stop button;
+    /// with an item selected, what it is and its size; otherwise the bar is hidden.
     fn update_status(&self) {
         let imp = self.imp();
-        if imp.spinner.is_spinning() {
-            imp.status.set_label("Loading…");
+        if imp.loading.get() {
+            imp.floating_bar.set_labels(Some("Loading…"), None);
+            imp.floating_bar.set_loading(true);
+            imp.floating_bar.set_visible(true);
             return;
         }
-        let count = imp.selection.get().map_or(0, |selection| selection.n_items());
-        let noun = if count == 1 { "item" } else { "items" };
-        let free = self
-            .path()
-            .and_then(|path| {
-                gio::File::for_path(path)
-                    .query_filesystem_info("filesystem::free", gio::Cancellable::NONE)
-                    .ok()
-            })
-            .map(|info| glib::format_size(info.attribute_uint64("filesystem::free")).to_string());
-        let text = match free {
-            Some(free) => format!("{count} {noun}, Free space: {free}"),
-            None => format!("{count} {noun}"),
+        imp.floating_bar.set_loading(false);
+        let selected = imp.selection.get().and_then(|selection| selection.selected_item());
+        let Some(entry) = selected.and_downcast::<FileEntry>() else {
+            imp.floating_bar.set_visible(false);
+            return;
         };
-        imp.status.set_label(&text);
+        if entry.is_dir() {
+            let primary = format!("“{}” selected", entry.name());
+            imp.floating_bar.set_labels(Some(&primary), None);
+        } else {
+            let size = glib::format_size(entry.info().size() as u64);
+            imp.floating_bar.set_labels(Some("1 item selected"), Some(&format!("({size})")));
+        }
+        imp.floating_bar.set_visible(true);
     }
 
     /// Rebinds every item so a size or layout change shows, keeping the item at the top of the view

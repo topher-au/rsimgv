@@ -1,4 +1,5 @@
 mod browse_view;
+mod floating_bar;
 mod fs_tree;
 mod header_bar;
 mod overlay_split_view;
@@ -8,6 +9,7 @@ mod preferences;
 mod window;
 
 pub use browse_view::BrowseView;
+pub use floating_bar::FloatingBar;
 pub use fs_tree::FsTree;
 pub use header_bar::HeaderBar;
 pub use navigation_bar::NavigationBar;
