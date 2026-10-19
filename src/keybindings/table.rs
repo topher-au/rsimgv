@@ -6,6 +6,7 @@ use serde_yaml_ng::{Mapping, Value};
 use super::actions::{find, ActionInfo, Scope, ACTIONS};
 use super::chord::canonical;
 
+#[derive(Clone, PartialEq)]
 pub struct BindingTable {
     /// The chords of each action, in the catalogue's order.
     chords: Vec<Vec<String>>,

@@ -73,8 +73,17 @@
       <summary>Show the thumbnail bar in the viewer</summary>
     </key>
     <key name="viewer-thumbnail-bar-overlay" type="b">
+      <default>true</default>
+      <summary>Float the thumbnail bar over the picture, rather than beside it</summary>
+    </key>
+    <key name="viewer-thumbnail-bar-pinned" type="b">
       <default>false</default>
-      <summary>Float the thumbnail bar over the picture, showing it only while the pointer is near its edge</summary>
+      <summary>Keep the floating thumbnail bar shown, rather than only while the pointer is near it</summary>
+    </key>
+    <key name="viewer-thumbnail-bar-size" type="i">
+      <range min="48" max="256"/>
+      <default>80</default>
+      <summary>The size of the thumbnails in the viewer's thumbnail bar, in pixels</summary>
     </key>
     <key name="open-fullscreen" type="b">
       <default>false</default>
@@ -111,15 +120,6 @@
       <default>'fit-window'</default>
       <summary>How an image is sized when it is opened</summary>
     </key>
-    <key name="one-to-one-focus" type="s">
-      <choices>
-        <choice value="top"/>
-        <choice value="center"/>
-        <choice value="cursor"/>
-      </choices>
-      <default>'center'</default>
-      <summary>Where the view is focused when an image is shown at 1:1</summary>
-    </key>
     <key name="scaling-filter" type="s">
       <choices>
         <choice value="nearest"/>
@@ -134,10 +134,15 @@
       <default>true</default>
       <summary>Keep the fit mode when switching images</summary>
     </key>
-    <key name="expand-up-to" type="i">
-      <default>200</default>
-      <range min="100" max="1000"/>
-      <summary>Largest zoom, in percent, that small images are expanded to fill the window</summary>
+    <key name="zoom-step" type="i">
+      <default>25</default>
+      <range min="5" max="100"/>
+      <summary>How much one zoom step enlarges or shrinks the picture, in percent</summary>
+    </key>
+    <key name="expand-up-to-factor" type="i">
+      <default>0</default>
+      <range min="0" max="4"/>
+      <summary>Largest zoom, as a multiple of their own size, that small images are enlarged to when fitted; 0 has no limit</summary>
     </key>
     <key name="smooth-upscaling" type="b">
       <default>true</default>

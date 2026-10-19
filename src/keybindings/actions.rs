@@ -38,6 +38,17 @@ impl Scope {
         }
     }
 
+    /// A small icon for the scope.
+    pub fn icon(self) -> &'static str {
+        match self {
+            Scope::Global => "emblem-system-symbolic",
+            Scope::Browse => "folder-symbolic",
+            Scope::View => "view-reveal-symbolic",
+            Scope::Image => "image-x-generic-symbolic",
+            Scope::Video => "video-x-generic-symbolic",
+        }
+    }
+
     /// How specific the scope is: deeper scopes win when both claim a chord.
     pub fn depth(self) -> u8 {
         match self {
@@ -97,6 +108,24 @@ pub const ACTIONS: &[ActionInfo] = &[
         name: "win.navigate-up", description: "Go to the parent folder.", icon: "go-up-symbolic", label: "Go Up", scope: Scope::Global, defaults: &["alt+up"],
     },
     ActionInfo {
+        name: "win.next-folder", description: "Go to the next folder in depth-first order of the folder tree. In the viewer, go to the next folder with a picture or video and show its first one.", icon: "go-down-symbolic", label: "Next Folder", scope: Scope::Global, defaults: &[],
+    },
+    ActionInfo {
+        name: "win.previous-folder", description: "Go to the previous folder in depth-first order of the folder tree. In the viewer, go to the previous folder with a picture or video and show its first one.", icon: "go-up-symbolic", label: "Previous Folder", scope: Scope::Global, defaults: &[],
+    },
+    ActionInfo {
+        name: "win.next-media-folder", description: "Go to the next folder with a picture or video, and select its first one.", icon: "go-down-symbolic", label: "Next Media Folder", scope: Scope::Global, defaults: &[],
+    },
+    ActionInfo {
+        name: "win.previous-media-folder", description: "Go to the previous folder with a picture or video, and select its last one.", icon: "go-up-symbolic", label: "Previous Media Folder", scope: Scope::Global, defaults: &[],
+    },
+    ActionInfo {
+        name: "win.bookmark-folder", description: "Bookmark the folder shown, under a name you choose.", icon: "bookmark-new-symbolic", label: "Bookmark Folder", scope: Scope::Global, defaults: &["ctrl+d"],
+    },
+    ActionInfo {
+        name: "win.toggle-bookmarks", description: "Expand or collapse the bookmarks list in the sidebar.", icon: "user-bookmarks-symbolic", label: "Toggle Bookmarks", scope: Scope::Global, defaults: &[],
+    },
+    ActionInfo {
         name: "win.toggle-sidebar", description: "Show or hide the sidebar.", icon: "sidebar-show-symbolic", label: "Toggle Sidebar", scope: Scope::Global, defaults: &["f9"],
     },
     ActionInfo {
@@ -133,16 +162,16 @@ pub const ACTIONS: &[ActionInfo] = &[
         name: "browse.up-directory", description: "Go to the parent folder.", icon: "go-up-symbolic", label: "Up Directory", scope: Scope::Browse, defaults: &["q", "backspace"],
     },
     ActionInfo {
-        name: "browse.toggle-hidden", description: "Show or hide hidden files and folders.", icon: "view-reveal-symbolic", label: "Toggle Hidden Files", scope: Scope::Browse, defaults: &["ctrl+h"],
-    },
-    ActionInfo {
-        name: "browse.toggle-media-only", description: "Show only pictures and videos, or every file.", icon: "video-x-generic-symbolic", label: "Toggle Media Only", scope: Scope::Browse, defaults: &["ctrl+m"],
-    },
-    ActionInfo {
         name: "browse.thumbnail-larger", description: "Make the items in the browse view larger.", icon: "zoom-in-symbolic", label: "Larger Thumbnails", scope: Scope::Browse, defaults: &["ctrl+shift+equal", "ctrl+equal"],
     },
     ActionInfo {
         name: "browse.thumbnail-smaller", description: "Make the items in the browse view smaller.", icon: "zoom-out-symbolic", label: "Smaller Thumbnails", scope: Scope::Browse, defaults: &["ctrl+minus"],
+    },
+    ActionInfo {
+        name: "browse.toggle-hidden", description: "Show or hide hidden files and folders.", icon: "view-reveal-symbolic", label: "Toggle Hidden Files", scope: Scope::Browse, defaults: &["ctrl+h"],
+    },
+    ActionInfo {
+        name: "browse.toggle-media-only", description: "Show only pictures and videos, or every file.", icon: "video-x-generic-symbolic", label: "Toggle Media Only", scope: Scope::Browse, defaults: &["ctrl+m"],
     },
     ActionInfo {
         name: "view.previous", description: "Show the picture or video before this one in the folder.", icon: "go-previous-symbolic", label: "Previous Item", scope: Scope::View, defaults: &["comma"],
@@ -160,55 +189,28 @@ pub const ACTIONS: &[ActionInfo] = &[
         name: "view.close", description: "Close the viewer and return to the browse view.", icon: "window-close-symbolic", label: "Close Viewer", scope: Scope::View, defaults: &["q", "escape"],
     },
     ActionInfo {
-        name: "view.pin", description: "Keep the viewer's controls and title shown.", icon: "view-pin-symbolic", label: "Pin Viewer Controls", scope: Scope::View, defaults: &["p"],
+        name: "view.pin", description: "Keep the viewer's header above the picture in fullscreen, and a video's controls shown.", icon: "view-pin-symbolic", label: "Pin Viewer Header", scope: Scope::View, defaults: &["p"],
     },
     ActionInfo {
         name: "view.toggle-thumbnail-bar", description: "Show or hide the viewer's thumbnail bar.", icon: "view-grid-symbolic", label: "Toggle Thumbnail Bar", scope: Scope::View, defaults: &["t"],
     },
     ActionInfo {
-        name: "video.play-pause", description: "Play the video, or pause it while it plays.", icon: "media-playback-start-symbolic", label: "Play / Pause", scope: Scope::Video, defaults: &["space"],
+        name: "view.toggle-thumbnail-bar-pin", description: "Keep the floating thumbnail bar shown, or let it hide until the pointer comes near.", icon: "view-pin-symbolic", label: "Pin Thumbnail Bar", scope: Scope::View, defaults: &[],
     },
     ActionInfo {
-        name: "video.seek-forward", description: "Skip forward 5 seconds.", icon: "media-seek-forward-symbolic", label: "Seek Forward", scope: Scope::Video, defaults: &["right"],
-    },
-    ActionInfo {
-        name: "video.seek-backward", description: "Skip back 5 seconds.", icon: "media-seek-backward-symbolic", label: "Seek Backward", scope: Scope::Video, defaults: &["left"],
-    },
-    ActionInfo {
-        name: "video.volume-up", description: "Raise the volume.", icon: "audio-volume-high-symbolic", label: "Volume Up", scope: Scope::Video, defaults: &["up"],
-    },
-    ActionInfo {
-        name: "video.volume-down", description: "Lower the volume.", icon: "audio-volume-low-symbolic", label: "Volume Down", scope: Scope::Video, defaults: &["down"],
-    },
-    ActionInfo {
-        name: "video.mute", description: "Mute the sound, or unmute it.", icon: "audio-volume-muted-symbolic", label: "Mute", scope: Scope::Video, defaults: &["m"],
-    },
-    ActionInfo {
-        name: "video.repeat", description: "Play the video again from the start when it ends, or stop repeating it.", icon: "media-playlist-repeat-symbolic", label: "Toggle Repeat", scope: Scope::Video, defaults: &["r"],
-    },
-    ActionInfo {
-        name: "win.bookmark-folder", description: "Bookmark the folder shown, under a name you choose.", icon: "bookmark-new-symbolic", label: "Bookmark Folder", scope: Scope::Global, defaults: &["ctrl+d"],
-    },
-    ActionInfo {
-        name: "win.toggle-bookmarks", description: "Expand or collapse the bookmarks list in the sidebar.", icon: "user-bookmarks-symbolic", label: "Toggle Bookmarks", scope: Scope::Global, defaults: &[],
-    },
-    ActionInfo {
-        name: "win.next-folder", description: "Go to the next folder in depth-first order of the folder tree. In the viewer, go to the next folder with a picture or video and show its first one.", icon: "go-down-symbolic", label: "Next Folder", scope: Scope::Global, defaults: &[],
-    },
-    ActionInfo {
-        name: "win.previous-folder", description: "Go to the previous folder in depth-first order of the folder tree. In the viewer, go to the previous folder with a picture or video and show its first one.", icon: "go-up-symbolic", label: "Previous Folder", scope: Scope::Global, defaults: &[],
-    },
-    ActionInfo {
-        name: "win.next-media-folder", description: "Go to the next folder with a picture or video, and select its first one.", icon: "go-down-symbolic", label: "Next Media Folder", scope: Scope::Global, defaults: &[],
-    },
-    ActionInfo {
-        name: "win.previous-media-folder", description: "Go to the previous folder with a picture or video, and select its last one.", icon: "go-up-symbolic", label: "Previous Media Folder", scope: Scope::Global, defaults: &[],
+        name: "view.toggle-thumbnail-bar-overlay", description: "Float the thumbnail bar over the picture, or put it beside the picture.", icon: "window-restore-symbolic", label: "Toggle Thumbnail Bar Overlay", scope: Scope::View, defaults: &[],
     },
     ActionInfo {
         name: "image.zoom-in", description: "Enlarge the picture.", icon: "zoom-in-symbolic", label: "Zoom In", scope: Scope::Image, defaults: &["shift+equal", "equal"],
     },
     ActionInfo {
         name: "image.zoom-out", description: "Shrink the picture.", icon: "zoom-out-symbolic", label: "Zoom Out", scope: Scope::Image, defaults: &["minus"],
+    },
+    ActionInfo {
+        name: "image.zoom-in-at-pointer", description: "Enlarge the picture, keeping the point under the pointer in place.", icon: "zoom-in-symbolic", label: "Zoom In at Pointer", scope: Scope::Image, defaults: &[],
+    },
+    ActionInfo {
+        name: "image.zoom-out-at-pointer", description: "Shrink the picture, keeping the point under the pointer in place.", icon: "zoom-out-symbolic", label: "Zoom Out at Pointer", scope: Scope::Image, defaults: &[],
     },
     ActionInfo {
         name: "image.fit-cycle", description: "Switch to the next fit mode: window, width, height, then original size.", icon: "zoom-fit-best-symbolic", label: "Cycle Fit Mode", scope: Scope::Image, defaults: &["f"],
@@ -236,6 +238,27 @@ pub const ACTIONS: &[ActionInfo] = &[
     },
     ActionInfo {
         name: "image.pan-right", description: "Move the picture right within the window.", icon: "go-next-symbolic", label: "Pan Right", scope: Scope::Image, defaults: &["right"],
+    },
+    ActionInfo {
+        name: "video.play-pause", description: "Play the video, or pause it while it plays.", icon: "media-playback-start-symbolic", label: "Play / Pause", scope: Scope::Video, defaults: &["space"],
+    },
+    ActionInfo {
+        name: "video.seek-forward", description: "Skip forward 5 seconds.", icon: "media-seek-forward-symbolic", label: "Seek Forward", scope: Scope::Video, defaults: &["right"],
+    },
+    ActionInfo {
+        name: "video.seek-backward", description: "Skip back 5 seconds.", icon: "media-seek-backward-symbolic", label: "Seek Backward", scope: Scope::Video, defaults: &["left"],
+    },
+    ActionInfo {
+        name: "video.volume-up", description: "Raise the volume.", icon: "audio-volume-high-symbolic", label: "Volume Up", scope: Scope::Video, defaults: &["up"],
+    },
+    ActionInfo {
+        name: "video.volume-down", description: "Lower the volume.", icon: "audio-volume-low-symbolic", label: "Volume Down", scope: Scope::Video, defaults: &["down"],
+    },
+    ActionInfo {
+        name: "video.mute", description: "Mute the sound, or unmute it.", icon: "audio-volume-muted-symbolic", label: "Mute", scope: Scope::Video, defaults: &["m"],
+    },
+    ActionInfo {
+        name: "video.repeat", description: "Play the video again from the start when it ends, or stop repeating it.", icon: "media-playlist-repeat-symbolic", label: "Toggle Repeat", scope: Scope::Video, defaults: &["r"],
     },
     ActionInfo {
         name: "video.auto-advance", description: "When a video ends, show the next item in the folder, or stop doing so.", icon: "media-skip-forward-symbolic", label: "Toggle Auto-Advance", scope: Scope::Video, defaults: &["n"],

@@ -7,6 +7,97 @@
     <property name="focusable">true</property>
     <style><class name="media-viewer"/></style>
     <child>
+      <object class="GtkBox" id="header_dock">
+        <property name="orientation">vertical</property>
+        <child>
+          <object class="GtkRevealer" id="header">
+            <property name="valign">start</property>
+            <property name="transition-type">slide-down</property>
+            <property name="transition-duration">250</property>
+            <property name="reveal-child">true</property>
+            <child>
+              <object class="AdwHeaderBar" id="header_bar">
+                <property name="title-widget">
+                  <object class="GtkBox"/>
+                </property>
+                <child type="start">
+                  <object class="GtkButton" id="back_button">
+                    <property name="icon-name">go-previous-symbolic</property>
+                    <property name="tooltip-text">Back</property>
+                  </object>
+                </child>
+                <child type="start">
+                  <object class="GtkBox">
+                    <property name="spacing">8</property>
+                    <property name="margin-start">6</property>
+                    <child>
+                      <object class="GtkLabel" id="filename">
+                        <property name="ellipsize">middle</property>
+                        <property name="max-width-chars">60</property>
+                        <style><class name="heading"/></style>
+                      </object>
+                    </child>
+                    <child>
+                      <object class="GtkLabel" id="position">
+                        <style><class name="dim-label"/></style>
+                      </object>
+                    </child>
+                  </object>
+                </child>
+                <child type="end">
+                  <object class="GtkToggleButton" id="pin_button">
+                    <property name="icon-name">view-pin-symbolic</property>
+                    <property name="tooltip-text">Keep the header above the picture in fullscreen</property>
+                  </object>
+                </child>
+                <child type="end">
+                  <object class="GtkButton">
+                    <property name="icon-name">view-fullscreen-symbolic</property>
+                    <property name="tooltip-text">Toggle fullscreen</property>
+                    <property name="action-name">win.toggle-fullscreen</property>
+                  </object>
+                </child>
+                <child type="end">
+                  <object class="GtkBox" id="zoom_box">
+                    <property name="spacing">4</property>
+                    <child>
+                      <object class="GtkButton">
+                        <property name="icon-name">zoom-out-symbolic</property>
+                        <property name="tooltip-text">Zoom out</property>
+                        <property name="action-name">image.zoom-out</property>
+                      </object>
+                    </child>
+                    <child>
+                      <object class="GtkLabel" id="zoom_label">
+                        <property name="width-chars">6</property>
+                        <style><class name="heading"/><class name="numeric"/></style>
+                      </object>
+                    </child>
+                    <child>
+                      <object class="GtkButton">
+                        <property name="icon-name">zoom-in-symbolic</property>
+                        <property name="tooltip-text">Zoom in</property>
+                        <property name="action-name">image.zoom-in</property>
+                      </object>
+                    </child>
+                    <child>
+                      <object class="GtkButton">
+                        <property name="icon-name">zoom-fit-best-symbolic</property>
+                        <property name="tooltip-text">Cycle fit mode</property>
+                        <property name="action-name">image.fit-cycle</property>
+                      </object>
+                    </child>
+                  </object>
+                </child>
+              </object>
+            </child>
+          </object>
+        </child>
+      </object>
+    </child>
+    <child>
+      <object class="GtkBox" id="body">
+    <child>
       <object class="GtkOverlay" id="overlay">
         <property name="hexpand">true</property>
         <property name="vexpand">true</property>
@@ -30,40 +121,6 @@
           </object>
         </property>
         <child type="overlay">
-          <object class="GtkRevealer" id="header">
-            <property name="valign">start</property>
-            <property name="halign">start</property>
-            <property name="transition-type">crossfade</property>
-            <child>
-              <object class="GtkBox">
-                <property name="orientation">horizontal</property>
-                <property name="spacing">12</property>
-                <property name="margin-top">12</property>
-                <property name="margin-start">12</property>
-                <property name="margin-end">12</property>
-                <child>
-                  <object class="GtkButton" id="back_button">
-                    <property name="child">
-                      <object class="AdwButtonContent">
-                        <property name="icon-name">go-previous-symbolic</property>
-                        <property name="label">Back</property>
-                      </object>
-                    </property>
-                    <style><class name="osd"/></style>
-                  </object>
-                </child>
-                <child>
-                  <object class="GtkLabel" id="filename">
-                    <property name="ellipsize">middle</property>
-                    <property name="max-width-chars">80</property>
-                    <style><class name="osd"/></style>
-                  </object>
-                </child>
-              </object>
-            </child>
-          </object>
-        </child>
-        <child type="overlay">
           <object class="GtkRevealer" id="controls_revealer">
             <property name="valign">end</property>
             <property name="halign">center</property>
@@ -74,6 +131,8 @@
             </child>
           </object>
         </child>
+      </object>
+    </child>
       </object>
     </child>
   </template>

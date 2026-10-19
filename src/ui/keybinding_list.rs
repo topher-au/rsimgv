@@ -1,5 +1,6 @@
-//! The keybindings editor for the preferences: a searchable list of every binding with its scope and chord,
-//! the buttons that add, change and remove them, a line that flags conflicts, and import, export and reset.
+//! The keybindings editor for the preferences: an action picker and add button, a line that flags conflicts,
+//! a list of every binding with its scope, chord and a remove button, a search box, and import, export and
+//! reset. Activating a row changes its chord.
 
 use std::cell::{OnceCell, RefCell};
 
@@ -7,7 +8,7 @@ use gtk::prelude::*;
 use gtk::subclass::prelude::*;
 use gtk::{gio, glib};
 
-use crate::keybindings::{self, actions::ActionInfo, actions::ACTIONS};
+use crate::keybindings::{self, actions::ActionInfo, actions::ACTIONS, BindingTable};
 use super::binding_dialog;
 
 mod imp {
@@ -18,8 +19,10 @@ mod imp {
         pub(super) list: OnceCell<gtk::ListBox>,
         pub(super) search: OnceCell<gtk::SearchEntry>,
         pub(super) conflicts: OnceCell<gtk::Label>,
-        pub(super) edit: OnceCell<gtk::Button>,
-        pub(super) remove: OnceCell<gtk::Button>,
+        pub(super) actions: OnceCell<gtk::DropDown>,
+        pub(super) undo: OnceCell<gtk::Button>,
+        /// The bindings as they were when the editor opened, which undo restores.
+        pub(super) snapshot: RefCell<Option<BindingTable>>,
         /// The action and chord of each row, in the list's order.
         pub(super) bindings: RefCell<Vec<(&'static ActionInfo, String)>>,
     }
@@ -38,16 +41,26 @@ mod imp {
             obj.set_orientation(gtk::Orientation::Vertical);
             obj.set_spacing(8);
 
+            // Every action, to pick the one the add button binds.
+            // The popup lists each action's name over its description; the button shows the name.
+            // Each item's string holds the action's name, label and description, so the search matches any of them.
+            let texts: Vec<String> =
+                ACTIONS.iter().map(|action| format!("{}\n{}\n{}", action.name, action.label, action.description)).collect();
+            let texts: Vec<&str> = texts.iter().map(String::as_str).collect();
+            let actions = gtk::DropDown::new(
+                Some(gtk::StringList::new(&texts)),
+                Some(gtk::PropertyExpression::new(gtk::StringObject::static_type(), None::<gtk::Expression>, "string")),
+            );
+            actions.set_enable_search(true);
+            actions.add_css_class("action-picker");
+            actions.set_search_match_mode(gtk::StringFilterMatchMode::Substring);
+            actions.set_factory(Some(&action_factory(false)));
+            actions.set_list_factory(Some(&action_factory(true)));
+            actions.set_hexpand(true);
             let add = icon_button("list-add-symbolic", "Add binding");
-            let edit = icon_button("document-edit-symbolic", "Change binding");
-            let remove = icon_button("list-remove-symbolic", "Remove binding");
-            let search = gtk::SearchEntry::new();
-            search.set_hexpand(true);
-            search.set_placeholder_text(Some("Search actions or shortcuts"));
             let toolbar = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-            for widget in [add.upcast_ref::<gtk::Widget>(), edit.upcast_ref(), remove.upcast_ref(), search.upcast_ref()] {
-                toolbar.append(widget);
-            }
+            toolbar.append(&actions);
+            toolbar.append(&add);
             obj.append(&toolbar);
 
             let conflicts = gtk::Label::new(None);
@@ -59,23 +72,30 @@ mod imp {
 
             let list = gtk::ListBox::new();
             list.set_selection_mode(gtk::SelectionMode::Single);
-            list.add_css_class("boxed-list");
             let scroller = gtk::ScrolledWindow::new();
             scroller.set_child(Some(&list));
             scroller.set_vexpand(true);
             scroller.set_min_content_height(320);
             scroller.set_has_frame(true);
+            // A classic scrollbar beside the rows, so it never covers their remove buttons.
+            scroller.set_overlay_scrolling(false);
             obj.append(&scroller);
 
-            let import = gtk::Button::with_label("Import");
-            let export = gtk::Button::with_label("Export");
-            let reset = gtk::Button::with_label("Reset to Defaults");
-            reset.set_hexpand(true);
-            reset.set_halign(gtk::Align::End);
+            let search = gtk::SearchEntry::new();
+            search.set_hexpand(true);
+            search.set_placeholder_text(Some("Search actions or shortcuts"));
+            obj.append(&search);
+
+            let import = labelled_button("document-import-symbolic", "Import", "Import keybindings from a file");
+            let export = labelled_button("document-export-symbolic", "Export", "Export keybindings to a file");
+            let reset = labelled_button("document-revert-symbolic", "Reset", "Reset every binding to its default");
+            let undo = labelled_button("edit-undo-symbolic", "Undo", "Restore the bindings from when preferences opened");
+            undo.set_hexpand(true);
+            undo.set_halign(gtk::Align::End);
             let footer = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-            footer.append(&import);
-            footer.append(&export);
-            footer.append(&reset);
+            for button in [&import, &export, &reset, &undo] {
+                footer.append(button);
+            }
             obj.append(&footer);
 
             let weak = obj.downgrade();
@@ -83,21 +103,9 @@ mod imp {
                 let weak = weak.clone();
                 move |_| with_list(&weak, |list| list.add_binding())
             });
-            edit.connect_clicked({
-                let weak = weak.clone();
-                move |_| with_list(&weak, |list| list.change_selected())
-            });
-            remove.connect_clicked({
-                let weak = weak.clone();
-                move |_| with_list(&weak, |list| list.remove_selected())
-            });
             list.connect_row_activated({
                 let weak = weak.clone();
-                move |_, _| with_list(&weak, |list| list.change_selected())
-            });
-            list.connect_selected_rows_changed({
-                let weak = weak.clone();
-                move |_| with_list(&weak, |list| list.update_buttons())
+                move |_, row| with_list(&weak, |list| list.change_row(row.index()))
             });
             search.connect_search_changed({
                 let list = list.clone();
@@ -128,18 +136,127 @@ mod imp {
                 let weak = weak.clone();
                 move |_| with_list(&weak, |list| list.export())
             });
-            reset.connect_clicked(move |_| with_list(&weak, |list| list.reset()));
+            reset.connect_clicked({
+                let weak = weak.clone();
+                move |_| with_list(&weak, |list| list.confirm_reset())
+            });
+            undo.connect_clicked(move |_| with_list(&weak, |list| list.undo()));
 
             let _ = self.list.set(list);
             let _ = self.search.set(search);
             let _ = self.conflicts.set(conflicts);
-            let _ = self.edit.set(edit);
-            let _ = self.remove.set(remove);
+            let _ = self.actions.set(actions);
+            let _ = self.undo.set(undo);
         }
     }
 
     impl WidgetImpl for KeybindingList {}
     impl BoxImpl for KeybindingList {}
+
+    /// Makes each item an action's name, and with `described`, its icon to the left, its description below in
+    /// dimmed text, and its scope with the scope's icon at the top right.
+    fn action_factory(described: bool) -> gtk::SignalListItemFactory {
+        let factory = gtk::SignalListItemFactory::new();
+        factory.connect_setup(move |_, item| {
+            let Some(item) = item.downcast_ref::<gtk::ListItem>() else { return };
+            let name = gtk::Label::new(None);
+            name.set_xalign(0.0);
+            if !described {
+                // The button: the icon, the name, then the description dimmed on the same line, cut short to fit.
+                let description = gtk::Label::new(None);
+                description.set_xalign(0.0);
+                description.set_hexpand(true);
+                description.set_ellipsize(gtk::pango::EllipsizeMode::End);
+                description.set_width_chars(1);
+                description.add_css_class("dim-label");
+                description.add_css_class("action-description");
+                let icon = gtk::Image::new();
+                icon.set_pixel_size(16);
+                let line = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+                line.append(&icon);
+                line.append(&name);
+                line.append(&description);
+                item.set_child(Some(&line));
+                return;
+            }
+            name.set_hexpand(true);
+            // The scope, small and dimmed, with its icon after it.
+            let scope_label = gtk::Label::new(None);
+            scope_label.add_css_class("action-scope");
+            scope_label.add_css_class("dim-label");
+            let scope_icon = gtk::Image::new();
+            scope_icon.set_pixel_size(12);
+            scope_icon.add_css_class("dim-label");
+            let scope = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+            scope.set_margin_start(24);
+            scope.set_halign(gtk::Align::End);
+            scope.set_valign(gtk::Align::Start);
+            scope.append(&scope_label);
+            scope.append(&scope_icon);
+            let description = gtk::Label::new(None);
+            description.set_xalign(0.0);
+            description.set_wrap(true);
+            description.set_max_width_chars(48);
+            description.add_css_class("dim-label");
+            description.add_css_class("action-description");
+            let grid = gtk::Grid::builder().column_spacing(0).row_spacing(0).build();
+            let icon = gtk::Image::new();
+            icon.set_pixel_size(16);
+            icon.set_valign(gtk::Align::Start);
+            icon.set_margin_top(2);
+            icon.set_margin_end(10);
+            grid.attach(&icon, 0, 0, 1, 2);
+            grid.attach(&name, 1, 0, 1, 1);
+            grid.attach(&scope, 2, 0, 1, 1);
+            grid.attach(&description, 1, 1, 2, 1);
+            item.set_child(Some(&grid));
+        });
+        factory.connect_bind(move |_, item| {
+            let Some(item) = item.downcast_ref::<gtk::ListItem>() else { return };
+            // The filtered list moves items around, so the action is found by the name in its string.
+            let action = item.item().and_downcast::<gtk::StringObject>().and_then(|object| {
+                let text = object.string();
+                let name = text.split('\n').next().unwrap_or_default().to_owned();
+                ACTIONS.iter().find(|action| action.name == name)
+            });
+            let (Some(child), Some(action)) = (item.child(), action) else { return };
+            if let Some(line) = child.downcast_ref::<gtk::Box>() {
+                if let Some(icon) = line.first_child().and_downcast::<gtk::Image>() {
+                    icon.set_icon_name(Some(action.icon));
+                }
+                if let Some(name) = line.first_child().and_then(|icon| icon.next_sibling()).and_downcast::<gtk::Label>() {
+                    name.set_label(action.label);
+                }
+                if let Some(description) = line.last_child().and_downcast::<gtk::Label>() {
+                    description.set_label(action.description);
+                }
+                return;
+            }
+            let Some(grid) = child.downcast_ref::<gtk::Grid>() else { return };
+            let label = |column, row| grid.child_at(column, row).and_downcast::<gtk::Label>();
+            if let Some(icon) = grid.child_at(0, 0).and_downcast::<gtk::Image>() {
+                icon.set_icon_name(Some(action.icon));
+            }
+            if let (Some(name), Some(description)) = (label(1, 0), label(1, 1)) {
+                name.set_label(action.label);
+                description.set_label(action.description);
+            }
+            let scope = grid.child_at(2, 0);
+            if let Some(scope_label) = scope.as_ref().and_then(|scope| scope.first_child()).and_downcast::<gtk::Label>() {
+                scope_label.set_label(action.scope.title());
+            }
+            if let Some(scope_icon) = scope.as_ref().and_then(|scope| scope.last_child()).and_downcast::<gtk::Image>() {
+                scope_icon.set_icon_name(Some(action.scope.icon()));
+            }
+        });
+        factory
+    }
+
+    /// A button with an icon and a label, and a tooltip that says more.
+    fn labelled_button(icon: &str, label: &str, tooltip: &str) -> gtk::Button {
+        let content = adw::ButtonContent::builder().icon_name(icon).label(label).build();
+        gtk::Button::builder().child(&content).tooltip_text(tooltip).build()
+    }
 
     fn icon_button(icon: &str, tooltip: &str) -> gtk::Button {
         let button = gtk::Button::from_icon_name(icon);
@@ -165,6 +282,7 @@ impl KeybindingList {
     /// The editor, showing the bindings in the live table.
     pub fn new() -> Self {
         let editor: Self = glib::Object::new();
+        editor.imp().snapshot.replace(Some(keybindings::with_table(|table| table.clone())));
         editor.refresh();
         editor
     }
@@ -179,14 +297,17 @@ impl KeybindingList {
         let mut bindings = Vec::new();
         for action in ACTIONS {
             for chord in keybindings::with_table(|table| table.chords(action.name).to_vec()) {
-                list.append(&binding_row(action, &chord));
+                list.append(&self.binding_row(action, &chord));
                 bindings.push((action, chord));
             }
         }
         imp.bindings.replace(bindings);
         list.invalidate_filter();
         self.update_conflicts();
-        self.update_buttons();
+        let changed = imp.snapshot.borrow().as_ref().is_some_and(|snapshot| keybindings::with_table(|table| *table != *snapshot));
+        if let Some(undo) = imp.undo.get() {
+            undo.set_sensitive(changed);
+        }
     }
 
     /// Shows the first chord that is bound to more than one action whose scopes overlap, if there is one.
@@ -204,20 +325,6 @@ impl KeybindingList {
         label.set_visible(conflict.is_some());
     }
 
-    fn update_buttons(&self) {
-        let imp = self.imp();
-        let has_selection = imp.list.get().is_some_and(|list| list.selected_row().is_some());
-        imp.edit.get().expect("edit is built in constructed").set_sensitive(has_selection);
-        imp.remove.get().expect("remove is built in constructed").set_sensitive(has_selection);
-    }
-
-    /// The binding on the selected row, if a row is selected.
-    fn selected_binding(&self) -> Option<(&'static ActionInfo, String)> {
-        let imp = self.imp();
-        let row = imp.list.get()?.selected_row()?;
-        imp.bindings.borrow().get(row.index() as usize).cloned()
-    }
-
     /// Saves the bindings file and shows the new rows.
     fn commit(&self) {
         if let Err(err) = keybindings::save() {
@@ -226,34 +333,74 @@ impl KeybindingList {
         self.refresh();
     }
 
+    /// Adds a chord to the action picked beside the add button.
     fn add_binding(&self) {
+        let Some(picker) = self.imp().actions.get() else { return };
+        let Some(action) = ACTIONS.get(picker.selected() as usize) else { return };
         let weak = self.downgrade();
-        binding_dialog::show(self, None, move |action, chord| {
+        binding_dialog::show(self, action, None, move |chord| {
             keybindings::with_table(|table| table.add(action.name, &chord));
             if let Some(list) = weak.upgrade() {
                 list.commit();
             }
-        });
+        }, None);
     }
 
-    fn change_selected(&self) {
-        let Some((action, chord)) = self.selected_binding() else { return };
+    /// Changes the chord of the binding on the row at `index`.
+    fn change_row(&self, index: i32) {
+        let Some((action, chord)) = self.imp().bindings.borrow().get(index as usize).cloned() else { return };
         let weak = self.downgrade();
         let previous = chord.clone();
-        binding_dialog::show(self, Some((action, chord)), move |new_action, new_chord| {
+        let previous_for_delete = chord.clone();
+        binding_dialog::show(self, action, Some(chord), move |new_chord| {
             keybindings::with_table(|table| {
                 table.remove(action.name, &previous);
-                table.add(new_action.name, &new_chord);
+                table.add(action.name, &new_chord);
             });
             if let Some(list) = weak.upgrade() {
                 list.commit();
             }
-        });
+        }, Some(Box::new({
+            let weak = self.downgrade();
+            let chord = previous_for_delete;
+            move || {
+                if let Some(list) = weak.upgrade() {
+                    list.remove_binding(action, &chord);
+                }
+            }
+        })));
     }
 
-    fn remove_selected(&self) {
-        let Some((action, chord)) = self.selected_binding() else { return };
-        keybindings::with_table(|table| table.remove(action.name, &chord));
+    fn remove_binding(&self, action: &'static ActionInfo, chord: &str) {
+        keybindings::with_table(|table| table.remove(action.name, chord));
+        self.commit();
+    }
+
+    /// Asks before putting every binding back to its default.
+    fn confirm_reset(&self) {
+        use adw::prelude::AlertDialogExt;
+        let dialog = adw::AlertDialog::new(
+            Some("Reset Keybindings?"),
+            Some("Every binding will be put back to its default. Undo can still restore the bindings from when preferences opened."),
+        );
+        dialog.add_response("cancel", "Cancel");
+        dialog.add_response("reset", "Reset");
+        dialog.set_response_appearance("reset", adw::ResponseAppearance::Destructive);
+        dialog.set_default_response(Some("cancel"));
+        dialog.set_close_response("cancel");
+        let weak = self.downgrade();
+        dialog.connect_response(Some("reset"), move |_, _| {
+            if let Some(list) = weak.upgrade() {
+                list.reset();
+            }
+        });
+        adw::prelude::AdwDialogExt::present(&dialog, Some(self));
+    }
+
+    /// Puts the bindings back as they were when the editor opened.
+    fn undo(&self) {
+        let Some(snapshot) = self.imp().snapshot.borrow().clone() else { return };
+        keybindings::with_table(|table| *table = snapshot);
         self.commit();
     }
 
@@ -295,31 +442,85 @@ impl KeybindingList {
             }
         });
     }
-}
 
-/// A row: the action's icon and label, its scope, and its chord in monospace.
-fn binding_row(action: &'static ActionInfo, chord: &str) -> gtk::ListBoxRow {
-    let content = gtk::Box::new(gtk::Orientation::Horizontal, 12);
-    content.set_margin_top(8);
-    content.set_margin_bottom(8);
-    content.set_margin_start(12);
-    content.set_margin_end(12);
+    /// A row: the action's icon and label, its chord in monospace, and its scope's icon, which removes it.
+    fn binding_row(&self, action: &'static ActionInfo, chord: &str) -> gtk::ListBoxRow {
+        let content = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+        content.set_margin_top(2);
+        content.set_margin_bottom(2);
+        content.set_margin_start(12);
 
-    content.append(&gtk::Image::from_icon_name(action.icon));
-    let label = gtk::Label::new(Some(action.label));
-    label.set_xalign(0.0);
-    label.set_hexpand(true);
-    content.append(&label);
+        content.append(&gtk::Image::from_icon_name(action.icon));
+        let label = gtk::Label::new(Some(action.label));
+        label.set_xalign(0.0);
+        label.set_hexpand(true);
+        content.append(&label);
 
-    let scope = gtk::Label::new(Some(action.scope.title()));
-    scope.add_css_class("dim-label");
-    content.append(&scope);
+        let key = gtk::Label::new(Some(chord));
+        key.add_css_class("monospace");
+        content.append(&key);
 
-    let key = gtk::Label::new(Some(chord));
-    key.add_css_class("monospace");
-    content.append(&key);
+        // The scope's icon, which turns into a red remove button while the pointer is over it.
+        let remove = gtk::Button::from_icon_name(action.scope.icon());
+        remove.set_tooltip_text(Some("Remove binding"));
+        remove.add_css_class("flat");
+        remove.add_css_class("binding-remove");
+        remove.set_valign(gtk::Align::Center);
+        let hover = gtk::EventControllerMotion::new();
+        hover.connect_enter({
+            let remove = remove.clone();
+            move |_, _, _| {
+                remove.set_icon_name("user-trash-symbolic");
+                remove.add_css_class("error");
+            }
+        });
+        hover.connect_leave({
+            let remove = remove.clone();
+            move |_| {
+                remove.set_icon_name(action.scope.icon());
+                remove.remove_css_class("error");
+            }
+        });
+        remove.add_controller(hover);
+        let weak = self.downgrade();
+        let removed = chord.to_owned();
+        remove.connect_clicked(move |_| {
+            if let Some(list) = weak.upgrade() {
+                list.remove_binding(action, &removed);
+            }
+        });
+        content.append(&remove);
 
-    let row = gtk::ListBoxRow::new();
-    row.set_child(Some(&content));
-    row
+        let row = gtk::ListBoxRow::new();
+        row.set_child(Some(&content));
+        // The tooltip: the name and action name, the description, then a little below, the scope with its icon.
+        row.set_has_tooltip(true);
+        row.connect_query_tooltip(move |_, _, _, _, tooltip| {
+            let name = gtk::Label::new(None);
+            name.set_xalign(0.0);
+            name.set_markup(&format!(
+                "<b>{}</b> ({})",
+                glib::markup_escape_text(action.label),
+                glib::markup_escape_text(action.name),
+            ));
+            let scope_title = gtk::Label::new(None);
+            scope_title.set_markup("<b>Scope:</b>");
+            let scope = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+            scope.append(&scope_title);
+            scope.append(&gtk::Image::from_icon_name(action.scope.icon()));
+            scope.append(&gtk::Label::new(Some(action.scope.title())));
+            let description = gtk::Label::new(Some(action.description));
+            description.set_xalign(0.0);
+            description.set_wrap(true);
+            description.set_max_width_chars(48);
+            let content = gtk::Box::new(gtk::Orientation::Vertical, 2);
+            scope.set_margin_top(6);
+            content.append(&name);
+            content.append(&description);
+            content.append(&scope);
+            tooltip.set_custom(Some(&content));
+            true
+        });
+        row
+    }
 }

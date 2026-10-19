@@ -7,3 +7,26 @@
 @import "media_viewer";
 
 @import "content_pane";
+
+// The scope of an action in the keybindings editor's action picker.
+.action-scope {
+  font-style: italic;
+}
+
+// Keep the action picker's items close together.
+dropdown.action-picker popover listview > row {
+  padding-top: 2px;
+  padding-bottom: 2px;
+}
+
+// An action's description in the keybindings editor's action picker is never bold, even on its button.
+.action-description {
+  font-weight: normal;
+}
+
+// The keybindings list's remove buttons are small, so its rows stay close together.
+button.binding-remove {
+  min-height: 0;
+  min-width: 0;
+  padding: 4px;
+}

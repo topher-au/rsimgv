@@ -27,8 +27,6 @@ mod imp {
         #[template_child]
         pub thumbnail_bar_shown_row: TemplateChild<adw::SwitchRow>,
         #[template_child]
-        pub thumbnail_bar_overlay_row: TemplateChild<adw::SwitchRow>,
-        #[template_child]
         pub blurred_background_row: TemplateChild<adw::SwitchRow>,
         #[template_child]
         pub ipc_tcp_row: TemplateChild<adw::SpinRow>,
@@ -71,7 +69,7 @@ mod imp {
         #[template_child]
         pub keep_fit_mode_row: TemplateChild<adw::SwitchRow>,
         #[template_child]
-        pub one_to_one_focus_row: TemplateChild<adw::ComboRow>,
+        pub zoom_step_row: TemplateChild<adw::SpinRow>,
         #[template_child]
         pub expand_up_to_scale: TemplateChild<gtk::Scale>,
         #[template_child]
@@ -126,17 +124,33 @@ impl PreferencesDialog {
         settings.bind("ipc-socket", &*imp.ipc_socket_row, "active").build();
         settings.bind("viewer-blurred-background", &*imp.blurred_background_row, "active").build();
         bind_port(settings, &imp.ipc_tcp_row, "ipc-tcp-port");
+        bind_port(settings, &imp.zoom_step_row, "zoom-step");
         bind_port(settings, &imp.ipc_http_row, "ipc-http-port");
 
         bind_switches(settings, dialog.imp());
         bind_choices(settings, dialog.imp());
         dialog.bind_start_directory(settings);
         bind_info_fields(settings, &dialog);
-        settings
-            .bind("expand-up-to", &*imp.expand_up_to_scale, "value")
-            .mapping(|variant, _| variant.get::<i32>().map(|size| f64::from(size).to_value()))
-            .set_mapping(|value, _| value.get::<f64>().ok().map(|size| (size.round() as i32).to_variant()))
-            .build();
+        // The scale steps through no limit, shown as "-", then 1x to 4x, with a mark at each.
+        let scale = &*imp.expand_up_to_scale;
+        for factor in 0..=4 {
+            scale.add_mark(f64::from(factor), gtk::PositionType::Bottom, None);
+        }
+        scale.set_format_value_func(|_, value| match value.round() as i32 {
+            0 => "-".to_owned(),
+            factor => format!("{factor}x"),
+        });
+        // The scale holds a double and the key an integer, so the factor is written by hand.
+        scale.set_value(f64::from(settings.int("expand-up-to-factor")));
+        scale.connect_value_changed({
+            let settings = settings.clone();
+            move |scale| {
+                let factor = scale.value().round() as i32;
+                if settings.int("expand-up-to-factor") != factor {
+                    let _ = settings.set_int("expand-up-to-factor", factor);
+                }
+            }
+        });
 
         // The spin row holds a double and the key an integer, so the size is converted by hand.
         imp.item_size_row.set_value(f64::from(settings.int("item-size")));
@@ -183,7 +197,6 @@ fn bind_switches(settings: &gio::Settings, imp: &imp::PreferencesDialog) {
         ("keep-fit-mode", &imp.keep_fit_mode_row),
         ("smooth-upscaling", &imp.smooth_upscaling_row),
         ("viewer-thumbnail-bar-shown", &imp.thumbnail_bar_shown_row),
-        ("viewer-thumbnail-bar-overlay", &imp.thumbnail_bar_overlay_row),
     ];
     for (key, row) in switches {
         settings.bind(key, &**row, "active").build();
@@ -192,14 +205,13 @@ fn bind_switches(settings: &gio::Settings, imp: &imp::PreferencesDialog) {
 
 /// Binds each combo row to a string setting whose value is one of `choices`, by position in the row.
 fn bind_choices(settings: &gio::Settings, imp: &imp::PreferencesDialog) {
-    let combos: [(&str, &glib::Object, &[&str]); 9] = [
+    let combos: [(&str, &glib::Object, &[&str]); 8] = [
         ("viewer-thumbnail-bar", imp.thumbnail_bar_row.upcast_ref(), &["top", "left", "bottom", "right"]),
         ("start-location", imp.start_location_row.upcast_ref(), &["last", "root", "home", "specific"]),
         ("filename-display", imp.filename_row.upcast_ref(), &["off", "wrapped", "ellipsized"]),
         ("show-directories", imp.show_directories_row.upcast_ref(), &["none", "first-last", "inline"]),
         ("zoom-indicator", imp.zoom_indicator_row.upcast_ref(), &["on", "off", "auto"]),
         ("image-fit", imp.image_fit_row.upcast_ref(), &["fit-window", "stretch-width", "one-to-one", "fit-stretch"]),
-        ("one-to-one-focus", imp.one_to_one_focus_row.upcast_ref(), &["top", "center", "cursor"]),
         ("scaling-filter", imp.scaling_filter_row.upcast_ref(), &["nearest", "bilinear", "bicubic", "lanczos"]),
         ("info-layout", imp.info_layout_dropdown.upcast_ref(), &["disabled", "stacked", "inline"]),
     ];

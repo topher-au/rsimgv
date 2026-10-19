@@ -9,7 +9,7 @@ use gtk::subclass::prelude::*;
 use gtk::{gdk, glib, graphene};
 
 /// How much one zoom step changes the scale.
-const ZOOM_STEP: f64 = 1.25;
+const DEFAULT_ZOOM_STEP: f64 = 1.25;
 /// The smallest and largest scale the zoom reaches, relative to the picture's own size.
 const MIN_SCALE: f64 = 0.05;
 const MAX_SCALE: f64 = 20.0;
@@ -45,6 +45,14 @@ impl Fit {
 }
 
 /// How the picture is drawn: its scale, and its offset from the centre of the view.
+/// How the user left a picture: its fit mode, or `None` for its zoom, and its pan.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Placement {
+    fit: Option<Fit>,
+    zoom: f64,
+    offset: (f64, f64),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct View {
     scale: f64,
@@ -59,10 +67,21 @@ mod imp {
         pub(super) texture: RefCell<Option<gdk::Texture>>,
         /// The fit mode, or `None` once the user has zoomed.
         pub(super) fit: Cell<Option<Fit>>,
+        /// The fit mode last chosen, which a new picture gets, and whether it does rather than fitting the window.
+        pub(super) last_fit: Cell<Option<Fit>>,
+        pub(super) keep_fit: Cell<bool>,
+        /// How much one zoom step changes the scale, as a factor.
+        pub(super) zoom_step: Cell<f64>,
+        /// The most fitting to the window enlarges a picture smaller than the view, as a multiple of its size; 0 has no limit.
+        pub(super) expand_limit: Cell<f64>,
         /// The scale used while no fit mode is set.
         pub(super) zoom: Cell<f64>,
         /// The offset the picture is panned to: where it is heading.
         pub(super) offset: Cell<(f64, f64)>,
+        /// The scale last reported through `scale-changed`.
+        pub(super) reported_scale: Cell<f64>,
+        /// Where the pointer is over the canvas, or `None` while it is elsewhere.
+        pub(super) pointer: Cell<Option<(f64, f64)>>,
         /// The offset when the current drag began, so a drag moves from there.
         pub(super) drag_start: Cell<(f64, f64)>,
         /// How the picture is drawn right now. It eases toward the target view.
@@ -83,9 +102,21 @@ mod imp {
     }
 
     impl ObjectImpl for ImageCanvas {
+        fn signals() -> &'static [glib::subclass::Signal] {
+            use std::sync::LazyLock;
+            static SIGNALS: LazyLock<Vec<glib::subclass::Signal>> = LazyLock::new(|| {
+                vec![glib::subclass::Signal::builder("scale-changed").param_types([f64::static_type()]).build()]
+            });
+            SIGNALS.as_ref()
+        }
+
         fn constructed(&self) {
             self.parent_constructed();
             self.fit.set(Some(Fit::Window));
+            self.keep_fit.set(true);
+            self.zoom_step.set(DEFAULT_ZOOM_STEP);
+            // A zoomed or panned picture is drawn past the canvas, so clip it to keep it off its neighbours.
+            self.obj().set_overflow(gtk::Overflow::Hidden);
             self.zoom.set(1.0);
             let obj = self.obj();
             let drag = gtk::GestureDrag::new();
@@ -109,6 +140,40 @@ mod imp {
                 }
             });
             obj.add_controller(drag);
+
+            let motion = gtk::EventControllerMotion::new();
+            motion.connect_motion({
+                let weak = obj.downgrade();
+                move |_, x, y| {
+                    if let Some(canvas) = weak.upgrade() {
+                        canvas.imp().pointer.set(Some((x, y)));
+                    }
+                }
+            });
+            motion.connect_leave({
+                let weak = obj.downgrade();
+                move |_| {
+                    if let Some(canvas) = weak.upgrade() {
+                        canvas.imp().pointer.set(None);
+                    }
+                }
+            });
+            obj.add_controller(motion);
+
+            // Ctrl and the wheel zoom on the pointer; a smooth scroll zooms by as much as it moves.
+            let scroll = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::VERTICAL);
+            scroll.connect_scroll({
+                let weak = obj.downgrade();
+                move |controller, _, dy| {
+                    let Some(canvas) = weak.upgrade() else { return glib::Propagation::Proceed };
+                    if !controller.current_event_state().contains(gdk::ModifierType::CONTROL_MASK) {
+                        return glib::Propagation::Proceed;
+                    }
+                    canvas.zoom_at_pointer(canvas.imp().zoom_step.get().powf(-dy.clamp(-1.0, 1.0)));
+                    glib::Propagation::Stop
+                }
+            });
+            obj.add_controller(scroll);
         }
     }
 
@@ -124,6 +189,17 @@ mod imp {
                 canvas.draw_underlay(snapshot, &texture);
             }
             let Some(target) = canvas.target_view() else { return };
+            // The scale the picture heads to changes with zooms, fits and the view's size; it is reported
+            // after the frame, as signals should not run while drawing.
+            if (self.reported_scale.get() - target.scale).abs() > f64::EPSILON {
+                self.reported_scale.set(target.scale);
+                let weak = canvas.downgrade();
+                glib::idle_add_local_once(move || {
+                    if let Some(canvas) = weak.upgrade() {
+                        canvas.emit_by_name::<()>("scale-changed", &[&canvas.imp().reported_scale.get()]);
+                    }
+                });
+            }
             let view = match self.shown.get() {
                 Some(view) => view,
                 None => {
@@ -155,9 +231,13 @@ impl Default for ImageCanvas {
 }
 
 impl ImageCanvas {
-    /// Shows `texture`, or nothing. The picture is centred again, without easing from the last one.
+    /// Shows `texture`, or nothing. The picture is centred again in the fit mode, dropping any zoom, without
+    /// easing from the last one.
     pub fn set_texture(&self, texture: Option<gdk::Texture>) {
-        self.imp().texture.replace(texture);
+        let imp = self.imp();
+        let fit = if imp.keep_fit.get() { imp.last_fit.get().unwrap_or(Fit::Window) } else { Fit::Window };
+        imp.fit.set(Some(fit));
+        imp.texture.replace(texture);
         self.imp().offset.set((0.0, 0.0));
         self.snap();
     }
@@ -165,6 +245,7 @@ impl ImageCanvas {
     /// Fits the picture to the view in `fit` mode, centred again.
     pub fn set_fit(&self, fit: Fit) {
         self.imp().fit.set(Some(fit));
+        self.imp().last_fit.set(Some(fit));
         self.imp().offset.set((0.0, 0.0));
         self.ease();
     }
@@ -176,11 +257,11 @@ impl ImageCanvas {
     }
 
     pub fn zoom_in(&self) {
-        self.zoom_by(ZOOM_STEP);
+        self.zoom_by(self.imp().zoom_step.get());
     }
 
     pub fn zoom_out(&self) {
-        self.zoom_by(1.0 / ZOOM_STEP);
+        self.zoom_by(1.0 / self.imp().zoom_step.get());
     }
 
     /// Pans the picture by `dx` and `dy` pixels, easing there, as far as it can go while still covering the view.
@@ -190,10 +271,83 @@ impl ImageCanvas {
         self.ease();
     }
 
+    /// How the picture is zoomed and panned, if the user has zoomed or panned it.
+    pub fn placement(&self) -> Option<Placement> {
+        let imp = self.imp();
+        imp.texture.borrow().as_ref()?;
+        let offset = self.target_view().map_or(imp.offset.get(), |view| view.offset);
+        let moved = offset.0.abs() >= 0.5 || offset.1.abs() >= 0.5;
+        (imp.fit.get().is_none() || moved).then(|| Placement { fit: imp.fit.get(), zoom: imp.zoom.get(), offset })
+    }
+
+    /// Zooms and pans the picture as `placement` says, without easing.
+    pub fn restore(&self, placement: Placement) {
+        let imp = self.imp();
+        imp.fit.set(placement.fit);
+        imp.zoom.set(placement.zoom);
+        imp.offset.set(placement.offset);
+        self.snap();
+    }
+
+    /// Calls `callback` with the scale the picture is drawn at, relative to its own size, when it changes.
+    pub fn connect_scale_changed<F: Fn(&Self, f64) + 'static>(&self, callback: F) -> glib::SignalHandlerId {
+        self.connect_local("scale-changed", false, move |values| {
+            let canvas = values[0].get::<ImageCanvas>().expect("canvas argument");
+            callback(&canvas, values[1].get::<f64>().expect("scale argument"));
+            None
+        })
+    }
+
+    /// Makes each zoom step change the scale by `percent`.
+    pub fn set_zoom_step(&self, percent: i32) {
+        self.imp().zoom_step.set(1.0 + f64::from(percent.max(1)) / 100.0);
+    }
+
+    /// Limits how much fitting to the window enlarges a small picture, to `factor` times its size; 0 has no limit.
+    pub fn set_expand_limit(&self, factor: f64) {
+        self.imp().expand_limit.set(factor);
+        self.ease();
+    }
+
+    /// Whether a new picture keeps the fit mode last chosen, rather than fitting the window.
+    pub fn set_keep_fit(&self, keep: bool) {
+        self.imp().keep_fit.set(keep);
+    }
+
     /// Draws a blurred, dimmed copy of the picture, cropped to fill the view, behind the picture. Off by default.
     pub fn set_underlay(&self, on: bool) {
         self.imp().underlay.set(on);
         self.queue_draw();
+    }
+
+    /// Zooms in a step, keeping the point under the pointer in place, or the centre if the pointer is elsewhere.
+    pub fn zoom_in_at_pointer(&self) {
+        self.zoom_at_pointer(self.imp().zoom_step.get());
+    }
+
+    pub fn zoom_out_at_pointer(&self) {
+        self.zoom_at_pointer(1.0 / self.imp().zoom_step.get());
+    }
+
+    /// Zooms by `factor`, keeping the point of the picture under the pointer where it is.
+    fn zoom_at_pointer(&self, factor: f64) {
+        let Some(view) = self.target_view() else { return };
+        let Some((px, py)) = self.imp().pointer.get() else {
+            self.zoom_by(factor);
+            return;
+        };
+        let scale = (view.scale * factor).clamp(MIN_SCALE, MAX_SCALE);
+        let ratio = scale / view.scale;
+        // The pointer's place relative to the view's centre, less the offset, is the point on the picture,
+        // which moves with the scale.
+        let (view_width, view_height) = self.view_size();
+        let (cx, cy) = (px - view_width / 2.0, py - view_height / 2.0);
+        let offset = (cx - (cx - view.offset.0) * ratio, cy - (cy - view.offset.1) * ratio);
+        let imp = self.imp();
+        imp.zoom.set(scale);
+        imp.fit.set(None);
+        imp.offset.set(offset);
+        self.ease();
     }
 
     fn zoom_by(&self, factor: f64) {
@@ -269,8 +423,12 @@ impl ImageCanvas {
         if view_width <= 0.0 || view_height <= 0.0 {
             return None;
         }
+        let fitted = |scale: f64| {
+            let limit = self.imp().expand_limit.get();
+            if limit > 0.0 { scale.min(limit) } else { scale }
+        };
         Some(match self.imp().fit.get() {
-            Some(Fit::Window) => (view_width / texture_width).min(view_height / texture_height),
+            Some(Fit::Window) => fitted((view_width / texture_width).min(view_height / texture_height)),
             Some(Fit::Width) => view_width / texture_width,
             Some(Fit::Height) => view_height / texture_height,
             Some(Fit::Original) => 1.0,

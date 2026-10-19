@@ -13,6 +13,14 @@
 //!   media-only: true
 //! ```
 //!
+//! A name with dots in it is kept in nested mappings, so `thumbnail-bar.size` in `view` is saved as:
+//!
+//! ```yaml
+//! view:
+//!   thumbnail-bar:
+//!     size: 80
+//! ```
+//!
 //! A file in the older layout, with every setting under one `settings` mapping, still loads.
 //!
 //! Values are read back as the type GSettings asks for. Changes made in the file while the app runs
@@ -81,14 +89,16 @@ const LAYOUT: &[(&str, &str, &str)] = &[
     ("zoom-indicator", "general", "zoom-indicator"),
     ("image-fit", "view", "image-fit"),
     ("keep-fit-mode", "view", "keep-fit-mode"),
-    ("one-to-one-focus", "view", "one-to-one-focus"),
-    ("expand-up-to", "view", "expand-up-to"),
+    ("expand-up-to-factor", "view", "expand-up-to-factor"),
+    ("zoom-step", "view", "zoom-step"),
     ("scaling-filter", "view", "scaling-filter"),
     ("smooth-upscaling", "view", "smooth-upscaling"),
     ("viewer-blurred-background", "view", "blurred-background"),
-    ("viewer-thumbnail-bar", "view", "thumbnail-bar"),
-    ("viewer-thumbnail-bar-shown", "view", "thumbnail-bar-shown"),
-    ("viewer-thumbnail-bar-overlay", "view", "thumbnail-bar-overlay"),
+    ("viewer-thumbnail-bar", "view", "thumbnail-bar.side"),
+    ("viewer-thumbnail-bar-shown", "view", "thumbnail-bar.shown"),
+    ("viewer-thumbnail-bar-size", "view", "thumbnail-bar.size"),
+    ("viewer-thumbnail-bar-overlay", "view", "thumbnail-bar.overlay"),
+    ("viewer-thumbnail-bar-pinned", "view", "thumbnail-bar.pinned"),
     ("ipc-socket", "ipc", "socket"),
     ("ipc-tcp-port", "ipc", "tcp-port"),
     ("ipc-http-port", "ipc", "http-port"),
@@ -131,14 +141,46 @@ fn load(file: &Path) -> BTreeMap<String, Value> {
         let (Some(group), Some(names)) = (group.as_str(), group_value.as_mapping()) else {
             continue;
         };
-        for (name, value) in names {
-            let Some(name) = name.as_str() else { continue };
-            if let Some(key) = schema_key(group, name) {
-                values.insert(key, value.clone());
+        for (name, value) in flatten(names) {
+            if let Some(key) = schema_key(group, &name) {
+                values.insert(key, value);
             }
         }
     }
     values
+}
+
+/// The settings in a group's mapping, with the names of those in nested mappings joined by dots.
+fn flatten(names: &Mapping) -> Vec<(String, Value)> {
+    let mut flat = Vec::new();
+    for (name, value) in names {
+        let Some(name) = name.as_str() else { continue };
+        match value {
+            Value::Mapping(inner) => {
+                flat.extend(flatten(inner).into_iter().map(|(inner_name, value)| (format!("{name}.{inner_name}"), value)));
+            }
+            _ => flat.push((name.to_owned(), value.clone())),
+        }
+    }
+    flat
+}
+
+/// Puts `value` in `mapping` under `name`, in nested mappings for each part of the name before a dot.
+fn insert_nested(mapping: &mut Mapping, name: &str, value: Value) {
+    match name.split_once('.') {
+        Some((first, rest)) => {
+            let first = Value::String(first.to_owned());
+            if !matches!(mapping.get(&first), Some(Value::Mapping(_))) {
+                mapping.insert(first.clone(), Value::Mapping(Mapping::new()));
+            }
+            if let Some(Value::Mapping(inner)) = mapping.get_mut(&first) {
+                insert_nested(inner, rest, value);
+            }
+        }
+        None => {
+            mapping.insert(Value::String(name.to_owned()), value);
+        }
+    }
 }
 
 /// Writes the settings to `file` through a temporary file, so a crash never leaves it half-written.
@@ -151,7 +193,7 @@ fn save(file: &Path, values: &BTreeMap<String, Value>) -> std::io::Result<()> {
             root.insert(group_key.clone(), Value::Mapping(Mapping::new()));
         }
         if let Some(Value::Mapping(names)) = root.get_mut(&group_key) {
-            names.insert(Value::String(name), value.clone());
+            insert_nested(names, &name, value.clone());
         }
     }
     let text = serde_yaml_ng::to_string(&Value::Mapping(root)).map_err(std::io::Error::other)?;

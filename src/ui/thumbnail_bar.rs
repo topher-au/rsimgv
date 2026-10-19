@@ -1,10 +1,13 @@
 //! The viewer's thumbnail bar: a scrolling row or column of the thumbnails of the items the viewer
 //! steps through, with the one shown selected. Clicking a thumbnail shows its item. Only the
 //! thumbnails in view are made, as the list view only binds the rows it shows. Dragging the bar asks for
-//! it to move to the side of the viewer it is dropped nearest.
+//! it to move to the side of the viewer it is dropped nearest; dragging its inner edge, the one facing the
+//! picture, makes the thumbnails bigger or smaller. A small header at the start of the bar holds toggles to
+//! pin the bar shown and to float it over the picture.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 use gtk::glib::subclass::Signal;
 use gtk::prelude::*;
@@ -15,8 +18,13 @@ use super::film_strip::FilmStrip;
 use super::media_viewer::is_video;
 use crate::fs::thumbnail::{Media as ThumbnailMedia, Size as ThumbnailSize, Thumbnails};
 
-/// The size of a thumbnail in the bar, in pixels.
+/// The size of a thumbnail in the bar to start with, and the range it is kept within, in pixels.
 const THUMBNAIL_PIXELS: i32 = 80;
+const THUMBNAIL_MIN: i32 = 48;
+const THUMBNAIL_MAX: i32 = 256;
+
+/// How deep, in pixels, the band along the bar's inner edge is where a drag resizes the bar.
+const RESIZE_EDGE: f64 = 8.0;
 
 /// How far, in pixels, the pointer must move before a press on the bar becomes a drag rather than a click.
 const DRAG_THRESHOLD: f64 = 24.0;
@@ -39,8 +47,20 @@ mod imp {
         pub(super) selection: gtk::SingleSelection,
         pub(super) list: gtk::ListView,
         pub(super) scroller: gtk::ScrolledWindow,
+        /// Lays the header and the thumbnails out along the bar.
+        pub(super) content: gtk::Box,
+        pub(super) header: gtk::Box,
+        pub(super) pin_button: gtk::ToggleButton,
+        pub(super) overlay_button: gtk::ToggleButton,
         /// Whether the bar is being dragged to another side.
         pub(super) dragging: Cell<bool>,
+        /// The thumbnail size the drag of the inner edge started from, while one is under way.
+        pub(super) resizing: Cell<Option<i32>>,
+        /// The side of the viewer the bar is on, so which of its edges faces the picture.
+        pub(super) side: Cell<gtk::PositionType>,
+        /// The thumbnail size, shared with the factory, and the images it made, to resize them.
+        pub(super) size: Rc<Cell<i32>>,
+        pub(super) images: Rc<RefCell<Vec<glib::WeakRef<gtk::Image>>>>,
     }
 
     impl Default for ThumbnailBar {
@@ -49,11 +69,46 @@ mod imp {
             let selection = gtk::SingleSelection::new(Some(paths.clone()));
             selection.set_autoselect(false);
             selection.set_can_unselect(true);
-            let list = gtk::ListView::new(Some(selection.clone()), Some(factory()));
+            let size = Rc::new(Cell::new(THUMBNAIL_PIXELS));
+            let images = Rc::new(RefCell::new(Vec::new()));
+            let list = gtk::ListView::new(Some(selection.clone()), Some(factory(size.clone(), images.clone())));
             list.set_single_click_activate(true);
             list.add_css_class("thumbnail-bar-list");
-            let scroller = gtk::ScrolledWindow::builder().child(&list).build();
-            Self { paths, selection, list, scroller, dragging: Cell::new(false) }
+            let scroller = gtk::ScrolledWindow::builder().child(&list).hexpand(true).vexpand(true).build();
+            let pin_button = gtk::ToggleButton::builder()
+                .icon_name("view-pin-symbolic")
+                .tooltip_text("Keep the thumbnail bar shown")
+                .build();
+            let overlay_button = gtk::ToggleButton::builder()
+                .icon_name("window-restore-symbolic")
+                .tooltip_text("Float the thumbnail bar over the picture")
+                .build();
+            let header = gtk::Box::new(gtk::Orientation::Vertical, 4);
+            header.add_css_class("thumbnail-bar-header");
+            header.set_valign(gtk::Align::Center);
+            for button in [&pin_button, &overlay_button] {
+                button.add_css_class("flat");
+                button.add_css_class("circular");
+                header.append(button);
+            }
+            let content = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+            content.append(&header);
+            content.append(&scroller);
+            Self {
+                paths,
+                selection,
+                list,
+                scroller,
+                content,
+                header,
+                pin_button,
+                overlay_button,
+                dragging: Cell::new(false),
+                resizing: Cell::new(None),
+                side: Cell::new(gtk::PositionType::Bottom),
+                size,
+                images,
+            }
         }
     }
 
@@ -73,7 +128,23 @@ mod imp {
         fn constructed(&self) {
             self.parent_constructed();
             let obj = self.obj();
-            self.scroller.set_parent(&*obj);
+            self.content.set_parent(&*obj);
+            self.pin_button.connect_toggled({
+                let weak = obj.downgrade();
+                move |button| {
+                    if let Some(bar) = weak.upgrade() {
+                        bar.emit_by_name::<()>("pin-toggled", &[&button.is_active()]);
+                    }
+                }
+            });
+            self.overlay_button.connect_toggled({
+                let weak = obj.downgrade();
+                move |button| {
+                    if let Some(bar) = weak.upgrade() {
+                        bar.emit_by_name::<()>("overlay-toggled", &[&button.is_active()]);
+                    }
+                }
+            });
             let weak = obj.downgrade();
             self.list.connect_activate(move |_, position| {
                 if let Some(bar) = weak.upgrade() {
@@ -84,11 +155,31 @@ mod imp {
 
             // A press that moves far enough becomes a drag of the whole bar; dropping it asks for the
             // side nearest the pointer. Claiming the drag cancels the list's click, so no item opens.
+            // A press on the inner edge resizes instead, at once.
             let drag = gtk::GestureDrag::new();
             drag.set_propagation_phase(gtk::PropagationPhase::Capture);
             let weak = obj.downgrade();
+            drag.connect_drag_begin(move |gesture, x, y| {
+                let Some(bar) = weak.upgrade() else { return };
+                if bar.on_inner_edge(x, y) {
+                    gesture.set_state(gtk::EventSequenceState::Claimed);
+                    bar.imp().resizing.set(Some(bar.imp().size.get()));
+                }
+            });
+            let weak = obj.downgrade();
             drag.connect_drag_update(move |gesture, dx, dy| {
                 let Some(bar) = weak.upgrade() else { return };
+                if let Some(start) = bar.imp().resizing.get() {
+                    // The inner edge follows the pointer, so moving it toward the picture grows the bar.
+                    let grow = match bar.imp().side.get() {
+                        gtk::PositionType::Top => dy,
+                        gtk::PositionType::Bottom => -dy,
+                        gtk::PositionType::Left => dx,
+                        _ => -dx,
+                    };
+                    bar.set_thumbnail_size(start + grow.round() as i32);
+                    return;
+                }
                 if !bar.imp().dragging.get() && dx.hypot(dy) >= DRAG_THRESHOLD {
                     gesture.set_state(gtk::EventSequenceState::Claimed);
                     bar.imp().dragging.set(true);
@@ -99,6 +190,11 @@ mod imp {
             let weak = obj.downgrade();
             drag.connect_drag_end(move |gesture, dx, dy| {
                 let Some(bar) = weak.upgrade() else { return };
+                if bar.imp().resizing.take().is_some() {
+                    bar.refresh_thumbnails();
+                    bar.emit_by_name::<()>("size-chosen", &[&bar.imp().size.get()]);
+                    return;
+                }
                 if !bar.imp().dragging.replace(false) {
                     return;
                 }
@@ -109,16 +205,37 @@ mod imp {
                 }
             });
             obj.add_controller(drag);
+
+            // The resize cursor shows over the inner edge.
+            let motion = gtk::EventControllerMotion::new();
+            let weak = obj.downgrade();
+            motion.connect_motion(move |_, x, y| {
+                let Some(bar) = weak.upgrade() else { return };
+                if bar.imp().dragging.get() {
+                    return;
+                }
+                let cursor = (bar.imp().resizing.get().is_some() || bar.on_inner_edge(x, y)).then(|| {
+                    match bar.imp().side.get() {
+                        gtk::PositionType::Top | gtk::PositionType::Bottom => "ns-resize",
+                        _ => "ew-resize",
+                    }
+                });
+                bar.set_cursor_from_name(cursor);
+            });
+            obj.add_controller(motion);
         }
 
         fn dispose(&self) {
-            self.scroller.unparent();
+            self.content.unparent();
         }
 
         fn signals() -> &'static [Signal] {
             static SIGNALS: LazyLock<Vec<Signal>> =
                 LazyLock::new(|| vec![
                     Signal::builder("item-activated").param_types([u32::static_type()]).build(),
+                    Signal::builder("pin-toggled").param_types([bool::static_type()]).build(),
+                    Signal::builder("overlay-toggled").param_types([bool::static_type()]).build(),
+                    Signal::builder("size-chosen").param_types([i32::static_type()]).build(),
                     Signal::builder("side-dropped").param_types([f64::static_type(), f64::static_type()]).build(),
                 ]);
             SIGNALS.as_ref()
@@ -145,9 +262,63 @@ impl ThumbnailBar {
         glib::Object::new()
     }
 
-    /// Lays the thumbnails out in a row, or a column, scrolling along it.
-    pub fn set_orientation(&self, orientation: gtk::Orientation) {
+    /// Puts the bar on `side` of the viewer: a row along the top or bottom, a column beside.
+    pub fn set_side(&self, side: gtk::PositionType) {
+        self.imp().side.set(side);
+        self.set_orientation(match side {
+            gtk::PositionType::Top | gtk::PositionType::Bottom => gtk::Orientation::Horizontal,
+            _ => gtk::Orientation::Vertical,
+        });
+    }
+
+    /// Makes the thumbnails `size` pixels, kept within the bar's range.
+    pub fn set_thumbnail_size(&self, size: i32) {
         let imp = self.imp();
+        let size = size.clamp(THUMBNAIL_MIN, THUMBNAIL_MAX);
+        if imp.size.replace(size) == size {
+            return;
+        }
+        imp.images.borrow_mut().retain(|image| {
+            let Some(image) = image.upgrade() else { return false };
+            image.set_pixel_size(size);
+            image.set_size_request(size, size);
+            true
+        });
+        if imp.resizing.get().is_none() {
+            self.refresh_thumbnails();
+        }
+    }
+
+    /// Asks again for the thumbnails shown, at the size they are now.
+    fn refresh_thumbnails(&self) {
+        let imp = self.imp();
+        imp.images.borrow_mut().clear();
+        imp.list.set_factory(Some(&factory(imp.size.clone(), imp.images.clone())));
+        if let Some(position) = (imp.selection.selected() != gtk::INVALID_LIST_POSITION).then(|| imp.selection.selected()) {
+            imp.list.scroll_to(position, gtk::ListScrollFlags::NONE, None);
+        }
+    }
+
+    /// Whether `x`, `y` is in the band along the edge of the bar that faces the picture.
+    fn on_inner_edge(&self, x: f64, y: f64) -> bool {
+        let (width, height) = (f64::from(self.width()), f64::from(self.height()));
+        match self.imp().side.get() {
+            gtk::PositionType::Top => y > height - RESIZE_EDGE,
+            gtk::PositionType::Bottom => y < RESIZE_EDGE,
+            gtk::PositionType::Left => x > width - RESIZE_EDGE,
+            _ => x < RESIZE_EDGE,
+        }
+    }
+
+    /// Lays the thumbnails out in a row, or a column, scrolling along it.
+    fn set_orientation(&self, orientation: gtk::Orientation) {
+        let imp = self.imp();
+        // The header runs across the bar at its start: a column before a row of thumbnails, a row above a column.
+        imp.content.set_orientation(orientation);
+        let horizontal = orientation == gtk::Orientation::Horizontal;
+        imp.header.set_orientation(if horizontal { gtk::Orientation::Vertical } else { gtk::Orientation::Horizontal });
+        imp.header.set_valign(if horizontal { gtk::Align::Center } else { gtk::Align::Fill });
+        imp.header.set_halign(if horizontal { gtk::Align::Fill } else { gtk::Align::Center });
         imp.list.set_orientation(orientation);
         let (h, v) = match orientation {
             gtk::Orientation::Horizontal => (gtk::PolicyType::Automatic, gtk::PolicyType::Never),
@@ -181,9 +352,45 @@ impl ThumbnailBar {
         imp.list.scroll_to(position, gtk::ListScrollFlags::NONE, None);
     }
 
-    /// Whether the bar is being dragged to another side.
+    /// Shows the pin and overlay toggles as `pinned` and `overlay`. The pin only matters while floating.
+    pub fn set_toggles(&self, pinned: bool, overlay: bool) {
+        let imp = self.imp();
+        imp.pin_button.set_active(pinned);
+        imp.overlay_button.set_active(overlay);
+        imp.pin_button.set_sensitive(overlay);
+    }
+
+    /// Calls `callback` when the pin toggle is clicked, with whether it is now on.
+    pub fn connect_pin_toggled<F: Fn(&Self, bool) + 'static>(&self, callback: F) -> glib::SignalHandlerId {
+        self.connect_local("pin-toggled", false, move |values| {
+            let bar = values[0].get::<ThumbnailBar>().expect("bar argument");
+            callback(&bar, values[1].get::<bool>().expect("active argument"));
+            None
+        })
+    }
+
+    /// Calls `callback` when the overlay toggle is clicked, with whether it is now on.
+    pub fn connect_overlay_toggled<F: Fn(&Self, bool) + 'static>(&self, callback: F) -> glib::SignalHandlerId {
+        self.connect_local("overlay-toggled", false, move |values| {
+            let bar = values[0].get::<ThumbnailBar>().expect("bar argument");
+            callback(&bar, values[1].get::<bool>().expect("active argument"));
+            None
+        })
+    }
+
+    /// Whether the bar is being dragged to another side or resized.
     pub fn is_dragging(&self) -> bool {
-        self.imp().dragging.get()
+        self.imp().dragging.get() || self.imp().resizing.get().is_some()
+    }
+
+    /// Calls `callback` with the thumbnail size, in pixels, a resize of the bar ended at.
+    pub fn connect_size_chosen<F: Fn(&Self, i32) + 'static>(&self, callback: F) -> glib::SignalHandlerId {
+        self.connect_local("size-chosen", false, move |values| {
+            let bar = values[0].get::<ThumbnailBar>().expect("bar argument");
+            let size = values[1].get::<i32>().expect("size argument");
+            callback(&bar, size);
+            None
+        })
     }
 
     /// Calls `callback` with where, in the bar's coordinates, a drag of the bar was dropped.
@@ -208,21 +415,25 @@ impl ThumbnailBar {
     }
 }
 
-/// Makes each row a fixed-size image, which asks for its item's thumbnail when bound.
-fn factory() -> gtk::SignalListItemFactory {
+/// Makes each row an image of `size`, which asks for its item's thumbnail when bound, and keeps the
+/// images in `images`.
+fn factory(size: Rc<Cell<i32>>, images: Rc<RefCell<Vec<glib::WeakRef<gtk::Image>>>>) -> gtk::SignalListItemFactory {
     let factory = gtk::SignalListItemFactory::new();
-    factory.connect_setup(|_, item| {
+    let setup_size = size.clone();
+    factory.connect_setup(move |_, item| {
         let Some(item) = item.downcast_ref::<gtk::ListItem>() else { return };
+        let pixels = setup_size.get();
         let image = gtk::Image::builder()
-            .pixel_size(THUMBNAIL_PIXELS)
+            .pixel_size(pixels)
             .icon_name("image-x-generic-symbolic")
-            .width_request(THUMBNAIL_PIXELS)
-            .height_request(THUMBNAIL_PIXELS)
+            .width_request(pixels)
+            .height_request(pixels)
             .build();
         image.add_css_class("thumbnail");
+        images.borrow_mut().push(image.downgrade());
         item.set_child(Some(&image));
     });
-    factory.connect_bind(|_, item| {
+    factory.connect_bind(move |_, item| {
         let Some(item) = item.downcast_ref::<gtk::ListItem>() else { return };
         let (Some(image), Some(path)) = (
             item.child().and_downcast::<gtk::Image>(),
@@ -250,7 +461,7 @@ fn factory() -> gtk::SignalListItemFactory {
             &path,
             modified_secs(&path),
             media,
-            ThumbnailSize::for_pixels(THUMBNAIL_PIXELS),
+            ThumbnailSize::for_pixels(size.get()),
             wanted,
             move |texture| {
                 let (Some(image), Some(item)) = (shown.upgrade(), ready_item.upgrade()) else { return };

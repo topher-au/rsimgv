@@ -197,6 +197,33 @@ impl Window {
         let _ = window.imp().key_handler.set(keys);
         window.connect_sources();
         window.refresh_bookmarks();
+        window.imp().viewer.set_zoom_step(settings.int("zoom-step"));
+        settings.connect_changed(Some("zoom-step"), {
+            let weak = window.downgrade();
+            move |settings, _| {
+                if let Some(window) = weak.upgrade() {
+                    window.imp().viewer.set_zoom_step(settings.int("zoom-step"));
+                }
+            }
+        });
+        window.imp().viewer.set_expand_limit(settings.int("expand-up-to-factor"));
+        settings.connect_changed(Some("expand-up-to-factor"), {
+            let weak = window.downgrade();
+            move |settings, _| {
+                if let Some(window) = weak.upgrade() {
+                    window.imp().viewer.set_expand_limit(settings.int("expand-up-to-factor"));
+                }
+            }
+        });
+        window.imp().viewer.set_keep_fit(settings.boolean("keep-fit-mode"));
+        settings.connect_changed(Some("keep-fit-mode"), {
+            let weak = window.downgrade();
+            move |settings, _| {
+                if let Some(window) = weak.upgrade() {
+                    window.imp().viewer.set_keep_fit(settings.boolean("keep-fit-mode"));
+                }
+            }
+        });
         window.imp().viewer.set_blurred_background(settings.boolean("viewer-blurred-background"));
         settings.connect_changed(Some("viewer-blurred-background"), {
             let weak = window.downgrade();
@@ -208,6 +235,9 @@ impl Window {
         });
         let width = settings.int("sidebar-width");
         imp.split.set_user_sidebar_width((width > 0).then_some(width));
+        // In fullscreen the viewer's header floats over the picture and hides; otherwise it sits above it.
+        imp.viewer.set_fullscreen(window.is_fullscreen());
+        window.connect_fullscreened_notify(|window| window.imp().viewer.set_fullscreen(window.is_fullscreen()));
         let apply_thumbnail_bar = {
             let weak = window.downgrade();
             move |settings: &gio::Settings, _: &str| {
@@ -216,11 +246,19 @@ impl Window {
                     side_from_name(&settings.string("viewer-thumbnail-bar")),
                     settings.boolean("viewer-thumbnail-bar-shown"),
                     settings.boolean("viewer-thumbnail-bar-overlay"),
+                    settings.boolean("viewer-thumbnail-bar-pinned"),
                 );
+                window.imp().viewer.set_thumbnail_size(settings.int("viewer-thumbnail-bar-size"));
             }
         };
         apply_thumbnail_bar(settings, "viewer-thumbnail-bar");
-        for key in ["viewer-thumbnail-bar", "viewer-thumbnail-bar-shown", "viewer-thumbnail-bar-overlay"] {
+        for key in [
+            "viewer-thumbnail-bar",
+            "viewer-thumbnail-bar-shown",
+            "viewer-thumbnail-bar-size",
+            "viewer-thumbnail-bar-overlay",
+            "viewer-thumbnail-bar-pinned",
+        ] {
             settings.connect_changed(Some(key), apply_thumbnail_bar.clone());
         }
         imp.viewer.connect_thumbnail_side_requested({
@@ -229,6 +267,46 @@ impl Window {
                 let _ = settings.set_string("viewer-thumbnail-bar", side);
             }
         });
+        imp.viewer.thumbnail_bar().connect_pin_toggled({
+            let settings = settings.clone();
+            move |_, on| {
+                let _ = settings.set_boolean("viewer-thumbnail-bar-pinned", on);
+            }
+        });
+        imp.viewer.thumbnail_bar().connect_overlay_toggled({
+            let settings = settings.clone();
+            move |_, on| {
+                let _ = settings.set_boolean("viewer-thumbnail-bar-overlay", on);
+            }
+        });
+        imp.viewer.connect_thumbnail_size_requested({
+            let settings = settings.clone();
+            move |_, size| {
+                let _ = settings.set_int("viewer-thumbnail-bar-size", size);
+            }
+        });
+        // Ctrl and the wheel over the browse view resize its items, a step per notch; a smooth scroll
+        // adds up until it makes a notch.
+        let scroll = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::VERTICAL);
+        scroll.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let pending = std::rc::Rc::new(std::cell::Cell::new(0.0_f64));
+        scroll.connect_scroll({
+            let weak = window.downgrade();
+            move |controller, _, dy| {
+                let Some(window) = weak.upgrade() else { return glib::Propagation::Proceed };
+                if !controller.current_event_state().contains(gdk::ModifierType::CONTROL_MASK) {
+                    return glib::Propagation::Proceed;
+                }
+                let total = pending.get() + dy;
+                let notches = total.trunc();
+                pending.set(total - notches);
+                if notches != 0.0 {
+                    window.resize_items(-(notches as i32) * THUMBNAIL_STEP);
+                }
+                glib::Propagation::Stop
+            }
+        });
+        imp.tab_view.add_controller(scroll);
         window.navigate(&start_location(settings));
         window.reselect_last_file(settings);
         window
@@ -563,6 +641,8 @@ impl Window {
         bound_action(&view, &weak, "close", Window::close_viewer);
         bound_action(&view, &weak, "pin", |window| window.imp().viewer.toggle_pinned());
         bound_action(&view, &weak, "toggle-thumbnail-bar", |window| window.toggle_setting("viewer-thumbnail-bar-shown"));
+        bound_action(&view, &weak, "toggle-thumbnail-bar-pin", |window| window.toggle_setting("viewer-thumbnail-bar-pinned"));
+        bound_action(&view, &weak, "toggle-thumbnail-bar-overlay", |window| window.toggle_setting("viewer-thumbnail-bar-overlay"));
         self.insert_action_group("view", Some(&view));
 
         let video = gio::SimpleActionGroup::new();
@@ -579,6 +659,8 @@ impl Window {
         let image = gio::SimpleActionGroup::new();
         bound_action(&image, &weak, "zoom-in", |window| window.imp().viewer.zoom_in());
         bound_action(&image, &weak, "zoom-out", |window| window.imp().viewer.zoom_out());
+        bound_action(&image, &weak, "zoom-in-at-pointer", |window| window.imp().viewer.zoom_in_at_pointer());
+        bound_action(&image, &weak, "zoom-out-at-pointer", |window| window.imp().viewer.zoom_out_at_pointer());
         bound_action(&image, &weak, "fit-cycle", |window| window.imp().viewer.cycle_fit());
         bound_action(&image, &weak, "fit-window", |window| window.imp().viewer.set_fit(Fit::Window));
         bound_action(&image, &weak, "fit-width", |window| window.imp().viewer.set_fit(Fit::Width));

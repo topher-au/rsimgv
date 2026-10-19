@@ -22,6 +22,16 @@ thumbnail-bar {
   }
 }
 
+thumbnail-bar .thumbnail-bar-header {
+  padding: 4px;
+  color: #fff;
+}
+
 thumbnail-bar.dragging {
   opacity: 0.6;
+}
+
+// The viewer's header, floating over the picture in fullscreen, lets the picture show through.
+.media-viewer headerbar.floating {
+  background-color: rgba(0, 0, 0, 0.6);
 }
