@@ -84,9 +84,19 @@ pub fn show(
         spin.set_value(existing_value.unwrap_or(info.default));
         spin.set_hexpand(true);
         let label = gtk::Label::new(Some(info.label));
+        // The value as it will be shown, in its unit, beside the field.
+        let shown = gtk::Label::new(Some(&info.format(spin.value())));
+        shown.add_css_class("dim-label");
+        shown.set_width_chars(12);
+        shown.set_xalign(0.0);
+        spin.connect_value_changed({
+            let shown = shown.clone();
+            move |spin| shown.set_label(&info.format(spin.value()))
+        });
         let row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
         row.append(&label);
         row.append(&spin);
+        row.append(&shown);
         content.append(&row);
         spin
     });

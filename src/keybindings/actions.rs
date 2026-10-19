@@ -84,11 +84,23 @@ pub struct ActionInfo {
 pub const MIN_SPEED: f64 = 0.05;
 pub const MAX_SPEED: f64 = 16.0;
 
-/// The value a binding passes to an action that takes one: what it is called, the range it is kept within, the
-/// step the editor moves it by, how many decimals it shows, and what it is when the binding gives none.
+/// What a binding's value counts, which decides how it is shown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Unit {
+    /// Shown as `n second(s)`.
+    Seconds,
+    /// Shown as `n%`.
+    Percent,
+    /// A multiple, shown as `n×`.
+    Times,
+}
+
+/// The value a binding passes to an action that takes one: what it is called and counts, the range it is kept
+/// within, the step the editor moves it by, how many decimals it shows, and what it is when the binding gives none.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ValueInfo {
     pub label: &'static str,
+    pub unit: Unit,
     pub min: f64,
     pub max: f64,
     pub step: f64,
@@ -96,13 +108,37 @@ pub struct ValueInfo {
     pub default: f64,
 }
 
+impl ValueInfo {
+    /// `value` as it is shown, in its unit, with at most the value's decimals and no trailing zeros.
+    pub fn format(&self, value: f64) -> String {
+        let mut number = format!("{value:.*}", self.digits as usize);
+        if number.contains('.') {
+            number = number.trim_end_matches('0').trim_end_matches('.').to_owned();
+        }
+        match self.unit {
+            Unit::Seconds if number == "1" || number == "-1" => format!("{number} second"),
+            Unit::Seconds => format!("{number} seconds"),
+            Unit::Percent => format!("{number}%"),
+            Unit::Times => format!("{number}\u{d7}"),
+        }
+    }
+}
+
 /// The value the action `name` takes from its bindings, if it takes one.
 pub fn value_info(name: &str) -> Option<ValueInfo> {
     match name {
-        "video.seek" => Some(ValueInfo { label: "Seconds", min: -3600.0, max: 3600.0, step: 1.0, digits: 1, default: 10.0 }),
-        "video.volume" => Some(ValueInfo { label: "Percent", min: -100.0, max: 100.0, step: 1.0, digits: 0, default: 5.0 }),
-        "video.set-speed" => Some(ValueInfo { label: "Speed", min: MIN_SPEED, max: MAX_SPEED, step: 0.25, digits: 2, default: 1.0 }),
-        "video.adjust-speed" => Some(ValueInfo { label: "Change", min: -MAX_SPEED, max: MAX_SPEED, step: 0.05, digits: 2, default: 0.25 }),
+        "video.seek" => Some(ValueInfo { label: "Seconds", unit: Unit::Seconds, min: -3600.0, max: 3600.0, step: 1.0, digits: 1, default: 10.0 }),
+        "video.volume" => Some(ValueInfo { label: "Change", unit: Unit::Percent, min: -100.0, max: 100.0, step: 1.0, digits: 0, default: 5.0 }),
+        "video.set-speed" => Some(ValueInfo { label: "Speed", unit: Unit::Times, min: MIN_SPEED, max: MAX_SPEED, step: 0.25, digits: 2, default: 1.0 }),
+        "video.adjust-speed" => Some(ValueInfo {
+            label: "Change",
+            unit: Unit::Percent,
+            min: -MAX_SPEED * 100.0,
+            max: MAX_SPEED * 100.0,
+            step: 5.0,
+            digits: 0,
+            default: 25.0,
+        }),
         _ => None,
     }
 }

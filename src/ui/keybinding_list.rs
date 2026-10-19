@@ -461,7 +461,7 @@ impl KeybindingList {
 
         if let Some(info) = value_info(action.name) {
             let value = binding.value.unwrap_or(info.default);
-            let shown = gtk::Label::new(Some(&format!("{} {}", format_value(value, info.digits), info.label.to_lowercase())));
+            let shown = gtk::Label::new(Some(&info.format(value)));
             shown.add_css_class("dim-label");
             content.append(&shown);
         }
@@ -535,8 +535,3 @@ impl KeybindingList {
     }
 }
 
-/// `value` with at most `digits` decimals, without trailing zeros.
-fn format_value(value: f64, digits: u32) -> String {
-    let text = format!("{value:.*}", digits as usize);
-    if text.contains('.') { text.trim_end_matches('0').trim_end_matches('.').to_owned() } else { text }
-}
