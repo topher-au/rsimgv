@@ -78,7 +78,9 @@ browse:
   show-hidden: false
   media-only: true
   item-size: 128
-  wrap-names: false
+  filename-display: ellipsized
+  show-directories: first
+  info-fields: [size, modified]
 tree:
   collapse-on-navigate: false
 ```

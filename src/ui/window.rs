@@ -8,6 +8,7 @@ use gio::prelude::StaticType;
 use gtk::prelude::*;
 use gtk::{gdk, gio, glib};
 
+use super::browse_view::InfoField;
 use super::fs_tree::TreeSnapshot;
 use super::path_bar::OpenTarget;
 use super::{BrowseView, FsTree, HeaderBar, NavigationBar, OverlaySplitView, PathBar, PreferencesDialog};
@@ -619,7 +620,15 @@ impl Window {
         let imp = self.imp();
         if let Some(settings) = imp.settings.get() {
             settings.bind("item-size", browse, "item-size").build();
-            settings.bind("wrap-names", browse, "wrap-names").build();
+            settings.bind("filename-display", browse, "filename-display").build();
+            settings.bind("show-directories", browse, "show-directories").build();
+            set_info_fields_from(settings, browse);
+            let weak = browse.downgrade();
+            settings.connect_changed(Some("info-fields"), move |settings, _| {
+                if let Some(browse) = weak.upgrade() {
+                    set_info_fields_from(settings, &browse);
+                }
+            });
             settings.bind("media-only", browse, "media-only").build();
             settings.bind("show-hidden", browse, "show-hidden").build();
         }
@@ -721,6 +730,12 @@ struct TabState {
     history: Vec<PathBuf>,
     index: usize,
     tree: TreeSnapshot,
+}
+
+/// Gives `browse` the info fields the settings list, skipping names it does not know.
+fn set_info_fields_from(settings: &gio::Settings, browse: &BrowseView) {
+    let fields: Vec<InfoField> = settings.strv("info-fields").iter().filter_map(|key| InfoField::from_key(key)).collect();
+    browse.set_info_fields(&fields);
 }
 
 /// The id of the tab on `page`, stored as the name of its child.

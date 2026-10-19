@@ -6,6 +6,8 @@ use std::rc::Rc;
 
 use adw::prelude::AdwDialogExt;
 use adw::subclass::prelude::*;
+
+use super::browse_view::InfoField;
 use gtk::prelude::*;
 use gtk::{gio, glib};
 
@@ -21,6 +23,16 @@ mod imp {
         pub collapse_on_navigate_row: TemplateChild<adw::SwitchRow>,
         #[template_child]
         pub item_size_row: TemplateChild<adw::SpinRow>,
+        #[template_child]
+        pub filename_row: TemplateChild<adw::ComboRow>,
+        #[template_child]
+        pub show_directories_row: TemplateChild<adw::ComboRow>,
+        #[template_child]
+        pub info_size_row: TemplateChild<adw::SwitchRow>,
+        #[template_child]
+        pub info_modified_row: TemplateChild<adw::SwitchRow>,
+        #[template_child]
+        pub info_content_type_row: TemplateChild<adw::SwitchRow>,
         #[template_child]
         pub media_only_row: TemplateChild<adw::SwitchRow>,
         #[template_child]
@@ -87,6 +99,7 @@ impl PreferencesDialog {
 
         bind_switches(settings, dialog.imp());
         bind_choices(settings, dialog.imp());
+        bind_info_fields(settings, dialog.imp());
         settings
             .bind("expand-up-to", &*imp.expand_up_to_scale, "value")
             .mapping(|variant, _| variant.get::<i32>().map(|size| f64::from(size).to_value()))
@@ -142,7 +155,9 @@ fn bind_switches(settings: &gio::Settings, imp: &imp::PreferencesDialog) {
 
 /// Binds each combo row to a string setting whose value is one of `choices`, by position in the row.
 fn bind_choices(settings: &gio::Settings, imp: &imp::PreferencesDialog) {
-    let combos: [(&str, &adw::ComboRow, &[&str]); 4] = [
+    let combos: [(&str, &adw::ComboRow, &[&str]); 6] = [
+        ("filename-display", &imp.filename_row, &["off", "wrapped", "ellipsized"]),
+        ("show-directories", &imp.show_directories_row, &["none", "first", "last", "inline"]),
         ("zoom-indicator", &imp.zoom_indicator_row, &["on", "off", "auto"]),
         ("image-fit", &imp.image_fit_row, &["fit-window", "stretch-width", "one-to-one", "fit-stretch"]),
         ("one-to-one-focus", &imp.one_to_one_focus_row, &["top", "center", "cursor"]),
@@ -163,6 +178,48 @@ fn bind_choices(settings: &gio::Settings, imp: &imp::PreferencesDialog) {
             })
             .build();
     }
+}
+
+/// Binds the info switches to the `info-fields` list: a switch on adds its field, off removes it.
+fn bind_info_fields(settings: &gio::Settings, imp: &imp::PreferencesDialog) {
+    let rows = [
+        (InfoField::Size, &imp.info_size_row),
+        (InfoField::Modified, &imp.info_modified_row),
+        (InfoField::ContentType, &imp.info_content_type_row),
+    ];
+    let shown = |settings: &gio::Settings, field: InfoField| settings.strv("info-fields").iter().any(|key| key == field.key());
+    for (field, row) in &rows {
+        row.set_active(shown(settings, *field));
+        row.connect_active_notify({
+            let settings = settings.clone();
+            let field = *field;
+            move |row| {
+                let mut keys: Vec<String> = settings.strv("info-fields").iter().map(|key| key.to_string()).collect();
+                let listed = keys.iter().any(|key| key == field.key());
+                if row.is_active() == listed {
+                    return;
+                }
+                if row.is_active() {
+                    keys.push(field.key().to_owned());
+                } else {
+                    keys.retain(|key| key != field.key());
+                }
+                // Keep the list in the order the fields are offered in.
+                keys.sort_by_key(|key| InfoField::ALL.iter().position(|f| f.key() == key));
+                let _ = settings.set_strv("info-fields", keys.as_slice());
+            }
+        });
+    }
+    // A change made elsewhere, such as by editing the file, moves the switches.
+    let weak: Vec<(InfoField, glib::WeakRef<adw::SwitchRow>)> =
+        rows.iter().map(|(field, row)| (*field, row.downgrade())).collect();
+    settings.connect_changed(Some("info-fields"), move |settings, _| {
+        for (field, row) in &weak {
+            if let Some(row) = row.upgrade() {
+                row.set_active(shown(settings, *field));
+            }
+        }
+    });
 }
 
 #[cfg(test)]

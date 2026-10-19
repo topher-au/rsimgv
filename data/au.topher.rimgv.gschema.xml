@@ -14,10 +14,6 @@
       <range min="32" max="2048"/>
       <summary>Size in pixels of the visual part of each browse item</summary>
     </key>
-    <key name="wrap-names" type="b">
-      <default>false</default>
-      <summary>Wrap item names to two lines instead of ellipsizing them</summary>
-    </key>
     <key name="collapse-on-navigate" type="b">
       <default>false</default>
       <summary>Collapse folders outside the current path when navigating</summary>
@@ -102,6 +98,29 @@
     <key name="smooth-upscaling" type="b">
       <default>true</default>
       <summary>Smooth pixels when images are enlarged</summary>
+    </key>
+    <key name="filename-display" type="s">
+      <choices>
+        <choice value="off"/>
+        <choice value="wrapped"/>
+        <choice value="ellipsized"/>
+      </choices>
+      <default>'ellipsized'</default>
+      <summary>How item names are shown: off, wrapped to two lines, or ellipsized</summary>
+    </key>
+    <key name="show-directories" type="s">
+      <choices>
+        <choice value="none"/>
+        <choice value="first"/>
+        <choice value="last"/>
+        <choice value="inline"/>
+      </choices>
+      <default>'first'</default>
+      <summary>Where folders are listed: not at all, first, last, or among the files</summary>
+    </key>
+    <key name="info-fields" type="as">
+      <default>['size', 'modified']</default>
+      <summary>Details shown under each item's name</summary>
     </key>
   </schema>
 </schemalist>

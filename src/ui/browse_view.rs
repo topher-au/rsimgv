@@ -29,6 +29,22 @@ pub enum InfoField {
 }
 
 impl InfoField {
+    /// Every field, in the order the preferences list them.
+    pub const ALL: [InfoField; 3] = [InfoField::Size, InfoField::Modified, InfoField::ContentType];
+
+    /// The name a field is saved under in the settings.
+    pub fn key(self) -> &'static str {
+        match self {
+            InfoField::Size => "size",
+            InfoField::Modified => "modified",
+            InfoField::ContentType => "content-type",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|field| field.key() == key)
+    }
+
     fn text(self, entry: &FileEntry) -> Option<String> {
         let info = entry.info();
         match self {
@@ -62,7 +78,7 @@ fn is_media(entry: &FileEntry) -> bool {
         .is_some_and(|kind| kind.starts_with("image/") || kind.starts_with("video/"))
 }
 
-/// Lists a folder, folders first and then by natural name order.
+/// Lists a folder in natural name order. Where folders go is decided when the list is shown.
 async fn list_directory(dir: PathBuf) -> Result<Vec<FileEntry>, glib::Error> {
     let file = gio::File::for_path(&dir);
     let enumerator = file
@@ -76,11 +92,7 @@ async fn list_directory(dir: PathBuf) -> Result<Vec<FileEntry>, glib::Error> {
         }
         infos.extend(batch);
     }
-    infos.sort_by(|a, b| {
-        let a_dir = a.file_type() == gio::FileType::Directory;
-        let b_dir = b.file_type() == gio::FileType::Directory;
-        b_dir.cmp(&a_dir).then_with(|| natural_cmp(&a.display_name(), &b.display_name()))
-    });
+    infos.sort_by(|a, b| natural_cmp(&a.display_name(), &b.display_name()));
     Ok(infos
         .into_iter()
         .map(|info| FileEntry::new(dir.join(info.name()), info))
@@ -98,6 +110,7 @@ mod imp {
         pub grid: TemplateChild<gtk::GridView>,
         pub(super) store: OnceCell<gio::ListStore>,
         pub(super) filter: OnceCell<gtk::CustomFilter>,
+        pub(super) sorter: OnceCell<gtk::CustomSorter>,
         /// Show dot-prefixed files and folders.
         #[property(get, set)]
         show_hidden: Cell<bool>,
@@ -110,12 +123,15 @@ mod imp {
         pub(super) scroll_memory: RefCell<std::collections::HashMap<PathBuf, f64>>,
         pub(super) path: RefCell<Option<PathBuf>>,
         pub(super) info_fields: RefCell<Vec<InfoField>>,
+        /// How item names are shown: `off`, `wrapped` (two lines) or `ellipsized` (one line).
+        #[property(get, set)]
+        filename_display: RefCell<String>,
+        /// Where folders are listed: `none`, `first`, `last`, or `inline` among the files.
         /// Width and height of the visual part of each item, in pixels.
         #[property(get, set)]
         item_size: Cell<i32>,
-        /// Show names wrapped to two lines instead of ellipsized on one.
         #[property(get, set)]
-        wrap_names: Cell<bool>,
+        show_directories: RefCell<String>,
     }
 
     #[glib::object_subclass]
@@ -162,6 +178,8 @@ mod imp {
 
             self.item_size.set(DEFAULT_ITEM_SIZE);
             self.media_only.set(true);
+            self.filename_display.replace("ellipsized".to_owned());
+            self.show_directories.replace("first".to_owned());
             self.info_fields
                 .replace(vec![InfoField::Size, InfoField::Modified]);
 
@@ -177,14 +195,40 @@ mod imp {
                 };
                 let visible_when_hidden = view.show_hidden() || !entry.name().starts_with('.');
                 let visible_when_media = !view.media_only() || entry.is_dir() || is_media(entry);
-                visible_when_hidden && visible_when_media
+                let visible_when_listed = !entry.is_dir() || view.show_directories() != "none";
+                visible_when_hidden && visible_when_media && visible_when_listed
             });
-            let visible = gtk::FilterListModel::new(Some(store.clone()), Some(filter.clone()));
+
+            // Folders go first, last, or among the files, as the show-directories setting says.
+            let sorter = gtk::CustomSorter::new({
+                let view = obj.downgrade();
+                move |a, b| {
+                    let (Some(a), Some(b), Some(view)) =
+                        (a.downcast_ref::<FileEntry>(), b.downcast_ref::<FileEntry>(), view.upgrade())
+                    else {
+                        return gtk::Ordering::Equal;
+                    };
+                    let mode = view.show_directories();
+                    let rank = |entry: &FileEntry| match (mode.as_str(), entry.is_dir()) {
+                        ("inline", _) => 0,
+                        ("last", is_dir) => u8::from(is_dir),
+                        (_, is_dir) => u8::from(!is_dir),
+                    };
+                    match rank(a).cmp(&rank(b)).then_with(|| natural_cmp(&a.name(), &b.name())) {
+                        std::cmp::Ordering::Less => gtk::Ordering::Smaller,
+                        std::cmp::Ordering::Equal => gtk::Ordering::Equal,
+                        std::cmp::Ordering::Greater => gtk::Ordering::Larger,
+                    }
+                }
+            });
+            let sorted = gtk::SortListModel::new(Some(store.clone()), Some(sorter.clone()));
+            let visible = gtk::FilterListModel::new(Some(sorted), Some(filter.clone()));
             let selection = gtk::SingleSelection::new(Some(visible));
             selection.set_autoselect(false);
             self.grid.set_model(Some(&selection));
             let _ = self.store.set(store);
             let _ = self.filter.set(filter);
+            let _ = self.sorter.set(sorter);
 
             let factory = gtk::SignalListItemFactory::new();
             factory.connect_setup(|_, obj| {
@@ -264,9 +308,15 @@ mod imp {
 
             // Changing the size or the name mode rebinds every item, which re-lays them out.
             obj.connect_item_size_notify(|view| view.refresh_items());
-            obj.connect_wrap_names_notify(|view| view.refresh_items());
+            obj.connect_filename_display_notify(|view| view.refresh_items());
             obj.connect_show_hidden_notify(|view| view.refresh_filter());
             obj.connect_media_only_notify(|view| view.refresh_filter());
+            obj.connect_show_directories_notify(|view| {
+                view.refresh_filter();
+                if let Some(sorter) = view.imp().sorter.get() {
+                    sorter.changed(gtk::SorterChange::Different);
+                }
+            });
         }
     }
 
@@ -360,8 +410,10 @@ fn style_item(view: &BrowseView, cell: &gtk::Box, entry: &FileEntry) {
         None => icon.set_icon_name(Some("text-x-generic-symbolic")),
     }
 
-    let wrap = view.wrap_names();
+    let display = view.filename_display();
+    let wrap = display == "wrapped";
     name.set_label(&entry.name());
+    name.set_visible(display != "off");
     name.set_wrap(wrap);
     name.set_lines(if wrap { 2 } else { 1 });
     name.set_ellipsize(if wrap {
@@ -653,7 +705,7 @@ pub(crate) mod tests {
 
         // Resizing and re-laying out the items does not lose them.
         view.set_item_size(64);
-        view.set_wrap_names(true);
+        view.set_filename_display("wrapped".to_owned());
         view.set_info_fields(&[InfoField::Size]);
         assert_eq!(view.item_count(), 3);
 
