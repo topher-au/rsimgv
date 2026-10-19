@@ -46,11 +46,13 @@ impl BindingTable {
     }
 
     /// The chords bound to `name`, empty if there is no such action.
+    #[cfg(test)]
     pub fn chords(&self, name: &str) -> Vec<String> {
         self.bindings(name).iter().map(|binding| binding.chord.clone()).collect()
     }
 
     /// Binds `chord` to `name`, if it is a valid chord not already bound to it. Returns whether it was added.
+    #[cfg(test)]
     pub fn add(&mut self, name: &str, chord: &str) -> bool {
         self.add_with_value(name, chord, None)
     }
