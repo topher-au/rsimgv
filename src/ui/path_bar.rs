@@ -521,6 +521,7 @@ impl PathBar {
         for (label, action) in [
             ("Open in New _Window", "pathbar.open-item-new-window"),
             ("Open in New _Tab", "pathbar.open-item-new-tab"),
+            ("Copy _Path", "win.copy-path"),
             ("_Properties", "pathbar.properties"),
         ] {
             let item = gio::MenuItem::new(Some(label), None);

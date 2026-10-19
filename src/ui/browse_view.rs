@@ -143,6 +143,9 @@ mod imp {
                     Signal::builder("file-activated")
                         .param_types([String::static_type()])
                         .build(),
+                    Signal::builder("item-context-requested")
+                        .param_types([String::static_type(), bool::static_type(), f64::static_type(), f64::static_type()])
+                        .build(),
                 ]
             });
             SIGNALS.as_ref()
@@ -184,6 +187,33 @@ mod imp {
                 let builder = gtk::Builder::from_resource("/au/topher/rimgv/ui/browse_item.ui");
                 let cell: gtk::Box = builder.object("cell").expect("browse_item.ui defines `cell`");
                 item.set_child(Some(&cell));
+
+                // Right-click on an item asks for its context menu.
+                let click = gtk::GestureClick::new();
+                click.set_button(gtk::gdk::BUTTON_SECONDARY);
+                click.connect_pressed(|gesture, n_press, x, y| {
+                    if n_press != 1 {
+                        return;
+                    }
+                    let Some(cell) = gesture.widget().and_downcast::<gtk::Box>() else { return };
+                    let Some(view) = cell.ancestor(super::BrowseView::static_type()).and_downcast::<super::BrowseView>() else {
+                        return;
+                    };
+                    let Ok(position) = cell.widget_name().parse::<u32>() else { return };
+                    let Some(entry) = view.imp().grid.model().and_then(|model| model.item(position)).and_downcast::<FileEntry>() else {
+                        return;
+                    };
+                    let point = cell
+                        .compute_point(&view, &gtk::graphene::Point::new(x as f32, y as f32))
+                        .map_or((x, y), |p| (f64::from(p.x()), f64::from(p.y())));
+                    let path = entry.path().to_string_lossy().into_owned();
+                    view.emit_by_name::<()>(
+                        "item-context-requested",
+                        &[&path, &entry.is_dir(), &point.0, &point.1],
+                    );
+                    gesture.set_state(gtk::EventSequenceState::Claimed);
+                });
+                cell.add_controller(click);
             });
             let view = obj.downgrade();
             factory.connect_bind(move |_, obj| {
@@ -408,6 +438,23 @@ impl BrowseView {
             let view = values[0].get::<BrowseView>().expect("view argument");
             let path = values[1].get::<String>().expect("path argument");
             callback(&view, Path::new(&path));
+            None
+        })
+    }
+
+    /// Calls `callback(view, path, is_dir, x, y)` when an item is right-clicked. The pointer is in the view's
+    /// coordinates.
+    pub fn connect_item_context_requested<F>(&self, callback: F) -> glib::SignalHandlerId
+    where
+        F: Fn(&Self, &Path, bool, f64, f64) + 'static,
+    {
+        self.connect_local("item-context-requested", false, move |values| {
+            let view = values[0].get::<BrowseView>().expect("view argument");
+            let path = values[1].get::<String>().expect("path argument");
+            let is_dir = values[2].get::<bool>().expect("is_dir argument");
+            let x = values[3].get::<f64>().expect("x argument");
+            let y = values[4].get::<f64>().expect("y argument");
+            callback(&view, Path::new(&path), is_dir, x, y);
             None
         })
     }
