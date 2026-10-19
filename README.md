@@ -8,6 +8,10 @@ library of pictures and videos without leaving the window. The media viewer is n
 > **Status:** early development. The file explorer works; the media viewer, thumbnails, and file
 > operations are still to come.
 
+## Screenshots
+
+![rsimgv showing the folder tree, the home folder, and the navigation and path bar](docs/screenshots/main-window.png)
+
 ## Features
 
 - **Folder tree** rooted at `/`. Folders expand on demand, and selecting one reveals its path. Expansion
