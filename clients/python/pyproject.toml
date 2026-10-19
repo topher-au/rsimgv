@@ -10,5 +10,9 @@ requires-python = ">=3.10"
 license = { text = "GPL-3.0-or-later" }
 dependencies = []
 
+[project.optional-dependencies]
+# Screenshot.to_image returns a Pillow image.
+image = ["Pillow"]
+
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -7,7 +7,10 @@ import itertools
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Union
+from typing import TYPE_CHECKING, Any, Union
+
+if TYPE_CHECKING:
+    import PIL.Image
 
 from .transport import ConnectionFailed, HttpTransport, TcpTransport, Transport, UnixTransport
 
@@ -73,6 +76,20 @@ class Screenshot:
     height: int
     # Left out of the repr, as an image is too long to print.
     data: bytes = field(repr=False)
+
+    def to_image(self, max_size: int | tuple[int, int] | None = None) -> "PIL.Image.Image":
+        """The image as a Pillow image. With ``max_size``, a number or a ``(width, height)``, it is scaled down to fit
+        within that size, keeping its shape; it is never enlarged. Needs Pillow installed."""
+        import io
+
+        from PIL import Image
+
+        image = Image.open(io.BytesIO(self.data))
+        image.load()
+        if max_size is not None:
+            bounds = (max_size, max_size) if isinstance(max_size, int) else max_size
+            image.thumbnail(bounds)
+        return image
 
     def save(self, path: str | os.PathLike[str]) -> Path:
         """Writes the image to ``path`` and returns it."""
