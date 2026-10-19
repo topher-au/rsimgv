@@ -28,7 +28,7 @@ mod imp {
         #[template_child]
         pub show_directories_row: TemplateChild<adw::ComboRow>,
         #[template_child]
-        pub info_layout_row: TemplateChild<adw::ComboRow>,
+        pub info_layout_dropdown: TemplateChild<gtk::DropDown>,
         #[template_child]
         pub info_list: TemplateChild<gtk::ListBox>,
         #[template_child]
@@ -160,19 +160,19 @@ fn bind_switches(settings: &gio::Settings, imp: &imp::PreferencesDialog) {
 
 /// Binds each combo row to a string setting whose value is one of `choices`, by position in the row.
 fn bind_choices(settings: &gio::Settings, imp: &imp::PreferencesDialog) {
-    let combos: [(&str, &adw::ComboRow, &[&str]); 7] = [
-        ("info-layout", &imp.info_layout_row, &["disabled", "stacked", "inline"]),
-        ("filename-display", &imp.filename_row, &["off", "wrapped", "ellipsized"]),
-        ("show-directories", &imp.show_directories_row, &["none", "first-last", "inline"]),
-        ("zoom-indicator", &imp.zoom_indicator_row, &["on", "off", "auto"]),
-        ("image-fit", &imp.image_fit_row, &["fit-window", "stretch-width", "one-to-one", "fit-stretch"]),
-        ("one-to-one-focus", &imp.one_to_one_focus_row, &["top", "center", "cursor"]),
-        ("scaling-filter", &imp.scaling_filter_row, &["nearest", "bilinear", "bicubic", "lanczos"]),
+    let combos: [(&str, &glib::Object, &[&str]); 7] = [
+        ("filename-display", imp.filename_row.upcast_ref(), &["off", "wrapped", "ellipsized"]),
+        ("show-directories", imp.show_directories_row.upcast_ref(), &["none", "first-last", "inline"]),
+        ("zoom-indicator", imp.zoom_indicator_row.upcast_ref(), &["on", "off", "auto"]),
+        ("image-fit", imp.image_fit_row.upcast_ref(), &["fit-window", "stretch-width", "one-to-one", "fit-stretch"]),
+        ("one-to-one-focus", imp.one_to_one_focus_row.upcast_ref(), &["top", "center", "cursor"]),
+        ("scaling-filter", imp.scaling_filter_row.upcast_ref(), &["nearest", "bilinear", "bicubic", "lanczos"]),
+        ("info-layout", imp.info_layout_dropdown.upcast_ref(), &["disabled", "stacked", "inline"]),
     ];
-    for (key, row, choices) in combos {
+    for (key, object, choices) in combos {
         let choices: &'static [&'static str] = choices;
         settings
-            .bind(key, row, "selected")
+            .bind(key, object, "selected")
             .mapping(move |variant, _| {
                 let name = variant.str()?;
                 let index = choices.iter().position(|choice| *choice == name).unwrap_or(0);
