@@ -1,8 +1,13 @@
 //! A GTK media stream played by libmpv, so a `GtkPicture` and the viewer's controls can use it like a
 //! `GtkMediaFile`. libmpv decodes and renders each frame in software into memory, which becomes a texture.
+//!
+//! One player serves every stream: it is made for the first video, and each later video is loaded into it. The
+//! stream made last is the current one; the player's events and frames go to it, and older streams let go of
+//! the player. A new player is made only when the mpv options change.
 
 use std::cell::{Cell, RefCell};
 use std::path::Path;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -27,7 +32,10 @@ mod imp {
 
     #[derive(Default)]
     pub struct MpvStream {
-        pub(super) player: RefCell<Option<Player>>,
+        /// The shared player, while this is the current stream.
+        pub(super) player: RefCell<Option<Rc<Player>>>,
+        /// Whether the player has loaded this stream's file, so events from the file before it are ignored.
+        pub(super) loaded: Cell<bool>,
         /// The latest frame, and the size frames are rendered at.
         pub(super) frame: RefCell<Option<gdk::Texture>>,
         pub(super) frame_size: Cell<(i32, i32)>,
@@ -57,7 +65,11 @@ mod imp {
         }
 
         fn dispose(&self) {
-            self.player.take();
+            // The current stream stops the player as it goes, so it is idle until the next video loads.
+            if let Some(player) = self.player.take() {
+                let _ = player.command(&["stop"]);
+                CURRENT.with(|current| current.replace(glib::WeakRef::new()));
+            }
         }
     }
 
@@ -126,55 +138,82 @@ glib::wrapper! {
         @implements gdk::Paintable;
 }
 
-/// Calls `handle` on the main thread with the stream, once for any number of calls made before it runs.
-fn main_thread_waker(stream: &MpvStream, handle: fn(&MpvStream)) -> impl Fn() + Send + Sync + 'static {
+thread_local! {
+    /// The shared player, and the mpv options it was made with.
+    static SHARED: RefCell<Option<(String, Rc<Player>)>> = const { RefCell::new(None) };
+    /// The stream the shared player is playing for.
+    static CURRENT: RefCell<glib::WeakRef<MpvStream>> = RefCell::new(glib::WeakRef::new());
+}
+
+/// Calls `handle` on the main thread with the current stream, once for any number of calls made before it runs.
+fn main_thread_waker(handle: fn(&MpvStream)) -> impl Fn() + Send + Sync + 'static {
     let pending = Arc::new(AtomicBool::new(false));
-    let weak = glib::SendWeakRef::from(stream.downgrade());
     move || {
         if pending.swap(true, Ordering::AcqRel) {
             return;
         }
         let pending = pending.clone();
-        let weak = weak.clone();
         glib::MainContext::default().invoke(move || {
             pending.store(false, Ordering::Release);
-            if let Some(stream) = weak.upgrade() {
+            if let Some(stream) = CURRENT.with(|current| current.borrow().upgrade()) {
                 handle(&stream);
             }
         });
     }
 }
 
+/// The shared player made with `options`, made now if there is none yet or it was made with other options.
+fn shared_player(options: &str) -> Option<Rc<Player>> {
+    if let Some(player) = SHARED.with(|shared| {
+        shared.borrow().as_ref().filter(|(made_with, _)| made_with == options).map(|(_, player)| player.clone())
+    }) {
+        return Some(player);
+    }
+    // The old player goes first, so its IPC socket is free for the new one.
+    let old = SHARED.with(|shared| shared.take());
+    if let Some(stream) = CURRENT.with(|current| current.borrow().upgrade()) {
+        stream.imp().player.take();
+    }
+    drop(old);
+    let mut player = match Player::new(options) {
+        Ok(player) => player,
+        Err(err) => {
+            eprintln!("rsimgv: mpv: {err}");
+            return None;
+        }
+    };
+    player.set_wakeup(main_thread_waker(MpvStream::handle_events));
+    player.set_render_update(main_thread_waker(MpvStream::render_frame));
+    player.observe_double(DURATION, "duration");
+    player.observe_double(TIME_POS, "time-pos");
+    player.observe_flag(EOF_REACHED, "eof-reached");
+    let player = Rc::new(player);
+    SHARED.with(|shared| shared.replace(Some((options.to_owned(), player.clone()))));
+    Some(player)
+}
+
 impl MpvStream {
-    /// A stream of the video in `path`, paused until it is played, with the mpv command line options in
-    /// `options`. `None` if libmpv could not start.
+    /// A stream of the video in `path`, paused until it is played, loaded into the shared player made with the mpv
+    /// command line options in `options`. It becomes the current stream. `None` if libmpv could not start.
     pub fn for_path(path: &Path, options: &str) -> Option<Self> {
+        let player = shared_player(options)?;
         let stream: Self = glib::Object::new();
-        let mut player = match Player::new(options) {
-            Ok(player) => player,
-            Err(err) => {
-                eprintln!("rsimgv: mpv: {err}");
-                return None;
-            }
-        };
-        player.set_wakeup(main_thread_waker(&stream, MpvStream::handle_events));
-        player.set_render_update(main_thread_waker(&stream, MpvStream::render_frame));
-        player.observe_double(DURATION, "duration");
-        player.observe_double(TIME_POS, "time-pos");
-        player.observe_flag(EOF_REACHED, "eof-reached");
+        // The stream before lets go of the player, which now plays for this one.
+        let previous = CURRENT.with(|current| current.replace(stream.downgrade()));
+        if let Some(previous) = previous.upgrade() {
+            previous.imp().player.take();
+        }
         player.set_flag("pause", true);
-        if let Err(err) = player.command(&["loadfile", &path.to_string_lossy()]) {
+        if let Err(err) = player.command(&["loadfile", &path.to_string_lossy(), "replace"]) {
             eprintln!("rsimgv: mpv: could not open {}: {err}", path.display());
             return None;
         }
         stream.imp().player.replace(Some(player));
-        // A wakeup may have come before the player was stored, when there was nothing to read the events; libmpv
-        // does not wake again while they wait, so they are read now.
+        // Events may already be waiting, with no wakeup to come for them, so they are read now.
         let weak = stream.downgrade();
         glib::idle_add_local_once(move || {
             if let Some(stream) = weak.upgrade() {
                 stream.handle_events();
-                stream.render_frame();
             }
         });
         Some(stream)
@@ -208,6 +247,7 @@ impl MpvStream {
         let imp = self.imp();
         match event {
             Event::FileLoaded => {
+                imp.loaded.set(true);
                 let (duration, has_audio) = match imp.player.borrow().as_ref() {
                     Some(player) => (
                         player.get_double("duration").map_or(0, |seconds| (seconds * MICROS) as i64),
@@ -227,6 +267,8 @@ impl MpvStream {
                     player.set_flag("pause", !self.is_playing());
                 }
             }
+            // Until its own file has loaded, what the player reports is about the file before.
+            _ if !imp.loaded.get() => {}
             Event::VideoReconfig => self.update_frame_size(),
             Event::PlaybackRestart => {
                 if imp.seeking.replace(false) {
