@@ -462,6 +462,14 @@ impl Window {
         let weak = self.downgrade();
 
         // A folder picked in the tree is highlighted but not opened.
+        imp.tree.connect_open_in_new_tab_requested({
+            let weak = weak.clone();
+            move |_, path| {
+                if let Some(window) = weak.upgrade() {
+                    window.open_background_tab(path);
+                }
+            }
+        });
         imp.tree.connect_location_selected({
             let weak = weak.clone();
             move |_, path| {
@@ -616,6 +624,14 @@ impl Window {
             settings.bind("show-hidden", browse, "show-hidden").build();
         }
         let weak = self.downgrade();
+        browse.connect_open_in_new_tab_requested({
+            let weak = weak.clone();
+            move |_, path| {
+                if let Some(window) = weak.upgrade() {
+                    window.open_background_tab(path);
+                }
+            }
+        });
         browse.connect_item_context_requested({
             let weak = weak.clone();
             move |browse, path, is_dir, x, y| {

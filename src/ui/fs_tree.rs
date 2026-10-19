@@ -114,6 +114,9 @@ mod imp {
                     Signal::builder("location-selected")
                         .param_types([String::static_type()])
                         .build(),
+                    Signal::builder("open-in-new-tab-requested")
+                        .param_types([String::static_type()])
+                        .build(),
                 ]
             });
             SIGNALS.as_ref()
@@ -195,6 +198,28 @@ mod imp {
                     tree.emit_by_name::<()>("item-context-requested", &[&node, &x, &y]);
                 });
                 expander.add_controller(click);
+
+                // Middle-click on a folder asks for it to be opened in a new tab.
+                let middle = gtk::GestureClick::new();
+                middle.set_button(gdk::BUTTON_MIDDLE);
+                middle.connect_pressed(|gesture, _, _, _| {
+                    let Some(expander) = gesture.widget().and_downcast::<gtk::TreeExpander>() else {
+                        return;
+                    };
+                    let Some(node) = expander.list_row().and_then(|row| node_of(&row)) else {
+                        return;
+                    };
+                    if !node.is_dir() {
+                        return;
+                    }
+                    let Some(tree) = expander.ancestor(super::FsTree::static_type()).and_downcast::<super::FsTree>()
+                    else {
+                        return;
+                    };
+                    let path = node.path().to_string_lossy().into_owned();
+                    tree.emit_by_name::<()>("open-in-new-tab-requested", &[&path]);
+                });
+                expander.add_controller(middle);
             });
             let tree = obj.downgrade();
             factory.connect_bind(move |_, obj| {
@@ -352,6 +377,19 @@ impl FsTree {
             let x = values[2].get::<f64>().expect("x argument");
             let y = values[3].get::<f64>().expect("y argument");
             callback(&tree, &node, x, y);
+            None
+        })
+    }
+
+    /// Calls `callback(tree, path)` when a folder is middle-clicked, with its absolute path.
+    pub fn connect_open_in_new_tab_requested<F>(&self, callback: F) -> glib::SignalHandlerId
+    where
+        F: Fn(&Self, &Path) + 'static,
+    {
+        self.connect_local("open-in-new-tab-requested", false, move |values| {
+            let tree = values[0].get::<FsTree>().expect("tree argument");
+            let path = values[1].get::<String>().expect("path argument");
+            callback(&tree, Path::new(&path));
             None
         })
     }

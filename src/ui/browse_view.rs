@@ -148,6 +148,9 @@ mod imp {
                     Signal::builder("item-context-requested")
                         .param_types([String::static_type(), bool::static_type(), f64::static_type(), f64::static_type()])
                         .build(),
+                    Signal::builder("open-in-new-tab-requested")
+                        .param_types([String::static_type()])
+                        .build(),
                 ]
             });
             SIGNALS.as_ref()
@@ -216,6 +219,25 @@ mod imp {
                     gesture.set_state(gtk::EventSequenceState::Claimed);
                 });
                 cell.add_controller(click);
+
+                // Middle-click on a folder asks for it to be opened in a new tab.
+                let middle = gtk::GestureClick::new();
+                middle.set_button(gtk::gdk::BUTTON_MIDDLE);
+                middle.connect_pressed(|gesture, _, _, _| {
+                    let Some(cell) = gesture.widget().and_downcast::<gtk::Box>() else { return };
+                    let Some(view) = cell.ancestor(super::BrowseView::static_type()).and_downcast::<super::BrowseView>() else {
+                        return;
+                    };
+                    let Ok(position) = cell.widget_name().parse::<u32>() else { return };
+                    let Some(entry) = view.imp().grid.model().and_then(|model| model.item(position)).and_downcast::<FileEntry>() else {
+                        return;
+                    };
+                    if entry.is_dir() {
+                        let path = entry.path().to_string_lossy().into_owned();
+                        view.emit_by_name::<()>("open-in-new-tab-requested", &[&path]);
+                    }
+                });
+                cell.add_controller(middle);
             });
             let view = obj.downgrade();
             factory.connect_bind(move |_, obj| {
@@ -454,6 +476,16 @@ impl BrowseView {
 
     /// Calls `callback(view, path, is_dir, x, y)` when an item is right-clicked. The pointer is in the view's
     /// coordinates.
+    /// Calls `callback(view, path)` when a folder is middle-clicked, with its absolute path.
+    pub fn connect_open_in_new_tab_requested<F: Fn(&Self, &Path) + 'static>(&self, callback: F) -> glib::SignalHandlerId {
+        self.connect_local("open-in-new-tab-requested", false, move |values| {
+            let view = values[0].get::<BrowseView>().expect("view argument");
+            let path = values[1].get::<String>().expect("path argument");
+            callback(&view, Path::new(&path));
+            None
+        })
+    }
+
     pub fn connect_item_context_requested<F>(&self, callback: F) -> glib::SignalHandlerId
     where
         F: Fn(&Self, &Path, bool, f64, f64) + 'static,
