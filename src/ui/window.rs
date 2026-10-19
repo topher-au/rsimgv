@@ -168,7 +168,7 @@ impl Window {
 
         window.add_context_actions();
         window.connect_sources();
-        window.open_tab(&glib::home_dir());
+        window.navigate(&glib::home_dir());
         window
     }
 
@@ -195,6 +195,16 @@ impl Window {
         if !path.is_dir() {
             eprintln!("rsimgv: {} is not a folder", path.display());
             return false;
+        }
+
+        // With no tab open, navigating opens one at the folder and activates it.
+        if imp.tab_view.n_pages() == 0 {
+            self.open_tab(path);
+            match reveal {
+                Reveal::Expand => imp.tree.reveal_path(path),
+                Reveal::SelectOnly => imp.tree.reveal_path_selecting_only(path),
+            }
+            return true;
         }
 
         imp.updating.set(true);
