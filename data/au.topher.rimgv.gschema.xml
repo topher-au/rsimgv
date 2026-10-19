@@ -134,6 +134,14 @@
       <default>true</default>
       <summary>Keep the fit mode when switching images</summary>
     </key>
+    <key name="video-backend" type="s">
+      <choices>
+        <choice value="mpv"/>
+        <choice value="gtk"/>
+      </choices>
+      <default>'mpv'</default>
+      <summary>What plays videos: libmpv, or GTK's own media backend</summary>
+    </key>
     <key name="zoom-step" type="i">
       <default>25</default>
       <range min="5" max="100"/>

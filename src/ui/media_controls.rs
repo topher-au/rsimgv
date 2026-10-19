@@ -80,7 +80,7 @@ mod imp {
         pub(super) volume_scale: OnceCell<gtk::Scale>,
         pub(super) volume_hide: RefCell<Option<glib::SourceId>>,
         /// The video being controlled, if any.
-        pub(super) media: RefCell<Option<gtk::MediaFile>>,
+        pub(super) media: RefCell<Option<gtk::MediaStream>>,
         /// The volume and mute state. It outlives each video, so a new one starts at the same level.
         pub(super) volume: Cell<f64>,
         pub(super) muted: Cell<bool>,
@@ -231,7 +231,7 @@ glib::wrapper! {
 
 impl MediaControls {
     /// Drives `media` from these controls and shows its state. `None` clears them.
-    pub fn set_media(&self, media: Option<&gtk::MediaFile>) {
+    pub fn set_media(&self, media: Option<&gtk::MediaStream>) {
         self.imp().media.replace(media.cloned());
         if let Some(media) = media {
             // Any change to the media, such as its position or play state, updates the controls.

@@ -197,6 +197,15 @@ impl Window {
         let _ = window.imp().key_handler.set(keys);
         window.connect_sources();
         window.refresh_bookmarks();
+        window.imp().viewer.set_use_mpv(settings.string("video-backend") == "mpv");
+        settings.connect_changed(Some("video-backend"), {
+            let weak = window.downgrade();
+            move |settings, _| {
+                if let Some(window) = weak.upgrade() {
+                    window.imp().viewer.set_use_mpv(settings.string("video-backend") == "mpv");
+                }
+            }
+        });
         window.imp().viewer.set_zoom_step(settings.int("zoom-step"));
         settings.connect_changed(Some("zoom-step"), {
             let weak = window.downgrade();

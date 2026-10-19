@@ -73,6 +73,8 @@ mod imp {
         #[template_child]
         pub expand_up_to_scale: TemplateChild<gtk::Scale>,
         #[template_child]
+        pub video_backend_row: TemplateChild<adw::ComboRow>,
+        #[template_child]
         pub scaling_filter_row: TemplateChild<adw::ComboRow>,
         #[template_child]
         pub smooth_upscaling_row: TemplateChild<adw::SwitchRow>,
@@ -205,7 +207,8 @@ fn bind_switches(settings: &gio::Settings, imp: &imp::PreferencesDialog) {
 
 /// Binds each combo row to a string setting whose value is one of `choices`, by position in the row.
 fn bind_choices(settings: &gio::Settings, imp: &imp::PreferencesDialog) {
-    let combos: [(&str, &glib::Object, &[&str]); 8] = [
+    let combos: [(&str, &glib::Object, &[&str]); 9] = [
+        ("video-backend", imp.video_backend_row.upcast_ref(), &["mpv", "gtk"]),
         ("viewer-thumbnail-bar", imp.thumbnail_bar_row.upcast_ref(), &["top", "left", "bottom", "right"]),
         ("start-location", imp.start_location_row.upcast_ref(), &["last", "root", "home", "specific"]),
         ("filename-display", imp.filename_row.upcast_ref(), &["off", "wrapped", "ellipsized"]),

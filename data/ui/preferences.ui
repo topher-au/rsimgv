@@ -328,6 +328,25 @@
         </child>
         <child>
           <object class="AdwPreferencesGroup">
+            <property name="title">Video</property>
+            <child>
+              <object class="AdwComboRow" id="video_backend_row">
+                <property name="title">Player</property>
+                <property name="subtitle">Applies to the next video opened</property>
+                <property name="model">
+                  <object class="GtkStringList">
+                    <items>
+                      <item>mpv</item>
+                      <item>GTK</item>
+                    </items>
+                  </object>
+                </property>
+              </object>
+            </child>
+          </object>
+        </child>
+        <child>
+          <object class="AdwPreferencesGroup">
             <property name="title">Scaling</property>
             <child>
               <object class="AdwComboRow" id="scaling_filter_row">

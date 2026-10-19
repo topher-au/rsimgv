@@ -91,6 +91,7 @@ const LAYOUT: &[(&str, &str, &str)] = &[
     ("keep-fit-mode", "view", "keep-fit-mode"),
     ("expand-up-to-factor", "view", "expand-up-to-factor"),
     ("zoom-step", "view", "zoom-step"),
+    ("video-backend", "view", "video-backend"),
     ("scaling-filter", "view", "scaling-filter"),
     ("smooth-upscaling", "view", "smooth-upscaling"),
     ("viewer-blurred-background", "view", "blurred-background"),

@@ -159,10 +159,12 @@ mod imp {
         /// The picture shown, so its zoom and pan can be kept when it is left.
         pub(super) shown_picture: RefCell<Option<PathBuf>>,
         /// The video shown, if the item is one. The viewer owns it, and the controls drive it.
-        pub(super) media: RefCell<Option<gtk::MediaFile>>,
+        pub(super) media: RefCell<Option<gtk::MediaStream>>,
         /// Whether a video starts again when it ends, and whether the next item plays when it ends instead.
         pub(super) repeat: Cell<bool>,
         pub(super) auto_advance: Cell<bool>,
+        /// Whether videos are played by libmpv rather than GTK's own media backend.
+        pub(super) use_mpv: Cell<bool>,
         /// Whether the controls and the title stay shown, rather than hiding until the pointer comes near.
         pub(super) pinned: Cell<bool>,
         /// Whether the window is fullscreen, where the header floats over the picture and hides.
@@ -500,6 +502,11 @@ impl MediaViewer {
         }
     }
 
+    /// Plays later videos with libmpv, or with GTK's own media backend.
+    pub fn set_use_mpv(&self, use_mpv: bool) {
+        self.imp().use_mpv.set(use_mpv);
+    }
+
     /// Changes the volume of the video shown by `delta`.
     pub fn adjust_volume(&self, delta: f64) {
         self.imp().controls.adjust_volume(delta);
@@ -608,7 +615,14 @@ impl MediaViewer {
 
         let video = is_video(&path);
         if video {
-            let media = gtk::MediaFile::for_filename(&path);
+            // libmpv plays the video if it is chosen and starts; otherwise GTK's media backend does.
+            let media: gtk::MediaStream = imp
+                .use_mpv
+                .get()
+                .then(|| crate::mpv::MpvStream::for_path(&path))
+                .flatten()
+                .map(|stream| stream.upcast())
+                .unwrap_or_else(|| gtk::MediaFile::for_filename(&path).upcast());
             // The end of a video either repeats it or, with auto-advance on, moves to the next item. The step
             // waits until the notification has returned, since it releases the video that sent it.
             media.connect_ended_notify({
