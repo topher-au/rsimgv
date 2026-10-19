@@ -453,18 +453,20 @@ impl KeybindingList {
         content.set_margin_bottom(2);
         content.set_margin_start(12);
 
+        // The value the binding passes, for an action that takes one, as its unit shows it.
+        let value = value_info(action.name).map(|info| (info, info.format(binding.value.unwrap_or(info.default))));
+
         content.append(&gtk::Image::from_icon_name(action.icon));
-        let label = gtk::Label::new(Some(action.label));
+        let label = gtk::Label::new(None);
+        let title = glib::markup_escape_text(action.label);
+        match &value {
+            // The value follows the title in brackets, dimmed.
+            Some((_, shown)) => label.set_markup(&format!("{title} <span alpha=\"55%\">({})</span>", glib::markup_escape_text(shown))),
+            None => label.set_markup(&title),
+        }
         label.set_xalign(0.0);
         label.set_hexpand(true);
         content.append(&label);
-
-        if let Some(info) = value_info(action.name) {
-            let value = binding.value.unwrap_or(info.default);
-            let shown = gtk::Label::new(Some(&info.format(value)));
-            shown.add_css_class("dim-label");
-            content.append(&shown);
-        }
 
         let key = gtk::Label::new(Some(chord));
         key.add_css_class("monospace");
@@ -526,6 +528,12 @@ impl KeybindingList {
             let content = gtk::Box::new(gtk::Orientation::Vertical, 2);
             scope.set_margin_top(6);
             content.append(&name);
+            if let Some((info, shown)) = &value {
+                let line = gtk::Label::new(None);
+                line.set_xalign(0.0);
+                line.set_markup(&format!("<b>{}:</b> {}", glib::markup_escape_text(info.label), glib::markup_escape_text(shown)));
+                content.append(&line);
+            }
             content.append(&description);
             content.append(&scope);
             tooltip.set_custom(Some(&content));
