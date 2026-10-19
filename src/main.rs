@@ -2,6 +2,7 @@ mod fs;
 mod ipc;
 mod remote;
 mod bookmarks;
+mod file_settings;
 mod keybindings;
 mod mpv;
 mod settings;
