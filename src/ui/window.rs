@@ -37,8 +37,6 @@ mod imp {
         #[template_child]
         pub location_entry: TemplateChild<gtk::Entry>,
         #[template_child]
-        pub browse: TemplateChild<BrowseView>,
-        #[template_child]
         pub tab_view: TemplateChild<adw::TabView>,
         #[template_child]
         pub tab_bar: TemplateChild<adw::TabBar>,
@@ -162,10 +160,6 @@ impl Window {
 
         // Settings drive the view: the browse view's properties and the tree follow their keys, and
         // the menu's "Show Hidden Directories" item is an action bound to its key.
-        settings.bind("item-size", &*imp.browse, "item-size").build();
-        settings.bind("wrap-names", &*imp.browse, "wrap-names").build();
-        settings.bind("media-only", &*imp.browse, "media-only").build();
-        settings.bind("show-hidden", &*imp.browse, "show-hidden").build();
         settings.bind("collapse-on-navigate", &tree, "collapse-on-navigate").build();
         tree.set_show_hidden(settings.boolean("show-hidden"));
         let tree_for_settings = tree.clone();
@@ -311,7 +305,11 @@ impl Window {
         if let Err(err) = imp.path_bar.set_path(path) {
             eprintln!("rsimgv: {err:#}");
         }
-        imp.browse.set_path(path);
+        if let Some(browse) = self.active_browse() {
+            if browse.path().as_deref() != Some(path) {
+                browse.set_path(path);
+            }
+        }
         if let Some(page) = imp.tab_view.selected_page() {
             page.set_title(&folder_name(path));
         }
@@ -331,9 +329,10 @@ impl Window {
                 tree: TreeSnapshot::revealing(path),
             },
         );
-        let child = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        child.set_widget_name(&id.to_string());
-        let page = imp.tab_view.append(&child);
+        let browse = BrowseView::new();
+        browse.set_widget_name(&id.to_string());
+        self.attach_browse(&browse);
+        let page = imp.tab_view.append(&browse);
         page.set_title(&folder_name(path));
         imp.tab_view.set_selected_page(&page);
         if imp.active_tab.get() != Some(id) {
@@ -495,7 +494,27 @@ impl Window {
                 }
             }
         });
-        imp.browse.connect_item_context_requested({
+    }
+
+    /// The browse view of the selected tab.
+    fn active_browse(&self) -> Option<BrowseView> {
+        self.imp()
+            .tab_view
+            .selected_page()
+            .and_then(|page| page.child().downcast::<BrowseView>().ok())
+    }
+
+    /// Connects a tab's browse view to the settings, its context menu, and opening folders.
+    fn attach_browse(&self, browse: &BrowseView) {
+        let imp = self.imp();
+        if let Some(settings) = imp.settings.get() {
+            settings.bind("item-size", browse, "item-size").build();
+            settings.bind("wrap-names", browse, "wrap-names").build();
+            settings.bind("media-only", browse, "media-only").build();
+            settings.bind("show-hidden", browse, "show-hidden").build();
+        }
+        let weak = self.downgrade();
+        browse.connect_item_context_requested({
             let weak = weak.clone();
             move |browse, path, is_dir, x, y| {
                 if let Some(window) = weak.upgrade() {
@@ -503,7 +522,7 @@ impl Window {
                 }
             }
         });
-        imp.browse.connect_directory_activated(move |_, path| {
+        browse.connect_directory_activated(move |_, path| {
             if let Some(window) = weak.upgrade() {
                 window.navigate(path);
             }
@@ -765,7 +784,7 @@ pub(crate) mod tests {
         assert_eq!(window.current_path(), Some(root.join("alpha")));
         assert_eq!(imp.path_bar.path(), Some(root.join("alpha")));
         assert_eq!(imp.navigation.location(), Some(root.join("alpha")));
-        wait_for("alpha listed in the browse view", || imp.browse.item_names() == ["beta"]);
+        wait_for("alpha listed in the browse view", || window.active_browse().is_some_and(|b| b.item_names() == ["beta"]));
 
         // Staying put is fine; a file is refused and changes nothing.
         assert!(window.navigate(&root.join("alpha")));
@@ -773,7 +792,7 @@ pub(crate) mod tests {
         assert_eq!(window.current_path(), Some(root.join("alpha")));
 
         // A subfolder entered from the browse list.
-        imp.browse.activate(0);
+        window.active_browse().expect("a browse view").activate(0);
         assert_eq!(window.current_path(), Some(root.join("alpha/beta")));
 
         // A breadcrumb click in the path bar.
