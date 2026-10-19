@@ -75,6 +75,8 @@ mod imp {
         #[template_child]
         pub video_backend_row: TemplateChild<adw::ComboRow>,
         #[template_child]
+        pub mpv_args_row: TemplateChild<adw::EntryRow>,
+        #[template_child]
         pub scaling_filter_row: TemplateChild<adw::ComboRow>,
         #[template_child]
         pub smooth_upscaling_row: TemplateChild<adw::SwitchRow>,
@@ -114,6 +116,25 @@ glib::wrapper! {
 }
 
 impl PreferencesDialog {
+    /// Shows the extra mpv options, saved when applied, and only while mpv plays videos.
+    fn bind_mpv_args(&self, settings: &gio::Settings) {
+        use adw::prelude::EntryRowExt;
+        let row = &*self.imp().mpv_args_row;
+        row.set_text(&settings.string("mpv-args"));
+        row.connect_apply({
+            let settings = settings.clone();
+            move |row| {
+                let _ = settings.set_string("mpv-args", &row.text());
+            }
+        });
+        let update = {
+            let row = row.clone();
+            move |settings: &gio::Settings| row.set_sensitive(settings.string("video-backend") == "mpv")
+        };
+        update(settings);
+        settings.connect_changed(Some("video-backend"), move |settings, _| update(settings));
+    }
+
     pub fn new(settings: &gio::Settings) -> Self {
         let dialog: Self = glib::Object::new();
         let imp = dialog.imp();
@@ -127,6 +148,7 @@ impl PreferencesDialog {
         settings.bind("viewer-blurred-background", &*imp.blurred_background_row, "active").build();
         bind_port(settings, &imp.ipc_tcp_row, "ipc-tcp-port");
         bind_port(settings, &imp.zoom_step_row, "zoom-step");
+        dialog.bind_mpv_args(settings);
         bind_port(settings, &imp.ipc_http_row, "ipc-http-port");
 
         bind_switches(settings, dialog.imp());

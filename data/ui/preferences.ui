@@ -343,6 +343,12 @@
                 </property>
               </object>
             </child>
+            <child>
+              <object class="AdwEntryRow" id="mpv_args_row">
+                <property name="title">mpv options</property>
+                <property name="show-apply-button">true</property>
+              </object>
+            </child>
           </object>
         </child>
         <child>
