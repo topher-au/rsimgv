@@ -28,6 +28,8 @@ mod imp {
         #[template_child]
         pub show_directories_row: TemplateChild<adw::ComboRow>,
         #[template_child]
+        pub info_layout_row: TemplateChild<adw::ComboRow>,
+        #[template_child]
         pub info_list: TemplateChild<gtk::ListBox>,
         #[template_child]
         pub add_info_button: TemplateChild<gtk::MenuButton>,
@@ -158,7 +160,8 @@ fn bind_switches(settings: &gio::Settings, imp: &imp::PreferencesDialog) {
 
 /// Binds each combo row to a string setting whose value is one of `choices`, by position in the row.
 fn bind_choices(settings: &gio::Settings, imp: &imp::PreferencesDialog) {
-    let combos: [(&str, &adw::ComboRow, &[&str]); 6] = [
+    let combos: [(&str, &adw::ComboRow, &[&str]); 7] = [
+        ("info-layout", &imp.info_layout_row, &["disabled", "stacked", "inline"]),
         ("filename-display", &imp.filename_row, &["off", "wrapped", "ellipsized"]),
         ("show-directories", &imp.show_directories_row, &["none", "first-last", "inline"]),
         ("zoom-indicator", &imp.zoom_indicator_row, &["on", "off", "auto"]),

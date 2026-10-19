@@ -91,6 +91,20 @@
             <property name="title">Show info</property>
             <property name="description">Details shown under each item's name, in this order</property>
             <child>
+              <object class="AdwComboRow" id="info_layout_row">
+                <property name="title">Layout</property>
+                <property name="model">
+                  <object class="GtkStringList">
+                    <items>
+                      <item>Disabled</item>
+                      <item>Stacked</item>
+                      <item>Inline</item>
+                    </items>
+                  </object>
+                </property>
+              </object>
+            </child>
+            <child>
               <object class="GtkListBox" id="info_list">
                 <property name="selection-mode">none</property>
                 <style><class name="boxed-list"/></style>

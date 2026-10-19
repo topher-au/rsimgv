@@ -637,6 +637,7 @@ impl Window {
             settings.bind("item-size", browse, "item-size").build();
             settings.bind("filename-display", browse, "filename-display").build();
             settings.bind("show-directories", browse, "show-directories").build();
+            settings.bind("info-layout", browse, "info-layout").build();
             set_info_fields_from(settings, browse);
             let weak = browse.downgrade();
             settings.connect_changed(Some("info-fields"), move |settings, _| {

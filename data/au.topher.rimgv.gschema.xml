@@ -117,6 +117,15 @@
       <default>'first-last'</default>
       <summary>Where folders are listed: not at all, before and after the files as the sort order says, or among the files</summary>
     </key>
+    <key name="info-layout" type="s">
+      <choices>
+        <choice value="disabled"/>
+        <choice value="stacked"/>
+        <choice value="inline"/>
+      </choices>
+      <default>'inline'</default>
+      <summary>How item info is laid out: disabled, one field per line, or fields separated by bullets</summary>
+    </key>
     <key name="info-fields" type="as">
       <default>['size', 'modified']</default>
       <summary>Details shown under each item's name</summary>

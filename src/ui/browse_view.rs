@@ -92,13 +92,13 @@ impl InfoField {
     }
 }
 
-/// The info line for `entry`: its chosen fields that have a value, joined.
-fn info_text(entry: &FileEntry, fields: &[InfoField]) -> String {
+/// The info for `entry`: its chosen fields that have a value, joined by `separator`.
+fn info_text(entry: &FileEntry, fields: &[InfoField], separator: &str) -> String {
     fields
         .iter()
         .filter_map(|field| field.text(entry))
         .collect::<Vec<_>>()
-        .join(" · ")
+        .join(separator)
 }
 
 /// Whether `entry` is a picture or a video, judged by its content type.
@@ -154,6 +154,10 @@ mod imp {
         pub(super) scroll_memory: RefCell<std::collections::HashMap<PathBuf, f64>>,
         pub(super) path: RefCell<Option<PathBuf>>,
         pub(super) info_fields: RefCell<Vec<InfoField>>,
+        /// How the info is laid out under a name: `disabled` (hidden), `stacked` (one field a line), or
+        /// `inline` (fields separated by a bullet).
+        #[property(get, set)]
+        info_layout: RefCell<String>,
         /// How item names are shown: `off`, `wrapped` (two lines) or `ellipsized` (one line).
         #[property(get, set)]
         filename_display: RefCell<String>,
@@ -210,6 +214,7 @@ mod imp {
             self.item_size.set(DEFAULT_ITEM_SIZE);
             self.media_only.set(true);
             self.filename_display.replace("ellipsized".to_owned());
+            self.info_layout.replace("inline".to_owned());
             self.show_directories.replace("first-last".to_owned());
             self.info_fields
                 .replace(vec![InfoField::Size, InfoField::Modified]);
@@ -339,6 +344,7 @@ mod imp {
             // Changing the size or the name mode rebinds every item, which re-lays them out.
             obj.connect_item_size_notify(|view| view.refresh_items());
             obj.connect_filename_display_notify(|view| view.refresh_items());
+            obj.connect_info_layout_notify(|view| view.refresh_items());
             obj.connect_show_hidden_notify(|view| view.refresh_filter());
             obj.connect_media_only_notify(|view| view.refresh_filter());
             obj.connect_show_directories_notify(|view| {
@@ -454,7 +460,9 @@ fn style_item(view: &BrowseView, cell: &gtk::Box, entry: &FileEntry) {
     name.set_tooltip_text(Some(&entry.name()));
 
     let fields = view.imp().info_fields.borrow().clone();
-    let text = info_text(entry, &fields);
+    let layout = view.info_layout();
+    let separator = if layout == "stacked" { "\n" } else { " · " };
+    let text = if layout == "disabled" { String::new() } else { info_text(entry, &fields, separator) };
     info.set_label(&text);
     info.set_visible(!text.is_empty());
 }

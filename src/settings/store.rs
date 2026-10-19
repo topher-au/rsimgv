@@ -64,6 +64,7 @@ const LAYOUT: &[(&str, &str, &str)] = &[
     ("filename-display", "browse", "filename-display"),
     ("show-directories", "browse", "show-directories"),
     ("info-fields", "browse", "info-fields"),
+    ("info-layout", "browse", "info-layout"),
     ("collapse-on-navigate", "tree", "collapse-on-navigate"),
     ("window-width", "window", "width"),
     ("window-height", "window", "height"),
