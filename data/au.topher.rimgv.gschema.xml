@@ -11,7 +11,7 @@
     </key>
     <key name="item-size" type="i">
       <default>128</default>
-      <range min="64" max="256"/>
+      <range min="32" max="2048"/>
       <summary>Size in pixels of the visual part of each browse item</summary>
     </key>
     <key name="wrap-names" type="b">

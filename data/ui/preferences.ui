@@ -26,8 +26,8 @@
                 <property name="title">Browse item size</property>
                 <property name="adjustment">
                   <object class="GtkAdjustment">
-                    <property name="lower">64</property>
-                    <property name="upper">256</property>
+                    <property name="lower">32</property>
+                    <property name="upper">2048</property>
                     <property name="step-increment">16</property>
                     <property name="value">128</property>
                   </object>
