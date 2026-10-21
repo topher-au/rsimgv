@@ -15,17 +15,26 @@ use gtk::prelude::*;
 use gtk::subclass::prelude::*;
 use gtk::{gdk, glib};
 
-use super::{Event, Player};
+use super::{config_generation, Event, Player};
 
 /// The ids observed properties are reported under.
 const DURATION: u64 = 1;
 const TIME_POS: u64 = 2;
 const EOF_REACHED: u64 = 3;
 
-/// The widest a frame is rendered, in pixels; wider videos are scaled down to keep software rendering quick.
+/// The widest a frame is rendered, in pixels; wider sizes are scaled down to keep software rendering quick.
 const MAX_FRAME_WIDTH: i32 = 2560;
 
 const MICROS: f64 = 1_000_000.0;
+
+/// `width` by `height`, scaled down to the widest frame rendered, keeping the aspect ratio.
+fn capped(width: i32, height: i32) -> (i32, i32) {
+    if width > MAX_FRAME_WIDTH {
+        let height = (f64::from(height) * f64::from(MAX_FRAME_WIDTH) / f64::from(width)).round() as i32;
+        return (MAX_FRAME_WIDTH, height);
+    }
+    (width, height)
+}
 
 mod imp {
     use super::*;
@@ -36,9 +45,13 @@ mod imp {
         pub(super) player: RefCell<Option<Rc<Player>>>,
         /// Whether the player has loaded this stream's file, so events from the file before it are ignored.
         pub(super) loaded: Cell<bool>,
-        /// The latest frame, and the size frames are rendered at.
+        /// The latest frame, and the video's size, which the frame's intrinsic size is.
         pub(super) frame: RefCell<Option<gdk::Texture>>,
         pub(super) frame_size: Cell<(i32, i32)>,
+        /// The size frames are rendered at, in device pixels: the size shown, so mpv's OSD is drawn sharp.
+        pub(super) render_size: Cell<(i32, i32)>,
+        /// The display's scale factor, which turns the size shown into device pixels.
+        pub(super) scale: Cell<i32>,
         pub(super) pixels: RefCell<Vec<u8>>,
         pub(super) duration: Cell<i64>,
         /// Whether a seek is under way, to report when it lands.
@@ -111,6 +124,7 @@ mod imp {
 
     impl PaintableImpl for MpvStream {
         fn snapshot(&self, snapshot: &gdk::Snapshot, width: f64, height: f64) {
+            self.obj().fit_render(width, height);
             if let Some(frame) = self.frame.borrow().as_ref() {
                 let snapshot = snapshot.downcast_ref::<gtk::Snapshot>().expect("a GTK snapshot");
                 snapshot.append_texture(frame, &gtk::graphene::Rect::new(0.0, 0.0, width as f32, height as f32));
@@ -139,8 +153,8 @@ glib::wrapper! {
 }
 
 thread_local! {
-    /// The shared player, and the mpv options it was made with.
-    static SHARED: RefCell<Option<(String, Rc<Player>)>> = const { RefCell::new(None) };
+    /// The shared player, with the mpv options and config generation it was made with.
+    static SHARED: RefCell<Option<(String, u64, Rc<Player>)>> = const { RefCell::new(None) };
     /// The stream the shared player is playing for.
     static CURRENT: RefCell<glib::WeakRef<MpvStream>> = RefCell::new(glib::WeakRef::new());
 }
@@ -162,10 +176,16 @@ fn main_thread_waker(handle: fn(&MpvStream)) -> impl Fn() + Send + Sync + 'stati
     }
 }
 
-/// The shared player made with `options`, made now if there is none yet or it was made with other options.
+/// The shared player made with `options` and the current mpv.conf, made now if there is none yet or it was made with
+/// other options or an older mpv.conf.
 fn shared_player(options: &str) -> Option<Rc<Player>> {
+    let generation = config_generation();
     if let Some(player) = SHARED.with(|shared| {
-        shared.borrow().as_ref().filter(|(made_with, _)| made_with == options).map(|(_, player)| player.clone())
+        shared
+            .borrow()
+            .as_ref()
+            .filter(|(made_with, made_at, _)| made_with == options && *made_at == generation)
+            .map(|(_, _, player)| player.clone())
     }) {
         return Some(player);
     }
@@ -183,12 +203,12 @@ fn shared_player(options: &str) -> Option<Rc<Player>> {
         }
     };
     player.set_wakeup(main_thread_waker(MpvStream::handle_events));
-    player.set_render_update(main_thread_waker(MpvStream::render_frame));
+    player.set_render_update(main_thread_waker(|stream| stream.render_frame(false)));
     player.observe_double(DURATION, "duration");
     player.observe_double(TIME_POS, "time-pos");
     player.observe_flag(EOF_REACHED, "eof-reached");
     let player = Rc::new(player);
-    SHARED.with(|shared| shared.replace(Some((options.to_owned(), player.clone()))));
+    SHARED.with(|shared| shared.replace(Some((options.to_owned(), generation, player.clone()))));
     Some(player)
 }
 
@@ -243,6 +263,13 @@ impl MpvStream {
     /// The speed it plays at, as a multiple of normal.
     pub fn speed(&self) -> Option<f64> {
         self.imp().player.borrow().as_ref()?.get_double("speed")
+    }
+
+    /// The frame rate the video's container declares, or the one mpv measures when it declares none.
+    pub fn fps(&self) -> Option<f64> {
+        let player = self.imp().player.borrow();
+        let player = player.as_ref()?;
+        player.get_double("container-fps").or_else(|| player.get_double("estimated-vf-fps"))
     }
 
     /// Handles the events waiting from libmpv.
@@ -307,31 +334,46 @@ impl MpvStream {
         }
     }
 
-    /// Takes the video's display size, scaled down to the widest frame rendered, and resizes the frames.
+    /// Takes the video's display size, scaled down to the widest frame rendered, as the intrinsic size.
     fn update_frame_size(&self) {
         let imp = self.imp();
         let size = imp.player.borrow().as_ref().and_then(|player| Some((player.get_i64("dwidth")?, player.get_i64("dheight")?)));
         let Some((width, height)) = size else { return };
-        let (mut width, mut height) = (width as i32, height as i32);
-        if width > MAX_FRAME_WIDTH {
-            height = (f64::from(height) * f64::from(MAX_FRAME_WIDTH) / f64::from(width)).round() as i32;
-            width = MAX_FRAME_WIDTH;
-        }
+        let (width, height) = capped(width as i32, height as i32);
         if width <= 0 || height <= 0 || imp.frame_size.get() == (width, height) {
             return;
         }
         imp.frame_size.set((width, height));
-        imp.pixels.replace(vec![0; width as usize * height as usize * 4]);
         self.invalidate_size();
     }
 
-    /// Renders the new frame, if there is one, and shows it.
-    fn render_frame(&self) {
+    /// Sets the display's scale factor, so frames are rendered at device pixels.
+    pub fn set_scale(&self, scale: i32) {
+        self.imp().scale.set(scale);
+        self.invalidate_contents();
+    }
+
+    /// Renders at the size `width` by `height` shown at, in device pixels, when that has changed. Mpv draws its OSD
+    /// at the size it renders, so rendering at the video's size and scaling it up would blur the text.
+    fn fit_render(&self, width: f64, height: f64) {
         let imp = self.imp();
-        let (width, height) = imp.frame_size.get();
+        let scale = f64::from(imp.scale.get().max(1));
+        let (width, height) = capped((width * scale).round() as i32, (height * scale).round() as i32);
+        if width <= 0 || height <= 0 || imp.render_size.get() == (width, height) || !self.is_prepared() {
+            return;
+        }
+        imp.render_size.set((width, height));
+        imp.pixels.replace(vec![0; width as usize * height as usize * 4]);
+        self.render_frame(true);
+    }
+
+    /// Renders the new frame, if there is one, or the current frame when `force` is set, and shows it.
+    fn render_frame(&self, force: bool) {
+        let imp = self.imp();
+        let (width, height) = imp.render_size.get();
         let player = imp.player.borrow();
         let Some(player) = player.as_ref() else { return };
-        if !player.frame_ready() || width <= 0 || height <= 0 {
+        if (!force && !player.frame_ready()) || width <= 0 || height <= 0 {
             return;
         }
         let mut pixels = imp.pixels.borrow_mut();

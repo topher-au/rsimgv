@@ -17,7 +17,7 @@ use super::media_viewer::{side_from_name, VOLUME_STEP};
 use super::key_handler::ActionKeyHandler;
 use super::fs_tree::TreeSnapshot;
 use super::path_bar::OpenTarget;
-use super::{BrowseView, FsTree, HeaderBar, MediaViewer, NavigationBar, OverlaySplitView, PathBar, PreferencesDialog};
+use super::{BrowseView, FsTree, HeaderBar, MediaViewer, NavigationBar, OverlaySplitView, PathBar, PreferencesDialog, ShownItem};
 
 mod imp {
     use super::*;
@@ -201,6 +201,14 @@ impl Window {
         window.refresh_bookmarks();
         window.imp().viewer.set_use_mpv(settings.string("video-backend") == "mpv");
         window.imp().viewer.set_mpv_options(&settings.string("mpv-args"));
+        crate::mpv::watch_config({
+            let weak = window.imp().viewer.downgrade();
+            move || {
+                if let Some(viewer) = weak.upgrade() {
+                    viewer.reload_video();
+                }
+            }
+        });
         settings.connect_changed(Some("mpv-args"), {
             let weak = window.downgrade();
             move |settings, _| {
@@ -835,6 +843,14 @@ impl Window {
             return None;
         }
         self.imp().viewer.screenshot()
+    }
+
+    /// The item the viewer shows, while the viewer is open. See `MediaViewer::shown_item`.
+    pub fn viewer_item(&self) -> Option<ShownItem> {
+        if !self.viewer_is_open() {
+            return None;
+        }
+        self.imp().viewer.shown_item()
     }
 
     pub fn viewer_is_open(&self) -> bool {

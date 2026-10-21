@@ -20,7 +20,7 @@ mod window;
 pub use browse_view::BrowseView;
 pub use floating_bar::FloatingBar;
 pub use item_grid::ItemGrid;
-pub use media_viewer::MediaViewer;
+pub use media_viewer::{MediaViewer, ShownItem};
 pub use fs_tree::FsTree;
 pub use header_bar::HeaderBar;
 pub use navigation_bar::NavigationBar;

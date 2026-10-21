@@ -7,8 +7,17 @@ mod sys;
 
 pub use stream::MpvStream;
 
+use std::cell::{Cell, RefCell};
+use std::collections::BTreeMap;
 use std::ffi::{CStr, CString};
+use std::io::{BufRead, BufReader, Write};
 use std::os::raw::{c_char, c_int, c_void};
+use std::os::unix::net::UnixStream;
+use std::path::Path;
+use std::time::Duration;
+
+use gtk::gio;
+use gtk::gio::prelude::*;
 
 /// An event from the player, as `Player::next_event` reports it.
 #[derive(Debug)]
@@ -44,9 +53,144 @@ fn check(code: c_int) -> Result<(), String> {
     if code < 0 { Err(error_text(code)) } else { Ok(()) }
 }
 
+thread_local! {
+    /// Bumped when mpv.conf changes, so the next player is made with the new file.
+    static CONFIG_GENERATION: Cell<u64> = const { Cell::new(0) };
+    /// Watches the config directory, for as long as the app runs.
+    static CONFIG_MONITOR: RefCell<Option<gio::FileMonitor>> = const { RefCell::new(None) };
+    /// The options mpv.conf had when it was last read, to find what changed.
+    static LAST_CONFIG: RefCell<BTreeMap<String, String>> = const { RefCell::new(BTreeMap::new()) };
+}
+
+/// mpv's config and scripts live in `rsimgv/mpv` under the user's config directory, kept with rsimgv's settings.
+pub fn config_dir() -> std::path::PathBuf {
+    gtk::glib::user_config_dir().join("rsimgv").join("mpv")
+}
+
+/// How many times mpv.conf has changed since the app started.
+pub fn config_generation() -> u64 {
+    CONFIG_GENERATION.with(Cell::get)
+}
+
+/// Calls `on_change` on the main thread when mpv.conf in the config directory changes. Players made after that
+/// read the new file, so `on_change` should play the current video again.
+pub fn watch_config(on_change: impl Fn() + 'static) {
+    let dir = config_dir();
+    if let Err(err) = std::fs::create_dir_all(&dir) {
+        eprintln!("rsimgv: mpv: could not create {}: {err}", dir.display());
+        return;
+    }
+    let monitor = match gio::File::for_path(&dir).monitor_directory(gio::FileMonitorFlags::NONE, gio::Cancellable::NONE) {
+        Ok(monitor) => monitor,
+        Err(err) => {
+            eprintln!("rsimgv: mpv: could not watch {}: {err}", dir.display());
+            return;
+        }
+    };
+    LAST_CONFIG.with(|last| last.replace(read_config()));
+    monitor.connect_changed(move |_, file, _, event| {
+        // A save can arrive as several events; the hint that writing is done comes once, after the last of them.
+        let done = matches!(
+            event,
+            gio::FileMonitorEvent::ChangesDoneHint | gio::FileMonitorEvent::MovedIn | gio::FileMonitorEvent::Deleted
+        );
+        if !done || file.basename().as_deref() != Some(Path::new("mpv.conf")) {
+            return;
+        }
+        let new = read_config();
+        let (changed, removed) = LAST_CONFIG.with(|last| {
+            let last = last.borrow();
+            let changed: Vec<(String, String)> =
+                new.iter().filter(|(name, value)| last.get(*name) != Some(value)).map(|(n, v)| (n.clone(), v.clone())).collect();
+            let removed = last.keys().any(|name| !new.contains_key(name));
+            (changed, removed)
+        });
+        LAST_CONFIG.with(|last| last.replace(new));
+        if changed.is_empty() && !removed {
+            return;
+        }
+        // Options that were removed have no value to set back, so only a new player can drop them.
+        if !removed && set_properties(&changed).is_ok() {
+            return;
+        }
+        CONFIG_GENERATION.with(|generation| generation.set(generation.get() + 1));
+        on_change();
+    });
+    CONFIG_MONITOR.with(|slot| slot.replace(Some(monitor)));
+}
+
+/// Reads mpv.conf in the config directory, or nothing if there is none.
+fn read_config() -> BTreeMap<String, String> {
+    std::fs::read_to_string(config_dir().join("mpv.conf")).map(|text| parse_config(&text)).unwrap_or_default()
+}
+
+/// The options in an mpv config file, by name, with their values. Blank lines, comments, profile headers and
+/// `include` lines are skipped; a bare `name` is `yes`, and `no-name` is `name=no`.
+pub fn parse_config(text: &str) -> BTreeMap<String, String> {
+    let mut options = BTreeMap::new();
+    for line in text.lines().map(str::trim) {
+        if line.is_empty() || line.starts_with('#') || line.starts_with('[') || line.starts_with("include") {
+            continue;
+        }
+        let (name, value) = match line.split_once('=') {
+            Some((name, value)) => (name.trim(), value.trim()),
+            None => match line.strip_prefix("no-") {
+                Some(name) => (name, "no"),
+                None => (line, "yes"),
+            },
+        };
+        let value = value.strip_prefix('"').and_then(|value| value.strip_suffix('"')).unwrap_or(value);
+        options.insert(name.to_owned(), value.to_owned());
+    }
+    options
+}
+
+/// Sets each option on the running player through its JSON IPC socket, with mpv's `set_property` command. Fails
+/// if there is no player to set them on, or if mpv does not accept one of them.
+pub fn set_properties(changes: &[(String, String)]) -> Result<(), String> {
+    let mut socket = UnixStream::connect(ipc_socket_path()).map_err(|err| err.to_string())?;
+    socket.set_read_timeout(Some(Duration::from_secs(2))).map_err(|err| err.to_string())?;
+    let mut replies = BufReader::new(socket.try_clone().map_err(|err| err.to_string())?);
+    for (name, value) in changes {
+        let request = serde_json::json!({"command": ["set_property", name, value]});
+        writeln!(socket, "{request}").map_err(|err| err.to_string())?;
+        // Replies come one per line; anything else on the socket is skipped.
+        loop {
+            let mut line = String::new();
+            if replies.read_line(&mut line).map_err(|err| err.to_string())? == 0 {
+                return Err("mpv closed the socket".to_owned());
+            }
+            let Ok(reply) = serde_json::from_str::<serde_json::Value>(&line) else { continue };
+            let Some(error) = reply.get("error").and_then(serde_json::Value::as_str) else { continue };
+            if error != "success" {
+                return Err(format!("could not set {name}: {error}"));
+            }
+            break;
+        }
+    }
+    Ok(())
+}
+
+/// The start of each player's mpv IPC socket name, which is followed by the process id in lowercase hex.
+const SOCKET_PREFIX: &str = "rsimgv-mpv-";
+
 /// Where the player's mpv IPC socket is: `/tmp/rsimgv-mpv-<pid>`, with the process id in lowercase hex.
 pub fn ipc_socket_path() -> std::path::PathBuf {
-    std::path::PathBuf::from(format!("/tmp/rsimgv-mpv-{:x}", std::process::id()))
+    std::path::PathBuf::from(format!("/tmp/{SOCKET_PREFIX}{:x}", std::process::id()))
+}
+
+/// Removes the IPC sockets left by players that are no longer running, such as after a crash. Sockets of running
+/// processes, including other rsimgv windows, are kept.
+pub fn remove_stale_sockets() {
+    let Ok(entries) = std::fs::read_dir("/tmp") else { return };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let pid = name.to_str().and_then(|name| name.strip_prefix(SOCKET_PREFIX)).and_then(|hex| u32::from_str_radix(hex, 16).ok());
+        let stale = pid.is_some_and(|pid| !std::path::Path::new(&format!("/proc/{pid}")).exists());
+        if stale {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
 }
 
 /// Options that would take the video out of rsimgv's window, so they are never applied from the user's options.
@@ -156,6 +300,8 @@ impl Player {
                 ("input-default-bindings", "no"),
                 ("osc", "no"),
                 ("ytdl", "no"),
+                // The OSD keeps its size in device pixels, so resizing the window does not change it.
+                ("osd-scale-by-window", "no"),
             ] {
                 player.set_option(name, value)?;
             }
@@ -165,6 +311,7 @@ impl Player {
             if let Err(err) = player.set_option("input-ipc-server", &socket.to_string_lossy()) {
                 eprintln!("rsimgv: mpv: could not open the IPC socket {}: {err}", socket.display());
             }
+            player.set_option("config-dir", &config_dir().to_string_lossy())?;
             for (name, value) in parse_options(extra) {
                 if EMBEDDING_OPTIONS.contains(&name.as_str()) {
                     continue;
@@ -360,6 +507,8 @@ impl Drop for Player {
                 sys::mpv_render_context_free(self.render);
             }
             sys::mpv_terminate_destroy(self.handle);
+            // mpv removes its socket when it ends, unless it was stopped; the socket is not needed once it has ended.
+            let _ = std::fs::remove_file(ipc_socket_path());
             for callback in [self.wakeup.take(), self.render_update.take()].into_iter().flatten() {
                 drop(Box::from_raw(callback));
             }

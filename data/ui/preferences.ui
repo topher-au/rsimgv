@@ -46,13 +46,12 @@
             <child>
               <object class="AdwSwitchRow" id="ipc_socket_row">
                 <property name="title">Control rsimgv through a Unix socket</property>
-                <property name="subtitle">Takes effect when rsimgv next starts.</property>
               </object>
             </child>
             <child>
               <object class="AdwSpinRow" id="ipc_tcp_row">
-                <property name="title">Localhost TCP port for control</property>
-                <property name="subtitle">0 turns it off. Takes effect when rsimgv next starts.</property>
+                <property name="title">TCP port for control</property>
+                <property name="subtitle">0 turns it off.</property>
                 <property name="adjustment">
                   <object class="GtkAdjustment">
                     <property name="lower">0</property>
@@ -64,8 +63,8 @@
             </child>
             <child>
               <object class="AdwSpinRow" id="ipc_http_row">
-                <property name="title">Localhost HTTP port for control</property>
-                <property name="subtitle">0 turns it off. Takes effect when rsimgv next starts.</property>
+                <property name="title">HTTP port for control</property>
+                <property name="subtitle">0 turns it off.</property>
                 <property name="adjustment">
                   <object class="GtkAdjustment">
                     <property name="lower">0</property>
@@ -73,6 +72,12 @@
                     <property name="step-increment">1</property>
                   </object>
                 </property>
+              </object>
+            </child>
+            <child>
+              <object class="AdwSwitchRow" id="ipc_external_row">
+                <property name="title">Allow other machines to control rsimgv</property>
+                <property name="subtitle">Applies to the TCP and HTTP ports, which otherwise accept only localhost. Anyone who can reach them can control rsimgv.</property>
               </object>
             </child>
             <child>

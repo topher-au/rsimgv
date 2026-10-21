@@ -104,6 +104,7 @@ const LAYOUT: &[(&str, &str, &str)] = &[
     ("ipc-socket", "ipc", "socket"),
     ("ipc-tcp-port", "ipc", "tcp-port"),
     ("ipc-http-port", "ipc", "http-port"),
+    ("ipc-external-access", "ipc", "external-access"),
 ];
 
 /// The group for a setting that is not in `LAYOUT`. Its name is the schema key.

@@ -33,6 +33,8 @@ mod imp {
         #[template_child]
         pub ipc_http_row: TemplateChild<adw::SpinRow>,
         #[template_child]
+        pub ipc_external_row: TemplateChild<adw::SwitchRow>,
+        #[template_child]
         pub collapse_on_navigate_row: TemplateChild<adw::SwitchRow>,
         #[template_child]
         pub item_size_row: TemplateChild<adw::SpinRow>,
@@ -150,6 +152,7 @@ impl PreferencesDialog {
         bind_port(settings, &imp.zoom_step_row, "zoom-step");
         dialog.bind_mpv_args(settings);
         bind_port(settings, &imp.ipc_http_row, "ipc-http-port");
+        settings.bind("ipc-external-access", &*imp.ipc_external_row, "active").build();
 
         bind_switches(settings, dialog.imp());
         bind_choices(settings, dialog.imp());

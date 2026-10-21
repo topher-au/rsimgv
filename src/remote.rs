@@ -30,6 +30,11 @@
 //!   files.selected  {}                       -> {"name", "index"}   of the selected tab; null when nothing is selected
 //!   view.screenshot {}                       -> {"format": "png", "width", "height", "data"}
 //!                   The picture or video frame the viewer shows, at its own size, as base64-encoded PNG.
+//!   view.info       {}                       -> {"directory", "filename", "position", "duration", "width", "height",
+//!                                                "fps", "speed", "mime_type"}
+//!                   The item the viewer shows, at its own size in pixels. position and duration are in seconds,
+//!                   fps is frames per second, and speed is a multiple of normal. The playback values are null for
+//!                   a picture; duration, fps and speed are null when a video does not report them yet.
 //!
 //! "tab" in tabs.files and tabs.select is a tab id, or "current" for the selected tab. "index" is a tab's
 //! position, counted from 0 in tab order.
@@ -37,7 +42,7 @@
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
-use gtk::glib;
+use gtk::{gio, glib};
 use gtk::prelude::*;
 use serde_json::{json, Value};
 
@@ -75,6 +80,23 @@ pub fn handle(window: &Window, method: &str, params: &Value) -> Result<Value, Er
             } else {
                 Err(Error::new("not_run", format!("the window did not run {name}")))
             }
+        }
+        "view.info" => {
+            let Some(item) = window.viewer_item() else {
+                return Err(Error::new("no_media", "the viewer is not open"));
+            };
+            let playback = item.playback.as_ref();
+            Ok(json!({
+                "directory": item.path.parent().map(|dir| dir.to_string_lossy().into_owned()),
+                "filename": item.path.file_name().map(|name| name.to_string_lossy().into_owned()),
+                "position": playback.map(|playback| playback.position),
+                "duration": playback.and_then(|playback| playback.duration),
+                "width": item.width,
+                "height": item.height,
+                "fps": playback.and_then(|playback| playback.fps),
+                "speed": playback.and_then(|playback| playback.speed),
+                "mime_type": mime_type(&item.path),
+            }))
         }
         "view.screenshot" => {
             let Some(texture) = window.viewer_screenshot() else {
@@ -244,6 +266,12 @@ pub fn handle(window: &Window, method: &str, params: &Value) -> Result<Value, Er
         }
         _ => Err(Error::new("unknown_method", format!("no method named {method}"))),
     }
+}
+
+/// The MIME type of a file, guessed from its name.
+fn mime_type(path: &Path) -> Option<String> {
+    let (content_type, _) = gio::content_type_guess(Some(path), None::<&[u8]>);
+    gio::content_type_get_mime_type(&content_type).map(|mime| mime.to_string())
 }
 
 fn text_param<'a>(params: &'a Value, key: &str) -> Result<&'a str, Error> {
