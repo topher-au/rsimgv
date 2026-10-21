@@ -11,6 +11,8 @@ sh = find_program('sh')
 
 gtk_dep = dependency('gtk4', version: '>= 4.22')
 adw_dep = dependency('libadwaita-1', version: '>= 1.9')
+# Videos can be played by libmpv, which the crate links against.
+mpv_dep = dependency('mpv', version: '>= 2.0')
 
 if get_option('buildtype') == 'debug'
   cargo_profile = 'debug'

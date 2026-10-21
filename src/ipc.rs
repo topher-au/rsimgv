@@ -4,7 +4,7 @@
 //! `{"id": 1, "result": {...}}` or `{"id": 1, "error": {"code": "...", "message": "..."}}`.
 //!
 //! - The Unix socket and the TCP socket take one request per line, and answer with one line per request.
-//!   The TCP socket listens on 127.0.0.1 only.
+//!   The TCP socket listens on 127.0.0.1 only, unless external access is on, when it listens on all interfaces.
 //! - HTTP takes a request as the body of `POST /ipc`, sent with `Content-Type: application/json`, and answers
 //!   with the response as the body. A request without that content type is refused: a web page cannot send
 //!   it cross-site without a preflight request, which is never answered.
@@ -13,12 +13,13 @@
 //! Requests are carried out on the GTK thread, where the window is.
 
 use std::io::{self, BufRead, BufReader, Read, Write};
-use std::net::TcpListener;
+use std::net::{TcpListener, TcpStream};
 use std::os::unix::fs::PermissionsExt;
-use std::os::unix::net::UnixListener;
-use std::path::PathBuf;
-use std::sync::mpsc;
-use std::thread;
+use std::os::unix::net::{UnixListener, UnixStream};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc};
+use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use gtk::glib;
@@ -28,6 +29,8 @@ use serde_json::{json, Value};
 const ANSWER_TIMEOUT: Duration = Duration::from_secs(5);
 /// The largest HTTP body accepted, in bytes.
 const MAX_BODY: usize = 1 << 20;
+/// How often an idle listener checks whether it has been told to stop.
+const ACCEPT_POLL: Duration = Duration::from_millis(50);
 
 /// A request for the GTK thread to carry out. Its answer goes back to the transport that sent it.
 pub struct Call {
@@ -56,17 +59,13 @@ impl Error {
     }
 }
 
-/// Which transports to serve. A TCP or HTTP port of 0 leaves that transport off.
+/// Which transports to serve. A TCP or HTTP port of 0 leaves that transport off. With `external`, the TCP and
+/// HTTP ports listen on all interfaces rather than on localhost.
 pub struct Config {
     pub socket: bool,
     pub tcp_port: u16,
     pub http_port: u16,
-}
-
-impl Config {
-    pub fn any_enabled(&self) -> bool {
-        self.socket || self.tcp_port != 0 || self.http_port != 0
-    }
+    pub external: bool,
 }
 
 /// Where the Unix socket is: `rsimgv.sock` in the user's runtime directory.
@@ -74,68 +73,125 @@ pub fn socket_path() -> PathBuf {
     glib::user_runtime_dir().join("rsimgv.sock")
 }
 
-/// Starts each enabled transport and returns the channel its calls arrive on. A transport that cannot start is
-/// reported, and the others still run.
-pub fn start(config: &Config) -> mpsc::Receiver<Call> {
-    let (calls, receiver) = mpsc::channel();
-    if config.socket {
-        if let Err(err) = serve_unix(&socket_path(), calls.clone()) {
-            eprintln!("rsimgv: could not open the IPC socket: {err}");
-        }
-    }
-    if config.tcp_port != 0 {
-        if let Err(err) = serve_tcp(config.tcp_port, calls.clone()) {
-            eprintln!("rsimgv: could not open the IPC TCP port {}: {err}", config.tcp_port);
-        }
-    }
-    if config.http_port != 0 {
-        if let Err(err) = serve_http(config.http_port, calls.clone()) {
-            eprintln!("rsimgv: could not open the IPC HTTP port {}: {err}", config.http_port);
-        }
-    }
-    receiver
+/// Removes the Unix socket when the app exits, so none is left for the next run to clear.
+pub fn remove_socket() {
+    let _ = std::fs::remove_file(socket_path());
 }
 
-fn serve_unix(path: &std::path::Path, calls: mpsc::Sender<Call>) -> io::Result<()> {
+/// One running transport: the thread accepting its connections, and what to clean up when it stops.
+struct Listener {
+    stop: Arc<AtomicBool>,
+    thread: JoinHandle<()>,
+    socket: Option<PathBuf>,
+}
+
+/// The running transports. `apply` stops them all and starts the ones a config enables, so a settings change takes
+/// effect at once. Calls from every transport arrive on the channel the server was made with.
+pub struct Server {
+    calls: mpsc::Sender<Call>,
+    listeners: Vec<Listener>,
+}
+
+impl Server {
+    pub fn new(calls: mpsc::Sender<Call>) -> Self {
+        Self { calls, listeners: Vec::new() }
+    }
+
+    /// Stops the running transports, then starts each one `config` enables. A transport that cannot start is
+    /// reported, and the others still run.
+    pub fn apply(&mut self, config: &Config) {
+        self.stop();
+        if config.socket {
+            let calls = self.calls.clone();
+            match serve_unix(&socket_path(), calls) {
+                Ok(listener) => self.listeners.push(listener),
+                Err(err) => eprintln!("rsimgv: could not open the IPC socket: {err}"),
+            }
+        }
+        let host = if config.external { "0.0.0.0" } else { "127.0.0.1" };
+        if config.tcp_port != 0 {
+            let calls = self.calls.clone();
+            match serve_tcp(host, config.tcp_port, move |stream| {
+                let _ = serve_lines(stream, &calls);
+            }) {
+                Ok(listener) => self.listeners.push(listener),
+                Err(err) => eprintln!("rsimgv: could not open the IPC TCP port {}: {err}", config.tcp_port),
+            }
+        }
+        if config.http_port != 0 {
+            let calls = self.calls.clone();
+            match serve_tcp(host, config.http_port, move |stream| {
+                let _ = serve_http_request(stream, &calls);
+            }) {
+                Ok(listener) => self.listeners.push(listener),
+                Err(err) => eprintln!("rsimgv: could not open the IPC HTTP port {}: {err}", config.http_port),
+            }
+        }
+    }
+
+    /// Stops every running transport. Each one has finished accepting when this returns; connections already
+    /// being answered finish on their own.
+    pub fn stop(&mut self) {
+        for listener in self.listeners.drain(..) {
+            listener.stop.store(true, Ordering::SeqCst);
+            let _ = listener.thread.join();
+            if let Some(path) = listener.socket {
+                let _ = std::fs::remove_file(path);
+            }
+        }
+    }
+}
+
+impl Drop for Server {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+/// Accepts connections until `stop` is set, handing each one to `serve` on its own thread.
+fn accept_loop<S: Send + 'static>(
+    stop: Arc<AtomicBool>,
+    mut accept: impl FnMut() -> io::Result<S> + Send + 'static,
+    serve: impl Fn(S) + Clone + Send + 'static,
+) -> JoinHandle<()> {
+    thread::spawn(move || {
+        while !stop.load(Ordering::SeqCst) {
+            match accept() {
+                Ok(stream) => {
+                    let serve = serve.clone();
+                    thread::spawn(move || serve(stream));
+                }
+                // Nothing is waiting (or accept failed); look again after a moment, so a stop is noticed.
+                Err(_) => thread::sleep(ACCEPT_POLL),
+            }
+        }
+    })
+}
+
+fn serve_unix(path: &Path, calls: mpsc::Sender<Call>) -> io::Result<Listener> {
     // A socket left by an earlier run would stop the bind, so it goes first.
     let _ = std::fs::remove_file(path);
     let listener = UnixListener::bind(path)?;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
-    thread::spawn(move || {
-        for stream in listener.incoming().flatten() {
-            let calls = calls.clone();
-            thread::spawn(move || {
-                let _ = serve_lines(stream, &calls);
-            });
-        }
-    });
-    Ok(())
+    listener.set_nonblocking(true)?;
+    let stop = Arc::new(AtomicBool::new(false));
+    let thread = accept_loop(
+        stop.clone(),
+        move || listener.accept().map(|(stream, _)| stream),
+        move |stream: UnixStream| {
+            let _ = serve_lines(stream, &calls);
+        },
+    );
+    Ok(Listener { stop, thread, socket: Some(path.to_owned()) })
 }
 
-fn serve_tcp(port: u16, calls: mpsc::Sender<Call>) -> io::Result<()> {
-    let listener = TcpListener::bind(("127.0.0.1", port))?;
-    thread::spawn(move || {
-        for stream in listener.incoming().flatten() {
-            let calls = calls.clone();
-            thread::spawn(move || {
-                let _ = serve_lines(stream, &calls);
-            });
-        }
-    });
-    Ok(())
-}
-
-fn serve_http(port: u16, calls: mpsc::Sender<Call>) -> io::Result<()> {
-    let listener = TcpListener::bind(("127.0.0.1", port))?;
-    thread::spawn(move || {
-        for stream in listener.incoming().flatten() {
-            let calls = calls.clone();
-            thread::spawn(move || {
-                let _ = serve_http_request(stream, &calls);
-            });
-        }
-    });
-    Ok(())
+/// Listens on `port` on `host`, handing each connection to `serve`.
+fn serve_tcp(host: &str, port: u16, serve: impl Fn(TcpStream) + Clone + Send + 'static) -> io::Result<Listener> {
+    let listener = TcpListener::bind((host, port))?;
+    listener.set_nonblocking(true)?;
+    let stop = Arc::new(AtomicBool::new(false));
+    let thread = accept_loop(stop.clone(), move || listener.accept().map(|(stream, _)| stream), serve);
+    Ok(Listener { stop, thread, socket: None })
 }
 
 /// Serves one connection of the line protocol: each line is a request, answered with a line.

@@ -2,13 +2,21 @@ mod fs;
 mod ipc;
 mod remote;
 mod bookmarks;
+mod file_settings;
 mod keybindings;
+mod mpv;
 mod settings;
 mod ui;
 
 use adw::prelude::*;
 use gtk::{gdk, gio};
+use std::cell::RefCell;
+use std::rc::Rc;
+use std::sync::mpsc;
 use std::time::Duration;
+
+/// The settings that decide which IPC transports run, and on which ports.
+const IPC_KEYS: [&str; 4] = ["ipc-socket", "ipc-tcp-port", "ipc-http-port", "ipc-external-access"];
 
 const APP_ID: &str = "au.topher.rimgv";
 
@@ -26,20 +34,23 @@ fn main() -> glib::ExitCode {
         .application_id(APP_ID)
         .resource_base_path("/au/topher/rimgv")
         .build();
+    let (calls, receiver) = mpsc::channel();
+    let ipc_server = Rc::new(RefCell::new(ipc::Server::new(calls)));
+    serve_ipc(&app, receiver);
+    for key in IPC_KEYS {
+        settings.connect_changed(Some(key), {
+            let settings = settings.clone();
+            let ipc_server = ipc_server.clone();
+            move |_, _| ipc_server.borrow_mut().apply(&ipc_config(&settings))
+        });
+    }
     let startup_settings = settings.clone();
     app.connect_startup(move |app| {
         load_css();
         register_icons();
         keybindings::load();
         bookmarks::load();
-        let config = ipc::Config {
-            socket: startup_settings.boolean("ipc-socket"),
-            tcp_port: startup_settings.int("ipc-tcp-port") as u16,
-            http_port: startup_settings.int("ipc-http-port") as u16,
-        };
-        if config.any_enabled() {
-            serve_ipc(app, &config);
-        }
+        ipc_server.borrow_mut().apply(&ipc_config(&startup_settings));
 
         let quit = gio::SimpleAction::new("quit", None);
         let weak = app.downgrade();
@@ -62,7 +73,19 @@ fn main() -> glib::ExitCode {
         app.add_action(&preferences);
     });
     app.connect_activate(move |app| gtk::prelude::GtkWindowExt::present(&ui::Window::new(app, &settings)));
+    app.connect_shutdown(|_| ipc::remove_socket());
+    mpv::remove_stale_sockets();
     app.run()
+}
+
+/// The IPC transports the settings ask for.
+fn ipc_config(settings: &gio::Settings) -> ipc::Config {
+    ipc::Config {
+        socket: settings.boolean("ipc-socket"),
+        tcp_port: settings.int("ipc-tcp-port") as u16,
+        http_port: settings.int("ipc-http-port") as u16,
+        external: settings.boolean("ipc-external-access"),
+    }
 }
 
 /// Adds the bundled hicolor icon theme to the default theme, so the app's own icons resolve.
@@ -81,10 +104,8 @@ fn load_css() {
     );
 }
 
-/// Starts the transports `config` enables, and carries out their calls on the active window, here on the GTK
-/// thread, which polls for them.
-fn serve_ipc(app: &adw::Application, config: &ipc::Config) {
-    let calls = ipc::start(config);
+/// Carries out the IPC calls from the transports on the active window, here on the GTK thread, which polls for them.
+fn serve_ipc(app: &adw::Application, calls: mpsc::Receiver<ipc::Call>) {
     let weak = app.downgrade();
     glib::timeout_add_local(Duration::from_millis(20), move || {
         let Some(app) = weak.upgrade() else { return glib::ControlFlow::Break };

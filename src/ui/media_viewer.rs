@@ -15,8 +15,27 @@ use gtk::subclass::prelude::*;
 use gtk::{gdk, gio, glib};
 
 use super::image_canvas::{Fit, ImageCanvas, Placement};
+use crate::file_settings::FileSettings;
 use super::media_controls::MediaControls;
 use super::thumbnail_bar::ThumbnailBar;
+
+const MICROS: f64 = 1_000_000.0;
+
+/// The item the viewer shows: its path, its size in pixels, and for a video, its playback.
+pub struct ShownItem {
+    pub path: PathBuf,
+    pub width: i32,
+    pub height: i32,
+    pub playback: Option<Playback>,
+}
+
+/// A video's playback, in seconds and frames per second. A value is `None` when it is not known.
+pub struct Playback {
+    pub position: f64,
+    pub duration: Option<f64>,
+    pub fps: Option<f64>,
+    pub speed: Option<f64>,
+}
 
 /// How much a volume key changes the volume, as a fraction of full.
 pub const VOLUME_STEP: f64 = 0.05;
@@ -24,10 +43,8 @@ pub const VOLUME_STEP: f64 = 0.05;
 /// The share of the viewer's height, from its bottom edge, where a video's controls appear.
 const REVEAL_FRACTION: f64 = 0.2;
 
-thread_local! {
-    /// How each picture was last zoomed and panned, kept until rsimgv closes.
-    static PLACEMENTS: RefCell<std::collections::HashMap<PathBuf, Placement>> = RefCell::default();
-}
+/// How near, in seconds, a video's start or end its position must be to start it from the beginning next time.
+const POSITION_MARGIN: f64 = 2.0;
 
 /// The picture in `path`, or `None` if it cannot be read.
 fn load_texture(path: &Path) -> Option<gdk::Texture> {
@@ -59,6 +76,24 @@ const BAR_SLIDE_MS: u32 = 250;
 
 /// How long, in milliseconds, the thumbnail bar stays shown when it is turned on.
 const BAR_PEEK_MS: u64 = 1500;
+
+/// The settings changes that keep where `media` was left: its position, unless it is near its start or end, and
+/// its speed, unless it is normal.
+fn video_settings(media: &gtk::MediaStream) -> Vec<(&'static str, Option<serde_yaml_ng::Value>)> {
+    let position = media.timestamp() as f64 / 1_000_000.0;
+    let duration = media.duration() as f64 / 1_000_000.0;
+    let mid_way = media.is_prepared()
+        && !media.is_ended()
+        && position > POSITION_MARGIN
+        && (duration <= 0.0 || position < duration - POSITION_MARGIN);
+    let speed = media.downcast_ref::<crate::mpv::MpvStream>().and_then(crate::mpv::MpvStream::speed);
+    let mut changes = vec![("position", mid_way.then(|| position.into()))];
+    // Only the mpv player knows its speed; with GTK's, the saved speed is left as it is.
+    if let Some(speed) = speed {
+        changes.push(("speed", ((speed - 1.0).abs() > 1e-6).then(|| speed.into())));
+    }
+    changes
+}
 
 /// The edge of a `width` by `height` area nearest the point `x`, `y`, measured as a share of the area,
 /// so a wide area does not favour the top and bottom.
@@ -156,13 +191,18 @@ mod imp {
         /// The folder's pictures and videos, in display order, and the index of the one shown.
         pub(super) paths: RefCell<Vec<PathBuf>>,
         pub(super) index: Cell<usize>,
-        /// The picture shown, so its zoom and pan can be kept when it is left.
-        pub(super) shown_picture: RefCell<Option<PathBuf>>,
+        /// The settings kept for the item shown: a picture's zoom and pan, a video's position and speed. They are
+        /// saved when it is left.
+        pub(super) file_settings: RefCell<Option<FileSettings>>,
         /// The video shown, if the item is one. The viewer owns it, and the controls drive it.
-        pub(super) media: RefCell<Option<gtk::MediaFile>>,
+        pub(super) media: RefCell<Option<gtk::MediaStream>>,
         /// Whether a video starts again when it ends, and whether the next item plays when it ends instead.
         pub(super) repeat: Cell<bool>,
         pub(super) auto_advance: Cell<bool>,
+        /// Whether videos are played by libmpv rather than GTK's own media backend.
+        pub(super) use_mpv: Cell<bool>,
+        /// Extra mpv command line options for the mpv player.
+        pub(super) mpv_options: RefCell<String>,
         /// Whether the controls and the title stay shown, rather than hiding until the pointer comes near.
         pub(super) pinned: Cell<bool>,
         /// Whether the window is fullscreen, where the header floats over the picture and hides.
@@ -500,6 +540,16 @@ impl MediaViewer {
         }
     }
 
+    /// Plays later videos with libmpv, or with GTK's own media backend.
+    pub fn set_use_mpv(&self, use_mpv: bool) {
+        self.imp().use_mpv.set(use_mpv);
+    }
+
+    /// Gives later videos played by mpv the mpv command line options in `options`.
+    pub fn set_mpv_options(&self, options: &str) {
+        self.imp().mpv_options.replace(options.to_owned());
+    }
+
     /// Changes the volume of the video shown by `delta`.
     pub fn adjust_volume(&self, delta: f64) {
         self.imp().controls.adjust_volume(delta);
@@ -569,6 +619,29 @@ impl MediaViewer {
     }
 
     /// Moves the video's position by `micros` microseconds.
+    /// Changes the playback speed by `change`, from the video's own speed, kept within the speeds allowed.
+    pub fn adjust_speed(&self, change: f64) {
+        let imp = self.imp();
+        let current = imp
+            .media
+            .borrow()
+            .as_ref()
+            .and_then(|media| media.downcast_ref::<crate::mpv::MpvStream>().and_then(crate::mpv::MpvStream::speed))
+            .unwrap_or(1.0);
+        self.set_speed(current + change);
+    }
+
+    /// Plays the video shown at `speed` times normal speed. Only the mpv player can change speed. The speed is kept
+    /// for the video when it is left.
+    pub fn set_speed(&self, speed: f64) {
+        use crate::keybindings::actions::{MAX_SPEED, MIN_SPEED};
+        let speed = speed.clamp(MIN_SPEED, MAX_SPEED);
+        let imp = self.imp();
+        if let Some(stream) = imp.media.borrow().as_ref().and_then(|media| media.downcast_ref::<crate::mpv::MpvStream>()) {
+            stream.set_speed(speed);
+        }
+    }
+
     pub fn seek(&self, micros: i64) {
         self.imp().controls.seek_by(micros);
     }
@@ -583,9 +656,59 @@ impl MediaViewer {
         })
     }
 
+    /// The item shown, at its own size: the picture, or the video's current frame, captured by mpv when it plays
+    /// the video. `None` when nothing is shown, or a video has no frame yet.
+    pub fn screenshot(&self) -> Option<gdk::Texture> {
+        let imp = self.imp();
+        let Some(media) = imp.media.borrow().clone() else { return imp.canvas.texture() };
+        // mpv captures the frame itself, at the video's own size.
+        if let Some(stream) = media.downcast_ref::<crate::mpv::MpvStream>() {
+            return stream.screenshot();
+        }
+        let frame = media.current_image();
+        if let Ok(texture) = frame.clone().downcast::<gdk::Texture>() {
+            return Some(texture);
+        }
+        // Any other frame is drawn at its own size and rendered to a texture by the window's renderer.
+        let (width, height) = (frame.intrinsic_width(), frame.intrinsic_height());
+        if width <= 0 || height <= 0 {
+            return None;
+        }
+        let snapshot = gtk::Snapshot::new();
+        frame.snapshot(&snapshot, f64::from(width), f64::from(height));
+        let node = snapshot.to_node()?;
+        let renderer = self.native()?.renderer()?;
+        Some(renderer.render_texture(node, Some(&gtk::graphene::Rect::new(0.0, 0.0, width as f32, height as f32))))
+    }
+
     /// Whether the item shown is a video.
     pub fn shows_video(&self) -> bool {
         self.imp().media.borrow().is_some()
+    }
+
+    /// The item shown: its path, its size, and for a video, its playback. `None` when nothing is shown.
+    pub fn shown_item(&self) -> Option<ShownItem> {
+        let imp = self.imp();
+        let path = imp.paths.borrow().get(imp.index.get()).cloned()?;
+        let media = imp.media.borrow().clone();
+        let Some(media) = media else {
+            // A picture is drawn at its own size, so its texture is that size.
+            let texture = imp.canvas.texture()?;
+            return Some(ShownItem { path, width: texture.width(), height: texture.height(), playback: None });
+        };
+        let duration = media.duration();
+        let mpv = media.downcast_ref::<crate::mpv::MpvStream>();
+        let playback = Playback {
+            position: media.timestamp() as f64 / MICROS,
+            duration: (duration > 0).then(|| duration as f64 / MICROS),
+            fps: mpv.and_then(|stream| stream.fps()),
+            // GTK's own backend always plays at normal speed.
+            speed: match mpv {
+                Some(stream) => stream.speed(),
+                None => Some(1.0),
+            },
+        };
+        Some(ShownItem { path, width: media.intrinsic_width(), height: media.intrinsic_height(), playback: Some(playback) })
     }
 
     fn request_back(&self) {
@@ -606,9 +729,23 @@ impl MediaViewer {
         imp.position.set_label(&format!("{} / {}", index + 1, len));
         imp.controls.set_navigation(neighbour(index, len, false).is_some(), neighbour(index, len, true).is_some());
 
+        let settings = FileSettings::for_path(&path).ok();
         let video = is_video(&path);
         if video {
-            let media = gtk::MediaFile::for_filename(&path);
+            // libmpv plays the video if it is chosen and starts; otherwise GTK's media backend does.
+            let media: gtk::MediaStream = imp
+                .use_mpv
+                .get()
+                .then(|| crate::mpv::MpvStream::for_path(&path, &imp.mpv_options.borrow()))
+                .flatten()
+                .map(|stream| {
+                    // Each video plays at the speed it was left at, or normal speed.
+                    stream.set_speed(settings.as_ref().and_then(|settings| settings.get_f64("speed")).unwrap_or(1.0));
+                    // Frames are rendered at device pixels, so the video and its OSD are drawn at the display's scale.
+                    stream.set_scale(imp.picture.scale_factor());
+                    stream.upcast()
+                })
+                .unwrap_or_else(|| gtk::MediaFile::for_filename(&path).upcast());
             // The end of a video either repeats it or, with auto-advance on, moves to the next item. The step
             // waits until the notification has returned, since it releases the video that sent it.
             media.connect_ended_notify({
@@ -628,23 +765,35 @@ impl MediaViewer {
                 }
             });
             imp.pages.set_visible_child(&*imp.picture);
+            // mpv fits the video to the area it is given, so that area is the whole picture, and its OSD sits in its corner.
+            let fit = if media.is::<crate::mpv::MpvStream>() { gtk::ContentFit::Fill } else { gtk::ContentFit::Contain };
+            imp.picture.set_content_fit(fit);
             imp.picture.set_paintable(Some(&media));
             imp.controls.set_media(Some(&media));
-            // Playing is requested once the stream is ready, since a request made before then is dropped.
-            media.connect_prepared_notify(|media| {
-                if media.is_prepared() {
-                    media.play();
+            // Playing is requested once the stream is ready, since a request made before then is dropped. It starts
+            // where it was left.
+            let position = settings.as_ref().and_then(|settings| settings.get_f64("position"));
+            media.connect_prepared_notify(move |media| {
+                if !media.is_prepared() {
+                    return;
                 }
+                if let Some(position) = position {
+                    let duration = media.duration() as f64 / 1_000_000.0;
+                    if media.is_seekable() && (duration <= 0.0 || position < duration - POSITION_MARGIN) {
+                        media.seek((position * 1_000_000.0) as i64);
+                    }
+                }
+                media.play();
             });
             imp.media.replace(Some(media));
         } else {
             imp.pages.set_visible_child(&*imp.canvas);
             imp.canvas.set_texture(load_texture(&path));
-            if let Some(placement) = PLACEMENTS.with(|placements| placements.borrow().get(&path).copied()) {
+            if let Some(placement) = settings.as_ref().and_then(Placement::from_settings) {
                 imp.canvas.restore(placement);
             }
-            imp.shown_picture.replace(Some(path.clone()));
         }
+        imp.file_settings.replace(settings);
         imp.controls_revealer.set_visible(video);
         imp.zoom_box.set_visible(!video);
         self.emit_by_name::<()>("item-changed", &[&path.to_string_lossy().into_owned()]);
@@ -653,19 +802,33 @@ impl MediaViewer {
     /// Clears the shown item: a video is paused and released, and the picture is emptied.
     fn release(&self) {
         let imp = self.imp();
-        if let Some(media) = imp.media.take() {
+        let mut settings = imp.file_settings.take();
+        let media = imp.media.take();
+        let changes = match &media {
+            Some(media) => video_settings(media),
+            None if imp.canvas.texture().is_some() => Placement::to_settings(imp.canvas.placement()),
+            None => Vec::new(),
+        };
+        if let Some(settings) = settings.as_mut() {
+            if let Err(err) = settings.apply(changes) {
+                eprintln!("rsimgv: could not save the file's settings: {err}");
+            }
+        }
+        if let Some(media) = media {
             media.set_playing(false);
         }
         imp.controls.set_media(None);
         imp.picture.set_paintable(None::<&gdk::Paintable>);
-        if let Some(path) = imp.shown_picture.take() {
-            let placement = imp.canvas.placement();
-            PLACEMENTS.with(|placements| match placement {
-                Some(placement) => placements.borrow_mut().insert(path, placement),
-                None => placements.borrow_mut().remove(&path),
-            });
-        }
         imp.canvas.set_texture(None);
+    }
+
+    /// Plays the video shown again from where it was left, so it is made with the current mpv config. Does nothing
+    /// when no video is shown.
+    pub fn reload_video(&self) {
+        let imp = self.imp();
+        if imp.media.borrow().is_some() {
+            self.load(imp.index.get());
+        }
     }
 
     /// Moves to the item before or after the one shown, if there is one.

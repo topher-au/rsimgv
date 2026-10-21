@@ -91,6 +91,8 @@ const LAYOUT: &[(&str, &str, &str)] = &[
     ("keep-fit-mode", "view", "keep-fit-mode"),
     ("expand-up-to-factor", "view", "expand-up-to-factor"),
     ("zoom-step", "view", "zoom-step"),
+    ("video-backend", "view", "video-backend"),
+    ("mpv-args", "view", "mpv-args"),
     ("scaling-filter", "view", "scaling-filter"),
     ("smooth-upscaling", "view", "smooth-upscaling"),
     ("viewer-blurred-background", "view", "blurred-background"),
@@ -102,6 +104,7 @@ const LAYOUT: &[(&str, &str, &str)] = &[
     ("ipc-socket", "ipc", "socket"),
     ("ipc-tcp-port", "ipc", "tcp-port"),
     ("ipc-http-port", "ipc", "http-port"),
+    ("ipc-external-access", "ipc", "external-access"),
 ];
 
 /// The group for a setting that is not in `LAYOUT`. Its name is the schema key.

@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import base64
 import itertools
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Union
+from typing import TYPE_CHECKING, Any, Union
+
+if TYPE_CHECKING:
+    import PIL.Image
 
 from .transport import ConnectionFailed, HttpTransport, TcpTransport, Transport, UnixTransport
 
@@ -49,13 +53,49 @@ class NotAFolder(IpcError):
     pass
 
 
+class NoMedia(IpcError):
+    """The viewer is not showing a picture or a video frame to capture."""
+
+
 _ERRORS: dict[str, type[IpcError]] = {
     "unknown_action": UnknownAction,
     "not_run": ActionNotRun,
     "no_such_tab": NoSuchTab,
     "no_such_file": NoSuchFile,
     "not_a_folder": NotAFolder,
+    "no_media": NoMedia,
 }
+
+
+@dataclass(frozen=True)
+class Screenshot:
+    """The media the viewer showed, at its own size: ``data`` is the image file's bytes, in ``format``."""
+
+    format: str
+    width: int
+    height: int
+    # Left out of the repr, as an image is too long to print.
+    data: bytes = field(repr=False)
+
+    def to_image(self, max_size: int | tuple[int, int] | None = None) -> "PIL.Image.Image":
+        """The image as a Pillow image. With ``max_size``, a number or a ``(width, height)``, it is scaled down to fit
+        within that size, keeping its shape; it is never enlarged. Needs Pillow installed."""
+        import io
+
+        from PIL import Image
+
+        image = Image.open(io.BytesIO(self.data))
+        image.load()
+        if max_size is not None:
+            bounds = (max_size, max_size) if isinstance(max_size, int) else max_size
+            image.thumbnail(bounds)
+        return image
+
+    def save(self, path: str | os.PathLike[str]) -> Path:
+        """Writes the image to ``path`` and returns it."""
+        path = Path(path)
+        path.write_bytes(self.data)
+        return path
 
 
 @dataclass(frozen=True)
@@ -235,8 +275,8 @@ class ActionNamespace:
     def __init__(self, client: "Client") -> None:
         self._client = client
 
-    def __call__(self, name: str) -> None:
-        self._client.run_action(name)
+    def __call__(self, name: str, value: float | None = None) -> None:
+        self._client.run_action(name, value)
 
     def __dir__(self) -> list[str]:
         """The action groups rsimgv has, such as ``win``, ``browse`` and ``video``. Asks rsimgv for them; if it
@@ -287,8 +327,9 @@ class Action:
         self._client = client
         self.name = name
 
-    def __call__(self) -> None:
-        self._client.run_action(self.name)
+    def __call__(self, value: float | None = None) -> None:
+        """Runs the action, passing ``value`` if it takes one: ``client.action.video.seek(-30)``."""
+        self._client.run_action(self.name, value)
 
     def __repr__(self) -> str:
         return f"<action {self.name}>"
@@ -391,5 +432,20 @@ class Client:
                 return None
         return self._action_infos.get(name)
 
-    def run_action(self, name: str) -> None:
-        self.call("actions.run", name=name)
+    def run_action(self, name: str, value: float | None = None) -> None:
+        """Runs the action ``name``, passing ``value`` to an action that takes one, such as ``video.seek``."""
+        if value is None:
+            self.call("actions.run", name=name)
+        else:
+            self.call("actions.run", name=name, value=float(value))
+
+    def screenshot(self) -> Screenshot:
+        """Captures the picture, or the video's current frame, that the viewer shows, at its own size. Raises
+        ``NoMedia`` when the viewer is closed or a video has no frame yet."""
+        result = self.call("view.screenshot")
+        return Screenshot(
+            format=result["format"],
+            width=int(result["width"]),
+            height=int(result["height"]),
+            data=base64.b64decode(result["data"]),
+        )

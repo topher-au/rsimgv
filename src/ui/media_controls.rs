@@ -80,7 +80,7 @@ mod imp {
         pub(super) volume_scale: OnceCell<gtk::Scale>,
         pub(super) volume_hide: RefCell<Option<glib::SourceId>>,
         /// The video being controlled, if any.
-        pub(super) media: RefCell<Option<gtk::MediaFile>>,
+        pub(super) media: RefCell<Option<gtk::MediaStream>>,
         /// The volume and mute state. It outlives each video, so a new one starts at the same level.
         pub(super) volume: Cell<f64>,
         pub(super) muted: Cell<bool>,
@@ -111,6 +111,8 @@ mod imp {
             // The slider lives in the same widget tree as the volume button, rather than in a popover on its
             // own surface, so the pointer moving from the button onto the slider is not read as leaving.
             let scale = gtk::Scale::with_range(gtk::Orientation::Vertical, 0.0, 1.0, 0.05);
+            // A vertical scale runs from its top down; inverted, loud is at the top, as a volume slider should be.
+            scale.set_inverted(true);
             scale.set_draw_value(false);
             scale.set_size_request(-1, 120);
             scale.set_value(1.0);
@@ -231,7 +233,7 @@ glib::wrapper! {
 
 impl MediaControls {
     /// Drives `media` from these controls and shows its state. `None` clears them.
-    pub fn set_media(&self, media: Option<&gtk::MediaFile>) {
+    pub fn set_media(&self, media: Option<&gtk::MediaStream>) {
         self.imp().media.replace(media.cloned());
         if let Some(media) = media {
             // Any change to the media, such as its position or play state, updates the controls.

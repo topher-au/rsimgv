@@ -134,6 +134,18 @@
       <default>true</default>
       <summary>Keep the fit mode when switching images</summary>
     </key>
+    <key name="video-backend" type="s">
+      <choices>
+        <choice value="mpv"/>
+        <choice value="gtk"/>
+      </choices>
+      <default>'mpv'</default>
+      <summary>What plays videos: libmpv, or GTK's own media backend</summary>
+    </key>
+    <key name="mpv-args" type="s">
+      <default>""</default>
+      <summary>Extra mpv command line options for the mpv player, such as --hwdec=auto-copy</summary>
+    </key>
     <key name="zoom-step" type="i">
       <default>25</default>
       <range min="5" max="100"/>
@@ -186,12 +198,16 @@
     <key name="ipc-tcp-port" type="i">
       <default>0</default>
       <range min="0" max="65535"/>
-      <summary>Serve the JSON IPC on this localhost TCP port; 0 turns it off</summary>
+      <summary>Serve the JSON IPC on this TCP port; 0 turns it off</summary>
     </key>
     <key name="ipc-http-port" type="i">
       <default>0</default>
       <range min="0" max="65535"/>
-      <summary>Serve the JSON IPC over HTTP on this localhost port; 0 turns it off</summary>
+      <summary>Serve the JSON IPC over HTTP on this port; 0 turns it off</summary>
+    </key>
+    <key name="ipc-external-access" type="b">
+      <default>false</default>
+      <summary>Let other machines reach the TCP and HTTP IPC ports, rather than only localhost</summary>
     </key>
     <key name="viewer-blurred-background" type="b">
       <default>false</default>

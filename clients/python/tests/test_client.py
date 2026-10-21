@@ -90,6 +90,9 @@ def fake_answer(request: dict) -> dict:
         if params.get("index") == 9:
             return error("no_such_file", "no item at index 9")
         return result({"selected": "x.jpg"})
+    if method == "view.screenshot":
+        # "PNG!" in base64, standing in for an image file.
+        return result({"format": "png", "width": 2, "height": 1, "data": "UE5HIQ=="})
     return error("unknown_method", method)
 
 
@@ -174,6 +177,9 @@ class TransportTests(unittest.TestCase):
         self.assertEqual(client.navigate.back(3), 3)
         with self.assertRaises(NotAFolder):
             client.navigate.to("/bad")
+
+        shot = client.screenshot()
+        self.assertEqual((shot.format, shot.width, shot.height, shot.data), ("png", 2, 1, b"PNG!"))
 
     def test_unix_socket(self):
         with tempfile.TemporaryDirectory() as directory:

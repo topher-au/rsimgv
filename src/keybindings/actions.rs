@@ -80,6 +80,70 @@ pub struct ActionInfo {
     pub defaults: &'static [&'static str],
 }
 
+/// The slowest and fastest playback speeds, as multiples of normal.
+pub const MIN_SPEED: f64 = 0.05;
+pub const MAX_SPEED: f64 = 16.0;
+
+/// What a binding's value counts, which decides how it is shown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Unit {
+    /// A change in time, shown as `+ns` or `-ns`.
+    Seconds,
+    /// A change, shown as `+n%` or `-n%`.
+    Percent,
+    /// A multiple, shown as `n×`.
+    Times,
+}
+
+/// The value a binding passes to an action that takes one: what it is called and counts, the range it is kept
+/// within, the step the editor moves it by, how many decimals it shows, and what it is when the binding gives none.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ValueInfo {
+    pub label: &'static str,
+    pub unit: Unit,
+    pub min: f64,
+    pub max: f64,
+    pub step: f64,
+    pub digits: u32,
+    pub default: f64,
+}
+
+impl ValueInfo {
+    /// `value` as it is shown, in its unit, with at most the value's decimals and no trailing zeros.
+    pub fn format(&self, value: f64) -> String {
+        let mut number = format!("{value:.*}", self.digits as usize);
+        if number.contains('.') {
+            number = number.trim_end_matches('0').trim_end_matches('.').to_owned();
+        }
+        // Changes always show their sign.
+        let signed = if value >= 0.0 { format!("+{number}") } else { number.clone() };
+        match self.unit {
+            Unit::Seconds => format!("{signed}s"),
+            Unit::Percent => format!("{signed}%"),
+            Unit::Times => format!("{number}\u{d7}"),
+        }
+    }
+}
+
+/// The value the action `name` takes from its bindings, if it takes one.
+pub fn value_info(name: &str) -> Option<ValueInfo> {
+    match name {
+        "video.seek" => Some(ValueInfo { label: "Seconds", unit: Unit::Seconds, min: -3600.0, max: 3600.0, step: 1.0, digits: 1, default: 10.0 }),
+        "video.volume" => Some(ValueInfo { label: "Change", unit: Unit::Percent, min: -100.0, max: 100.0, step: 1.0, digits: 0, default: 5.0 }),
+        "video.set-speed" => Some(ValueInfo { label: "Speed", unit: Unit::Times, min: MIN_SPEED, max: MAX_SPEED, step: 0.25, digits: 2, default: 1.0 }),
+        "video.adjust-speed" => Some(ValueInfo {
+            label: "Change",
+            unit: Unit::Percent,
+            min: -MAX_SPEED * 100.0,
+            max: MAX_SPEED * 100.0,
+            step: 5.0,
+            digits: 0,
+            default: 25.0,
+        }),
+        _ => None,
+    }
+}
+
 /// Every bindable action, in the order the editor lists them. The names, labels, icons and default keys
 /// follow pyimgv-gtk's catalogue. Actions that need a feature rsimgv does not have yet are left out.
 pub const ACTIONS: &[ActionInfo] = &[
@@ -249,10 +313,22 @@ pub const ACTIONS: &[ActionInfo] = &[
         name: "video.seek-backward", description: "Skip back 5 seconds.", icon: "media-seek-backward-symbolic", label: "Seek Backward", scope: Scope::Video, defaults: &["left"],
     },
     ActionInfo {
+        name: "video.seek", description: "Move the playback position by the number of seconds bound; a negative number goes back.", icon: "media-seek-forward-symbolic", label: "Seek", scope: Scope::Video, defaults: &[],
+    },
+    ActionInfo {
+        name: "video.set-speed", description: "Play at the speed bound, such as 2 for double speed or 0.5 for half; 1 is normal.", icon: "power-profile-performance-symbolic", label: "Set Speed", scope: Scope::Video, defaults: &[],
+    },
+    ActionInfo {
+        name: "video.adjust-speed", description: "Change the playback speed by the amount bound, such as 0.25 faster; a negative amount slows it.", icon: "power-profile-balanced-symbolic", label: "Adjust Speed", scope: Scope::Video, defaults: &[],
+    },
+    ActionInfo {
         name: "video.volume-up", description: "Raise the volume.", icon: "audio-volume-high-symbolic", label: "Volume Up", scope: Scope::Video, defaults: &["up"],
     },
     ActionInfo {
         name: "video.volume-down", description: "Lower the volume.", icon: "audio-volume-low-symbolic", label: "Volume Down", scope: Scope::Video, defaults: &["down"],
+    },
+    ActionInfo {
+        name: "video.volume", description: "Change the volume by the percentage bound; a negative number turns it down.", icon: "audio-volume-high-symbolic", label: "Adjust Volume", scope: Scope::Video, defaults: &[],
     },
     ActionInfo {
         name: "video.mute", description: "Mute the sound, or unmute it.", icon: "audio-volume-muted-symbolic", label: "Mute", scope: Scope::Video, defaults: &["m"],

@@ -1,4 +1,5 @@
-//! The dialog that adds or changes a binding of an action: a chord captured from the keyboard. It warns when
+//! The dialog that adds or changes a binding of an action: a chord captured from the keyboard, and for an
+//! action that takes a value, the value the binding passes. It warns when
 //! the chord is already bound to an action whose scope overlaps.
 
 use std::cell::{Cell, RefCell};
@@ -7,19 +8,22 @@ use std::rc::Rc;
 use adw::prelude::*;
 use gtk::glib;
 
-use crate::keybindings::actions::ActionInfo;
+use crate::keybindings::actions::{value_info, ActionInfo};
 use crate::keybindings::{self, chord::Chord};
 use super::key_handler::chord_from_event;
 
-/// Opens the dialog over `parent` for `action`. `existing` is the chord being changed, or `None` to add one.
-/// `on_save` receives the canonical chord. With `on_delete`, the dialog also offers to delete the binding.
+/// Opens the dialog over `parent` for `action`. `existing` is the chord being changed and its value, or `None`
+/// to add one. `on_save` receives the canonical chord and, for an action that takes one, the value. With
+/// `on_delete`, the dialog also offers to delete the binding.
 pub fn show(
     parent: &impl IsA<gtk::Widget>,
     action: &'static ActionInfo,
-    existing: Option<String>,
-    on_save: impl Fn(String) + 'static,
+    existing: Option<(String, Option<f64>)>,
+    on_save: impl Fn(String, Option<f64>) + 'static,
     on_delete: Option<Box<dyn Fn()>>,
 ) {
+    let existing_value = existing.as_ref().and_then(|(_, value)| *value);
+    let existing = existing.map(|(chord, _)| chord);
     let heading = if existing.is_some() { "Change Binding" } else { "Add Binding" };
     let body = format!("{} \u{b7} {}", action.scope.title(), action.label);
     let dialog = adw::AlertDialog::new(Some(heading), Some(&body));
@@ -73,6 +77,29 @@ pub fn show(
 
     let content = gtk::Box::new(gtk::Orientation::Vertical, 12);
     content.append(&capture);
+    // The value, for an action that takes one, starting at the binding's own or the action's default.
+    let value = value_info(action.name).map(|info| {
+        let spin = gtk::SpinButton::with_range(info.min, info.max, info.step);
+        spin.set_digits(info.digits);
+        spin.set_value(existing_value.unwrap_or(info.default));
+        spin.set_hexpand(true);
+        let label = gtk::Label::new(Some(info.label));
+        // The value as it will be shown, in its unit, beside the field.
+        let shown = gtk::Label::new(Some(&info.format(spin.value())));
+        shown.add_css_class("dim-label");
+        shown.set_width_chars(12);
+        shown.set_xalign(0.0);
+        spin.connect_value_changed({
+            let shown = shown.clone();
+            move |spin| shown.set_label(&info.format(spin.value()))
+        });
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+        row.append(&label);
+        row.append(&spin);
+        row.append(&shown);
+        content.append(&row);
+        spin
+    });
     content.append(&conflict);
     dialog.set_extra_child(Some(&content));
 
@@ -107,7 +134,7 @@ pub fn show(
             return;
         }
         let Some(text) = chord.borrow().clone() else { return };
-        on_save(text);
+        on_save(text, value.as_ref().map(gtk::SpinButton::value));
     });
     adw::prelude::AdwDialogExt::present(&dialog, Some(parent.as_ref()));
 }

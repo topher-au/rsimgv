@@ -1,7 +1,7 @@
 //! The IPC methods, run on the GTK thread against the window. Each takes JSON parameters and returns JSON.
 //!
 //!   actions.list    {}                       -> {"actions": [{"name", "label", "description", "scope", "icon", "defaults"}, ...]}
-//!   actions.run     {"name"}                 -> {}
+//!   actions.run     {"name", "value"?}       -> {}   value is passed to an action that takes one
 //!   window.info     {}                       -> {"current_path", "selected_file", "show_sidebar"}
 //!   window.set_show_sidebar {"show"}         -> {}
 //!   tabs.list       {}                       -> {"tabs": [{"id", "index", "path", "active"}, ...]}
@@ -28,6 +28,13 @@
 //!   files.select    {"file"}                 -> {"selected": name}   in the selected tab
 //!   files.select_index {"index"}             -> {"selected": name}   negative counts from the end
 //!   files.selected  {}                       -> {"name", "index"}   of the selected tab; null when nothing is selected
+//!   view.screenshot {}                       -> {"format": "png", "width", "height", "data"}
+//!                   The picture or video frame the viewer shows, at its own size, as base64-encoded PNG.
+//!   view.info       {}                       -> {"directory", "filename", "position", "duration", "width", "height",
+//!                                                "fps", "speed", "mime_type"}
+//!                   The item the viewer shows, at its own size in pixels. position and duration are in seconds,
+//!                   fps is frames per second, and speed is a multiple of normal. The playback values are null for
+//!                   a picture; duration, fps and speed are null when a video does not report them yet.
 //!
 //! "tab" in tabs.files and tabs.select is a tab id, or "current" for the selected tab. "index" is a tab's
 //! position, counted from 0 in tab order.
@@ -35,6 +42,8 @@
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
+use gtk::{gio, glib};
+use gtk::prelude::*;
 use serde_json::{json, Value};
 
 use crate::bookmarks;
@@ -65,11 +74,41 @@ pub fn handle(window: &Window, method: &str, params: &Value) -> Result<Value, Er
             if find(name).is_none() {
                 return Err(Error::new("unknown_action", format!("no action named {name}")));
             }
-            if window.run_action(name) {
+            let value = params.get("value").and_then(Value::as_f64);
+            if window.run_action(name, value) {
                 Ok(json!({}))
             } else {
                 Err(Error::new("not_run", format!("the window did not run {name}")))
             }
+        }
+        "view.info" => {
+            let Some(item) = window.viewer_item() else {
+                return Err(Error::new("no_media", "the viewer is not open"));
+            };
+            let playback = item.playback.as_ref();
+            Ok(json!({
+                "directory": item.path.parent().map(|dir| dir.to_string_lossy().into_owned()),
+                "filename": item.path.file_name().map(|name| name.to_string_lossy().into_owned()),
+                "position": playback.map(|playback| playback.position),
+                "duration": playback.and_then(|playback| playback.duration),
+                "width": item.width,
+                "height": item.height,
+                "fps": playback.and_then(|playback| playback.fps),
+                "speed": playback.and_then(|playback| playback.speed),
+                "mime_type": mime_type(&item.path),
+            }))
+        }
+        "view.screenshot" => {
+            let Some(texture) = window.viewer_screenshot() else {
+                return Err(Error::new("no_media", "the viewer is not showing a picture or a video frame"));
+            };
+            let png = texture.save_to_png_bytes();
+            Ok(json!({
+                "format": "png",
+                "width": texture.width(),
+                "height": texture.height(),
+                "data": glib::base64_encode(&png).as_str(),
+            }))
         }
         "window.info" => Ok(json!({
             "current_path": window.current_path().map(|path| path.to_string_lossy().into_owned()),
@@ -227,6 +266,12 @@ pub fn handle(window: &Window, method: &str, params: &Value) -> Result<Value, Er
         }
         _ => Err(Error::new("unknown_method", format!("no method named {method}"))),
     }
+}
+
+/// The MIME type of a file, guessed from its name.
+fn mime_type(path: &Path) -> Option<String> {
+    let (content_type, _) = gio::content_type_guess(Some(path), None::<&[u8]>);
+    gio::content_type_get_mime_type(&content_type).map(|mime| mime.to_string())
 }
 
 fn text_param<'a>(params: &'a Value, key: &str) -> Result<&'a str, Error> {

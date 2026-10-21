@@ -8,7 +8,7 @@ use gtk::prelude::*;
 use gtk::subclass::prelude::*;
 use gtk::{gio, glib};
 
-use crate::keybindings::{self, actions::ActionInfo, actions::ACTIONS, BindingTable};
+use crate::keybindings::{self, actions::value_info, actions::ActionInfo, actions::ACTIONS, Binding, BindingTable};
 use super::binding_dialog;
 
 mod imp {
@@ -23,8 +23,8 @@ mod imp {
         pub(super) undo: OnceCell<gtk::Button>,
         /// The bindings as they were when the editor opened, which undo restores.
         pub(super) snapshot: RefCell<Option<BindingTable>>,
-        /// The action and chord of each row, in the list's order.
-        pub(super) bindings: RefCell<Vec<(&'static ActionInfo, String)>>,
+        /// The action and binding of each row, in the list's order.
+        pub(super) bindings: RefCell<Vec<(&'static ActionInfo, Binding)>>,
     }
 
     #[glib::object_subclass]
@@ -121,10 +121,10 @@ mod imp {
                     }
                     let Some(obj) = weak.upgrade() else { return true };
                     let bindings = obj.imp().bindings.borrow();
-                    bindings.get(row.index() as usize).is_some_and(|(action, chord)| {
+                    bindings.get(row.index() as usize).is_some_and(|(action, binding)| {
                         action.label.to_lowercase().contains(&needle)
                             || action.name.contains(&needle)
-                            || chord.contains(&needle)
+                            || binding.chord.contains(&needle)
                     })
                 }
             });
@@ -296,9 +296,9 @@ impl KeybindingList {
         }
         let mut bindings = Vec::new();
         for action in ACTIONS {
-            for chord in keybindings::with_table(|table| table.chords(action.name).to_vec()) {
-                list.append(&self.binding_row(action, &chord));
-                bindings.push((action, chord));
+            for binding in keybindings::with_table(|table| table.bindings(action.name).to_vec()) {
+                list.append(&self.binding_row(action, &binding));
+                bindings.push((action, binding));
             }
         }
         imp.bindings.replace(bindings);
@@ -313,7 +313,8 @@ impl KeybindingList {
     /// Shows the first chord that is bound to more than one action whose scopes overlap, if there is one.
     fn update_conflicts(&self) {
         let imp = self.imp();
-        let conflict = imp.bindings.borrow().iter().find_map(|(action, chord)| {
+        let conflict = imp.bindings.borrow().iter().find_map(|(action, binding)| {
+            let chord = &binding.chord;
             let others = keybindings::with_table(|table| table.conflicts(action.name, chord));
             (!others.is_empty()).then(|| {
                 let names: Vec<&str> = std::iter::once(action.name).chain(others.iter().map(|other| other.name)).collect();
@@ -338,8 +339,8 @@ impl KeybindingList {
         let Some(picker) = self.imp().actions.get() else { return };
         let Some(action) = ACTIONS.get(picker.selected() as usize) else { return };
         let weak = self.downgrade();
-        binding_dialog::show(self, action, None, move |chord| {
-            keybindings::with_table(|table| table.add(action.name, &chord));
+        binding_dialog::show(self, action, None, move |chord, value| {
+            keybindings::with_table(|table| table.add_with_value(action.name, &chord, value));
             if let Some(list) = weak.upgrade() {
                 list.commit();
             }
@@ -348,14 +349,14 @@ impl KeybindingList {
 
     /// Changes the chord of the binding on the row at `index`.
     fn change_row(&self, index: i32) {
-        let Some((action, chord)) = self.imp().bindings.borrow().get(index as usize).cloned() else { return };
+        let Some((action, binding)) = self.imp().bindings.borrow().get(index as usize).cloned() else { return };
         let weak = self.downgrade();
-        let previous = chord.clone();
-        let previous_for_delete = chord.clone();
-        binding_dialog::show(self, action, Some(chord), move |new_chord| {
+        let previous = binding.chord.clone();
+        let previous_for_delete = binding.chord.clone();
+        binding_dialog::show(self, action, Some((binding.chord, binding.value)), move |new_chord, value| {
             keybindings::with_table(|table| {
                 table.remove(action.name, &previous);
-                table.add(action.name, &new_chord);
+                table.add_with_value(action.name, &new_chord, value);
             });
             if let Some(list) = weak.upgrade() {
                 list.commit();
@@ -443,15 +444,26 @@ impl KeybindingList {
         });
     }
 
-    /// A row: the action's icon and label, its chord in monospace, and its scope's icon, which removes it.
-    fn binding_row(&self, action: &'static ActionInfo, chord: &str) -> gtk::ListBoxRow {
+    /// A row: the action's icon and label, the value it passes if it takes one, its chord in monospace, and its
+    /// scope's icon, which removes it.
+    fn binding_row(&self, action: &'static ActionInfo, binding: &Binding) -> gtk::ListBoxRow {
+        let chord = binding.chord.as_str();
         let content = gtk::Box::new(gtk::Orientation::Horizontal, 12);
         content.set_margin_top(2);
         content.set_margin_bottom(2);
         content.set_margin_start(12);
 
+        // The value the binding passes, for an action that takes one, as its unit shows it.
+        let value = value_info(action.name).map(|info| (info, info.format(binding.value.unwrap_or(info.default))));
+
         content.append(&gtk::Image::from_icon_name(action.icon));
-        let label = gtk::Label::new(Some(action.label));
+        let label = gtk::Label::new(None);
+        let title = glib::markup_escape_text(action.label);
+        match &value {
+            // The value follows the title in brackets, dimmed.
+            Some((_, shown)) => label.set_markup(&format!("{title} <span alpha=\"55%\">({})</span>", glib::markup_escape_text(shown))),
+            None => label.set_markup(&title),
+        }
         label.set_xalign(0.0);
         label.set_hexpand(true);
         content.append(&label);
@@ -516,6 +528,12 @@ impl KeybindingList {
             let content = gtk::Box::new(gtk::Orientation::Vertical, 2);
             scope.set_margin_top(6);
             content.append(&name);
+            if let Some((info, shown)) = &value {
+                let line = gtk::Label::new(None);
+                line.set_xalign(0.0);
+                line.set_markup(&format!("<b>{}:</b> {}", glib::markup_escape_text(info.label), glib::markup_escape_text(shown)));
+                content.append(&line);
+            }
             content.append(&description);
             content.append(&scope);
             tooltip.set_custom(Some(&content));
@@ -524,3 +542,4 @@ impl KeybindingList {
         row
     }
 }
+
