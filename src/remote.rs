@@ -1,6 +1,6 @@
 //! The IPC methods, run on the GTK thread against the window. Each takes JSON parameters and returns JSON.
 //!
-//!   actions.list    {}                       -> {"actions": [{"name", "label", "description", "scope", "icon", "defaults"}, ...]}
+//!   actions.list    {}                       -> {"actions": [{"name", "label", "description", "scope", "contexts", "icon", "defaults"}, ...]}
 //!   actions.run     {"name", "value"?}       -> {}   value is passed to an action that takes one
 //!   window.info     {}                       -> {"current_path", "selected_file", "show_sidebar"}
 //!   window.set_show_sidebar {"show"}         -> {}
@@ -61,7 +61,8 @@ pub fn handle(window: &Window, method: &str, params: &Value) -> Result<Value, Er
                         "name": action.name,
                         "label": action.label,
                         "description": action.description,
-                        "scope": action.scope.id(),
+                        "scope": action.default_context().id(),
+                        "contexts": action.contexts.iter().map(|scope| scope.id()).collect::<Vec<_>>(),
                         "icon": action.icon,
                         "defaults": action.defaults,
                     })

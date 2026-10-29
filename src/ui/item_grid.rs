@@ -380,6 +380,11 @@ impl ItemGrid {
         self.queue_allocate();
     }
 
+    /// The widget showing the item at `position`, if it is on screen.
+    pub fn cell_at(&self, position: u32) -> Option<gtk::Widget> {
+        self.imp().shown.borrow().get(&position).cloned()
+    }
+
     /// Scrolls the enclosing scroller so the item at `position` is visible.
     pub fn scroll_to(&self, position: u32) {
         let Some(scroller) = self.scroller() else { return };
@@ -569,7 +574,9 @@ impl ItemGrid {
             .filter(|position| *position < first || *position >= end)
             .collect();
         for position in gone {
-            if let Some(widget) = imp.shown.borrow_mut().remove(&position) {
+            // Taken out first: hiding a cell can run handlers that look at the shown cells.
+            let removed = imp.shown.borrow_mut().remove(&position);
+            if let Some(widget) = removed {
                 widget.set_child_visible(false);
                 imp.spare.borrow_mut().push(widget);
             }

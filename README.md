@@ -65,6 +65,16 @@ Installing copies the GSettings schema and the application icons into the system
 program itself embeds its user interface, stylesheets, and icons in a GResource bundle, so it does not need
 them installed separately.
 
+## Command line
+
+```sh
+rsimgv [FILE_OR_FOLDER...]
+```
+
+Each argument opens in a new tab of the open window, or of a new window if none is open. A folder opens
+in its tab. A file opens in a tab on its folder with the file selected, and a picture or video also opens
+in the viewer. A running rsimgv takes the arguments of a second launch. `rsimgv --version` prints the version.
+
 ## Settings
 
 Settings are stored as YAML in `~/.config/rsimgv/rsimgv.conf`. Set `RSIMGV_CONFIG` to use another file.

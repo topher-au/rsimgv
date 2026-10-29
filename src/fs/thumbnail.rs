@@ -386,7 +386,7 @@ fn cached_or_made(
 }
 
 /// Writes `data` to `file` through a temporary file, so a reader never sees half of it.
-fn write_atomically(file: &Path, data: &[u8]) -> std::io::Result<()> {
+pub(super) fn write_atomically(file: &Path, data: &[u8]) -> std::io::Result<()> {
     let dir = file.parent().ok_or(std::io::ErrorKind::InvalidInput)?;
     DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
     let temporary = file.with_extension(format!("png.{}.tmp", std::process::id()));

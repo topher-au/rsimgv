@@ -9,7 +9,7 @@
 //!   with the response as the body. A request without that content type is refused: a web page cannot send
 //!   it cross-site without a preflight request, which is never answered.
 //!
-//! The socket is `rsimgv.sock` in the user's runtime directory, with mode 0600. Methods are in `remote`.
+//! The socket is `rsimgv.sock` in the user's runtime directory unless a path is set, with mode 0600. Methods are in `remote`.
 //! Requests are carried out on the GTK thread, where the window is.
 
 use std::io::{self, BufRead, BufReader, Read, Write};
@@ -59,23 +59,18 @@ impl Error {
     }
 }
 
-/// Which transports to serve. A TCP or HTTP port of 0 leaves that transport off. With `external`, the TCP and
-/// HTTP ports listen on all interfaces rather than on localhost.
+/// Which transports to serve. `socket` is the Unix socket's path, and `None` leaves it off. A TCP or HTTP port of 0
+/// leaves that transport off. With `external`, the TCP and HTTP ports listen on all interfaces rather than on localhost.
 pub struct Config {
-    pub socket: bool,
+    pub socket: Option<PathBuf>,
     pub tcp_port: u16,
     pub http_port: u16,
     pub external: bool,
 }
 
-/// Where the Unix socket is: `rsimgv.sock` in the user's runtime directory.
-pub fn socket_path() -> PathBuf {
+/// Where the Unix socket is when no path is set: `rsimgv.sock` in the user's runtime directory.
+pub fn default_socket_path() -> PathBuf {
     glib::user_runtime_dir().join("rsimgv.sock")
-}
-
-/// Removes the Unix socket when the app exits, so none is left for the next run to clear.
-pub fn remove_socket() {
-    let _ = std::fs::remove_file(socket_path());
 }
 
 /// One running transport: the thread accepting its connections, and what to clean up when it stops.
@@ -101,11 +96,11 @@ impl Server {
     /// reported, and the others still run.
     pub fn apply(&mut self, config: &Config) {
         self.stop();
-        if config.socket {
+        if let Some(path) = &config.socket {
             let calls = self.calls.clone();
-            match serve_unix(&socket_path(), calls) {
+            match serve_unix(path, calls) {
                 Ok(listener) => self.listeners.push(listener),
-                Err(err) => eprintln!("rsimgv: could not open the IPC socket: {err}"),
+                Err(err) => eprintln!("rsimgv: could not open the IPC socket {}: {err}", path.display()),
             }
         }
         let host = if config.external { "0.0.0.0" } else { "127.0.0.1" };

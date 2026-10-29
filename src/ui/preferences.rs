@@ -23,11 +23,43 @@ mod imp {
         #[template_child]
         pub ipc_socket_row: TemplateChild<adw::SwitchRow>,
         #[template_child]
+        pub ipc_socket_path_row: TemplateChild<adw::EntryRow>,
+        #[template_child]
+        pub ipc_tcp_switch_row: TemplateChild<adw::SwitchRow>,
+        #[template_child]
+        pub ipc_http_switch_row: TemplateChild<adw::SwitchRow>,
+        #[template_child]
         pub thumbnail_bar_row: TemplateChild<adw::ComboRow>,
         #[template_child]
         pub thumbnail_bar_shown_row: TemplateChild<adw::SwitchRow>,
         #[template_child]
+        pub thumbnail_bar_overlay_row: TemplateChild<adw::SwitchRow>,
+        #[template_child]
+        pub thumbnail_bar_pinned_row: TemplateChild<adw::SwitchRow>,
+        #[template_child]
+        pub thumbnail_bar_size_row: TemplateChild<adw::SpinRow>,
+        #[template_child]
         pub blurred_background_row: TemplateChild<adw::SwitchRow>,
+        #[template_child]
+        pub kde_effects_row: TemplateChild<adw::SwitchRow>,
+        #[template_child]
+        pub svp_enabled_row: TemplateChild<adw::SwitchRow>,
+        #[template_child]
+        pub svp_plugin_directory_row: TemplateChild<adw::EntryRow>,
+        #[template_child]
+        pub svp_fps_mode_row: TemplateChild<adw::ComboRow>,
+        #[template_child]
+        pub svp_fps_target_row: TemplateChild<adw::SpinRow>,
+        #[template_child]
+        pub svp_fps_minimum_row: TemplateChild<adw::SpinRow>,
+        #[template_child]
+        pub svp_fps_maximum_row: TemplateChild<adw::SpinRow>,
+        #[template_child]
+        pub svp_nvof_row: TemplateChild<adw::SwitchRow>,
+        #[template_child]
+        pub viewer_status_bar_row: TemplateChild<adw::SwitchRow>,
+        #[template_child]
+        pub status_overlay_position_row: TemplateChild<adw::ComboRow>,
         #[template_child]
         pub ipc_tcp_row: TemplateChild<adw::SpinRow>,
         #[template_child]
@@ -50,6 +82,18 @@ mod imp {
         pub add_info_button: TemplateChild<gtk::MenuButton>,
         #[template_child]
         pub media_only_row: TemplateChild<adw::SwitchRow>,
+        #[template_child]
+        pub thumbnail_crop_row: TemplateChild<adw::SwitchRow>,
+        #[template_child]
+        pub video_frame_previews_row: TemplateChild<adw::SwitchRow>,
+        #[template_child]
+        pub directory_previews_row: TemplateChild<adw::SwitchRow>,
+        #[template_child]
+        pub folder_preview_cycle_row: TemplateChild<adw::SwitchRow>,
+        #[template_child]
+        pub folder_preview_count_row: TemplateChild<adw::SpinRow>,
+        #[template_child]
+        pub folder_preview_fit_row: TemplateChild<adw::SwitchRow>,
         #[template_child]
         pub start_location_row: TemplateChild<adw::ComboRow>,
         #[template_child]
@@ -137,6 +181,30 @@ impl PreferencesDialog {
         settings.connect_changed(Some("video-backend"), move |settings, _| update(settings));
     }
 
+    /// Binds the remote control rows. Each transport's path or port row is insensitive while its toggle is off.
+    fn bind_remote(&self, settings: &gio::Settings) {
+        use adw::prelude::EntryRowExt;
+        let imp = self.imp();
+        settings.bind("ipc-socket", &*imp.ipc_socket_row, "active").build();
+        settings.bind("ipc-socket", &*imp.ipc_socket_path_row, "sensitive").build();
+        settings.bind("ipc-tcp-enabled", &*imp.ipc_tcp_switch_row, "active").build();
+        settings.bind("ipc-tcp-enabled", &*imp.ipc_tcp_row, "sensitive").build();
+        settings.bind("ipc-http-enabled", &*imp.ipc_http_switch_row, "active").build();
+        settings.bind("ipc-http-enabled", &*imp.ipc_http_row, "sensitive").build();
+        bind_port(settings, &imp.ipc_tcp_row, "ipc-tcp-port");
+        bind_port(settings, &imp.ipc_http_row, "ipc-http-port");
+
+        // The path is saved when applied, and a blank path means the default socket.
+        let row = &*imp.ipc_socket_path_row;
+        row.set_text(&settings.string("ipc-socket-path"));
+        row.connect_apply({
+            let settings = settings.clone();
+            move |row| {
+                let _ = settings.set_string("ipc-socket-path", &row.text());
+            }
+        });
+    }
+
     pub fn new(settings: &gio::Settings) -> Self {
         let dialog: Self = glib::Object::new();
         let imp = dialog.imp();
@@ -146,12 +214,30 @@ impl PreferencesDialog {
         settings.bind("show-hidden", &*imp.show_hidden_row, "active").build();
         settings.bind("collapse-on-navigate", &*imp.collapse_on_navigate_row, "active").build();
         settings.bind("media-only", &*imp.media_only_row, "active").build();
-        settings.bind("ipc-socket", &*imp.ipc_socket_row, "active").build();
+        settings.bind("thumbnail-crop", &*imp.thumbnail_crop_row, "active").build();
+        settings.bind("video-frame-previews", &*imp.video_frame_previews_row, "active").build();
+        settings.bind("directory-previews", &*imp.directory_previews_row, "active").build();
+        settings.bind("folder-preview-cycle", &*imp.folder_preview_cycle_row, "active").build();
+        bind_port(settings, &imp.folder_preview_count_row, "folder-preview-count");
+        settings.bind("folder-preview-fit", &*imp.folder_preview_fit_row, "active").build();
+        // The number of previews is not used while they are fitted, so its row is off then.
+        settings
+            .bind("folder-preview-fit", &*imp.folder_preview_count_row, "sensitive")
+            .flags(gio::SettingsBindFlags::INVERT_BOOLEAN)
+            .build();
         settings.bind("viewer-blurred-background", &*imp.blurred_background_row, "active").build();
-        bind_port(settings, &imp.ipc_tcp_row, "ipc-tcp-port");
+        settings.bind("kde-effects", &*imp.kde_effects_row, "active").build();
+        settings.bind("svp-enabled", &*imp.svp_enabled_row, "active").build();
+        settings.bind("svp-plugin-directory", &*imp.svp_plugin_directory_row, "text").build();
+        settings.bind("svp-fps-target", &*imp.svp_fps_target_row, "value").build();
+        settings.bind("svp-nvof", &*imp.svp_nvof_row, "active").build();
+        bind_port(settings, &imp.svp_fps_minimum_row, "svp-fps-minimum");
+        bind_port(settings, &imp.svp_fps_maximum_row, "svp-fps-maximum");
+        settings.bind("viewer-status-bar", &*imp.viewer_status_bar_row, "active").build();
         bind_port(settings, &imp.zoom_step_row, "zoom-step");
+        bind_port(settings, &imp.thumbnail_bar_size_row, "viewer-thumbnail-bar-size");
         dialog.bind_mpv_args(settings);
-        bind_port(settings, &imp.ipc_http_row, "ipc-http-port");
+        dialog.bind_remote(settings);
         settings.bind("ipc-external-access", &*imp.ipc_external_row, "active").build();
 
         bind_switches(settings, dialog.imp());
@@ -224,6 +310,8 @@ fn bind_switches(settings: &gio::Settings, imp: &imp::PreferencesDialog) {
         ("keep-fit-mode", &imp.keep_fit_mode_row),
         ("smooth-upscaling", &imp.smooth_upscaling_row),
         ("viewer-thumbnail-bar-shown", &imp.thumbnail_bar_shown_row),
+        ("viewer-thumbnail-bar-overlay", &imp.thumbnail_bar_overlay_row),
+        ("viewer-thumbnail-bar-pinned", &imp.thumbnail_bar_pinned_row),
     ];
     for (key, row) in switches {
         settings.bind(key, &**row, "active").build();
@@ -232,16 +320,22 @@ fn bind_switches(settings: &gio::Settings, imp: &imp::PreferencesDialog) {
 
 /// Binds each combo row to a string setting whose value is one of `choices`, by position in the row.
 fn bind_choices(settings: &gio::Settings, imp: &imp::PreferencesDialog) {
-    let combos: [(&str, &glib::Object, &[&str]); 9] = [
+    let combos: [(&str, &glib::Object, &[&str]); 11] = [
         ("video-backend", imp.video_backend_row.upcast_ref(), &["mpv", "gtk"]),
         ("viewer-thumbnail-bar", imp.thumbnail_bar_row.upcast_ref(), &["top", "left", "bottom", "right"]),
         ("start-location", imp.start_location_row.upcast_ref(), &["last", "root", "home", "specific"]),
         ("filename-display", imp.filename_row.upcast_ref(), &["off", "wrapped", "ellipsized"]),
         ("show-directories", imp.show_directories_row.upcast_ref(), &["none", "first-last", "inline"]),
         ("zoom-indicator", imp.zoom_indicator_row.upcast_ref(), &["on", "off", "auto"]),
-        ("image-fit", imp.image_fit_row.upcast_ref(), &["fit-window", "stretch-width", "one-to-one", "fit-stretch"]),
-        ("scaling-filter", imp.scaling_filter_row.upcast_ref(), &["nearest", "bilinear", "bicubic", "lanczos"]),
+        ("image-fit", imp.image_fit_row.upcast_ref(), &["window", "width", "height", "original"]),
+        ("scaling-filter", imp.scaling_filter_row.upcast_ref(), &["linear", "nearest"]),
         ("info-layout", imp.info_layout_dropdown.upcast_ref(), &["disabled", "stacked", "inline"]),
+        ("svp-fps-mode", imp.svp_fps_mode_row.upcast_ref(), &["default", "fixed", "variable", "display"]),
+        (
+            "viewer-status-overlay-position",
+            imp.status_overlay_position_row.upcast_ref(),
+            &["top-left", "top-middle", "top-right", "bottom-left", "bottom-middle", "bottom-right"],
+        ),
     ];
     for (key, object, choices) in combos {
         let choices: &'static [&'static str] = choices;
@@ -374,6 +468,12 @@ pub(crate) mod tests {
         assert!(!dialog.imp().media_only_row.is_active());
         settings.set_boolean("media-only", true).unwrap();
         settings.set_int("item-size", 128).unwrap();
+
+        // A port row is insensitive while its transport is off.
+        settings.set_boolean("ipc-tcp-enabled", false).unwrap();
+        assert!(!dialog.imp().ipc_tcp_row.is_sensitive(), "the TCP port is insensitive while TCP is off");
+        settings.set_boolean("ipc-tcp-enabled", true).unwrap();
+        assert!(dialog.imp().ipc_tcp_row.is_sensitive(), "the TCP port is sensitive while TCP is on");
     }
 }
 

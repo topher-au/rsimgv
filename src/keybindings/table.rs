@@ -1,22 +1,24 @@
-//! The live bindings: each catalogue action's chords, each with the value it passes if the action takes one,
-//! which the editor changes and the window resolves key presses against. Pure: no GTK.
+//! The live bindings: each catalogue action's chords, each with the context it is active in and the value it
+//! passes if the action takes one, which the editor changes and the window resolves key presses against. Pure:
+//! no GTK.
 
 use serde_yaml_ng::{Mapping, Value};
 
-use super::actions::{find, ActionInfo, Scope, ACTIONS};
+use super::actions::{ActionInfo, Scope, ACTIONS};
 use super::chord::canonical;
 
-/// A chord bound to an action, and the value it passes, for an action that takes one; `None` uses the action's
-/// default.
+/// A chord bound to an action, the context it is active in, and the value it passes, for an action that takes
+/// one; `None` uses the action's default.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Binding {
     pub chord: String,
+    pub context: Scope,
     pub value: Option<f64>,
 }
 
 impl Binding {
-    fn new(chord: String) -> Self {
-        Self { chord, value: None }
+    fn new(chord: String, context: Scope) -> Self {
+        Self { chord, context, value: None }
     }
 }
 
@@ -27,11 +29,11 @@ pub struct BindingTable {
 }
 
 impl BindingTable {
-    /// The table with every action on its default chords.
+    /// The table with every action on its default chords, each in the action's own context.
     pub fn defaults() -> Self {
         let chords = ACTIONS
             .iter()
-            .map(|action| action.defaults.iter().map(|chord| Binding::new((*chord).to_owned())).collect())
+            .map(|action| action.defaults.iter().map(|chord| Binding::new((*chord).to_owned(), action.default_context())).collect())
             .collect();
         Self { chords }
     }
@@ -51,20 +53,14 @@ impl BindingTable {
         self.bindings(name).iter().map(|binding| binding.chord.clone()).collect()
     }
 
-    /// Binds `chord` to `name`, if it is a valid chord not already bound to it. Returns whether it was added.
-    #[cfg(test)]
-    pub fn add(&mut self, name: &str, chord: &str) -> bool {
-        self.add_with_value(name, chord, None)
-    }
-
-    /// Binds `chord` to `name` passing `value`, if it is a valid chord not already bound to it. Returns whether
-    /// it was added.
-    pub fn add_with_value(&mut self, name: &str, chord: &str, value: Option<f64>) -> bool {
+    /// Binds `chord` to `name` in `context`, passing `value`, if the action can be bound in that context, the chord
+    /// is valid, and the chord is not already bound to the action. Returns whether it was added.
+    pub fn add(&mut self, name: &str, chord: &str, context: Scope, value: Option<f64>) -> bool {
         let (Some(index), Some(chord)) = (Self::index(name), canonical(chord)) else { return false };
-        if self.chords[index].iter().any(|bound| bound.chord == chord) {
+        if !ACTIONS[index].contexts.contains(&context) || self.chords[index].iter().any(|bound| bound.chord == chord) {
             return false;
         }
-        self.chords[index].push(Binding { chord, value });
+        self.chords[index].push(Binding { chord, context, value });
         true
     }
 
@@ -75,76 +71,72 @@ impl BindingTable {
         }
     }
 
-    /// Replaces the chords of `name`, keeping only the valid ones. Returns the ones that were refused.
-    pub fn set(&mut self, name: &str, chords: &[&str]) -> Vec<String> {
-        let Some(index) = Self::index(name) else { return Vec::new() };
-        let mut refused = Vec::new();
-        let mut bound: Vec<Binding> = Vec::new();
-        for chord in chords {
-            match canonical(chord) {
-                Some(chord) if !bound.iter().any(|binding| binding.chord == chord) => bound.push(Binding::new(chord)),
-                Some(_) => {}
-                None => refused.push((*chord).to_owned()),
-            }
-        }
-        self.chords[index] = bound;
-        refused
-    }
-
     pub fn reset_all(&mut self) {
         *self = Self::defaults();
     }
 
-    /// The action `chord` runs in the active scopes, and the value it passes. Global applies everywhere; of the
-    /// others, the deepest scope wins, and among equals the catalogue's first.
+    /// The action `chord` runs in the active contexts, and the value it passes. Global applies everywhere; of the
+    /// others, the deepest context wins, and among equals the catalogue's first.
     pub fn resolve(&self, chord: &str, active: &[Scope]) -> Option<(&'static ActionInfo, Option<f64>)> {
-        let mut best: Option<(&'static ActionInfo, Option<f64>)> = None;
+        let mut best: Option<(&'static ActionInfo, Option<f64>, Scope)> = None;
         for (action, bindings) in ACTIONS.iter().zip(&self.chords) {
-            let in_scope = action.scope == Scope::Global || active.contains(&action.scope);
-            let Some(binding) = bindings.iter().find(|bound| bound.chord == chord) else { continue };
-            if !in_scope {
-                continue;
-            }
-            if best.is_none_or(|(current, _)| action.scope.depth() > current.scope.depth()) {
-                best = Some((action, binding.value));
+            for binding in bindings.iter().filter(|bound| bound.chord == chord) {
+                let context = binding.context;
+                if context != Scope::Global && !active.contains(&context) {
+                    continue;
+                }
+                if best.is_none_or(|(_, _, current)| context.depth() > current.depth()) {
+                    best = Some((action, binding.value, context));
+                }
             }
         }
-        best
+        best.map(|(action, value, _)| (action, value))
     }
 
-    /// The other actions whose scopes overlap `name`'s and that are bound to `chord`: what binding it to
-    /// `name` would clash with.
-    pub fn conflicts(&self, name: &str, chord: &str) -> Vec<&'static ActionInfo> {
-        let Some(scope) = find(name).map(|action| action.scope) else { return Vec::new() };
+    /// The other actions with a binding to `chord` whose context overlaps `context`, each with the context of that
+    /// binding: what binding it to `name` in `context` would clash with.
+    pub fn conflicts(&self, name: &str, chord: &str, context: Scope) -> Vec<(&'static ActionInfo, Scope)> {
         ACTIONS
             .iter()
             .zip(&self.chords)
-            .filter(|(action, bindings)| {
-                action.name != name && action.scope.overlaps(scope) && bindings.iter().any(|bound| bound.chord == chord)
+            .filter_map(|(action, bindings)| {
+                if action.name == name {
+                    return None;
+                }
+                bindings
+                    .iter()
+                    .find(|bound| bound.chord == chord && bound.context.overlaps(context))
+                    .map(|bound| (action, bound.context))
             })
-            .map(|(action, _)| action)
             .collect()
     }
 
-    /// The YAML file text for the bindings that differ from the defaults. A binding with a value is a mapping of
-    /// `key` and `value`; one without is just its chord.
+    /// The YAML file text for the bindings that differ from the defaults. A binding with a value or a context
+    /// other than the action's own is a mapping of `key`, and `value` and `context` when it has them; any other
+    /// is just its chord.
     pub fn to_yaml(&self) -> String {
         let mut actions = Mapping::new();
         for (action, bindings) in ACTIONS.iter().zip(&self.chords) {
-            let defaults = action.defaults.iter().map(|chord| Binding::new((*chord).to_owned()));
+            let defaults = action.defaults.iter().map(|chord| Binding::new((*chord).to_owned(), action.default_context()));
             if bindings.iter().cloned().eq(defaults) {
                 continue;
             }
             let sequence = bindings
                 .iter()
-                .map(|binding| match binding.value {
-                    None => Value::String(binding.chord.clone()),
-                    Some(value) => {
-                        let mut entry = Mapping::new();
-                        entry.insert(Value::String("key".to_owned()), Value::String(binding.chord.clone()));
-                        entry.insert(Value::String("value".to_owned()), Value::Number(value.into()));
-                        Value::Mapping(entry)
+                .map(|binding| {
+                    let own_context = binding.context == action.default_context();
+                    if binding.value.is_none() && own_context {
+                        return Value::String(binding.chord.clone());
                     }
+                    let mut entry = Mapping::new();
+                    entry.insert(Value::String("key".to_owned()), Value::String(binding.chord.clone()));
+                    if let Some(value) = binding.value {
+                        entry.insert(Value::String("value".to_owned()), Value::Number(value.into()));
+                    }
+                    if !own_context {
+                        entry.insert(Value::String("context".to_owned()), Value::String(binding.context.id().to_owned()));
+                    }
+                    Value::Mapping(entry)
                 })
                 .collect();
             actions.insert(Value::String(action.name.to_owned()), Value::Sequence(sequence));
@@ -155,8 +147,9 @@ impl BindingTable {
         serde_yaml_ng::to_string(&Value::Mapping(root)).unwrap_or_default()
     }
 
-    /// Applies the actions in a YAML file over the table. Returns what could not be applied: unknown
-    /// actions, invalid chords, or a file that cannot be read.
+    /// Applies the actions in a YAML file over the table: each listed action gets the bindings the file gives it.
+    /// Returns what could not be applied: unknown actions, invalid chords, unknown contexts, contexts the action
+    /// cannot be bound in, or a file that cannot be read.
     pub fn apply_yaml(&mut self, text: &str) -> Vec<String> {
         let root: Value = match serde_yaml_ng::from_str(text) {
             Ok(root) => root,
@@ -166,31 +159,47 @@ impl BindingTable {
         let mut problems = Vec::new();
         for (key, value) in actions {
             let Some(name) = key.as_str() else { continue };
-            if find(name).is_none() {
+            let Some(index) = Self::index(name) else {
                 problems.push(format!("unknown action {name}"));
                 continue;
-            }
-            // Each entry is a chord, or a mapping of a chord (`key`) and the value it passes (`value`).
-            let entries: Vec<(&str, Option<f64>)> = value
-                .as_sequence()
-                .into_iter()
-                .flatten()
-                .filter_map(|entry| match entry {
-                    Value::String(chord) => Some((chord.as_str(), None)),
-                    Value::Mapping(_) => Some((entry.get("key")?.as_str()?, entry.get("value").and_then(Value::as_f64))),
-                    _ => None,
-                })
-                .collect();
-            let chords: Vec<&str> = entries.iter().map(|(chord, _)| *chord).collect();
-            problems.extend(self.set(name, &chords).into_iter().map(|chord| format!("{name}: {chord} is not a valid key")));
-            if let Some(index) = Self::index(name) {
-                for binding in &mut self.chords[index] {
-                    binding.value = entries
-                        .iter()
-                        .find(|(chord, _)| canonical(chord).as_deref() == Some(binding.chord.as_str()))
-                        .and_then(|(_, value)| *value);
+            };
+            let action = &ACTIONS[index];
+            let mut bindings: Vec<Binding> = Vec::new();
+            // Each entry is a chord, or a mapping of a chord (`key`), the value it passes (`value`) and the context
+            // it is active in (`context`), which is the action's own when it is left out.
+            for entry in value.as_sequence().into_iter().flatten() {
+                let (chord, context, passed) = match entry {
+                    Value::String(chord) => (chord.as_str(), action.default_context(), None),
+                    Value::Mapping(_) => {
+                        let Some(chord) = entry.get("key").and_then(Value::as_str) else { continue };
+                        let context = match entry.get("context") {
+                            None => action.default_context(),
+                            Some(context) => match context.as_str().and_then(Scope::from_id) {
+                                Some(context) => context,
+                                None => {
+                                    problems.push(format!("{name}: {chord} has an unknown context"));
+                                    continue;
+                                }
+                            },
+                        };
+                        (chord, context, entry.get("value").and_then(Value::as_f64))
+                    }
+                    _ => continue,
+                };
+                let Some(chord) = canonical(chord) else {
+                    problems.push(format!("{name}: {chord} is not a valid key"));
+                    continue;
+                };
+                if !action.contexts.contains(&context) {
+                    problems.push(format!("{name}: {chord} cannot be bound in {}", context.title()));
+                    continue;
                 }
+                if bindings.iter().any(|bound| bound.chord == chord) {
+                    continue;
+                }
+                bindings.push(Binding { chord, context, value: passed });
             }
+            self.chords[index] = bindings;
         }
         problems
     }
@@ -214,13 +223,23 @@ mod tests {
     }
 
     #[test]
-    fn a_rebound_chord_clashes_only_with_overlapping_scopes() {
+    fn a_rebound_chord_clashes_only_with_overlapping_contexts() {
         let mut table = BindingTable::defaults();
         // Binding space to a viewer action clashes with the video action, which is inside the viewer.
-        assert!(table.add("view.next", "space"));
-        assert_eq!(table.conflicts("view.next", "space").iter().map(|a| a.name).collect::<Vec<_>>(), vec!["video.play-pause"]);
+        assert!(table.add("view.next", "space", Scope::View, None));
+        assert_eq!(table.conflicts("view.next", "space", Scope::View).iter().map(|(a, _)| a.name).collect::<Vec<_>>(), vec!["video.play-pause"]);
         // Browsing and the viewer never overlap, so the viewer's left is not a conflict with browsing's.
-        assert!(table.conflicts("view.previous", "left").iter().all(|action| action.scope != Scope::Browse));
+        assert!(table.conflicts("view.previous", "left", Scope::View).iter().all(|(action, _)| !action.name.starts_with("browse.")));
+    }
+
+    #[test]
+    fn a_global_binding_is_active_in_every_context() {
+        let mut table = BindingTable::defaults();
+        // Binding the viewer's next action globally makes it run while browsing too.
+        assert!(table.add("view.next", "ctrl+n", Scope::Global, None));
+        assert_eq!(table.resolve("ctrl+n", &[Scope::Global, Scope::Browse]).map(|(a, _)| a.name), Some("view.next"));
+        // A binding can only be made in one of its action's contexts.
+        assert!(!table.add("view.next", "ctrl+m", Scope::Browse, None));
     }
 
     #[test]
@@ -237,7 +256,9 @@ mod tests {
     #[test]
     fn overrides_round_trip_through_the_yaml_file() {
         let mut table = BindingTable::defaults();
-        table.set("view.next", &["d", "Ctrl+Right"]);
+        table.remove("view.next", "period");
+        assert!(table.add("view.next", "d", Scope::View, None));
+        assert!(table.add("view.next", "ctrl+right", Scope::View, None));
         let text = table.to_yaml();
         assert!(text.contains("view.next"));
         assert!(!text.contains("view.previous"), "defaults are not written");
@@ -250,12 +271,26 @@ mod tests {
     #[test]
     fn values_round_trip_through_the_yaml_file() {
         let mut table = BindingTable::defaults();
-        assert!(table.add_with_value("video.seek", "ctrl+right", Some(30.0)));
+        assert!(table.add("video.seek", "ctrl+right", Scope::Video, Some(30.0)));
         let text = table.to_yaml();
         let mut loaded = BindingTable::defaults();
         assert!(loaded.apply_yaml(&text).is_empty());
-        assert_eq!(loaded.bindings("video.seek"), [Binding { chord: "ctrl+right".to_owned(), value: Some(30.0) }]);
+        assert_eq!(
+            loaded.bindings("video.seek"),
+            [Binding { chord: "ctrl+right".to_owned(), context: Scope::Video, value: Some(30.0) }]
+        );
         assert_eq!(loaded.resolve("ctrl+right", &[Scope::View, Scope::Video]).map(|(a, value)| (a.name, value)), Some(("video.seek", Some(30.0))));
+    }
+
+    #[test]
+    fn contexts_round_trip_through_the_yaml_file() {
+        let mut table = BindingTable::defaults();
+        assert!(table.add("view.next", "ctrl+n", Scope::Global, None));
+        let text = table.to_yaml();
+        assert!(text.contains("context: global"));
+        let mut loaded = BindingTable::defaults();
+        assert!(loaded.apply_yaml(&text).is_empty());
+        assert_eq!(loaded.bindings("view.next").last(), Some(&Binding { chord: "ctrl+n".to_owned(), context: Scope::Global, value: None }));
     }
 
     #[test]
@@ -264,5 +299,9 @@ mod tests {
         let problems = table.apply_yaml("schema: 1\nactions:\n  no.such-action:\n    - q\n  view.next:\n    - hyper+q\n    - d\n");
         assert_eq!(problems.len(), 2);
         assert_eq!(table.chords("view.next"), ["d"]);
+        // A context the action cannot be bound in is reported, and its entry skipped.
+        let problems = table.apply_yaml("schema: 1\nactions:\n  view.next:\n    - key: x\n      context: browse\n    - key: y\n      context: nowhere\n");
+        assert_eq!(problems.len(), 2);
+        assert!(table.chords("view.next").is_empty());
     }
 }

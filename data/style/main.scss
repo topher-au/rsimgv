@@ -24,9 +24,71 @@ dropdown.action-picker popover listview > row {
   font-weight: normal;
 }
 
-// The keybindings list's remove buttons are small, so its rows stay close together.
-button.binding-remove {
-  min-height: 0;
-  min-width: 0;
-  padding: 4px;
+// A binding that conflicts with another: its icon, name, warning sign and keys are yellow.
+.conflict {
+  color: #f6d32d;
+
+  label {
+    color: #f6d32d;
+  }
+}
+
+// The context column of the keybindings editor's rows: its name is smaller and italic.
+.binding-context {
+  font-size: 0.85em;
+  font-style: italic;
+}
+
+// A keybinding, drawn as its keys (the `keybind` widget). Each key is a raised, darker box with rounded corners, a
+// lit top edge and a thicker bottom edge. Modifiers are dimmer than the key they are held with.
+keybind {
+  > label.key {
+    background-color: rgba(0, 0, 0, 0.4);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-bottom: 3px solid rgba(0, 0, 0, 0.6);
+    border-radius: 6px;
+    box-shadow: inset 0 1px rgba(255, 255, 255, 0.08);
+    font-size: 0.9em;
+    font-weight: normal;
+    padding: 1px 5px;
+    margin: 0;
+  }
+
+  > label.key + label.key {
+    margin-left: 1px;
+  }
+
+  > label.key.modifier {
+    opacity: 0.7;
+  }
+}
+
+// The keybindings editor's search field: its text, the keybind it is filtered to, and its buttons, in one box.
+.search-field {
+  background-color: rgba(127, 127, 127, 0.12);
+  border: 1px solid rgba(127, 127, 127, 0.25);
+  border-radius: 8px;
+  padding: 2px 4px 2px 8px;
+}
+
+// The status bar under the viewer's item.
+.status-bar {
+  background-color: rgba(0, 0, 0, 0.5);
+  color: white;
+}
+
+// In fullscreen the status bar floats over the item: a translucent, rounded panel.
+.status-bar.status-overlay {
+  background-color: rgba(0, 0, 0, 0.45);
+  border-radius: 10px;
+  padding: 6px 12px;
+}
+
+// The video controls: a translucent, rounded panel that fades in and out over the video. Under KDE effects it is
+// blurred behind.
+.media-controls {
+  background-color: rgba(30, 30, 30, 0.55);
+  border-radius: 14px;
+  padding: 6px 10px;
+  margin: 8px;
 }

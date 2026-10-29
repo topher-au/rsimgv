@@ -24,6 +24,11 @@
   background-color: transparent;
 }
 
+// A folder's icon, with or without previews, sits on the browse view without a frame.
+.rsimgv-visual.folder {
+  background-color: transparent;
+}
+
 // The floating bar, copied from Nautilus's style.css.
 .floating-bar {
   padding: 3px;
@@ -38,4 +43,24 @@
 
 .floating-bar button {
   padding: 0px;
+}
+
+// The tooltip of a browse item: its name and kind in a header, then its details in a grid.
+.item-tooltip {
+  padding: 10px 12px;
+  min-width: 220px;
+
+  .tooltip-title {
+    font-weight: bold;
+    font-size: 1.1em;
+  }
+
+  .tooltip-path {
+    font-size: 0.85em;
+    opacity: 0.7;
+  }
+
+  .tooltip-grid {
+    margin-top: 2px;
+  }
 }

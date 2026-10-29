@@ -1,6 +1,6 @@
-//! The dialog that adds or changes a binding of an action: a chord captured from the keyboard, and for an
-//! action that takes a value, the value the binding passes. It warns when
-//! the chord is already bound to an action whose scope overlaps.
+//! The dialog that adds or changes a binding of an action: a chord captured from the keyboard, the context the
+//! binding is active in, and for an action that takes a value, the value the binding passes. It warns when
+//! the chord is already bound to an action whose context overlaps.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -8,25 +8,26 @@ use std::rc::Rc;
 use adw::prelude::*;
 use gtk::glib;
 
-use crate::keybindings::actions::{value_info, ActionInfo};
+use crate::keybindings::actions::{value_info, ActionInfo, Scope};
 use crate::keybindings::{self, chord::Chord};
 use super::key_handler::chord_from_event;
+use super::keybind_label::KeybindLabel;
 
-/// Opens the dialog over `parent` for `action`. `existing` is the chord being changed and its value, or `None`
-/// to add one. `on_save` receives the canonical chord and, for an action that takes one, the value. With
-/// `on_delete`, the dialog also offers to delete the binding.
+/// Opens the dialog over `parent` for `action`. `existing` is the chord being changed, its value and its context,
+/// or `None` to add one. `on_save` receives the canonical chord, the value for an action that takes one, and the
+/// context. With `on_delete`, the dialog also offers to delete the binding.
 pub fn show(
     parent: &impl IsA<gtk::Widget>,
     action: &'static ActionInfo,
-    existing: Option<(String, Option<f64>)>,
-    on_save: impl Fn(String, Option<f64>) + 'static,
+    existing: Option<(String, Option<f64>, Scope)>,
+    on_save: impl Fn(String, Option<f64>, Scope) + 'static,
     on_delete: Option<Box<dyn Fn()>>,
 ) {
-    let existing_value = existing.as_ref().and_then(|(_, value)| *value);
-    let existing = existing.map(|(chord, _)| chord);
+    let existing_value = existing.as_ref().and_then(|(_, value, _)| *value);
+    let existing_context = existing.as_ref().map(|(_, _, context)| *context);
+    let existing = existing.map(|(chord, _, _)| chord);
     let heading = if existing.is_some() { "Change Binding" } else { "Add Binding" };
-    let body = format!("{} \u{b7} {}", action.scope.title(), action.label);
-    let dialog = adw::AlertDialog::new(Some(heading), Some(&body));
+    let dialog = adw::AlertDialog::new(Some(heading), Some(action.label));
     if on_delete.is_some() {
         dialog.add_response("delete", "Delete");
         dialog.set_response_appearance("delete", adw::ResponseAppearance::Destructive);
@@ -41,34 +42,46 @@ pub fn show(
     // A new binding starts by waiting for its key; an existing one waits for a click on its chord.
     let capturing = Rc::new(Cell::new(existing.is_none()));
     let capture = gtk::Button::new();
-    capture.add_css_class("monospace");
     let conflict = gtk::Label::new(None);
     conflict.set_wrap(true);
     conflict.set_xalign(0.0);
     conflict.add_css_class("warning");
     conflict.set_visible(false);
 
+    // The context the binding is active in, one of the action's contexts, starting at the binding's own or the
+    // action's default. A change to it can clash the chord with another action, so it refreshes the warning.
+    let titles: Vec<&str> = action.contexts.iter().map(|context| context.title()).collect();
+    let contexts = gtk::DropDown::from_strings(&titles);
+    let start = existing_context.unwrap_or(action.default_context());
+    contexts.set_selected(action.contexts.iter().position(|context| *context == start).unwrap_or(0) as u32);
+    contexts.set_hexpand(true);
+
     let refresh = {
         let dialog = dialog.clone();
         let chord = chord.clone();
         let capture = capture.clone();
         let conflict = conflict.clone();
+        let contexts = contexts.clone();
         Rc::new(move || {
             let Some(text) = chord.borrow().clone() else {
-                capture.set_label("Press a key\u{2026}");
+                capture.set_child(Some(&gtk::Label::new(Some("Press a key\u{2026}"))));
                 dialog.set_response_enabled("save", false);
                 conflict.set_visible(false);
                 return;
             };
-            capture.set_label(&text);
+            capture.set_child(Some(&KeybindLabel::new(&text)));
             dialog.set_response_enabled("save", true);
-            let clashes = keybindings::with_table(|table| table.conflicts(action.name, &text));
+            let clashes = keybindings::with_table(|table| table.conflicts(action.name, &text, selected_context(action, &contexts)));
             conflict.set_visible(!clashes.is_empty());
-            let names: Vec<&str> = clashes.iter().map(|clash| clash.label).collect();
+            let names: Vec<&str> = clashes.iter().map(|(clash, _)| clash.label).collect();
             conflict.set_label(&format!("Already bound to {}", names.join(", ")));
         })
     };
     refresh();
+    {
+        let refresh = refresh.clone();
+        contexts.connect_selected_notify(move |_| refresh());
+    }
 
     {
         let capturing = capturing.clone();
@@ -77,6 +90,10 @@ pub fn show(
 
     let content = gtk::Box::new(gtk::Orientation::Vertical, 12);
     content.append(&capture);
+    let context_row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+    context_row.append(&gtk::Label::new(Some("Active in")));
+    context_row.append(&contexts);
+    content.append(&context_row);
     // The value, for an action that takes one, starting at the binding's own or the action's default.
     let value = value_info(action.name).map(|info| {
         let spin = gtk::SpinButton::with_range(info.min, info.max, info.step);
@@ -134,7 +151,12 @@ pub fn show(
             return;
         }
         let Some(text) = chord.borrow().clone() else { return };
-        on_save(text, value.as_ref().map(gtk::SpinButton::value));
+        on_save(text, value.as_ref().map(gtk::SpinButton::value), selected_context(action, &contexts));
     });
     adw::prelude::AdwDialogExt::present(&dialog, Some(parent.as_ref()));
+}
+
+/// The context the dropdown shows, one of the action's contexts.
+fn selected_context(action: &ActionInfo, contexts: &gtk::DropDown) -> Scope {
+    action.contexts.get(contexts.selected() as usize).copied().unwrap_or(action.default_context())
 }

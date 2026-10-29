@@ -13,7 +13,7 @@ use super::browse_view::{InfoField, ListedFile};
 use crate::bookmarks::{self, Bookmark};
 use super::image_canvas::{Fit, PAN_STEP};
 use super::media_controls::SEEK_STEP;
-use super::media_viewer::{side_from_name, VOLUME_STEP};
+use super::media_viewer::{side_from_name, ZoomIndicator, VOLUME_STEP};
 use super::key_handler::ActionKeyHandler;
 use super::fs_tree::TreeSnapshot;
 use super::path_bar::OpenTarget;
@@ -67,6 +67,8 @@ mod imp {
         pub(super) updating: Cell<bool>,
         /// Whether the viewer is showing, in place of the browse view.
         pub(super) viewer_open: Cell<bool>,
+        /// Whether the viewer made the window fullscreen when it opened, so closing it leaves fullscreen again.
+        pub(super) viewer_fullscreened: Cell<bool>,
         /// The keybinding handler, detached when the window closes.
         pub(super) key_handler: std::cell::OnceCell<ActionKeyHandler>,
         pub(super) settings: std::cell::OnceCell<gio::Settings>,
@@ -109,6 +111,14 @@ glib::wrapper! {
                     gtk::ConstraintTarget, gtk::Native, gtk::Root, gtk::ShortcutManager;
 }
 
+/// Where `Window::open_path` shows a path: in the tab the window is showing, or in a new tab, which is
+/// activated or not.
+#[derive(Clone, Copy, Debug)]
+pub enum Destination {
+    CurrentTab,
+    NewTab { activate: bool },
+}
+
 impl Window {
     pub fn new(app: &adw::Application, settings: &gio::Settings) -> Self {
         let window: Self = glib::Object::builder().property("application", app).build();
@@ -128,6 +138,16 @@ impl Window {
             let pending = pending.clone();
             Rc::new(move |window: &Window| schedule_window_save(window, &settings, &pending))
         };
+        // KDE's blur is kept behind the viewer's floating parts, each frame, when the setting is on.
+        let blur_last = Rc::new(RefCell::new(Vec::new()));
+        let weak = window.downgrade();
+        window.add_tick_callback(move |_, _| {
+            let Some(window) = weak.upgrade() else { return glib::ControlFlow::Break };
+            let enabled = window.imp().settings.get().is_some_and(|settings| settings.boolean("kde-effects"));
+            let widgets = if enabled { window.imp().viewer.floating_widgets() } else { Vec::new() };
+            crate::ui::kde_blur::update(window.upcast_ref(), &widgets, &blur_last);
+            glib::ControlFlow::Continue
+        });
         window.connect_maximized_notify({
             let schedule = schedule.clone();
             move |window| schedule(window)
@@ -191,6 +211,9 @@ impl Window {
             tree_for_settings.set_show_hidden(settings.boolean("show-hidden"));
         });
         window.add_action(&settings.create_action("show-hidden"));
+        add_setting_radio_action(&window, settings, "sort-by");
+        add_setting_radio_action(&window, settings, "sort-order");
+        add_show_directories_action(&window, settings);
 
         window.add_context_actions();
         window.add_tab_actions();
@@ -225,39 +248,22 @@ impl Window {
                 }
             }
         });
-        window.imp().viewer.set_zoom_step(settings.int("zoom-step"));
-        settings.connect_changed(Some("zoom-step"), {
-            let weak = window.downgrade();
-            move |settings, _| {
-                if let Some(window) = weak.upgrade() {
-                    window.imp().viewer.set_zoom_step(settings.int("zoom-step"));
+        window.apply_viewer_settings(settings);
+        for key in VIEWER_SETTINGS {
+            settings.connect_changed(Some(key), {
+                let weak = window.downgrade();
+                move |settings, _| {
+                    if let Some(window) = weak.upgrade() {
+                        window.apply_viewer_settings(settings);
+                    }
                 }
-            }
-        });
-        window.imp().viewer.set_expand_limit(settings.int("expand-up-to-factor"));
-        settings.connect_changed(Some("expand-up-to-factor"), {
+            });
+        }
+        imp.viewer.connect_item_changed({
             let weak = window.downgrade();
-            move |settings, _| {
+            move |_, _| {
                 if let Some(window) = weak.upgrade() {
-                    window.imp().viewer.set_expand_limit(settings.int("expand-up-to-factor"));
-                }
-            }
-        });
-        window.imp().viewer.set_keep_fit(settings.boolean("keep-fit-mode"));
-        settings.connect_changed(Some("keep-fit-mode"), {
-            let weak = window.downgrade();
-            move |settings, _| {
-                if let Some(window) = weak.upgrade() {
-                    window.imp().viewer.set_keep_fit(settings.boolean("keep-fit-mode"));
-                }
-            }
-        });
-        window.imp().viewer.set_blurred_background(settings.boolean("viewer-blurred-background"));
-        settings.connect_changed(Some("viewer-blurred-background"), {
-            let weak = window.downgrade();
-            move |settings, _| {
-                if let Some(window) = weak.upgrade() {
-                    window.imp().viewer.set_blurred_background(settings.boolean("viewer-blurred-background"));
+                    window.update_title();
                 }
             }
         });
@@ -561,12 +567,20 @@ impl Window {
     /// history or the tree; navigation and tab switching do that.
     fn show_path(&self, path: &Path) {
         let imp = self.imp();
-        imp.current_path.replace(Some(path.to_path_buf()));
+        let previous = imp.current_path.replace(Some(path.to_path_buf()));
         if let Err(err) = imp.path_bar.set_path(path) {
             eprintln!("rsimgv: {err:#}");
         }
         if let Some(browse) = self.active_browse() {
             if browse.path().as_deref() != Some(path) {
+                // Once the folder lists, the item selected the last time this location was shown is selected again,
+                // or else, going up to a parent, the item that leads to the folder shown before.
+                let selected = imp.navigation.selected().or_else(|| previous.as_deref().and_then(|previous| child_toward(path, previous)));
+                if let Some(name) = selected {
+                    browse.set_pending(move |view| {
+                        view.select_named(&name);
+                    });
+                }
                 browse.set_path(path);
             }
         }
@@ -585,6 +599,11 @@ impl Window {
         imp.viewer_open.set(true);
         imp.pages.set_visible_child(&*imp.viewer);
         imp.viewer.grab_focus();
+        if imp.settings.get().is_some_and(|settings| settings.boolean("open-fullscreen")) && !self.is_fullscreen() {
+            self.fullscreen();
+            imp.viewer_fullscreened.set(true);
+        }
+        self.update_title();
     }
 
     /// Returns from the viewer to the browse view, releasing what the viewer held.
@@ -593,10 +612,53 @@ impl Window {
         imp.viewer.close();
         imp.viewer_open.set(false);
         imp.pages.set_visible_child(&*imp.split);
+        if imp.viewer_fullscreened.take() {
+            self.unfullscreen();
+        }
+        self.update_title();
+    }
+
+    /// Applies the settings the viewer shows its pictures and videos with, and the window title, which
+    /// depends on one of them.
+    fn apply_viewer_settings(&self, settings: &gio::Settings) {
+        let viewer = &self.imp().viewer;
+        viewer.set_zoom_step(settings.int("zoom-step"));
+        viewer.set_expand_limit(settings.int("expand-up-to-factor"));
+        viewer.set_keep_fit(settings.boolean("keep-fit-mode"));
+        viewer.set_default_fit(Fit::from_name(&settings.string("image-fit")).unwrap_or_default());
+        viewer.set_smooth_scrolling(settings.boolean("smooth-scrolling"));
+        viewer.set_scaling(settings.string("scaling-filter") == "nearest", settings.boolean("smooth-upscaling"));
+        viewer.set_zoom_indicator(ZoomIndicator::from_name(&settings.string("zoom-indicator")).unwrap_or_default());
+        viewer.set_auto_hide_cursor(settings.boolean("auto-hide-cursor"));
+        viewer.set_blurred_background(settings.boolean("viewer-blurred-background"));
+        viewer.set_status_bar(settings.boolean("viewer-status-bar"));
+        viewer.set_status_overlay_position(&settings.string("viewer-status-overlay-position"));
+        viewer.set_svp(crate::svp::Config::from_settings(settings));
+        self.update_title();
+    }
+
+    /// Titles the window with the file name and size of the picture or video the viewer shows, when the
+    /// setting that asks for it is on. Otherwise, and when the viewer is not open, it is titled by the app.
+    fn update_title(&self) {
+        let imp = self.imp();
+        let info = imp.settings.get().is_some_and(|settings| settings.boolean("image-info-in-title"));
+        let item = (info && imp.viewer_open.get()).then(|| imp.viewer.shown_item()).flatten();
+        let title = match item {
+            Some(item) => {
+                let name = item.path.file_name().map_or_else(String::new, |name| name.to_string_lossy().into_owned());
+                if item.width > 0 && item.height > 0 {
+                    format!("{name} · {} × {}", item.width, item.height)
+                } else {
+                    name
+                }
+            }
+            None => "rsimgv".to_owned(),
+        };
+        self.set_title(Some(&title));
     }
 
     /// The actions keybindings activate, by group: `win` on the window, and `browse`, `view` and `video` for
-    /// the browse list, the viewer and the video. The catalogue in `keybindings::actions` gives each one's scope.
+    /// the browse list, the viewer and the video. The catalogue in `keybindings::actions` gives each one's contexts.
     fn add_binding_actions(&self) {
         let weak = self.downgrade();
         bound_action(self, &weak, "settings", Window::show_preferences);
@@ -657,6 +719,8 @@ impl Window {
         bound_action(&browse, &weak, "open", |window| window.with_browse(|view| view.activate_selected()));
         bound_action(&browse, &weak, "toggle-hidden", |window| window.toggle_setting("show-hidden"));
         bound_action(&browse, &weak, "toggle-media-only", |window| window.toggle_setting("media-only"));
+        bound_action(&browse, &weak, "toggle-filename", Window::toggle_filename);
+        bound_action(&browse, &weak, "toggle-item-info", Window::toggle_item_info);
         bound_action(&browse, &weak, "thumbnail-larger", |window| window.resize_items(THUMBNAIL_STEP));
         bound_action(&browse, &weak, "thumbnail-smaller", |window| window.resize_items(-THUMBNAIL_STEP));
         self.insert_action_group("browse", Some(&browse));
@@ -669,6 +733,7 @@ impl Window {
         bound_action(&view, &weak, "close", Window::close_viewer);
         bound_action(&view, &weak, "pin", |window| window.imp().viewer.toggle_pinned());
         bound_action(&view, &weak, "toggle-thumbnail-bar", |window| window.toggle_setting("viewer-thumbnail-bar-shown"));
+        bound_action(&view, &weak, "toggle-status-bar", |window| window.toggle_setting("viewer-status-bar"));
         bound_action(&view, &weak, "toggle-thumbnail-bar-pin", |window| window.toggle_setting("viewer-thumbnail-bar-pinned"));
         bound_action(&view, &weak, "toggle-thumbnail-bar-overlay", |window| window.toggle_setting("viewer-thumbnail-bar-overlay"));
         self.insert_action_group("view", Some(&view));
@@ -788,6 +853,83 @@ impl Window {
         row
     }
 
+    /// Opens `path` from the command line, as `destination` says. A folder is shown in its tab, or navigated
+    /// to. A file is shown with its folder, and selected there, and a picture or video also opens in the viewer
+    /// when its tab is the one shown. With `select_item`, `path` is never opened: its containing folder is shown
+    /// with `path` selected, whether `path` is a file or a folder. Returns `false`, opening nothing, if `path`
+    /// is neither.
+    pub fn open_path(&self, path: &Path, destination: Destination, select_item: bool) -> bool {
+        if !path.is_dir() && !path.is_file() {
+            return false;
+        }
+        let (folder, file, open) = if select_item {
+            (path.parent(), Some(path), false)
+        } else if path.is_dir() {
+            (Some(path), None, false)
+        } else {
+            (path.parent(), Some(path), true)
+        };
+        let Some(folder) = folder else { return false };
+        let (current, activate) = match destination {
+            Destination::CurrentTab if self.imp().tab_view.n_pages() > 0 => (true, true),
+            Destination::CurrentTab => (false, true),
+            Destination::NewTab { activate } => (false, activate),
+        };
+        let open = open && activate;
+        if !current {
+            let id = self.open_tab_at(folder, activate);
+            if let Some(file) = file {
+                let Some(browse) = self.page_for_tab(id).and_then(|page| page.child().downcast::<BrowseView>().ok())
+                else {
+                    return false;
+                };
+                self.show_file_once_listed(&browse, file, open);
+            }
+            return true;
+        }
+        let Some(file) = file else { return self.navigate(folder) };
+        let Some(browse) = self.active_browse() else { return false };
+        if self.current_path().as_deref() == Some(folder) {
+            self.show_file_in(&browse, file, open);
+            return true;
+        }
+        self.show_file_once_listed(&browse, file, open);
+        if self.navigate(folder) {
+            return true;
+        }
+        browse.clear_pending();
+        false
+    }
+
+    /// Opens the default folder, the one a new window starts in, in a new tab that is activated.
+    pub fn open_new_tab_at_default(&self) {
+        if let Some(settings) = self.imp().settings.get() {
+            self.open_tab(&start_location(settings));
+        }
+    }
+
+    /// Shows the file `path` in `browse` once its folder has listed: in the viewer if `open` is set and it is a
+    /// picture or video, and otherwise selected.
+    fn show_file_once_listed(&self, browse: &BrowseView, path: &Path, open: bool) {
+        let file = path.to_path_buf();
+        let weak = self.downgrade();
+        browse.set_pending(move |view| {
+            if let Some(window) = weak.upgrade() {
+                window.show_file_in(view, &file, open);
+            }
+        });
+    }
+
+    /// Shows the file `path` in `browse`: in the viewer if `open` is set and it is a picture or video, and
+    /// otherwise selected.
+    fn show_file_in(&self, browse: &BrowseView, path: &Path, open: bool) {
+        if open && browse.media_paths().iter().any(|listed| listed == path) {
+            self.open_viewer(browse, path);
+        } else {
+            browse.select_named(&path.to_string_lossy());
+        }
+    }
+
     /// Opens a folder the user picks.
     fn open_folder(&self) {
         let dialog = gtk::FileDialog::builder().title("Open Folder").build();
@@ -805,6 +947,22 @@ impl Window {
         if let Some(settings) = self.imp().settings.get() {
             // The keys are in the schema, so the write cannot fail.
             let _ = settings.set_boolean(key, !settings.boolean(key));
+        }
+    }
+
+    /// Shows the browse items' filenames, or hides them.
+    fn toggle_filename(&self) {
+        if let Some(settings) = self.imp().settings.get() {
+            let shown = settings.string("filename-display") != "off";
+            let _ = settings.set_string("filename-display", if shown { "off" } else { "ellipsized" });
+        }
+    }
+
+    /// Shows the browse items' information, or hides it.
+    fn toggle_item_info(&self) {
+        if let Some(settings) = self.imp().settings.get() {
+            let shown = settings.string("info-layout") != "disabled";
+            let _ = settings.set_string("info-layout", if shown { "disabled" } else { "inline" });
         }
     }
 
@@ -977,7 +1135,7 @@ impl Window {
     /// Goes one step back, or forward, in the folders shown. Returns whether there was a step to take.
     pub fn step_history(&self, forward: bool) -> bool {
         let navigation = &self.imp().navigation;
-        let (history, index) = navigation.history_state();
+        let (history, _, index) = navigation.history_state();
         let possible = if forward { index + 1 < history.len() } else { index > 0 };
         if !possible {
             return false;
@@ -1092,6 +1250,7 @@ impl Window {
             TabState {
                 path: Some(path.to_path_buf()),
                 history: vec![path.to_path_buf()],
+                selections: vec![None],
                 index: 0,
                 tree: TreeSnapshot::revealing(path),
             },
@@ -1107,6 +1266,7 @@ impl Window {
             return id;
         }
         imp.tab_view.set_selected_page(&page);
+        self.sync_active_browse();
         if imp.active_tab.get() != Some(id) {
             self.switch_to_tab(id);
         }
@@ -1117,10 +1277,11 @@ impl Window {
     fn save_active_tab(&self) {
         let imp = self.imp();
         let Some(id) = imp.active_tab.get() else { return };
-        let (history, index) = imp.navigation.history_state();
+        let (history, selections, index) = imp.navigation.history_state();
         let state = TabState {
             path: self.current_path(),
             history,
+            selections,
             index,
             tree: imp.tree.snapshot(),
         };
@@ -1132,7 +1293,7 @@ impl Window {
         let imp = self.imp();
         let Some(state) = imp.tabs.borrow().get(&id).cloned() else { return };
         imp.active_tab.set(Some(id));
-        imp.navigation.set_history_state(state.history, state.index);
+        imp.navigation.set_history_state(state.history, state.selections, state.index);
         if let Some(path) = &state.path {
             self.show_path(path);
         }
@@ -1265,6 +1426,7 @@ impl Window {
                 if let Some(id) = view.selected_page().and_then(|page| tab_id(&page)) {
                     window.switch_to_tab(id);
                 }
+                window.sync_active_browse();
             }
         });
         // The tab context menu is one menu object, set on the view up front so the bar always has it.
@@ -1317,6 +1479,19 @@ impl Window {
         });
     }
 
+    /// Makes the browse view of the selected tab the active one, which watches its folder, and the others
+    /// inactive. The viewer does not change this: its folder stays active while it is open.
+    fn sync_active_browse(&self) {
+        let tabs = &self.imp().tab_view;
+        let selected = tabs.selected_page();
+        for index in 0..tabs.n_pages() {
+            let page = tabs.nth_page(index);
+            if let Ok(browse) = page.child().downcast::<BrowseView>() {
+                browse.set_active(selected.as_ref() == Some(&page));
+            }
+        }
+    }
+
     /// The browse view of the selected tab.
     fn active_browse(&self) -> Option<BrowseView> {
         self.imp()
@@ -1328,6 +1503,14 @@ impl Window {
     /// Connects a tab's browse view to the settings, its context menu, and opening folders.
     fn attach_browse(&self, browse: &BrowseView) {
         let imp = self.imp();
+        // A folder that changes while the viewer shows it keeps the viewer's items in step with it.
+        let weak_window = self.downgrade();
+        browse.connect_listing_changed(move |view| {
+            let Some(window) = weak_window.upgrade() else { return };
+            if window.imp().viewer_open.get() && window.active_browse().as_ref() == Some(view) {
+                window.imp().viewer.update_paths(view.media_paths());
+            }
+        });
         if let Some(settings) = imp.settings.get() {
             settings.bind("item-size", browse, "item-size").build();
             settings.bind("filename-display", browse, "filename-display").build();
@@ -1341,8 +1524,27 @@ impl Window {
                 }
             });
             settings.bind("media-only", browse, "media-only").build();
+            settings.bind("thumbnail-crop", browse, "thumbnail-crop").build();
+            settings.bind("video-frame-previews", browse, "video-frame-previews").build();
+            settings.bind("directory-previews", browse, "directory-previews").build();
+            settings.bind("folder-preview-cycle", browse, "folder-preview-cycle").build();
+            settings.bind("folder-preview-count", browse, "folder-preview-count").build();
+            settings.bind("folder-preview-fit", browse, "folder-preview-fit").build();
             settings.bind("show-hidden", browse, "show-hidden").build();
+            settings.bind("sort-by", browse, "sort-by").build();
+            settings.bind("sort-order", browse, "sort-order").build();
         }
+        // The active tab's selection is what the history remembers for its current location.
+        browse.connect_selection_changed({
+            let weak = self.downgrade();
+            move |view, name| {
+                if let Some(window) = weak.upgrade() {
+                    if window.active_browse().as_ref() == Some(view) {
+                        window.imp().navigation.set_selected((!name.is_empty()).then(|| name.to_owned()));
+                    }
+                }
+            }
+        });
         let weak = self.downgrade();
         browse.connect_file_activated({
             let weak = weak.clone();
@@ -1418,6 +1620,29 @@ impl Window {
     }
 }
 
+/// The settings the viewer and the window title are set from, applied again whenever one changes.
+const VIEWER_SETTINGS: [&str; 20] = [
+    "zoom-step",
+    "expand-up-to-factor",
+    "keep-fit-mode",
+    "image-fit",
+    "smooth-scrolling",
+    "scaling-filter",
+    "smooth-upscaling",
+    "zoom-indicator",
+    "auto-hide-cursor",
+    "viewer-blurred-background",
+    "viewer-status-bar",
+    "viewer-status-overlay-position",
+    "svp-enabled",
+    "svp-plugin-directory",
+    "svp-fps-mode",
+    "svp-fps-target",
+    "svp-fps-minimum",
+    "svp-fps-maximum",
+    "svp-nvof",
+    "image-info-in-title",
+];
 /// How far a thumbnail size key moves each time, in pixels, and the range it is kept within.
 const THUMBNAIL_STEP: i32 = 16;
 const ITEM_SIZE_MIN: i32 = 32;
@@ -1429,6 +1654,55 @@ pub struct TabInfo {
     pub index: usize,
     pub path: Option<PathBuf>,
     pub active: bool,
+}
+
+/// Whether the browse view lists folders at all, which is `show-directories` other than `none`.
+fn shows_directories(settings: &gio::Settings) -> bool {
+    settings.string("show-directories") != "none"
+}
+
+/// Adds a stateful action for the string setting `key`, whose radio items in the sort menu set it. Menu items
+/// activate their action, and some pass the new value as a change of state, so both set the setting.
+fn add_setting_radio_action(window: &Window, settings: &gio::Settings, key: &'static str) {
+    let action = gio::SimpleAction::new_stateful(key, Some(glib::VariantTy::STRING), &settings.string(key).to_variant());
+    let set_from = {
+        let settings = settings.clone();
+        move |parameter: Option<&glib::Variant>| {
+            eprintln!("rsimgv: {key} set from {parameter:?}");
+            if let Some(value) = parameter.and_then(|value| value.get::<String>()) {
+                let result = settings.set_string(key, &value);
+                eprintln!("rsimgv: {key} = {value} (set: {result:?})");
+            }
+        }
+    };
+    action.connect_activate({
+        let set_from = set_from.clone();
+        move |_, parameter| set_from(parameter)
+    });
+    action.connect_change_state(move |_, parameter| set_from(parameter));
+    settings.connect_changed(Some(key), {
+        let action = action.clone();
+        move |settings, _| action.set_state(&settings.string(key).to_variant())
+    });
+    window.add_action(&action);
+}
+
+/// Adds the sort menu's "Show Directories" checkbox, which turns the listing of folders on or off.
+fn add_show_directories_action(window: &Window, settings: &gio::Settings) {
+    let action = gio::SimpleAction::new_stateful("show-directories", None, &shows_directories(settings).to_variant());
+    action.connect_activate({
+        let settings = settings.clone();
+        move |_, _| {
+            // Turning folders back on lists them first-last, the default.
+            let value = if shows_directories(&settings) { "none" } else { "first-last" };
+            let _ = settings.set_string("show-directories", value);
+        }
+    });
+    settings.connect_changed(Some("show-directories"), {
+        let action = action.clone();
+        move |settings, _| action.set_state(&shows_directories(settings).to_variant())
+    });
+    window.add_action(&action);
 }
 
 /// The folder a new window opens at, from the `start-location` setting. Falls back to the home folder
@@ -1467,6 +1741,12 @@ const WINDOW_SAVE_DELAY_MS: u64 = 400;
 
 /// Saves the window state once it has stopped changing for `WINDOW_SAVE_DELAY_MS`. A new change
 /// restarts the wait.
+/// The name of the item in `parent` that leads to `folder`, if `folder` is inside `parent`.
+fn child_toward(parent: &Path, folder: &Path) -> Option<String> {
+    let rest = folder.strip_prefix(parent).ok()?;
+    rest.components().next()?.as_os_str().to_str().map(str::to_owned)
+}
+
 fn schedule_window_save(window: &Window, settings: &gio::Settings, pending: &Rc<Cell<Option<glib::SourceId>>>) {
     if let Some(id) = pending.take() {
         id.remove();
@@ -1488,6 +1768,7 @@ fn schedule_window_save(window: &Window, settings: &gio::Settings, pending: &Rc<
 struct TabState {
     path: Option<PathBuf>,
     history: Vec<PathBuf>,
+    selections: Vec<Option<String>>,
     index: usize,
     tree: TreeSnapshot,
 }

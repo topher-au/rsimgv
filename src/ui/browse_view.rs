@@ -7,6 +7,7 @@
 
 use std::cell::{Cell, OnceCell, RefCell};
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 use gtk::glib::prelude::StaticType;
 use gtk::glib::subclass::Signal;
@@ -15,7 +16,8 @@ use gtk::subclass::prelude::*;
 use gtk::{gio, glib};
 
 use crate::fs::thumbnail::{Media as ThumbnailMedia, Size as ThumbnailSize, Thumbnails};
-use super::film_strip::FilmStrip;
+use super::thumbnail_paint::{picture_paintable, ScatteredThumbnail, MAX_PHOTOS, PHOTO_SHARE};
+use crate::fs::metadata::{MediaInfo, MediaMetadata};
 use crate::fs::{natural_cmp, FileEntry, FileStore, Reading};
 
 /// A file or folder in a browse view, as the IPC reports it.
@@ -28,6 +30,10 @@ pub struct ListedFile {
 pub const DEFAULT_ITEM_SIZE: i32 = 128;
 /// How long the pointer rests on an item before its description shows.
 const TOOLTIP_DELAY: std::time::Duration = std::time::Duration::from_millis(600);
+/// How long the folder must stay unchanged after a change in it before the view lists it again.
+const REFRESH_DELAY: std::time::Duration = std::time::Duration::from_millis(250);
+/// How long the pointer must stay still after keyboard browsing before it hides and the selected item's description shows.
+const KEYBOARD_IDLE_DELAY: std::time::Duration = std::time::Duration::from_millis(800);
 /// How long each frame of a hovered video shows.
 const FRAME_INTERVAL: std::time::Duration = std::time::Duration::from_millis(350);
 
@@ -40,18 +46,32 @@ pub enum InfoField {
     Resolution,
     Duration,
     Framerate,
+    Codec,
+    Bitrate,
+    Audio,
 }
 
 impl InfoField {
     /// Every field, in the order the preferences list them.
-    pub const ALL: [InfoField; 6] = [
+    pub const ALL: [InfoField; 9] = [
         InfoField::Size,
         InfoField::Modified,
         InfoField::ContentType,
         InfoField::Resolution,
         InfoField::Duration,
         InfoField::Framerate,
+        InfoField::Codec,
+        InfoField::Bitrate,
+        InfoField::Audio,
     ];
+
+    /// Whether the field is read from a picture's or video's metadata, rather than the file's own information.
+    pub fn needs_metadata(self) -> bool {
+        matches!(
+            self,
+            InfoField::Resolution | InfoField::Duration | InfoField::Framerate | InfoField::Codec | InfoField::Bitrate | InfoField::Audio
+        )
+    }
 
     /// The name shown for a field in the preferences.
     pub fn title(self) -> &'static str {
@@ -62,6 +82,9 @@ impl InfoField {
             InfoField::Resolution => "Resolution",
             InfoField::Duration => "Duration",
             InfoField::Framerate => "Frame rate",
+            InfoField::Codec => "Codec",
+            InfoField::Bitrate => "Bit rate",
+            InfoField::Audio => "Audio",
         }
     }
 
@@ -74,6 +97,9 @@ impl InfoField {
             InfoField::Resolution => "resolution",
             InfoField::Duration => "duration",
             InfoField::Framerate => "framerate",
+            InfoField::Codec => "codec",
+            InfoField::Bitrate => "bit-rate",
+            InfoField::Audio => "audio",
         }
     }
 
@@ -81,7 +107,8 @@ impl InfoField {
         Self::ALL.into_iter().find(|field| field.key() == key)
     }
 
-    fn text(self, entry: &FileEntry) -> Option<String> {
+    /// The field's text for `entry`, if it has one. The metadata fields need `metadata`, once it is read.
+    fn text(self, entry: &FileEntry, metadata: Option<&MediaMetadata>) -> Option<String> {
         let info = entry.info();
         match self {
             InfoField::Size if entry.is_dir() => None,
@@ -93,35 +120,104 @@ impl InfoField {
             InfoField::ContentType => info
                 .content_type()
                 .map(|kind| gio::content_type_get_description(&kind).to_string()),
-            // The size of an image, read from its header without decoding it.
-            InfoField::Resolution if entry.is_dir() => None,
-            InfoField::Resolution => gtk::gdk_pixbuf::Pixbuf::file_info(entry.path())
-                .map(|(_, width, height)| format!("{width} × {height}")),
-            // Video length and frame rate need a media reader, which the viewer will bring.
-            InfoField::Duration | InfoField::Framerate => None,
+            InfoField::Resolution => {
+                let metadata = metadata?;
+                Some(format!("{} × {}", metadata.width?, metadata.height?))
+            }
+            InfoField::Duration => {
+                let seconds = metadata?.duration?;
+                Some(super::media_controls::format_time((seconds * 1_000_000.0) as i64))
+            }
+            // Only a video has a frame rate worth showing; a picture's would be meaningless.
+            InfoField::Framerate if thumbnail_media(entry) != Some(ThumbnailMedia::Video) => None,
+            InfoField::Framerate => metadata?.frame_rate.map(crate::fs::metadata::format_fps),
+            InfoField::Codec => metadata?.codec.clone(),
+            InfoField::Bitrate => metadata?.bit_rate.map(|bits| {
+                if bits >= 1_000_000 {
+                    format!("{:.1} Mb/s", bits as f64 / 1_000_000.0)
+                } else {
+                    format!("{} kb/s", bits / 1000)
+                }
+            }),
+            InfoField::Audio => {
+                let metadata = metadata?;
+                let codec = metadata.audio_codec.clone()?;
+                Some(match metadata.audio_channels {
+                    Some(1) => format!("{codec}, mono"),
+                    Some(2) => format!("{codec}, stereo"),
+                    Some(channels) => format!("{codec}, {channels} channels"),
+                    None => codec,
+                })
+            }
         }
     }
 }
 
 /// The info for `entry`: its chosen fields that have a value, joined by `separator`.
-fn info_text(entry: &FileEntry, fields: &[InfoField], separator: &str) -> String {
+fn info_text(entry: &FileEntry, fields: &[InfoField], separator: &str, metadata: Option<&MediaMetadata>) -> String {
     fields
         .iter()
-        .filter_map(|field| field.text(entry))
+        .filter_map(|field| field.text(entry, metadata))
         .collect::<Vec<_>>()
         .join(separator)
 }
 
-/// The tooltip for an item, as markup: its full name in bold, then its type and, for a file, its size.
-fn full_description(entry: &FileEntry) -> String {
-    let mut lines = vec![format!("<b>{}</b>", glib::markup_escape_text(&entry.name()))];
-    if let Some(kind) = InfoField::ContentType.text(entry) {
-        lines.push(glib::markup_escape_text(&kind).to_string());
+/// The tooltip for an item: its name, kind and path, then each of its details in a grid. The metadata details need
+/// `metadata`, once it is read.
+fn tooltip_content(entry: &FileEntry, metadata: Option<&MediaMetadata>) -> gtk::Box {
+    let body = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    body.add_css_class("item-tooltip");
+
+    let title = gtk::Label::new(Some(&entry.name()));
+    title.add_css_class("tooltip-title");
+    title.set_xalign(0.0);
+    title.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
+    title.set_max_width_chars(40);
+    body.append(&title);
+
+    if let Some(kind) = InfoField::ContentType.text(entry, None) {
+        let kind_label = gtk::Label::new(Some(&kind));
+        kind_label.add_css_class("dim-label");
+        kind_label.set_xalign(0.0);
+        body.append(&kind_label);
     }
-    if let Some(size) = InfoField::Size.text(entry) {
-        lines.push(glib::markup_escape_text(&size).to_string());
+    let path = gtk::Label::new(Some(&entry.path().to_string_lossy()));
+    path.add_css_class("tooltip-path");
+    path.set_xalign(0.0);
+    path.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
+    path.set_max_width_chars(40);
+    body.append(&path);
+
+    let details: Vec<(&str, String)> = InfoField::ALL
+        .into_iter()
+        .filter(|field| *field != InfoField::ContentType)
+        .filter_map(|field| field.text(entry, metadata).map(|text| (field.title(), text)))
+        .collect();
+    if details.is_empty() {
+        return body;
     }
-    lines.join("\n")
+    let separator = gtk::Separator::new(gtk::Orientation::Horizontal);
+    separator.set_margin_top(6);
+    separator.set_margin_bottom(6);
+    body.append(&separator);
+    let grid = gtk::Grid::new();
+    grid.add_css_class("tooltip-grid");
+    grid.set_column_spacing(14);
+    grid.set_row_spacing(3);
+    for (row, (title, text)) in details.iter().enumerate() {
+        let key = gtk::Label::new(Some(title));
+        key.add_css_class("dim-label");
+        key.set_xalign(1.0);
+        key.set_valign(gtk::Align::Start);
+        let value = gtk::Label::new(Some(text));
+        value.set_xalign(0.0);
+        value.set_wrap(true);
+        value.set_max_width_chars(36);
+        grid.attach(&key, 0, row as i32, 1, 1);
+        grid.attach(&value, 1, row as i32, 1, 1);
+    }
+    body.append(&grid);
+    body
 }
 
 /// The thumbnail `entry` gets: a picture or a video's still. SVG pictures keep their icon.
@@ -182,6 +278,7 @@ fn request_thumbnail(
     let icon = icon.downgrade();
     // A video's still is drawn between film strips.
     let film = media == ThumbnailMedia::Video;
+    let crop = view.thumbnail_crop();
     Thumbnails::shared().request_still(
         &path,
         modified_secs(entry),
@@ -191,17 +288,203 @@ fn request_thumbnail(
         move |texture| {
             if let Some(icon) = icon.upgrade() {
                 icon.set_pixel_size(size);
-                if film {
-                    icon.set_paintable(Some(&FilmStrip::new(texture)));
-                } else {
-                    icon.set_paintable(Some(texture));
-                }
+                icon.set_paintable(Some(&picture_paintable(texture, crop, film)));
                 if let Some(visual) = icon.parent() {
                     visual.add_css_class("has-thumbnail");
                 }
             }
         },
     );
+}
+
+/// The most entries of a folder looked at to find its pictures, so a huge folder does not hold up the view.
+const SCATTER_SCAN: usize = 500;
+
+/// Every picture and video of `folder`, with their modification times and kinds, in a shuffled order. The order is
+/// random, but the same for the same folder, so scrolling does not reshuffle them. Hidden entries and folders are
+/// skipped.
+fn scattered_media(folder: &Path, random: &mut Seeded) -> Vec<Picture> {
+    let Ok(read) = std::fs::read_dir(folder) else { return Vec::new() };
+    let mut paths: Vec<PathBuf> = read.filter_map(|entry| entry.ok().map(|entry| entry.path())).take(SCATTER_SCAN).collect();
+    paths.sort();
+    let mut media: Vec<Picture> = paths
+        .into_iter()
+        .filter_map(|path| {
+            let name = path.file_name()?.to_str()?;
+            if name.starts_with('.') {
+                return None;
+            }
+            let metadata = path.metadata().ok()?;
+            if metadata.is_dir() {
+                return None;
+            }
+            let modified = metadata.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs() as i64;
+            let size = metadata.len();
+            let kind = gio::content_type_guess(Some(&path), None::<&[u8]>).0;
+            let media = if kind.starts_with("image/") && !kind.starts_with("image/svg") {
+                ThumbnailMedia::Picture
+            } else if kind.starts_with("video/") {
+                ThumbnailMedia::Video
+            } else {
+                return None;
+            };
+            Some((path, modified, size, media))
+        })
+        .collect();
+    // A shuffle, then the first few.
+    for index in (1..media.len()).rev() {
+        media.swap(index, (random.next() % (index as u64 + 1)) as usize);
+    }
+    media
+}
+
+/// How long each set of a folder's preview pictures stays up while it cycles.
+const CYCLE_INTERVAL: std::time::Duration = std::time::Duration::from_millis(1000);
+
+/// A picture or video of a folder: its path, modification time in seconds, size in bytes, and kind.
+type Picture = (PathBuf, i64, u64, ThumbnailMedia);
+
+/// A folder whose preview pictures are cycling through its media.
+struct Cycle {
+    cell: glib::WeakRef<gtk::Box>,
+    folder: PathBuf,
+    /// Every picture and video of the folder, in the order the previews take them.
+    media: Vec<Picture>,
+    scattered: ScatteredThumbnail,
+    /// The most pictures a page takes.
+    slots: usize,
+    /// Whether a page takes as many pictures as fit their dimensions, rather than up to `slots`.
+    fitted: bool,
+    size: i32,
+    /// The index in `media` of the first picture shown.
+    offset: usize,
+    /// The page after the one shown, loading.
+    preload: Option<Rc<RefCell<Preload>>>,
+}
+
+/// A page of a cycling folder's pictures, loading.
+struct Preload {
+    /// The index in `media` of the page's first picture.
+    offset: usize,
+    /// How many pictures the page takes.
+    len: usize,
+    /// The page's pictures, by slot, with how far each is turned.
+    page: Vec<Option<(gtk::gdk::Texture, f32)>>,
+    /// The pictures not yet made.
+    remaining: usize,
+}
+
+/// The offset of the page after one of `len` pictures from `offset`, or the start again after the last page.
+fn following(offset: usize, len: usize, total: usize) -> usize {
+    let next = offset + len;
+    if next < total { next } else { 0 }
+}
+
+/// The share of the item's square that a fitted page's pictures may cover.
+const FIT_BUDGET: f32 = 0.42;
+
+/// How many pictures a fitted page takes, from their aspect ratios in order: as many as fit in `FIT_BUDGET`. Each
+/// picture's longest side is `PHOTO_SHARE` of the item, so a wide or tall picture covers less than a square one.
+fn fit_count(aspects: &[f32]) -> usize {
+    let mut used = 0.0;
+    let mut count = 0;
+    for &aspect in aspects {
+        let aspect = aspect.max(f32::EPSILON);
+        let area = PHOTO_SHARE * PHOTO_SHARE * aspect.min(1.0 / aspect);
+        if count > 0 && used + area > FIT_BUDGET {
+            break;
+        }
+        used += area;
+        count += 1;
+    }
+    count.max(1)
+}
+
+/// The scattered previews a cell shows, if it shows a folder with its pictures up.
+fn scattered_in(cell: &gtk::Box) -> Option<ScatteredThumbnail> {
+    icon_of(cell)?.paintable()?.downcast::<ScatteredThumbnail>().ok()
+}
+
+/// How far a scattered picture is turned, in degrees: between about ten degrees either way, decided by its file name,
+/// so a picture is turned the same way wherever it shows.
+fn photo_turn(path: &Path) -> f32 {
+    let mut hasher = std::hash::DefaultHasher::new();
+    std::hash::Hash::hash(&path.file_name().unwrap_or_default(), &mut hasher);
+    Seeded(std::hash::Hasher::finish(&hasher)).signed_unit() * 10.0
+}
+
+/// A stream of pseudo-random numbers. It starts from a seed, so the same seed gives the same numbers.
+struct Seeded(u64);
+
+impl Seeded {
+    /// The stream for `folder`: the same for the same folder path.
+    fn for_folder(folder: &Path) -> Self {
+        let mut hasher = std::hash::DefaultHasher::new();
+        std::hash::Hash::hash(folder, &mut hasher);
+        Self(std::hash::Hasher::finish(&hasher))
+    }
+
+    fn next(&mut self) -> u64 {
+        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut mixed = self.0;
+        mixed = (mixed ^ (mixed >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        mixed = (mixed ^ (mixed >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        mixed ^ (mixed >> 31)
+    }
+
+    /// A number from -1 to 1.
+    fn signed_unit(&mut self) -> f32 {
+        ((self.next() >> 40) as f32 / (1u64 << 24) as f32) * 2.0 - 1.0
+    }
+}
+
+/// The folder's icon looked up at `size` pixels. The icon the image shows was made for a smaller size, so drawing it
+/// at the item's size would scale it up.
+fn folder_paintable(icon: &gtk::Image, entry: &FileEntry, size: i32) -> Option<gtk::gdk::Paintable> {
+    let gicon = entry.info().icon()?;
+    let theme = gtk::IconTheme::for_display(&icon.display());
+    let paintable = theme.lookup_by_gicon(&gicon, size, icon.scale_factor(), gtk::TextDirection::None, gtk::IconLookupFlags::empty());
+    Some(paintable.upcast())
+}
+
+/// Shows the folder `entry`'s icon filling its item, with up to the preview count of its pictures and videos scattered
+/// over it, each once it is made. A folder with none keeps its plain icon.
+fn request_scattered(view: &BrowseView, cell: &gtk::Box, entry: &FileEntry, icon: &gtk::Image, size: i32) {
+    let folder = entry.path().to_path_buf();
+    let mut random = Seeded::for_folder(&folder);
+    let mut media = scattered_media(&folder, &mut random);
+    if media.is_empty() {
+        return;
+    }
+    // The folder's icon fills the item under the pictures, so it is drawn at the item's size.
+    icon.set_pixel_size(size);
+    let fitted = view.folder_preview_fit();
+    let slots = if fitted { MAX_PHOTOS } else { view.preview_count() };
+    let shown = view.page_length(cell, &folder, &media, 0, fitted, slots);
+    media.truncate(shown);
+    let scattered = ScatteredThumbnail::new(folder_paintable(icon, entry, size), slots, fitted);
+    for (index, (path, modified, _, kind)) in media.into_iter().enumerate() {
+        let icon = icon.downgrade();
+        let scattered = scattered.clone();
+        let turn = photo_turn(&path);
+        Thumbnails::shared().request_still(
+            &path,
+            modified,
+            kind,
+            ThumbnailSize::for_pixels(size),
+            wanted_for(view, cell, &folder),
+            move |texture| {
+                scattered.set_photo(index, texture, turn);
+                if let Some(icon) = icon.upgrade() {
+                    icon.set_pixel_size(size);
+                    icon.set_paintable(Some(&scattered));
+                    if let Some(visual) = icon.parent() {
+                        visual.add_css_class("has-thumbnail");
+                    }
+                }
+            },
+        );
+    }
 }
 
 /// Whether the hover playback `generation` is the current one.
@@ -217,6 +500,16 @@ fn is_media(entry: &FileEntry) -> bool {
         .is_some_and(|kind| kind.starts_with("image/") || kind.starts_with("video/"))
 }
 
+/// Orders `a` and `b` by the `sort_by` key. Names are equal under `name`, so the caller breaks those ties.
+fn compare_by(sort_by: &str, a: &FileEntry, b: &FileEntry) -> std::cmp::Ordering {
+    match sort_by {
+        "modified" => a.modified().cmp(&b.modified()),
+        "size" => a.size().cmp(&b.size()),
+        "type" => a.content_type().cmp(&b.content_type()),
+        _ => std::cmp::Ordering::Equal,
+    }
+}
+
 mod imp {
     use super::*;
 
@@ -230,6 +523,8 @@ mod imp {
         pub floating_bar: TemplateChild<super::super::FloatingBar>,
         /// Whether a folder is loading. Its listing is stopped by the floating bar's stop button.
         pub(super) loading: Cell<bool>,
+        /// Whether the saved scroll position is still being restored after a folder lists.
+        pub(super) restoring_scroll: Cell<bool>,
         /// What to do once the folder has listed, such as selecting its first picture or video.
         pub(super) pending: RefCell<Option<Box<dyn FnOnce(&super::BrowseView)>>>,
         pub(super) store: OnceCell<gio::ListStore>,
@@ -243,14 +538,47 @@ mod imp {
         /// Show only pictures and videos (and folders), not every file.
         #[property(get, set)]
         media_only: Cell<bool>,
+        /// Crop each picture and video thumbnail to a square that fills the item's visual part.
+        #[property(get, set)]
+        thumbnail_crop: Cell<bool>,
+        /// Generate the frames a video plays while it is hovered.
+        #[property(get, set)]
+        video_frame_previews: Cell<bool>,
+        /// Show a cascade of a folder's first pictures and videos over its icon.
+        #[property(get, set)]
+        directory_previews: Cell<bool>,
+        /// Cycle a folder's preview pictures through its media while the folder is hovered or selected.
+        #[property(get, set)]
+        folder_preview_cycle: Cell<bool>,
+        /// Fit as many previews to a folder's icon as their pictures' dimensions allow, rather than a set number.
+        #[property(get, set)]
+        folder_preview_fit: Cell<bool>,
+        /// The most pictures and videos scattered over a folder's icon.
+        #[property(get, set)]
+        folder_preview_count: Cell<i32>,
         /// The read of the folder shown. Opening another folder, or stopping, cancels it.
         pub(super) reading: RefCell<Option<Reading>>,
         /// The video under the pointer, whose frames play while it is hovered.
         pub(super) hovered: RefCell<Option<Hover>>,
         pub(super) hover_generation: Cell<u64>,
+        /// The folder whose preview pictures are cycling, if any.
+        pub(super) cycle: RefCell<Option<Cycle>>,
+        pub(super) cycle_timer: RefCell<Option<glib::SourceId>>,
+        /// The item under the pointer, for the folder preview cycle.
+        pub(super) hovered_cell: RefCell<Option<glib::WeakRef<gtk::Box>>>,
         /// The popover that shows an item's description, below the item, and the timer that opens it.
         pub(super) tooltip: OnceCell<gtk::Popover>,
         pub(super) tooltip_timer: RefCell<Option<glib::SourceId>>,
+        /// Whether the selection was last moved from the keyboard, and not since moved by the pointer.
+        pub(super) keyboard_browsing: Cell<bool>,
+        /// The timer that, once the pointer has been still, hides it and shows the selected item's description.
+        pub(super) keyboard_timer: RefCell<Option<glib::SourceId>>,
+        /// Whether this is the active tab, or the tab whose viewer is open. Only the active view watches its folder.
+        pub(super) active: Cell<bool>,
+        /// Watches the folder shown, while the view is active.
+        pub(super) monitor: RefCell<Option<gio::FileMonitor>>,
+        /// The timer that lists the folder again after its changes have settled.
+        pub(super) refresh_timer: RefCell<Option<glib::SourceId>>,
         /// How far each folder visited in this view was scrolled, so returning to one restores it.
         pub(super) scroll_memory: RefCell<std::collections::HashMap<PathBuf, f64>>,
         pub(super) path: RefCell<Option<PathBuf>>,
@@ -268,6 +596,12 @@ mod imp {
         item_size: Cell<i32>,
         #[property(get, set)]
         show_directories: RefCell<String>,
+        /// What the files and folders are sorted by: `name`, `modified`, `size` or `type`.
+        #[property(get, set)]
+        sort_by: RefCell<String>,
+        /// `ascending` or `descending`.
+        #[property(get, set)]
+        sort_order: RefCell<String>,
     }
 
     #[glib::object_subclass]
@@ -303,9 +637,13 @@ mod imp {
                     Signal::builder("item-context-requested")
                         .param_types([String::static_type(), bool::static_type(), f64::static_type(), f64::static_type()])
                         .build(),
+                    Signal::builder("selection-changed")
+                        .param_types([String::static_type()])
+                        .build(),
                     Signal::builder("open-in-new-tab-requested")
                         .param_types([String::static_type()])
                         .build(),
+                    Signal::builder("listing-changed").build(),
                 ]
             });
             SIGNALS.as_ref()
@@ -320,6 +658,8 @@ mod imp {
             self.filename_display.replace("ellipsized".to_owned());
             self.info_layout.replace("inline".to_owned());
             self.show_directories.replace("first-last".to_owned());
+            self.sort_by.replace("name".to_owned());
+            self.sort_order.replace("ascending".to_owned());
             self.info_fields
                 .replace(vec![InfoField::Size, InfoField::Modified]);
 
@@ -353,7 +693,9 @@ mod imp {
                         ("inline", _) => 0,
                         (_, is_dir) => u8::from(!is_dir),
                     };
-                    match rank(a).cmp(&rank(b)).then_with(|| natural_cmp(&a.name(), &b.name())) {
+                    let order = compare_by(&view.sort_by(), a, b).then_with(|| natural_cmp(&a.name(), &b.name()));
+                    let order = if view.sort_order() == "descending" { order.reverse() } else { order };
+                    match rank(a).cmp(&rank(b)).then(order) {
                         std::cmp::Ordering::Less => gtk::Ordering::Smaller,
                         std::cmp::Ordering::Equal => gtk::Ordering::Equal,
                         std::cmp::Ordering::Greater => gtk::Ordering::Larger,
@@ -370,6 +712,12 @@ mod imp {
                 move |_, _, _| {
                     if let Some(view) = view.upgrade() {
                         view.update_status();
+                        // A folder being listed clears its selection; that is not the user's choice, so it is not reported.
+                        if !view.imp().loading.get() {
+                            view.imp().restoring_scroll.set(false);
+                            view.emit_by_name::<()>("selection-changed", &[&view.selected_name().unwrap_or_default()]);
+                        }
+                        view.update_cycle();
                     }
                 }
             });
@@ -476,15 +824,11 @@ mod imp {
 
             // The description of the item under the pointer, in a popover below the item rather than a
             // tooltip, which GTK places at the pointer and so over the thumbnail.
-            let label = gtk::Label::new(None);
-            label.set_use_markup(true);
-            label.set_can_target(false);
             let popover = gtk::Popover::new();
             popover.set_autohide(false);
             popover.set_has_arrow(false);
             popover.set_position(gtk::PositionType::Bottom);
             popover.set_can_target(false);
-            popover.set_child(Some(&label));
             let _ = self.tooltip.set(popover);
 
             // Cursor movement is exposed as actions on the `browse` group, so keys and menus can share them.
@@ -519,12 +863,27 @@ mod imp {
             obj.connect_info_layout_notify(|view| view.refresh_items());
             obj.connect_show_hidden_notify(|view| view.refresh_filter());
             obj.connect_media_only_notify(|view| view.refresh_filter());
+            obj.connect_thumbnail_crop_notify(|view| view.refresh_items());
+            obj.connect_directory_previews_notify(|view| view.refresh_items());
+            obj.connect_folder_preview_cycle_notify(|view| view.update_cycle());
+            obj.connect_folder_preview_count_notify(|view| view.refresh_items());
             obj.connect_show_directories_notify(|view| {
                 view.refresh_filter();
-                if let Some(sorter) = view.imp().sorter.get() {
-                    sorter.changed(gtk::SorterChange::Different);
+                view.resort();
+            });
+            obj.connect_sort_by_notify(|view| view.resort());
+            obj.connect_sort_order_notify(|view| view.resort());
+
+            let pointer = gtk::EventControllerMotion::new();
+            pointer.connect_motion({
+                let view = obj.downgrade();
+                move |_, _, _| {
+                    if let Some(view) = view.upgrade() {
+                        view.pointer_moved();
+                    }
                 }
             });
+            obj.add_controller(pointer);
         }
     }
 
@@ -617,14 +976,24 @@ fn style_item(view: &BrowseView, cell: &gtk::Box, entry: &FileEntry) {
 
     visual.set_size_request(size, size);
     cell.set_size_request(size, -1);
-    icon.set_pixel_size((size * 3 / 5).max(16));
+    // A folder's icon fills its item, as its previews do; other icons are a little smaller.
+    let icon_size = if entry.is_dir() { size } else { (size * 3 / 5).max(16) };
+    icon.set_pixel_size(icon_size);
     match entry.info().icon() {
         Some(gicon) => icon.set_from_gicon(&gicon),
         None => icon.set_icon_name(Some("text-x-generic-symbolic")),
     }
     visual.remove_css_class("has-thumbnail");
+    // A folder's visual has no background of its own, with or without previews.
+    if entry.is_dir() {
+        visual.add_css_class("folder");
+    } else {
+        visual.remove_css_class("folder");
+    }
     if let Some(media) = thumbnail_media(entry) {
         request_thumbnail(view, cell, entry, &icon, size, media);
+    } else if entry.is_dir() && view.directory_previews() {
+        request_scattered(view, cell, entry, &icon, size);
     }
 
     let display = view.filename_display();
@@ -642,13 +1011,53 @@ fn style_item(view: &BrowseView, cell: &gtk::Box, entry: &FileEntry) {
     let chars = (size / 8).max(4);
     name.set_max_width_chars(chars);
     info.set_max_width_chars(chars);
+    // Information too long for the item's width wraps onto more lines rather than being cut off.
+    info.set_wrap(true);
+    info.set_wrap_mode(gtk::pango::WrapMode::WordChar);
 
+    update_info(view, cell, entry, &info);
+}
+
+/// The label under `cell`'s name, which shows the info fields.
+fn info_label_of(cell: &gtk::Box) -> Option<gtk::Label> {
+    let name = cell.first_child()?.next_sibling()?;
+    name.next_sibling().and_downcast::<gtk::Label>()
+}
+
+/// Shows the chosen info fields of `entry` in `info`. The metadata fields wait for the metadata to be read, and show
+/// once it is.
+fn update_info(view: &BrowseView, cell: &gtk::Box, entry: &FileEntry, info: &gtk::Label) {
     let fields = view.imp().info_fields.borrow().clone();
     let layout = view.info_layout();
-    let separator = if layout == "stacked" { "\n" } else { " · " };
-    let text = if layout == "disabled" { String::new() } else { info_text(entry, &fields, separator) };
+    let text = if layout == "disabled" {
+        String::new()
+    } else {
+        let separator = if layout == "stacked" { "\n" } else { " · " };
+        let metadata = if fields.iter().any(|field| field.needs_metadata()) && thumbnail_media(entry).is_some() {
+            request_metadata(view, cell, entry)
+        } else {
+            None
+        };
+        info_text(entry, &fields, separator, metadata.as_ref())
+    };
     info.set_label(&text);
     info.set_visible(!text.is_empty());
+}
+
+/// The metadata of the picture or video `entry`, if it is read. Otherwise it is read in the background, and the info
+/// line of `cell` is shown again once it is.
+fn request_metadata(view: &BrowseView, cell: &gtk::Box, entry: &FileEntry) -> Option<MediaMetadata> {
+    let path = entry.path().to_path_buf();
+    let (mtime, size) = (modified_secs(entry), entry.info().size() as u64);
+    // Only a file not yet read needs the weak references a request holds.
+    MediaInfo::shared().get(&path, mtime, size).or_else(|| {
+        let (weak_view, weak_cell) = (view.downgrade(), cell.downgrade());
+        MediaInfo::shared().request(&path, mtime, size, wanted_for(view, cell, &path), move || {
+            let (Some(view), Some(cell)) = (weak_view.upgrade(), weak_cell.upgrade()) else { return };
+            let (Some(entry), Some(info)) = (entry_in(&view, &cell), info_label_of(&cell)) else { return };
+            update_info(&view, &cell, &entry, &info);
+        })
+    })
 }
 
 glib::wrapper! {
@@ -708,16 +1117,167 @@ impl BrowseView {
             view.imp().loading.set(false);
             view.attach_selection();
             view.update_status();
+            // A selection waiting for the folder brings its item into view, so the saved scroll position does not apply.
             let pending = view.imp().pending.take();
+            let selecting = pending.is_some();
             if let Some(run) = pending {
                 run(&view);
             }
-            if let Some(scroller) = &scroller {
-                restore_scroll_after_layout(scroller, saved);
+            if let (Some(scroller), false) = (&scroller, selecting) {
+                restore_scroll_after_layout(&view, scroller, saved);
             }
         };
         let reading = files.read(path, on_batch, on_done);
         imp.reading.replace(Some(reading));
+        self.update_monitor();
+    }
+
+    /// Makes this the active view, which watches its folder for changes, or an inactive one, which does not.
+    /// An activated view lists its folder again, since it may have changed while it was not watched.
+    pub fn set_active(&self, active: bool) {
+        let imp = self.imp();
+        if imp.active.replace(active) == active {
+            return;
+        }
+        self.update_monitor();
+        if active {
+            self.refresh();
+        }
+    }
+
+    /// Watches the folder shown while the view is active, and stops watching otherwise or when the folder changes.
+    fn update_monitor(&self) {
+        let imp = self.imp();
+        if let Some(timer) = imp.refresh_timer.take() {
+            timer.remove();
+        }
+        if let Some(monitor) = imp.monitor.take() {
+            monitor.cancel();
+        }
+        if !imp.active.get() {
+            return;
+        }
+        let Some(path) = self.path() else { return };
+        let Ok(monitor) = gio::File::for_path(&path).monitor_directory(gio::FileMonitorFlags::NONE, gio::Cancellable::NONE)
+        else {
+            return;
+        };
+        let weak = self.downgrade();
+        monitor.connect_changed(move |_, _, _, event| {
+            let changed = matches!(
+                event,
+                gio::FileMonitorEvent::Created
+                    | gio::FileMonitorEvent::Deleted
+                    | gio::FileMonitorEvent::Renamed
+                    | gio::FileMonitorEvent::MovedIn
+                    | gio::FileMonitorEvent::MovedOut
+                    | gio::FileMonitorEvent::ChangesDoneHint
+            );
+            if let (true, Some(view)) = (changed, weak.upgrade()) {
+                view.schedule_refresh();
+            }
+        });
+        imp.monitor.replace(Some(monitor));
+    }
+
+    /// Lists the folder again once it has stopped changing for `REFRESH_DELAY`.
+    fn schedule_refresh(&self) {
+        let imp = self.imp();
+        if let Some(timer) = imp.refresh_timer.take() {
+            timer.remove();
+        }
+        let weak = self.downgrade();
+        let timer = glib::timeout_add_local_once(REFRESH_DELAY, move || {
+            if let Some(view) = weak.upgrade() {
+                view.imp().refresh_timer.take();
+                view.refresh();
+            }
+        });
+        imp.refresh_timer.replace(Some(timer));
+    }
+
+    /// Lists the folder afresh and updates the items to match, keeping the selection on the same item. Does
+    /// nothing while the folder is loading, since that listing is already fresh.
+    fn refresh(&self) {
+        let imp = self.imp();
+        if imp.reading.borrow().is_some() {
+            return;
+        }
+        let Some(path) = self.path() else { return };
+        let files = FileStore::shared();
+        files.discard_idle(&path);
+        let listed = Rc::new(RefCell::new(Vec::new()));
+        let on_batch = {
+            let listed = listed.clone();
+            move |batch: &[FileEntry]| listed.borrow_mut().extend_from_slice(batch)
+        };
+        let on_done = {
+            let view = self.downgrade();
+            move |result: Result<(), String>| {
+                let Some(view) = view.upgrade() else { return };
+                view.imp().reading.take();
+                if result.is_ok() {
+                    view.reconcile(&listed.borrow());
+                }
+            }
+        };
+        let reading = files.read(&path, on_batch, on_done);
+        imp.reading.replace(Some(reading));
+    }
+
+    /// Makes the items match `listed`: entries that are gone are removed, new or changed ones are added, and
+    /// unchanged ones keep their objects, so their thumbnails stay.
+    fn reconcile(&self, listed: &[FileEntry]) {
+        let imp = self.imp();
+        let Some(store) = imp.store.get() else { return };
+        let selected = imp
+            .grid
+            .model()
+            .and_then(|model| model.item(model.selected()).and_downcast::<FileEntry>())
+            .map(|entry| entry.name());
+
+        let mut wanted: std::collections::HashMap<String, FileEntry> =
+            listed.iter().map(|entry| (entry.name(), entry.clone())).collect();
+        let mut removed = false;
+        let mut position = store.n_items();
+        while position > 0 {
+            position -= 1;
+            let Some(shown) = store.item(position).and_downcast::<FileEntry>() else { continue };
+            let unchanged = wanted
+                .get(&shown.name())
+                .is_some_and(|new| new.modified() == shown.modified() && new.size() == shown.size());
+            if unchanged {
+                wanted.remove(&shown.name());
+            } else {
+                store.remove(position);
+                removed = true;
+            }
+        }
+        let added: Vec<FileEntry> = wanted.into_values().collect();
+        let changed = removed || !added.is_empty();
+        store.splice(store.n_items(), 0, &added);
+
+        // Selecting by name here, rather than with `select_named`, leaves the scroll where it is.
+        if let (Some(name), Some(model)) = (selected, imp.grid.model()) {
+            let position = (0..model.n_items())
+                .find(|&position| model.item(position).and_downcast::<FileEntry>().is_some_and(|entry| entry.name() == name));
+            if let Some(position) = position {
+                model.set_selected(position);
+            }
+        }
+        self.update_status();
+        if changed {
+            self.emit_by_name::<()>("listing-changed", &[]);
+        }
+    }
+
+    /// Calls `callback` when the folder's items change as it is listed again, so a viewer showing them can follow.
+    pub fn connect_listing_changed<F: Fn(&Self) + 'static>(&self, callback: F) -> glib::SignalHandlerId {
+        self.connect_local("listing-changed", false, move |values| {
+            let view = values[0].get::<BrowseView>().expect("view argument");
+            callback(&view);
+            None
+        })
     }
 
     pub fn set_info_fields(&self, fields: &[InfoField]) {
@@ -744,11 +1304,13 @@ impl BrowseView {
     /// Moves the cursor to the first item.
     pub fn select_first(&self) {
         self.imp().grid.select_first();
+        self.keyboard_moved();
     }
 
     /// Moves the cursor to the last item.
     pub fn select_last(&self) {
         self.imp().grid.select_last();
+        self.keyboard_moved();
     }
 
     /// Opens the item under the cursor.
@@ -759,16 +1321,19 @@ impl BrowseView {
     /// Moves the cursor `items` along the list: negative moves back.
     pub fn move_cursor_x(&self, items: i32) {
         self.imp().grid.move_cursor_x(items);
+        self.keyboard_moved();
     }
 
     /// Moves the cursor `rows` rows down the grid: negative moves up.
     pub fn move_cursor_y(&self, rows: i32) {
         self.imp().grid.move_cursor_y(rows);
+        self.keyboard_moved();
     }
 
     /// Moves the cursor `pages` pages down the grid: negative moves up.
     pub fn move_cursor_page(&self, pages: i32) {
         self.imp().grid.move_cursor_page(pages);
+        self.keyboard_moved();
     }
 
     /// The items shown, in display order.
@@ -870,6 +1435,17 @@ impl BrowseView {
         self.emit_by_name::<()>(signal, &[&path]);
     }
 
+    /// Calls `callback(view, name)` when the selected item changes while the folder is shown, with the item's name,
+    /// or an empty name when none is selected.
+    pub fn connect_selection_changed<F: Fn(&Self, &str) + 'static>(&self, callback: F) -> glib::SignalHandlerId {
+        self.connect_local("selection-changed", false, move |values| {
+            let view = values[0].get::<BrowseView>().expect("view argument");
+            let name = values[1].get::<String>().expect("name argument");
+            callback(&view, &name);
+            None
+        })
+    }
+
     /// Calls `callback(view, path)` when a folder is activated.
     pub fn connect_directory_activated<F: Fn(&Self, &Path) + 'static>(&self, callback: F) -> glib::SignalHandlerId {
         self.connect_local("directory-activated", false, move |values| {
@@ -923,6 +1499,65 @@ impl BrowseView {
             filter.changed(gtk::FilterChange::Different);
         }
         self.update_status();
+    }
+
+    /// Re-sorts the items after the sort key, its direction or the folders' placement changes.
+    fn resort(&self) {
+        let Some(sorter) = self.imp().sorter.get() else { return };
+        // The item selected before the sort stays selected, wherever it lands, and is scrolled into view.
+        let selected = self
+            .imp()
+            .grid
+            .model()
+            .and_then(|model| model.item(model.selected()).and_downcast::<FileEntry>())
+            .map(|entry| entry.name());
+        sorter.changed(gtk::SorterChange::Different);
+        if let Some(name) = selected {
+            self.select_named(&name);
+        }
+    }
+
+    /// Notes that the selection was moved from the keyboard: the description of the selected item shows once
+    /// the pointer has been still for a while, and the pointer hides.
+    fn keyboard_moved(&self) {
+        let imp = self.imp();
+        imp.keyboard_browsing.set(true);
+        self.tooltip_leave();
+        if let Some(timer) = imp.keyboard_timer.take() {
+            timer.remove();
+        }
+        let view = self.downgrade();
+        let timer = glib::timeout_add_local_once(KEYBOARD_IDLE_DELAY, move || {
+            if let Some(view) = view.upgrade() {
+                view.show_keyboard_hint();
+            }
+        });
+        *imp.keyboard_timer.borrow_mut() = Some(timer);
+    }
+
+    /// Hides the pointer and shows the description of the selected item, after the keyboard moved the selection
+    /// and the pointer has been still.
+    fn show_keyboard_hint(&self) {
+        let imp = self.imp();
+        imp.keyboard_timer.take();
+        self.set_cursor(gtk::gdk::Cursor::from_name("none", None).as_ref());
+        let selected = imp.grid.model().map(|model| model.selected());
+        if let Some(cell) = selected.and_then(|position| imp.grid.cell_at(position)).and_downcast::<gtk::Box>() {
+            self.tooltip_show(&cell);
+        }
+    }
+
+    /// Shows the pointer again, and ends keyboard browsing, once the pointer moves.
+    fn pointer_moved(&self) {
+        let imp = self.imp();
+        if !imp.keyboard_browsing.replace(false) {
+            return;
+        }
+        if let Some(timer) = imp.keyboard_timer.take() {
+            timer.remove();
+        }
+        self.set_cursor(None);
+        self.tooltip_leave();
     }
 
     /// Stops loading the folder: the entries read so far are shown.
@@ -1021,9 +1656,8 @@ impl BrowseView {
         // The timer has fired, so there is nothing left to cancel.
         self.imp().tooltip_timer.take();
         let (Some(popover), Some(entry)) = (self.imp().tooltip.get(), entry_in(self, cell)) else { return };
-        if let Some(label) = popover.child().and_downcast::<gtk::Label>() {
-            label.set_markup(&full_description(&entry));
-        }
+        let metadata = if thumbnail_media(&entry).is_some() { request_metadata(self, cell, &entry) } else { None };
+        popover.set_child(Some(&tooltip_content(&entry, metadata.as_ref())));
         if popover.parent().is_some() {
             popover.unparent();
         }
@@ -1041,11 +1675,219 @@ impl BrowseView {
         popover.popup();
     }
 
+    /// Cycles the preview pictures of the folder that is hovered, or else selected, and stops cycling any other.
+    fn update_cycle(&self) {
+        let target = if self.folder_preview_cycle() { self.cycle_target() } else { None };
+        let cycling = self.imp().cycle.borrow().as_ref().and_then(|cycle| cycle.cell.upgrade());
+        if target.is_some() && target == cycling {
+            return;
+        }
+        self.stop_cycle();
+        if let Some(cell) = target {
+            self.start_cycle(&cell);
+        }
+    }
+
+    /// The cell of the folder to cycle: the one under the pointer if it is a folder, else the selected one if it is.
+    fn cycle_target(&self) -> Option<gtk::Box> {
+        let imp = self.imp();
+        let hovered = imp.hovered_cell.borrow().as_ref().and_then(|cell| cell.upgrade());
+        let selected = imp
+            .grid
+            .model()
+            .and_then(|model| imp.grid.cell_at(model.selected()))
+            .and_then(|widget| widget.downcast::<gtk::Box>().ok());
+        hovered.into_iter().chain(selected).find(|cell| self.is_folder_cell(cell))
+    }
+
+    /// The most pictures scattered over a folder's icon, at least one.
+    fn preview_count(&self) -> usize {
+        self.folder_preview_count().max(1) as usize
+    }
+
+    /// Whether `cell` shows a folder, and folder previews are on.
+    fn is_folder_cell(&self, cell: &gtk::Box) -> bool {
+        self.directory_previews() && entry_in(self, cell).is_some_and(|entry| entry.is_dir())
+    }
+
+    /// Starts cycling the previews of the folder in `cell`, if they are up and there is more than one picture to cycle.
+    fn start_cycle(&self, cell: &gtk::Box) {
+        let Some(entry) = entry_in(self, cell) else { return };
+        let Some(scattered) = scattered_in(cell) else { return };
+        let folder = entry.path().to_path_buf();
+        let mut random = Seeded::for_folder(&folder);
+        let media = scattered_media(&folder, &mut random);
+        if media.len() < 2 {
+            return;
+        }
+        let fitted = self.folder_preview_fit();
+        let slots = if fitted { MAX_PHOTOS } else { self.preview_count() };
+        let mut cycle = Cycle {
+            cell: cell.downgrade(),
+            folder,
+            media,
+            scattered,
+            slots,
+            fitted,
+            size: self.item_size(),
+            offset: 0,
+            preload: None,
+        };
+        // The page after the first starts loading straight away, so it is ready when the cycle reaches it.
+        let next = following(0, self.page_length(cell, &cycle.folder, &cycle.media, 0, fitted, slots), cycle.media.len());
+        cycle.preload = Some(self.request_page(cell, &cycle, next));
+        *self.imp().cycle.borrow_mut() = Some(cycle);
+        let view = self.downgrade();
+        let timer = glib::timeout_add_local(CYCLE_INTERVAL, move || match view.upgrade() {
+            Some(view) => view.advance_cycle(),
+            None => glib::ControlFlow::Break,
+        });
+        self.imp().cycle_timer.replace(Some(timer));
+    }
+
+    /// Moves the cycling folder on to its next pictures, or stops if its cell no longer shows it.
+    fn advance_cycle(&self) -> glib::ControlFlow {
+        let Some(mut cycle) = self.imp().cycle.borrow_mut().take() else {
+            self.imp().cycle_timer.take();
+            return glib::ControlFlow::Break;
+        };
+        let Some(cell) = cycle.cell.upgrade().filter(|cell| self.still_cycling(cell, &cycle)) else {
+            self.imp().cycle_timer.take();
+            return glib::ControlFlow::Break;
+        };
+        // The next page is shown only once all its pictures are made; until then the cycle waits on it.
+        let preload = match cycle.preload.take() {
+            Some(preload) if preload.borrow().remaining == 0 => preload,
+            waiting => {
+                cycle.preload = waiting;
+                *self.imp().cycle.borrow_mut() = Some(cycle);
+                return glib::ControlFlow::Continue;
+            }
+        };
+        let (offset, len, page) = {
+            let mut preload = preload.borrow_mut();
+            (preload.offset, preload.len, std::mem::take(&mut preload.page))
+        };
+        cycle.offset = offset;
+        cycle.scattered.set_page(page);
+        // The page after this one starts loading at once.
+        let next = following(offset, len, cycle.media.len());
+        cycle.preload = Some(self.request_page(&cell, &cycle, next));
+        *self.imp().cycle.borrow_mut() = Some(cycle);
+        glib::ControlFlow::Continue
+    }
+
+    /// How many of a folder's pictures a page from `offset` takes: in fitted mode, as many as fit their dimensions,
+    /// otherwise up to `slots`.
+    fn page_length(&self, cell: &gtk::Box, folder: &Path, media: &[Picture], offset: usize, fitted: bool, slots: usize) -> usize {
+        let available = media.len().saturating_sub(offset);
+        if !fitted {
+            return slots.min(available);
+        }
+        let aspects: Vec<f32> = media
+            .get(offset..)
+            .unwrap_or_default()
+            .iter()
+            .take(MAX_PHOTOS)
+            .map(|(path, modified, size, _)| self.aspect_of(cell, folder, path, *modified, *size))
+            .collect();
+        fit_count(&aspects).min(available)
+    }
+
+    /// The width over the height of the picture at `path`. Its metadata is read in the background if it is not known
+    /// yet, and the folder's previews are laid out again once it is; until then it counts as square.
+    fn aspect_of(&self, cell: &gtk::Box, folder: &Path, path: &Path, modified: i64, size: u64) -> f32 {
+        // Only a file not yet read needs the weak references a request holds.
+        let metadata = MediaInfo::shared().get(path, modified, size).or_else(|| {
+            let (weak_view, weak_cell) = (self.downgrade(), cell.downgrade());
+            MediaInfo::shared().request(path, modified, size, wanted_for(self, cell, folder), move || {
+                let (Some(view), Some(cell)) = (weak_view.upgrade(), weak_cell.upgrade()) else { return };
+                if let Some(entry) = entry_in(&view, &cell) {
+                    style_item(&view, &cell, &entry);
+                }
+            })
+        });
+        match metadata.and_then(|metadata| Some((metadata.width?, metadata.height?))) {
+            Some((width, height)) if width > 0 && height > 0 => width as f32 / height as f32,
+            _ => 1.0,
+        }
+    }
+
+    /// Starts making the pictures of the page from `offset`. The cycle shows the page once they are all made.
+    fn request_page(&self, cell: &gtk::Box, cycle: &Cycle, offset: usize) -> Rc<RefCell<Preload>> {
+        let len = self.page_length(cell, &cycle.folder, &cycle.media, offset, cycle.fitted, cycle.slots);
+        let preload = Rc::new(RefCell::new(Preload {
+            offset,
+            len,
+            page: vec![None; cycle.slots],
+            remaining: len,
+        }));
+        for slot in 0..len {
+            let (path, modified, _, kind) = &cycle.media[offset + slot];
+            let turn = photo_turn(path);
+            let preload = preload.clone();
+            Thumbnails::shared().request_still(
+                path,
+                *modified,
+                *kind,
+                ThumbnailSize::for_pixels(cycle.size),
+                wanted_for(self, cell, &cycle.folder),
+                move |texture| {
+                    let mut preload = preload.borrow_mut();
+                    preload.page[slot] = Some((texture.clone(), turn));
+                    preload.remaining -= 1;
+                },
+            );
+        }
+        preload
+    }
+
+    /// Whether `cell` still shows the cycling folder, with the same previews it had when the cycle started.
+    fn still_cycling(&self, cell: &gtk::Box, cycle: &Cycle) -> bool {
+        shows(self, cell, &cycle.folder) && scattered_in(cell).is_some_and(|scattered| scattered == cycle.scattered)
+    }
+
+    /// Shows the cycle's pictures from its offset in `cell`, each as its thumbnail is made.
+    fn show_cycle(&self, cycle: &Cycle, cell: &gtk::Box) {
+        let page = self.page_length(cell, &cycle.folder, &cycle.media, cycle.offset, cycle.fitted, cycle.slots);
+        for slot in 0..cycle.slots {
+            let scattered = cycle.scattered.clone();
+            if slot >= page {
+                scattered.clear_photo(slot);
+                continue;
+            }
+            let (path, modified, _, kind) = &cycle.media[cycle.offset + slot];
+            let turn = photo_turn(path);
+            Thumbnails::shared().request_still(
+                path,
+                *modified,
+                *kind,
+                ThumbnailSize::for_pixels(cycle.size),
+                wanted_for(self, cell, &cycle.folder),
+                move |texture| scattered.set_photo(slot, texture, turn),
+            );
+        }
+    }
+
+    /// Stops cycling the folder, if one is, and puts its pictures back to the first ones.
+    fn stop_cycle(&self) {
+        if let Some(timer) = self.imp().cycle_timer.take() {
+            timer.remove();
+        }
+        let Some(mut cycle) = self.imp().cycle.take() else { return };
+        if let Some(cell) = cycle.cell.upgrade().filter(|cell| self.still_cycling(cell, &cycle)) {
+            cycle.offset = 0;
+            self.show_cycle(&cycle, &cell);
+        }
+    }
+
     /// Starts playing the frames of the video in `cell`, once they are made.
     fn hover_enter(&self, cell: &gtk::Box) {
+        self.imp().hovered_cell.replace(Some(cell.downgrade()));
+        self.update_cycle();
         self.stop_hover();
         let Some(entry) = entry_in(self, cell) else { return };
-        if thumbnail_media(&entry) != Some(ThumbnailMedia::Video) {
+        if thumbnail_media(&entry) != Some(ThumbnailMedia::Video) || !self.video_frame_previews() {
             return;
         }
         let imp = self.imp();
@@ -1078,7 +1920,8 @@ impl BrowseView {
             return;
         }
         // Each frame is drawn between film strips, as a video's still is.
-        let frames: Vec<FilmStrip> = frames.iter().map(FilmStrip::new).collect();
+        let crop = self.thumbnail_crop();
+        let frames: Vec<gtk::gdk::Paintable> = frames.iter().map(|texture| picture_paintable(texture, crop, true)).collect();
         let view = self.downgrade();
         let weak_cell = cell.downgrade();
         let mut index = 0;
@@ -1114,6 +1957,11 @@ impl BrowseView {
             .is_some_and(|hover| hover.cell.upgrade().as_ref() == Some(cell));
         if hovered_here {
             self.stop_hover();
+        }
+        let left_hovered = self.imp().hovered_cell.borrow().as_ref().and_then(|hovered| hovered.upgrade()).is_some_and(|hovered| &hovered == cell);
+        if left_hovered {
+            self.imp().hovered_cell.take();
+            self.update_cycle();
         }
     }
 
@@ -1261,11 +2109,18 @@ pub(crate) mod tests {
 
 /// Scrolls to `value` once the newly listed items have been laid out, over a few frames because the
 /// grid's height grows as it measures them.
-fn restore_scroll_after_layout(scroller: &gtk::ScrolledWindow, value: f64) {
+fn restore_scroll_after_layout(view: &BrowseView, scroller: &gtk::ScrolledWindow, value: f64) {
     const FRAMES: u32 = 8;
     let frames = Cell::new(0u32);
+    view.imp().restoring_scroll.set(true);
+    let view = view.downgrade();
     scroller.add_tick_callback(move |scroller, _| {
         frames.set(frames.get() + 1);
+        // Stops once the user has selected an item, since the selection brings its item into view.
+        let Some(view) = view.upgrade() else { return glib::ControlFlow::Break };
+        if !view.imp().restoring_scroll.get() {
+            return glib::ControlFlow::Break;
+        }
         scroller.vadjustment().set_value(value);
         if frames.get() < FRAMES {
             glib::ControlFlow::Continue

@@ -10,6 +10,8 @@ use gtk::prelude::*;
 use gtk::subclass::prelude::*;
 use gtk::glib;
 
+use super::media_viewer::VOLUME_STEP;
+
 /// How far a rewind or fast forward moves, in microseconds.
 pub const SEEK_STEP: i64 = 5_000_000;
 /// Microseconds in a second, the unit that media timestamps and durations use.
@@ -57,15 +59,17 @@ mod imp {
         #[template_child]
         pub previous_button: TemplateChild<gtk::Button>,
         #[template_child]
-        pub rewind_button: TemplateChild<gtk::Button>,
-        #[template_child]
         pub play_button: TemplateChild<gtk::Button>,
         #[template_child]
-        pub forward_button: TemplateChild<gtk::Button>,
+        pub stop_button: TemplateChild<gtk::Button>,
         #[template_child]
         pub next_button: TemplateChild<gtk::Button>,
         #[template_child]
         pub time_label: TemplateChild<gtk::Label>,
+        #[template_child]
+        pub duration_label: TemplateChild<gtk::Label>,
+        #[template_child]
+        pub auto_advance_button: TemplateChild<gtk::ToggleButton>,
         #[template_child]
         pub position: TemplateChild<gtk::Scale>,
         #[template_child]
@@ -154,22 +158,34 @@ mod imp {
                     }
                 }
             });
-            self.rewind_button.connect_clicked({
+            self.stop_button.connect_clicked({
                 let weak = weak.clone();
                 move |_| {
                     if let Some(controls) = weak.upgrade() {
-                        controls.seek_by(-SEEK_STEP);
+                        controls.stop();
                     }
                 }
             });
-            self.forward_button.connect_clicked({
+            self.auto_advance_button.connect_clicked({
                 let weak = weak.clone();
                 move |_| {
                     if let Some(controls) = weak.upgrade() {
-                        controls.seek_by(SEEK_STEP);
+                        controls.emit_by_name::<()>("auto-advance-requested", &[]);
                     }
                 }
             });
+            // Scrolling over the volume button turns the volume up or down a step.
+            let scroll = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::VERTICAL);
+            scroll.connect_scroll({
+                let weak = weak.clone();
+                move |_, _, dy| {
+                    if let Some(controls) = weak.upgrade() {
+                        controls.adjust_volume(if dy < 0.0 { VOLUME_STEP } else { -VOLUME_STEP });
+                    }
+                    glib::Propagation::Stop
+                }
+            });
+            self.volume_button.add_controller(scroll);
             self.play_button.connect_clicked({
                 let weak = weak.clone();
                 move |_| {
@@ -215,6 +231,7 @@ mod imp {
                 vec![
                     Signal::builder("previous-requested").build(),
                     Signal::builder("next-requested").build(),
+                    Signal::builder("auto-advance-requested").build(),
                 ]
             });
             SIGNALS.as_ref()
@@ -246,6 +263,28 @@ impl MediaControls {
             self.apply_audio();
         } else {
             self.refresh();
+        }
+    }
+
+    /// Calls `callback` when the auto-advance button is pressed.
+    pub fn connect_auto_advance_requested<F: Fn(&Self) + 'static>(&self, callback: F) -> glib::SignalHandlerId {
+        self.connect_local("auto-advance-requested", false, move |values| {
+            let controls = values[0].get::<MediaControls>().expect("controls argument");
+            callback(&controls);
+            None
+        })
+    }
+
+    /// Shows whether the viewer auto-advances, on the auto-advance button.
+    pub fn set_auto_advance(&self, on: bool) {
+        self.imp().auto_advance_button.set_active(on);
+    }
+
+    /// Stops the video: it pauses, and goes back to its start.
+    pub fn stop(&self) {
+        if let Some(media) = self.imp().media.borrow().clone() {
+            media.pause();
+            media.seek(0);
         }
     }
 
@@ -350,7 +389,8 @@ impl MediaControls {
         let (icon, tooltip) = if playing { ("media-playback-pause-symbolic", "Pause") } else { ("media-playback-start-symbolic", "Play") };
         imp.play_button.set_icon_name(icon);
         imp.play_button.set_tooltip_text(Some(tooltip));
-        imp.time_label.set_label(&format!("{} / {}", format_time(position), format_time(duration)));
+        imp.time_label.set_label(&format_time(position));
+        imp.duration_label.set_label(&format_time(duration));
 
         let seconds = duration as f64 / MICROS;
         if imp.position.adjustment().upper() != seconds {

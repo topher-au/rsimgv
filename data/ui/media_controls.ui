@@ -2,86 +2,122 @@
 <interface>
   <template class="RsimgvMediaControls" parent="GtkBox">
     <property name="orientation">horizontal</property>
-    <property name="spacing">4</property>
-    <property name="margin-top">8</property>
-    <property name="margin-bottom">8</property>
-    <property name="margin-start">8</property>
-    <property name="margin-end">8</property>
-    <style><class name="osd"/><class name="media-controls"/></style>
+    <property name="spacing">2</property>
+    <property name="valign">center</property>
+    <style><class name="media-controls"/></style>
     <child>
-      <object class="GtkButton" id="previous_button">
-        <property name="icon-name">media-skip-backward-symbolic</property>
-        <property name="tooltip-text">Previous</property>
-        <style><class name="flat"/></style>
-      </object>
-    </child>
-    <child>
-      <object class="GtkButton" id="rewind_button">
-        <property name="icon-name">media-seek-backward-symbolic</property>
-        <property name="tooltip-text">Rewind 5 seconds</property>
-        <style><class name="flat"/></style>
-      </object>
-    </child>
-    <child>
-      <object class="GtkButton" id="play_button">
-        <property name="icon-name">media-playback-start-symbolic</property>
-        <property name="tooltip-text">Play</property>
-        <style><class name="flat"/></style>
-      </object>
-    </child>
-    <child>
-      <object class="GtkButton" id="forward_button">
-        <property name="icon-name">media-seek-forward-symbolic</property>
-        <property name="tooltip-text">Fast forward 5 seconds</property>
-        <style><class name="flat"/></style>
-      </object>
-    </child>
-    <child>
-      <object class="GtkButton" id="next_button">
-        <property name="icon-name">media-skip-forward-symbolic</property>
-        <property name="tooltip-text">Next</property>
-        <style><class name="flat"/></style>
-      </object>
-    </child>
-    <child>
-      <object class="GtkLabel" id="time_label">
-        <property name="margin-start">8</property>
-        <property name="margin-end">8</property>
-        <style><class name="numeric"/></style>
-      </object>
-    </child>
-    <child>
-      <object class="GtkScale" id="position">
-        <property name="orientation">horizontal</property>
-        <property name="draw-value">false</property>
-        <property name="hexpand">true</property>
-        <property name="width-request">240</property>
-        <property name="valign">center</property>
-      </object>
-    </child>
-    <child>
-      <object class="GtkOverlay" id="volume_overlay">
-        <property name="valign">center</property>
+      <object class="GtkBox">
+        <property name="spacing">2</property>
         <child>
-          <object class="GtkButton" id="volume_button">
-            <property name="icon-name">audio-volume-high-symbolic</property>
-            <property name="tooltip-text">Mute</property>
+          <object class="GtkButton" id="previous_button">
+            <property name="icon-name">media-skip-backward-symbolic</property>
+            <property name="tooltip-text">Previous</property>
             <style><class name="flat"/></style>
           </object>
         </child>
-        <child type="overlay">
-          <object class="GtkRevealer" id="volume_revealer">
-            <property name="valign">end</property>
-            <property name="halign">center</property>
-            <property name="margin-bottom">40</property>
-            <property name="transition-type">crossfade</property>
+        <child>
+          <object class="GtkButton" id="play_button">
+            <property name="icon-name">media-playback-start-symbolic</property>
+            <property name="tooltip-text">Play</property>
+            <style><class name="flat"/></style>
+          </object>
+        </child>
+        <child>
+          <object class="GtkButton" id="stop_button">
+            <property name="icon-name">media-playback-stop-symbolic</property>
+            <property name="tooltip-text">Stop</property>
+            <style><class name="flat"/></style>
+          </object>
+        </child>
+        <child>
+          <object class="GtkButton" id="next_button">
+            <property name="icon-name">media-skip-forward-symbolic</property>
+            <property name="tooltip-text">Next</property>
+            <style><class name="flat"/></style>
+          </object>
+        </child>
+      </object>
+    </child>
+    <child>
+      <object class="GtkSeparator">
+        <property name="margin-start">4</property>
+        <property name="margin-end">4</property>
+      </object>
+    </child>
+    <child>
+      <object class="GtkBox">
+        <property name="spacing">6</property>
+        <property name="valign">center</property>
+        <child>
+          <object class="GtkLabel" id="time_label">
+            <style><class name="numeric"/></style>
+          </object>
+        </child>
+        <child>
+          <object class="GtkScale" id="position">
+            <property name="orientation">horizontal</property>
+            <property name="draw-value">false</property>
+            <property name="hexpand">true</property>
+            <property name="width-request">220</property>
+            <property name="valign">center</property>
+          </object>
+        </child>
+        <child>
+          <object class="GtkLabel" id="duration_label">
+            <style><class name="numeric"/><class name="dim-label"/></style>
+          </object>
+        </child>
+      </object>
+    </child>
+    <child>
+      <object class="GtkSeparator">
+        <property name="margin-start">4</property>
+        <property name="margin-end">4</property>
+      </object>
+    </child>
+    <child>
+      <object class="GtkBox">
+        <property name="spacing">2</property>
+        <child>
+          <object class="GtkButton" id="fullscreen_button">
+            <property name="icon-name">view-fullscreen-symbolic</property>
+            <property name="tooltip-text">Toggle fullscreen</property>
+            <property name="action-name">win.toggle-fullscreen</property>
+            <style><class name="flat"/></style>
+          </object>
+        </child>
+        <child>
+          <object class="GtkToggleButton" id="auto_advance_button">
+            <property name="icon-name">media-playlist-consecutive-symbolic</property>
+            <property name="tooltip-text">Auto-advance to the next item when a video ends</property>
+            <style><class name="flat"/></style>
+          </object>
+        </child>
+        <child>
+          <object class="GtkOverlay" id="volume_overlay">
+            <property name="valign">center</property>
             <child>
-              <object class="GtkBox" id="volume_slider_box">
-                <style><class name="osd"/></style>
-                <property name="margin-top">8</property>
-                <property name="margin-bottom">8</property>
-                <property name="margin-start">8</property>
-                <property name="margin-end">8</property>
+              <object class="GtkButton" id="volume_button">
+                <property name="icon-name">audio-volume-high-symbolic</property>
+                <property name="tooltip-text">Mute</property>
+                <style><class name="flat"/></style>
+              </object>
+            </child>
+            <child type="overlay">
+              <object class="GtkRevealer" id="volume_revealer">
+                <property name="valign">end</property>
+                <property name="halign">center</property>
+                <property name="margin-bottom">40</property>
+                <property name="transition-type">crossfade</property>
+                <child>
+                  <object class="GtkBox" id="volume_slider_box">
+                    <style><class name="osd"/></style>
+                    <property name="margin-top">8</property>
+                    <property name="margin-bottom">8</property>
+                    <property name="margin-start">8</property>
+                    <property name="margin-end">8</property>
+                  </object>
+                </child>
               </object>
             </child>
           </object>

@@ -2,6 +2,7 @@ mod entry;
 mod node;
 mod sort;
 mod store;
+pub mod metadata;
 pub mod thumbnail;
 pub mod walk;
 

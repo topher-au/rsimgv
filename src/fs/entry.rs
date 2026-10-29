@@ -51,4 +51,18 @@ impl FileEntry {
     pub fn is_dir(&self) -> bool {
         self.info().file_type() == gio::FileType::Directory
     }
+
+    pub fn size(&self) -> i64 {
+        self.info().size()
+    }
+
+    /// When the entry was last modified, in seconds since the epoch.
+    pub fn modified(&self) -> u64 {
+        self.info().attribute_uint64("time::modified")
+    }
+
+    /// The content type, or empty if the listing did not give one.
+    pub fn content_type(&self) -> String {
+        self.info().attribute_string("standard::content-type").map(|kind| kind.to_string()).unwrap_or_default()
+    }
 }

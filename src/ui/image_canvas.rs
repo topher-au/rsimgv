@@ -6,7 +6,7 @@ use std::cell::{Cell, RefCell};
 
 use gtk::prelude::*;
 use gtk::subclass::prelude::*;
-use gtk::{gdk, glib, graphene};
+use gtk::{gdk, glib, graphene, gsk};
 
 /// How much one zoom step changes the scale.
 const DEFAULT_ZOOM_STEP: f64 = 1.25;
@@ -24,8 +24,9 @@ const BLUR_RADIUS: f64 = 40.0;
 const DIM: gdk::RGBA = gdk::RGBA::new(0.0, 0.0, 0.0, 0.55);
 
 /// A fit mode: the picture is scaled to fit the view, its width, its height, or shown at its own size.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Fit {
+    #[default]
     Window,
     Width,
     Height,
@@ -114,6 +115,8 @@ mod imp {
         pub(super) zoom_step: Cell<f64>,
         /// The most fitting to the window enlarges a picture smaller than the view, as a multiple of its size; 0 has no limit.
         pub(super) expand_limit: Cell<f64>,
+        /// The fit mode a picture gets when it is opened and no other is kept.
+        pub(super) default_fit: Cell<Fit>,
         /// The scale used while no fit mode is set.
         pub(super) zoom: Cell<f64>,
         /// The offset the picture is panned to: where it is heading.
@@ -132,6 +135,12 @@ mod imp {
         pub(super) last_frame: Cell<i64>,
         /// Whether a blurred, dimmed, cropped copy of the picture fills the view behind it.
         pub(super) underlay: Cell<bool>,
+        /// Whether pictures are drawn with nearest-neighbour sampling, rather than linear.
+        pub(super) nearest_scaling: Cell<bool>,
+        /// Whether enlarged pictures are drawn with linear sampling too, rather than nearest.
+        pub(super) smooth_upscaling: Cell<bool>,
+        /// Whether zooming and panning ease to their new place, rather than jumping there.
+        pub(super) smooth_scrolling: Cell<bool>,
     }
 
     #[glib::object_subclass]
@@ -154,6 +163,8 @@ mod imp {
             self.parent_constructed();
             self.fit.set(Some(Fit::Window));
             self.keep_fit.set(true);
+            self.smooth_upscaling.set(true);
+            self.smooth_scrolling.set(true);
             self.zoom_step.set(DEFAULT_ZOOM_STEP);
             // A zoomed or panned picture is drawn past the canvas, so clip it to keep it off its neighbours.
             self.obj().set_overflow(gtk::Overflow::Hidden);
@@ -240,9 +251,10 @@ mod imp {
                     }
                 });
             }
+            // Without smooth scrolling the view is never behind the target, so nothing eases.
             let view = match self.shown.get() {
-                Some(view) => view,
-                None => {
+                Some(view) if self.smooth_scrolling.get() => view,
+                _ => {
                     self.shown.set(Some(target));
                     target
                 }
@@ -252,7 +264,8 @@ mod imp {
                 canvas.ease();
             }
             let Some((x, y, width, height)) = canvas.placed(view) else { return };
-            snapshot.append_texture(&texture, &graphene::Rect::new(x as f32, y as f32, width as f32, height as f32));
+            let filter = canvas.scaling_filter(view.scale);
+            snapshot.append_scaled_texture(&texture, filter, &graphene::Rect::new(x as f32, y as f32, width as f32, height as f32));
         }
     }
 }
@@ -275,7 +288,8 @@ impl ImageCanvas {
     /// easing from the last one.
     pub fn set_texture(&self, texture: Option<gdk::Texture>) {
         let imp = self.imp();
-        let fit = if imp.keep_fit.get() { imp.last_fit.get().unwrap_or(Fit::Window) } else { Fit::Window };
+        let default = imp.default_fit.get();
+        let fit = if imp.keep_fit.get() { imp.last_fit.get().unwrap_or(default) } else { default };
         imp.fit.set(Some(fit));
         imp.texture.replace(texture);
         self.imp().offset.set((0.0, 0.0));
@@ -309,6 +323,11 @@ impl ImageCanvas {
         let (x, y) = self.imp().offset.get();
         self.imp().offset.set((x + dx, y + dy));
         self.ease();
+    }
+
+    /// Whether the user has zoomed the picture, rather than it being in a fit mode.
+    pub fn is_zoomed(&self) -> bool {
+        self.imp().fit.get().is_none()
     }
 
     /// How the picture is zoomed and panned, if the user has zoomed or panned it.
@@ -352,6 +371,24 @@ impl ImageCanvas {
     pub fn set_expand_limit(&self, factor: f64) {
         self.imp().expand_limit.set(factor);
         self.ease();
+    }
+
+    /// Sets the fit mode a new picture gets, when it is not kept from the last one.
+    pub fn set_default_fit(&self, fit: Fit) {
+        self.imp().default_fit.set(fit);
+    }
+
+    /// Whether zooming and panning ease to their new place over a few frames, rather than jumping there.
+    pub fn set_smooth_scrolling(&self, on: bool) {
+        self.imp().smooth_scrolling.set(on);
+    }
+
+    /// Sets how pictures are resampled: nearest keeps their pixels sharp. Enlarged pictures are drawn nearest too
+    /// when `smooth_upscaling` is off.
+    pub fn set_scaling(&self, nearest: bool, smooth_upscaling: bool) {
+        self.imp().nearest_scaling.set(nearest);
+        self.imp().smooth_upscaling.set(smooth_upscaling);
+        self.queue_draw();
     }
 
     /// Whether a new picture keeps the fit mode last chosen, rather than fitting the window.
@@ -402,8 +439,13 @@ impl ImageCanvas {
         self.ease();
     }
 
-    /// Starts easing the shown view toward the target, if it is not already doing so.
+    /// Starts easing the shown view toward the target, if it is not already doing so. Without smooth scrolling
+    /// the view jumps there.
     fn ease(&self) {
+        if !self.imp().smooth_scrolling.get() {
+            self.snap();
+            return;
+        }
         if self.imp().easing.borrow().is_some() {
             return;
         }
@@ -509,6 +551,16 @@ impl ImageCanvas {
         let x = (view_width - width) / 2.0 + view.offset.0.clamp(-max_x, max_x);
         let y = (view_height - height) / 2.0 + view.offset.1.clamp(-max_y, max_y);
         Some((x, y, width, height))
+    }
+
+    /// The filter a picture drawn at `scale` is resampled with.
+    fn scaling_filter(&self, scale: f64) -> gsk::ScalingFilter {
+        let enlarged = scale > 1.0;
+        if self.imp().nearest_scaling.get() || (enlarged && !self.imp().smooth_upscaling.get()) {
+            gsk::ScalingFilter::Nearest
+        } else {
+            gsk::ScalingFilter::Linear
+        }
     }
 
     /// Draws the picture cropped to cover the whole view, blurred, and dimmed, so it fills the background.

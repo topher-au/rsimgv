@@ -97,6 +97,61 @@
                         </child>
                       </object>
                     </child>
+                  <child>
+                    <object class="GtkMenuButton" id="sort_button">
+                      <property name="icon-name">view-sort-symbolic</property>
+                      <property name="tooltip-text">Sort and view options</property>
+                      <style><class name="flat"/></style>
+                      <property name="menu-model">
+                        <menu id="sort-menu">
+                          <section>
+                            <item>
+                              <attribute name="label">Alphabetical</attribute>
+                              <attribute name="action">win.sort-by</attribute>
+                              <attribute name="target">name</attribute>
+                            </item>
+                            <item>
+                              <attribute name="label">Modification Time</attribute>
+                              <attribute name="action">win.sort-by</attribute>
+                              <attribute name="target">modified</attribute>
+                            </item>
+                            <item>
+                              <attribute name="label">Size</attribute>
+                              <attribute name="action">win.sort-by</attribute>
+                              <attribute name="target">size</attribute>
+                            </item>
+                            <item>
+                              <attribute name="label">Type</attribute>
+                              <attribute name="action">win.sort-by</attribute>
+                              <attribute name="target">type</attribute>
+                            </item>
+                          </section>
+                          <section>
+                            <item>
+                              <attribute name="label">Ascending</attribute>
+                              <attribute name="action">win.sort-order</attribute>
+                              <attribute name="target">ascending</attribute>
+                            </item>
+                            <item>
+                              <attribute name="label">Descending</attribute>
+                              <attribute name="action">win.sort-order</attribute>
+                              <attribute name="target">descending</attribute>
+                            </item>
+                          </section>
+                          <section>
+                            <item>
+                              <attribute name="label">Show Hidden Files</attribute>
+                              <attribute name="action">win.show-hidden</attribute>
+                            </item>
+                            <item>
+                              <attribute name="label">Show Directories</attribute>
+                              <attribute name="action">win.show-directories</attribute>
+                            </item>
+                          </section>
+                        </menu>
+                      </property>
+                    </object>
+                  </child>
                   <child type="end">
                     <object class="GtkMenuButton" id="menu_button">
                       <property name="icon-name">open-menu-symbolic</property>

@@ -68,16 +68,52 @@ fn short_key(key: &str) -> &str {
 const LAYOUT: &[(&str, &str, &str)] = &[
     ("show-hidden", "browse", "show-hidden"),
     ("media-only", "browse", "media-only"),
+    ("show-directories", "browse", "show-directories"),
+    ("collapse-on-navigate", "browse", "collapse-on-navigate"),
     ("item-size", "browse", "item-size"),
     ("filename-display", "browse", "filename-display"),
-    ("show-directories", "browse", "show-directories"),
-    ("info-fields", "browse", "info-fields"),
     ("info-layout", "browse", "info-layout"),
-    ("collapse-on-navigate", "tree", "collapse-on-navigate"),
+    ("info-fields", "browse", "info-fields"),
     ("window-width", "window", "width"),
     ("window-height", "window", "height"),
     ("window-maximized", "window", "maximized"),
     ("sidebar-width", "window", "sidebar-width"),
+    ("start-location", "start", "location"),
+    ("start-directory", "start", "directory"),
+    ("last-directory", "start", "last-directory"),
+    ("last-file", "start", "last-file"),
+    ("open-fullscreen", "viewer", "open-fullscreen"),
+    ("auto-hide-cursor", "viewer", "auto-hide-cursor"),
+    ("viewer-blurred-background", "viewer", "blurred-background"),
+    ("viewer-thumbnail-bar", "viewer", "thumbnail-bar.side"),
+    ("viewer-thumbnail-bar-shown", "viewer", "thumbnail-bar.shown"),
+    ("viewer-thumbnail-bar-size", "viewer", "thumbnail-bar.size"),
+    ("viewer-thumbnail-bar-overlay", "viewer", "thumbnail-bar.overlay"),
+    ("viewer-thumbnail-bar-pinned", "viewer", "thumbnail-bar.pinned"),
+    ("image-info-in-title", "viewer", "image-info-in-title"),
+    ("image-fit", "image", "fit"),
+    ("keep-fit-mode", "image", "keep-fit"),
+    ("zoom-step", "image", "zoom-step"),
+    ("expand-up-to-factor", "image", "expand-up-to-factor"),
+    ("zoom-indicator", "image", "zoom-indicator"),
+    ("smooth-scrolling", "image", "smooth-scrolling"),
+    ("scaling-filter", "image", "scaling-filter"),
+    ("smooth-upscaling", "image", "smooth-upscaling"),
+    ("video-backend", "video", "backend"),
+    ("mpv-args", "video", "mpv-args"),
+    ("ipc-socket", "remote", "socket"),
+    ("ipc-socket-path", "remote", "socket-path"),
+    ("ipc-tcp-enabled", "remote", "tcp-enabled"),
+    ("ipc-tcp-port", "remote", "tcp-port"),
+    ("ipc-http-enabled", "remote", "http-enabled"),
+    ("ipc-http-port", "remote", "http-port"),
+    ("ipc-external-access", "remote", "external-access"),
+];
+
+/// Where settings were kept before the layout in `LAYOUT`, for the keys that have moved. A file in the old
+/// layout still loads them, and the next save writes them where `LAYOUT` puts them.
+const PREVIOUS: &[(&str, &str, &str)] = &[
+    ("collapse-on-navigate", "tree", "collapse-on-navigate"),
     ("start-location", "general", "start-location"),
     ("start-directory", "general", "start-directory"),
     ("last-directory", "general", "last-directory"),
@@ -136,18 +172,37 @@ fn load(file: &Path) -> BTreeMap<String, Value> {
         return BTreeMap::new();
     };
     let root: Value = serde_yaml_ng::from_str(&text).unwrap_or(Value::Null);
-    let mut values = BTreeMap::new();
-    let Some(groups) = root.as_mapping() else {
-        return values;
-    };
-    for (group, group_value) in groups {
-        let (Some(group), Some(names)) = (group.as_str(), group_value.as_mapping()) else {
-            continue;
-        };
-        for (name, value) in flatten(names) {
-            if let Some(key) = schema_key(group, &name) {
-                values.insert(key, value);
+    let mut stored: BTreeMap<(String, String), Value> = BTreeMap::new();
+    if let Some(groups) = root.as_mapping() {
+        for (group, group_value) in groups {
+            let (Some(group), Some(names)) = (group.as_str(), group_value.as_mapping()) else {
+                continue;
+            };
+            for (name, value) in flatten(names) {
+                stored.insert((group.to_owned(), name), value);
             }
+        }
+    }
+
+    let mut values = BTreeMap::new();
+    for ((group, name), value) in &stored {
+        if let Some(key) = schema_key(group, name) {
+            values.insert(key, value.clone());
+        }
+    }
+    for (key, group, name) in PREVIOUS {
+        if values.contains_key(*key) {
+            continue;
+        }
+        if let Some(value) = stored.get(&((*group).to_owned(), (*name).to_owned())) {
+            values.insert((*key).to_owned(), value.clone());
+        }
+    }
+    // A port used to turn its transport on, so a file that sets one without the toggle keeps that transport on.
+    for (enabled, port) in [("ipc-tcp-enabled", "ipc-tcp-port"), ("ipc-http-enabled", "ipc-http-port")] {
+        let set = values.get(port).and_then(Value::as_i64).is_some_and(|port| port > 0);
+        if set && !values.contains_key(enabled) {
+            values.insert(enabled.to_owned(), Value::Bool(true));
         }
     }
     values
@@ -220,10 +275,8 @@ fn from_yaml(value: &Value, ty: &glib::VariantTy) -> Option<glib::Variant> {
         "d" => value.as_f64().map(|n| n.to_variant()),
         "s" => value.as_str().map(|s| s.to_variant()),
         "as" => value
-            .as_sequence()?
-            .iter()
-            .map(|item| item.as_str().map(str::to_owned))
-            .collect::<Option<Vec<String>>>()
+            .as_sequence()
+            .and_then(|items| items.iter().map(|item| item.as_str().map(str::to_owned)).collect::<Option<Vec<String>>>())
             .map(|list| list.to_variant())
             // Lists saved as GVariant text by earlier versions still load.
             .or_else(|| value.as_str().and_then(|text| glib::Variant::parse(Some(ty), text).ok())),
@@ -393,6 +446,16 @@ pub(crate) mod tests {
         assert_eq!(root["settings"]["unlisted"], Value::Bool(true), "unlisted keys fall back to settings");
 
         assert_eq!(load(&file), values, "the file reads back to the same values");
+
+        // A file in the layout before the regrouping still loads, and a setting in the new layout wins over it.
+        std::fs::write(&file, "general:\n  start-location: specific\nview:\n  image-fit: original\n  thumbnail-bar:\n    size: 96\ntree:\n  collapse-on-navigate: true\n").unwrap();
+        let old = load(&file);
+        assert_eq!(old.get("start-location"), Some(&Value::String("specific".into())), "a moved setting loads from its old group");
+        assert_eq!(old.get("image-fit"), Some(&Value::String("original".into())), "a setting in the old view group loads");
+        assert_eq!(old.get("viewer-thumbnail-bar-size"), Some(&Value::Number(Number::from(96))), "a nested old setting loads");
+        assert_eq!(old.get("collapse-on-navigate"), Some(&Value::Bool(true)), "a setting in the old tree group loads");
+        std::fs::write(&file, "general:\n  start-location: root\nstart:\n  location: home\n").unwrap();
+        assert_eq!(load(&file).get("start-location"), Some(&Value::String("home".into())), "the new layout wins");
         let _ = std::fs::remove_file(&file);
     }
 }

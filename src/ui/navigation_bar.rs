@@ -36,6 +36,8 @@ mod imp {
         #[template_child]
         pub up_button: TemplateChild<gtk::Button>,
         pub(super) history: RefCell<Vec<PathBuf>>,
+        /// The item selected in each location of the history, by its name, if one was.
+        pub(super) selections: RefCell<Vec<Option<String>>>,
         pub(super) index: Cell<usize>,
     }
 
@@ -163,8 +165,10 @@ impl NavigationBar {
             }
             if !history.is_empty() {
                 history.truncate(imp.index.get() + 1);
+                imp.selections.borrow_mut().truncate(imp.index.get() + 1);
             }
             history.push(path.to_path_buf());
+            imp.selections.borrow_mut().push(None);
             imp.index.set(history.len() - 1);
         }
         self.update_buttons();
@@ -207,17 +211,34 @@ impl NavigationBar {
         self.emit_location(&target);
     }
 
-    /// The visited locations and the index of the current one, for keeping a tab's history.
-    pub fn history_state(&self) -> (Vec<PathBuf>, usize) {
+    /// Records the item selected in the current location, by its name, or none.
+    pub fn set_selected(&self, name: Option<String>) {
         let imp = self.imp();
-        (imp.history.borrow().clone(), imp.index.get())
+        if let Some(selection) = imp.selections.borrow_mut().get_mut(imp.index.get()) {
+            *selection = name;
+        }
+    }
+
+    /// The item selected the last time the current location was shown, if one was.
+    pub fn selected(&self) -> Option<String> {
+        let imp = self.imp();
+        imp.selections.borrow().get(imp.index.get()).cloned().flatten()
+    }
+
+    /// The visited locations, the item selected in each, and the index of the current one, for keeping a tab's
+    /// history.
+    pub fn history_state(&self) -> (Vec<PathBuf>, Vec<Option<String>>, usize) {
+        let imp = self.imp();
+        (imp.history.borrow().clone(), imp.selections.borrow().clone(), imp.index.get())
     }
 
     /// Replaces the history, as when switching to another tab. Emits nothing.
-    pub fn set_history_state(&self, history: Vec<PathBuf>, index: usize) {
+    pub fn set_history_state(&self, history: Vec<PathBuf>, mut selections: Vec<Option<String>>, index: usize) {
         let imp = self.imp();
         let index = index.min(history.len().saturating_sub(1));
+        selections.resize(history.len(), None);
         imp.history.replace(history);
+        imp.selections.replace(selections);
         imp.index.set(index);
         self.update_buttons();
     }

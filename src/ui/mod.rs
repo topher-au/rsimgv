@@ -2,11 +2,14 @@ mod binding_dialog;
 mod browse_view;
 mod floating_bar;
 mod film_strip;
+mod thumbnail_paint;
 mod thumbnail_bar;
 mod image_canvas;
 mod item_grid;
+mod kde_blur;
 mod keybinding_list;
 mod key_handler;
+mod keybind_label;
 mod media_controls;
 mod media_viewer;
 mod fs_tree;
@@ -27,7 +30,7 @@ pub use navigation_bar::NavigationBar;
 pub use path_bar::PathBar;
 pub use preferences::PreferencesDialog;
 pub use overlay_split_view::OverlaySplitView;
-pub use window::Window;
+pub use window::{Destination, Window};
 
 // GTK records the thread that calls gtk::init(), and libtest runs each #[test] on its own
 // thread, so every widget scenario runs from this single test.

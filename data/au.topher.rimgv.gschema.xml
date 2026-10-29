@@ -9,6 +9,85 @@
       <default>true</default>
       <summary>Only show pictures and videos in the browse view</summary>
     </key>
+    <key name="thumbnail-crop" type="b">
+      <default>false</default>
+      <summary>Crop thumbnails to a square that fills the item's visual part</summary>
+    </key>
+    <key name="video-frame-previews" type="b">
+      <default>true</default>
+      <summary>Generate the frames a video plays while hovered in the browse view</summary>
+    </key>
+    <key name="directory-previews" type="b">
+      <default>false</default>
+      <summary>Show a cascade of the first pictures and videos over a folder's icon</summary>
+    </key>
+    <key name="folder-preview-count" type="i">
+      <default>4</default>
+      <range min="1" max="12"/>
+      <summary>The most pictures and videos scattered over a folder's icon</summary>
+    </key>
+    <key name="viewer-status-overlay-position" type="s">
+      <choices>
+        <choice value="top-left"/>
+        <choice value="top-middle"/>
+        <choice value="top-right"/>
+        <choice value="bottom-left"/>
+        <choice value="bottom-middle"/>
+        <choice value="bottom-right"/>
+      </choices>
+      <default>'bottom-middle'</default>
+      <summary>Where the status bar floats over the viewer's item in fullscreen</summary>
+    </key>
+    <key name="viewer-status-bar" type="b">
+      <default>false</default>
+      <summary>Show a status bar under the viewer's item: its position, name, resolution, frame rate and file size</summary>
+    </key>
+    <key name="svp-enabled" type="b">
+      <default>false</default>
+      <summary>Interpolate the frames of videos played by libmpv with SVP (SmoothVideo Project)</summary>
+    </key>
+    <key name="svp-plugin-directory" type="s">
+      <default>'/opt/svp/plugins'</default>
+      <summary>The directory of SVP's VapourSynth plugin libraries</summary>
+    </key>
+    <key name="svp-fps-mode" type="s">
+      <choices>
+        <choice value="default"/>
+        <choice value="fixed"/>
+        <choice value="variable"/>
+        <choice value="display"/>
+      </choices>
+      <default>'display'</default>
+      <summary>The output frame rate: the source's, a fixed target, the target divided by the speed, or the display's rate divided by the speed</summary>
+    </key>
+    <key name="svp-fps-target" type="d">
+      <default>0.0</default>
+      <summary>The target output frame rate for the fixed and variable modes, or 0 for the source's</summary>
+    </key>
+    <key name="svp-fps-minimum" type="i">
+      <default>60</default>
+      <summary>The lowest output frame rate SVP is given</summary>
+    </key>
+    <key name="svp-fps-maximum" type="i">
+      <default>240</default>
+      <summary>The highest output frame rate SVP is given</summary>
+    </key>
+    <key name="svp-nvof" type="b">
+      <default>true</default>
+      <summary>Use NVIDIA optical flow for SVP's motion analysis, rather than the CPU</summary>
+    </key>
+    <key name="kde-effects" type="b">
+      <default>false</default>
+      <summary>Use KDE Plasma's effects, such as blur behind floating overlays, where the compositor offers them</summary>
+    </key>
+    <key name="folder-preview-fit" type="b">
+      <default>false</default>
+      <summary>Fit as many previews to a folder's icon as their pictures' dimensions allow, instead of a set number</summary>
+    </key>
+    <key name="folder-preview-cycle" type="b">
+      <default>false</default>
+      <summary>Cycle a folder's preview pictures through its media while it is hovered or selected</summary>
+    </key>
     <key name="item-size" type="i">
       <default>128</default>
       <range min="32" max="2048"/>
@@ -95,7 +174,7 @@
     </key>
     <key name="smooth-scrolling" type="b">
       <default>true</default>
-      <summary>Scroll images smoothly</summary>
+      <summary>Animate zooming and panning of images, rather than jumping to the new view</summary>
     </key>
     <key name="image-info-in-title" type="b">
       <default>false</default>
@@ -112,23 +191,21 @@
     </key>
     <key name="image-fit" type="s">
       <choices>
-        <choice value="fit-window"/>
-        <choice value="stretch-width"/>
-        <choice value="one-to-one"/>
-        <choice value="fit-stretch"/>
+        <choice value="window"/>
+        <choice value="width"/>
+        <choice value="height"/>
+        <choice value="original"/>
       </choices>
-      <default>'fit-window'</default>
-      <summary>How an image is sized when it is opened</summary>
+      <default>'window'</default>
+      <summary>How an image is sized when it is opened: to fit the window, its width, or its height, or at its own size</summary>
     </key>
     <key name="scaling-filter" type="s">
       <choices>
         <choice value="nearest"/>
-        <choice value="bilinear"/>
-        <choice value="bicubic"/>
-        <choice value="lanczos"/>
+        <choice value="linear"/>
       </choices>
-      <default>'bicubic'</default>
-      <summary>Filter used to scale images</summary>
+      <default>'linear'</default>
+      <summary>How images are resampled when drawn: nearest keeps pixels sharp, linear smooths them</summary>
     </key>
     <key name="keep-fit-mode" type="b">
       <default>true</default>
@@ -158,7 +235,7 @@
     </key>
     <key name="smooth-upscaling" type="b">
       <default>true</default>
-      <summary>Smooth pixels when images are enlarged</summary>
+      <summary>Smooth pixels when images are enlarged, rather than drawing them as blocks; off uses nearest for enlarged images</summary>
     </key>
     <key name="filename-display" type="s">
       <choices>
@@ -178,6 +255,24 @@
       <default>'first-last'</default>
       <summary>Where folders are listed: not at all, before and after the files as the sort order says, or among the files</summary>
     </key>
+    <key name="sort-by" type="s">
+      <choices>
+        <choice value="name"/>
+        <choice value="modified"/>
+        <choice value="size"/>
+        <choice value="type"/>
+      </choices>
+      <default>'name'</default>
+      <summary>What the browse view sorts files and folders by: name, modification time, size or type</summary>
+    </key>
+    <key name="sort-order" type="s">
+      <choices>
+        <choice value="ascending"/>
+        <choice value="descending"/>
+      </choices>
+      <default>'ascending'</default>
+      <summary>Whether the browse view sorts ascending or descending</summary>
+    </key>
     <key name="info-layout" type="s">
       <choices>
         <choice value="disabled"/>
@@ -195,15 +290,27 @@
       <default>false</default>
       <summary>Serve the JSON IPC on a Unix socket in the runtime directory</summary>
     </key>
+    <key name="ipc-socket-path" type="s">
+      <default>''</default>
+      <summary>Where the Unix socket is; empty for rsimgv.sock in the runtime directory</summary>
+    </key>
+    <key name="ipc-tcp-enabled" type="b">
+      <default>false</default>
+      <summary>Serve the JSON IPC on a TCP port</summary>
+    </key>
     <key name="ipc-tcp-port" type="i">
-      <default>0</default>
-      <range min="0" max="65535"/>
-      <summary>Serve the JSON IPC on this TCP port; 0 turns it off</summary>
+      <default>9700</default>
+      <range min="1" max="65535"/>
+      <summary>The TCP port the JSON IPC is served on, when TCP is enabled</summary>
+    </key>
+    <key name="ipc-http-enabled" type="b">
+      <default>false</default>
+      <summary>Serve the JSON IPC over HTTP</summary>
     </key>
     <key name="ipc-http-port" type="i">
-      <default>0</default>
-      <range min="0" max="65535"/>
-      <summary>Serve the JSON IPC over HTTP on this port; 0 turns it off</summary>
+      <default>9780</default>
+      <range min="1" max="65535"/>
+      <summary>The HTTP port the JSON IPC is served on, when HTTP is enabled</summary>
     </key>
     <key name="ipc-external-access" type="b">
       <default>false</default>

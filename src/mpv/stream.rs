@@ -265,6 +265,25 @@ impl MpvStream {
         self.imp().player.borrow().as_ref()?.get_double("speed")
     }
 
+    /// The refresh rate of the display the window is on, which mpv reads from the screen.
+    pub fn display_fps(&self) -> Option<f64> {
+        self.imp().player.borrow().as_ref()?.get_double("display-fps")
+    }
+
+    /// Shows `text` over the video with mpv's OSD, for `millis` milliseconds.
+    pub fn show_text(&self, text: &str, millis: u32) {
+        if let Some(player) = self.imp().player.borrow().as_ref() {
+            let _ = player.command(&["show-text", text, &millis.to_string()]);
+        }
+    }
+
+    /// Replaces the video filters with `filter`, or removes them all when it is empty.
+    pub fn set_video_filter(&self, filter: &str) -> Result<(), String> {
+        let player = self.imp().player.borrow();
+        let player = player.as_ref().ok_or("no player")?;
+        player.command(&["vf", "set", filter])
+    }
+
     /// The frame rate the video's container declares, or the one mpv measures when it declares none.
     pub fn fps(&self) -> Option<f64> {
         let player = self.imp().player.borrow();

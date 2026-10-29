@@ -16,10 +16,31 @@ use gtk::{gdk, gio, glib};
 
 use super::image_canvas::{Fit, ImageCanvas, Placement};
 use crate::file_settings::FileSettings;
+use crate::fs::metadata::MediaInfo;
 use super::media_controls::MediaControls;
 use super::thumbnail_bar::ThumbnailBar;
 
 const MICROS: f64 = 1_000_000.0;
+
+/// When the zoom level is shown: always, never, or only once the user has zoomed the picture.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ZoomIndicator {
+    On,
+    Off,
+    #[default]
+    Auto,
+}
+
+impl ZoomIndicator {
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "on" => Some(ZoomIndicator::On),
+            "off" => Some(ZoomIndicator::Off),
+            "auto" => Some(ZoomIndicator::Auto),
+            _ => None,
+        }
+    }
+}
 
 /// The item the viewer shows: its path, its size in pixels, and for a video, its playback.
 pub struct ShownItem {
@@ -45,6 +66,19 @@ const REVEAL_FRACTION: f64 = 0.2;
 
 /// How near, in seconds, a video's start or end its position must be to start it from the beginning next time.
 const POSITION_MARGIN: f64 = 2.0;
+
+/// The horizontal and vertical alignment of a status overlay at `position`, such as `top-left` or `bottom-middle`.
+fn overlay_alignment(position: &str) -> (gtk::Align, gtk::Align) {
+    let vertical = if position.starts_with("top") { gtk::Align::Start } else { gtk::Align::End };
+    let horizontal = if position.ends_with("left") {
+        gtk::Align::Start
+    } else if position.ends_with("right") {
+        gtk::Align::End
+    } else {
+        gtk::Align::Center
+    };
+    (horizontal, vertical)
+}
 
 /// The picture in `path`, or `None` if it cannot be read.
 fn load_texture(path: &Path) -> Option<gdk::Texture> {
@@ -76,6 +110,8 @@ const BAR_SLIDE_MS: u32 = 250;
 
 /// How long, in milliseconds, the thumbnail bar stays shown when it is turned on.
 const BAR_PEEK_MS: u64 = 1500;
+/// How long the pointer stays still before it is hidden, when the cursor is set to hide.
+const CURSOR_HIDE_MS: u64 = 1500;
 
 /// The settings changes that keep where `media` was left: its position, unless it is near its start or end, and
 /// its speed, unless it is normal.
@@ -171,6 +207,20 @@ mod imp {
         pub controls: TemplateChild<MediaControls>,
         #[template_child]
         pub overlay: TemplateChild<gtk::Overlay>,
+        #[template_child]
+        pub status_bar: TemplateChild<gtk::Box>,
+        #[template_child]
+        pub status_counter: TemplateChild<gtk::Label>,
+        #[template_child]
+        pub status_name: TemplateChild<gtk::Label>,
+        #[template_child]
+        pub status_resolution: TemplateChild<gtk::Label>,
+        #[template_child]
+        pub status_expander: TemplateChild<gtk::Box>,
+        #[template_child]
+        pub status_fps: TemplateChild<gtk::Label>,
+        #[template_child]
+        pub status_size: TemplateChild<gtk::Label>,
         /// The thumbnails of the items, floating over an edge of the picture.
         pub(super) thumbnail_bar: ThumbnailBar,
         /// Slides the thumbnail bar in from its edge and out again.
@@ -209,6 +259,19 @@ mod imp {
         pub(super) fullscreen: Cell<bool>,
         /// Hides the header once the pointer has been away from it for a while.
         pub(super) header_hide: RefCell<Option<glib::SourceId>>,
+        /// Whether the zoom level is shown, and whether the pointer is hidden while it is still.
+        pub(super) zoom_indicator: Cell<ZoomIndicator>,
+        pub(super) auto_hide_cursor: Cell<bool>,
+        /// Hides the pointer once it has been still over the viewer for a while.
+        pub(super) cursor_hide: RefCell<Option<glib::SourceId>>,
+        /// Whether the status bar under the item is shown.
+        pub(super) status_shown: Cell<bool>,
+        /// Where the status bar floats over the item in fullscreen, such as `bottom-middle`.
+        pub(super) status_overlay_position: RefCell<String>,
+        /// The SVP frame interpolation settings, applied to the videos mpv plays.
+        pub(super) svp: RefCell<Option<crate::svp::Config>>,
+        /// Whether SVP is applied to the video shown.
+        pub(super) svp_active: Cell<bool>,
     }
 
     #[glib::object_subclass]
@@ -243,6 +306,14 @@ mod imp {
                     }
                 }
             });
+            self.controls.connect_auto_advance_requested({
+                let weak = weak.clone();
+                move |_| {
+                    if let Some(viewer) = weak.upgrade() {
+                        viewer.toggle_auto_advance();
+                    }
+                }
+            });
             self.controls.connect_previous_requested({
                 let weak = weak.clone();
                 move |_| {
@@ -266,6 +337,7 @@ mod imp {
                 let weak = weak.clone();
                 move |_, x, y| {
                     if let Some(viewer) = weak.upgrade() {
+                        viewer.wake_cursor();
                         viewer.reveal_near(Some((x, y)));
                     }
                 }
@@ -296,6 +368,7 @@ mod imp {
                 move |_, scale| {
                     if let Some(viewer) = weak.upgrade() {
                         viewer.imp().zoom_label.set_label(&format!("{:.0}%", scale * 100.0));
+                        viewer.update_zoom_indicator();
                     }
                 }
             });
@@ -456,6 +529,28 @@ impl MediaViewer {
         })
     }
 
+    /// Replaces the items with `paths`, as the folder they come from has changed. The item shown stays shown, at
+    /// its new place; if it is gone, the item at its place takes its place instead.
+    pub fn update_paths(&self, paths: Vec<PathBuf>) {
+        let imp = self.imp();
+        let len = paths.len();
+        let current = imp.paths.borrow().get(imp.index.get()).cloned();
+        let found = current.as_ref().and_then(|current| paths.iter().position(|path| path == current));
+        imp.thumbnail_bar.set_paths(&paths);
+        imp.paths.replace(paths);
+        match found {
+            Some(index) => {
+                imp.index.set(index);
+                imp.thumbnail_bar.select(index);
+                imp.position.set_label(&format!("{} / {}", index + 1, len));
+                imp.controls.set_navigation(neighbour(index, len, false).is_some(), neighbour(index, len, true).is_some());
+                self.refresh_status();
+            }
+            None if len > 0 => self.load(imp.index.get().min(len - 1)),
+            None => {}
+        }
+    }
+
     /// Stops any video and drops the items, so the viewer holds nothing once it is hidden.
     pub fn close(&self) {
         self.release();
@@ -494,6 +589,7 @@ impl MediaViewer {
     pub fn toggle_auto_advance(&self) {
         let imp = self.imp();
         imp.auto_advance.set(!imp.auto_advance.get());
+        imp.controls.set_auto_advance(imp.auto_advance.get());
     }
 
     /// Keeps the controls and the title shown, or lets them hide again.
@@ -502,10 +598,53 @@ impl MediaViewer {
         imp.pin_button.set_active(!imp.pinned.get());
     }
 
+    /// Shows the zoom level always, never, or once the picture is zoomed by hand.
+    pub fn set_zoom_indicator(&self, indicator: ZoomIndicator) {
+        self.imp().zoom_indicator.set(indicator);
+        self.update_zoom_indicator();
+    }
+
+    /// Shows the zoom level as the setting asks, for a picture. A video has no zoom level to show.
+    fn update_zoom_indicator(&self) {
+        let imp = self.imp();
+        let shown = match imp.zoom_indicator.get() {
+            ZoomIndicator::On => true,
+            ZoomIndicator::Off => false,
+            ZoomIndicator::Auto => imp.canvas.is_zoomed(),
+        };
+        imp.zoom_box.set_visible(shown && imp.media.borrow().is_none());
+    }
+
+    /// Hides the pointer over the viewer once it has been still for a while, when `on`. Otherwise it is always shown.
+    pub fn set_auto_hide_cursor(&self, on: bool) {
+        self.imp().auto_hide_cursor.set(on);
+        self.wake_cursor();
+    }
+
+    /// Shows the pointer, and hides it again after it has been still, when the cursor is set to hide.
+    fn wake_cursor(&self) {
+        let imp = self.imp();
+        if let Some(source) = imp.cursor_hide.take() {
+            source.remove();
+        }
+        self.set_cursor(None);
+        if !imp.auto_hide_cursor.get() {
+            return;
+        }
+        let weak = self.downgrade();
+        let source = glib::timeout_add_local_once(std::time::Duration::from_millis(CURSOR_HIDE_MS), move || {
+            let Some(viewer) = weak.upgrade() else { return };
+            viewer.imp().cursor_hide.take();
+            viewer.set_cursor(gdk::Cursor::from_name("none", None).as_ref());
+        });
+        imp.cursor_hide.replace(Some(source));
+    }
+
     /// Notes whether the window is fullscreen, which decides where the header goes.
     pub fn set_fullscreen(&self, fullscreen: bool) {
         self.imp().fullscreen.set(fullscreen);
         self.place_header();
+        self.place_status_bar();
     }
 
     /// Floats the header over the picture, sliding down only while the pointer is near the top, when the
@@ -598,6 +737,21 @@ impl MediaViewer {
         self.imp().canvas.set_keep_fit(keep);
     }
 
+    /// Sets the fit mode a new picture gets, when it is not kept from the last one.
+    pub fn set_default_fit(&self, fit: Fit) {
+        self.imp().canvas.set_default_fit(fit);
+    }
+
+    /// Whether zooming and panning ease to their new place over a few frames, rather than jumping there.
+    pub fn set_smooth_scrolling(&self, on: bool) {
+        self.imp().canvas.set_smooth_scrolling(on);
+    }
+
+    /// Sets how pictures are resampled, nearest or linear, and whether enlarged ones are smoothed too.
+    pub fn set_scaling(&self, nearest: bool, smooth_upscaling: bool) {
+        self.imp().canvas.set_scaling(nearest, smooth_upscaling);
+    }
+
     /// Shows a blurred, dimmed copy of the picture behind it, or not.
     pub fn set_blurred_background(&self, on: bool) {
         self.imp().canvas.set_underlay(on);
@@ -637,8 +791,94 @@ impl MediaViewer {
         use crate::keybindings::actions::{MAX_SPEED, MIN_SPEED};
         let speed = speed.clamp(MIN_SPEED, MAX_SPEED);
         let imp = self.imp();
-        if let Some(stream) = imp.media.borrow().as_ref().and_then(|media| media.downcast_ref::<crate::mpv::MpvStream>()) {
+        let stream = imp.media.borrow().as_ref().and_then(|media| media.downcast_ref::<crate::mpv::MpvStream>().cloned());
+        if let Some(stream) = stream {
             stream.set_speed(speed);
+            // SVP's target rate follows the speed, so its filter is rebuilt for it.
+            self.apply_svp(&stream, speed);
+        }
+    }
+
+    /// Sets the SVP settings, and applies them to the video shown.
+    pub fn set_svp(&self, config: crate::svp::Config) {
+        self.imp().svp.replace(Some(config));
+        let stream = self.imp().media.borrow().as_ref().and_then(|media| media.downcast_ref::<crate::mpv::MpvStream>().cloned());
+        if let Some(stream) = stream {
+            let speed = stream.speed().unwrap_or(1.0);
+            self.apply_svp(&stream, speed);
+        }
+    }
+
+    /// Applies SVP to the video `stream` plays at `speed`, once mpv knows the video's frame rate. The video's filter
+    /// is only replaced while SVP is on or was on, so videos without it keep their filters.
+    fn start_svp(&self, stream: &crate::mpv::MpvStream) {
+        let (weak_viewer, weak_stream) = (self.downgrade(), stream.downgrade());
+        let mut tries = 0;
+        glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
+            let (Some(viewer), Some(stream)) = (weak_viewer.upgrade(), weak_stream.upgrade()) else {
+                return glib::ControlFlow::Break;
+            };
+            tries += 1;
+            if stream.fps().is_some() {
+                let speed = stream.speed().unwrap_or(1.0);
+                viewer.apply_svp(&stream, speed);
+                return glib::ControlFlow::Break;
+            }
+            if tries >= 100 {
+                return glib::ControlFlow::Break;
+            }
+            glib::ControlFlow::Continue
+        });
+    }
+
+    /// Writes the SVP script for `stream`'s video at `speed` and loads it into mpv, or removes the filter when SVP is
+    /// off. Only the SVP settings' plugins and the video's own rate are read.
+    fn apply_svp(&self, stream: &crate::mpv::MpvStream, speed: f64) {
+        let Some(config) = self.imp().svp.borrow().clone() else { return };
+        // The OSD says when SVP changes state: on when it is applied, off when it was on and is turned off.
+        const OSD_MILLIS: u32 = 2500;
+        if !config.enabled {
+            let _ = stream.set_video_filter("");
+            if self.imp().svp_active.replace(false) {
+                stream.show_text("SVP off", OSD_MILLIS);
+            }
+            return;
+        }
+        let plugins = crate::svp::find_plugins(&config.plugin_directory);
+        let usable = if config.nvof { plugins.svp2.is_some() } else { plugins.svp1.is_some() && plugins.svp2.is_some() };
+        let Some(source) = stream.fps() else { return };
+        if !usable {
+            eprintln!("rsimgv: SVP plugins not found in {}", config.plugin_directory.display());
+            stream.show_text(&format!("SVP plugins not found in {}", config.plugin_directory.display()), OSD_MILLIS);
+            return;
+        }
+        let target = crate::svp::target_fps(&config.rate, source, speed, stream.display_fps());
+        let directory = crate::svp::script_directory();
+        let path = directory.join("video.py");
+        let written = std::fs::create_dir_all(&directory)
+            .and_then(|()| std::fs::write(&path, crate::svp::script(&plugins, source, target, config.nvof)));
+        if let Err(err) = written {
+            eprintln!("rsimgv: could not write the SVP script: {err}");
+            stream.show_text("SVP script could not be written", OSD_MILLIS);
+            return;
+        }
+        println!("rsimgv: SVP script written to {}", path.display());
+        match stream.set_video_filter(&crate::svp::filter(&path)) {
+            Ok(()) => {
+                println!("rsimgv: SVP filter set: {}", crate::svp::filter(&path));
+                self.imp().svp_active.set(true);
+                let text = format!(
+                    "SVP: {} -> {} ({:.0}% speed)",
+                    crate::fs::metadata::format_fps(source),
+                    crate::fs::metadata::format_fps(target),
+                    speed * 100.0
+                );
+                stream.show_text(&text, OSD_MILLIS);
+            }
+            Err(err) => {
+                eprintln!("rsimgv: SVP could not be applied: {err}");
+                stream.show_text("SVP could not be applied", OSD_MILLIS);
+            }
         }
     }
 
@@ -715,6 +955,131 @@ impl MediaViewer {
         self.emit_by_name::<()>("back-requested", &[]);
     }
 
+    /// Shows or hides the status bar under the item: its position, name, resolution, frame rate and file size.
+    pub fn set_status_bar(&self, shown: bool) {
+        let imp = self.imp();
+        imp.status_shown.set(shown);
+        imp.status_bar.set_visible(shown);
+        self.refresh_status();
+    }
+
+    /// The parts of the viewer that float over the item, which KDE's blur is drawn behind: the status overlay and the
+    /// header in fullscreen (unless pinned), the video controls, and the thumbnail bar when it floats.
+    pub fn floating_widgets(&self) -> Vec<gtk::Widget> {
+        let imp = self.imp();
+        let mut widgets = Vec::new();
+        if imp.fullscreen.get() {
+            if imp.status_bar.is_visible() {
+                widgets.push(imp.status_bar.clone().upcast());
+            }
+            if !imp.pinned.get() && imp.header.reveals_child() {
+                widgets.push(imp.header.clone().upcast());
+            }
+        }
+        if imp.controls_revealer.reveals_child() {
+            widgets.push(imp.controls_revealer.clone().upcast());
+        }
+        if imp.bar_shown.get() && imp.bar_overlay.get() {
+            widgets.push(imp.thumbnail_bar.clone().upcast());
+        }
+        widgets
+    }
+
+    /// Sets where the status bar floats in fullscreen, such as `top-left` or `bottom-middle`.
+    pub fn set_status_overlay_position(&self, position: &str) {
+        self.imp().status_overlay_position.replace(position.to_owned());
+        self.place_status_bar();
+    }
+
+    /// Puts the status bar under the item. In fullscreen it floats over the item instead, at the chosen position,
+    /// without its expander, and lets pointer events through so the picture stays usable beneath it.
+    fn place_status_bar(&self) {
+        let imp = self.imp();
+        let bar: &gtk::Box = &imp.status_bar;
+        if bar.parent().is_some() {
+            bar.unparent();
+        }
+        if imp.fullscreen.get() {
+            let (halign, valign) = overlay_alignment(&imp.status_overlay_position.borrow());
+            bar.set_halign(halign);
+            bar.set_valign(valign);
+            bar.set_margin_start(14);
+            bar.set_margin_end(14);
+            bar.set_margin_top(14);
+            bar.set_margin_bottom(14);
+            bar.set_can_target(false);
+            bar.add_css_class("status-overlay");
+            imp.status_expander.set_visible(false);
+            imp.overlay.add_overlay(bar);
+        } else {
+            bar.set_halign(gtk::Align::Fill);
+            bar.set_valign(gtk::Align::Fill);
+            bar.set_margin_start(12);
+            bar.set_margin_end(12);
+            bar.set_margin_top(4);
+            bar.set_margin_bottom(4);
+            bar.set_can_target(true);
+            bar.remove_css_class("status-overlay");
+            imp.status_expander.set_visible(true);
+            self.append(bar);
+        }
+    }
+
+    /// The path of the item shown.
+    fn shown_path(&self) -> Option<PathBuf> {
+        let imp = self.imp();
+        imp.paths.borrow().get(imp.index.get()).cloned()
+    }
+
+    /// Fills the status bar for the item shown. Its resolution and frame rate come from its metadata, which is read in
+    /// the background the first time; the bar is filled again once it is.
+    fn refresh_status(&self) {
+        let imp = self.imp();
+        if !imp.status_shown.get() {
+            return;
+        }
+        let Some(path) = self.shown_path() else { return };
+        let (index, len) = (imp.index.get(), imp.paths.borrow().len());
+        imp.status_counter.set_label(&format!("[{}/{}]", index + 1, len));
+        imp.status_name.set_label(&path.file_name().map_or_else(String::new, |name| name.to_string_lossy().into_owned()));
+        let Ok(file) = std::fs::metadata(&path) else { return };
+        let size = file.len();
+        let mtime = file
+            .modified()
+            .ok()
+            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+            .map_or(0, |time| time.as_secs() as i64);
+        imp.status_size.set_label(&glib::format_size(size).to_string());
+
+        let metadata = MediaInfo::shared().get(&path, mtime, size).or_else(|| {
+            // The request is only wanted while this item is still the one shown.
+            let (weak_wanted, wanted_path) = (self.downgrade(), path.clone());
+            let weak_ready = self.downgrade();
+            MediaInfo::shared().request(
+                &path,
+                mtime,
+                size,
+                move || weak_wanted.upgrade().is_some_and(|viewer| viewer.shown_path().as_deref() == Some(wanted_path.as_path())),
+                move || {
+                    if let Some(viewer) = weak_ready.upgrade() {
+                        viewer.refresh_status();
+                    }
+                },
+            )
+        });
+        let resolution = metadata.as_ref().and_then(|metadata| Some(format!("{} × {}", metadata.width?, metadata.height?)));
+        // Only a video has a frame rate worth showing; a picture's would be meaningless.
+        let fps = metadata
+            .as_ref()
+            .filter(|_| is_video(&path))
+            .and_then(|metadata| metadata.frame_rate)
+            .map(crate::fs::metadata::format_fps);
+        for (label, text) in [(&imp.status_resolution, resolution), (&imp.status_fps, fps)] {
+            label.set_label(text.as_deref().unwrap_or_default());
+            label.set_visible(text.is_some());
+        }
+    }
+
     /// Shows the item at `index`, replacing the one before it.
     fn load(&self, index: usize) {
         let imp = self.imp();
@@ -727,6 +1092,7 @@ impl MediaViewer {
         let name = path.file_name().map_or_else(String::new, |name| name.to_string_lossy().into_owned());
         imp.filename.set_label(&name);
         imp.position.set_label(&format!("{} / {}", index + 1, len));
+        self.refresh_status();
         imp.controls.set_navigation(neighbour(index, len, false).is_some(), neighbour(index, len, true).is_some());
 
         let settings = FileSettings::for_path(&path).ok();
@@ -740,7 +1106,9 @@ impl MediaViewer {
                 .flatten()
                 .map(|stream| {
                     // Each video plays at the speed it was left at, or normal speed.
-                    stream.set_speed(settings.as_ref().and_then(|settings| settings.get_f64("speed")).unwrap_or(1.0));
+                    let speed = settings.as_ref().and_then(|settings| settings.get_f64("speed")).unwrap_or(1.0);
+                    stream.set_speed(speed);
+                    self.start_svp(&stream);
                     // Frames are rendered at device pixels, so the video and its OSD are drawn at the display's scale.
                     stream.set_scale(imp.picture.scale_factor());
                     stream.upcast()
@@ -795,7 +1163,7 @@ impl MediaViewer {
         }
         imp.file_settings.replace(settings);
         imp.controls_revealer.set_visible(video);
-        imp.zoom_box.set_visible(!video);
+        self.update_zoom_indicator();
         self.emit_by_name::<()>("item-changed", &[&path.to_string_lossy().into_owned()]);
     }
 

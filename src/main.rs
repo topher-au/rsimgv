@@ -1,6 +1,7 @@
 mod fs;
 mod ipc;
 mod remote;
+mod svp;
 mod bookmarks;
 mod file_settings;
 mod keybindings;
@@ -10,13 +11,24 @@ mod ui;
 
 use adw::prelude::*;
 use gtk::{gdk, gio};
+use gio::prelude::ApplicationCommandLineExt;
 use std::cell::RefCell;
+use std::ops::ControlFlow;
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::mpsc;
 use std::time::Duration;
 
 /// The settings that decide which IPC transports run, and on which ports.
-const IPC_KEYS: [&str; 4] = ["ipc-socket", "ipc-tcp-port", "ipc-http-port", "ipc-external-access"];
+const IPC_KEYS: [&str; 7] = [
+    "ipc-socket",
+    "ipc-socket-path",
+    "ipc-tcp-enabled",
+    "ipc-tcp-port",
+    "ipc-http-enabled",
+    "ipc-http-port",
+    "ipc-external-access",
+];
 
 const APP_ID: &str = "au.topher.rimgv";
 
@@ -33,7 +45,48 @@ fn main() -> glib::ExitCode {
     let app = adw::Application::builder()
         .application_id(APP_ID)
         .resource_base_path("/au/topher/rimgv")
+        .flags(gio::ApplicationFlags::HANDLES_COMMAND_LINE)
         .build();
+    app.add_main_option(
+        "version",
+        glib::Char::from(b'V'),
+        glib::OptionFlags::NONE,
+        glib::OptionArg::None,
+        "Show the version and exit",
+        None,
+    );
+    app.add_main_option(
+        "new-window",
+        glib::Char(0),
+        glib::OptionFlags::NONE,
+        glib::OptionArg::None,
+        "Open the paths, or the default folder, in a new window",
+        None,
+    );
+    app.add_main_option(
+        "new-tab",
+        glib::Char(0),
+        glib::OptionFlags::NONE,
+        glib::OptionArg::None,
+        "Open the paths, or the default folder, in a new tab",
+        None,
+    );
+    app.add_main_option(
+        "select-item",
+        glib::Char(0),
+        glib::OptionFlags::NONE,
+        glib::OptionArg::None,
+        "Show each path's containing folder with the path selected, instead of opening the path",
+        None,
+    );
+    app.set_option_context_parameter_string(Some("[FILE_OR_FOLDER...]"));
+    app.connect_handle_local_options(|_, options| {
+        if options.contains("version") {
+            println!("rsimgv {}", env!("CARGO_PKG_VERSION"));
+            return ControlFlow::Break(glib::ExitCode::SUCCESS);
+        }
+        ControlFlow::Continue(())
+    });
     let (calls, receiver) = mpsc::channel();
     let ipc_server = Rc::new(RefCell::new(ipc::Server::new(calls)));
     serve_ipc(&app, receiver);
@@ -44,6 +97,7 @@ fn main() -> glib::ExitCode {
             move |_, _| ipc_server.borrow_mut().apply(&ipc_config(&settings))
         });
     }
+    let shutdown_server = ipc_server.clone();
     let startup_settings = settings.clone();
     app.connect_startup(move |app| {
         load_css();
@@ -72,18 +126,90 @@ fn main() -> glib::ExitCode {
         });
         app.add_action(&preferences);
     });
+    // The paths are opened in the active window, navigating its current tab to the first and opening the rest
+    // in new tabs. With --new-window or --new-tab, every path opens in a new tab, in a new window for the first
+    // flag. With a flag and no paths, the new window or tab opens at the default folder.
+    let command_line_settings = settings.clone();
+    app.connect_command_line(move |app, command_line| {
+        let options = command_line.options_dict();
+        let new_window = options.contains("new-window");
+        let new_tab = options.contains("new-tab");
+        let select_item = options.contains("select-item");
+        let args: Vec<_> = command_line
+            .arguments()
+            .into_iter()
+            .skip(1)
+            .filter(|arg| !arg.to_string_lossy().starts_with('-'))
+            .collect();
+        if args.is_empty() && !new_window && !new_tab {
+            app.activate();
+            return glib::ExitCode::SUCCESS;
+        }
+        let existing = app.active_window().and_downcast::<ui::Window>();
+        let created = new_window || existing.is_none();
+        let window = match existing {
+            Some(window) if !new_window => window,
+            _ => {
+                let window = ui::Window::new(app, &command_line_settings);
+                gtk::prelude::GtkWindowExt::present(&window);
+                window
+            }
+        };
+        if args.is_empty() {
+            // A new window already opens at the default folder.
+            if new_tab && !created {
+                window.open_new_tab_at_default();
+            }
+            return glib::ExitCode::SUCCESS;
+        }
+        // A new window starts with a tab at the default folder, which gives way to the paths opened in it.
+        let initial = if created && (new_window || new_tab) { window.tab_id_at(0) } else { None };
+        let mut status = glib::ExitCode::SUCCESS;
+        let mut opened = 0;
+        for (index, arg) in args.iter().enumerate() {
+            let destination = if new_window || new_tab {
+                ui::Destination::NewTab { activate: index == 0 }
+            } else if index == 0 {
+                ui::Destination::CurrentTab
+            } else {
+                ui::Destination::NewTab { activate: false }
+            };
+            let done = command_line
+                .create_file_for_arg(arg)
+                .path()
+                .and_then(|path| path.canonicalize().ok())
+                .is_some_and(|path| window.open_path(&path, destination, select_item));
+            if done {
+                opened += 1;
+            } else {
+                command_line.printerr_literal(&format!("rsimgv: {}: no such file or folder\n", arg.to_string_lossy()));
+                status = glib::ExitCode::FAILURE;
+            }
+        }
+        if let Some(id) = initial.filter(|_| opened > 0) {
+            window.close_tab(id);
+        }
+        status
+    });
     app.connect_activate(move |app| gtk::prelude::GtkWindowExt::present(&ui::Window::new(app, &settings)));
-    app.connect_shutdown(|_| ipc::remove_socket());
+    app.connect_shutdown(move |_| shutdown_server.borrow_mut().stop());
     mpv::remove_stale_sockets();
     app.run()
 }
 
 /// The IPC transports the settings ask for.
 fn ipc_config(settings: &gio::Settings) -> ipc::Config {
+    let socket_path = settings.string("ipc-socket-path");
+    let socket = settings.boolean("ipc-socket").then(|| {
+        if socket_path.is_empty() { ipc::default_socket_path() } else { PathBuf::from(socket_path.as_str()) }
+    });
+    let port = |enabled: &str, key: &str| {
+        if settings.boolean(enabled) { settings.int(key) as u16 } else { 0 }
+    };
     ipc::Config {
-        socket: settings.boolean("ipc-socket"),
-        tcp_port: settings.int("ipc-tcp-port") as u16,
-        http_port: settings.int("ipc-http-port") as u16,
+        socket,
+        tcp_port: port("ipc-tcp-enabled", "ipc-tcp-port"),
+        http_port: port("ipc-http-enabled", "ipc-http-port"),
         external: settings.boolean("ipc-external-access"),
     }
 }

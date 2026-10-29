@@ -1,15 +1,17 @@
 //! The keybindings editor for the preferences: an action picker and add button, a line that flags conflicts,
 //! a list of every binding with its scope, chord and a remove button, a search box, and import, export and
-//! reset. Activating a row changes its chord.
+//! defaults, reset and undo. Activating a row changes its chord, and Delete removes it.
 
-use std::cell::{OnceCell, RefCell};
+use std::cell::{Cell, OnceCell, RefCell};
 
 use gtk::prelude::*;
 use gtk::subclass::prelude::*;
 use gtk::{gio, glib};
 
-use crate::keybindings::{self, actions::value_info, actions::ActionInfo, actions::ACTIONS, Binding, BindingTable};
+use crate::keybindings::{self, actions::value_info, actions::ActionInfo, actions::Scope, actions::ACTIONS, Binding, BindingTable};
 use super::binding_dialog;
+use super::key_handler::chord_from_event;
+use super::keybind_label::KeybindLabel;
 
 mod imp {
     use super::*;
@@ -17,10 +19,25 @@ mod imp {
     #[derive(Default)]
     pub struct KeybindingList {
         pub(super) list: OnceCell<gtk::ListBox>,
-        pub(super) search: OnceCell<gtk::SearchEntry>,
+        pub(super) search: OnceCell<gtk::Entry>,
+        /// Shares one width among the binding slots of every row.
+        pub(super) binding_sizes: OnceCell<gtk::SizeGroup>,
+        pub(super) search_clear: OnceCell<gtk::Button>,
+        /// The box in the search field that holds the keybind the list is filtered to, as keycaps.
+        pub(super) search_keybind: OnceCell<gtk::Box>,
         pub(super) conflicts: OnceCell<gtk::Label>,
         pub(super) actions: OnceCell<gtk::DropDown>,
+        pub(super) reset: OnceCell<gtk::Button>,
         pub(super) undo: OnceCell<gtk::Button>,
+        /// The bindings from before each change, the last one last, each with the binding that was selected then:
+        /// what undo puts back, and selects again.
+        pub(super) history: RefCell<Vec<(BindingTable, Option<(&'static str, String)>)>>,
+        pub(super) keybind_button: OnceCell<gtk::Button>,
+        pub(super) context_filter: OnceCell<gtk::DropDown>,
+        /// Whether the next key combination becomes the keybind the list is filtered to.
+        pub(super) capturing: Cell<bool>,
+        /// The keybind the list is filtered to, if any.
+        pub(super) keybind: RefCell<Option<String>>,
         /// The bindings as they were when the editor opened, which undo restores.
         pub(super) snapshot: RefCell<Option<BindingTable>>,
         /// The action and binding of each row, in the list's order.
@@ -57,6 +74,38 @@ mod imp {
             actions.set_factory(Some(&action_factory(false)));
             actions.set_list_factory(Some(&action_factory(true)));
             actions.set_hexpand(true);
+            // The popup opens on the current action, selected and scrolled into view, with the list focused rather
+            // than the search. GTK clears the search as the popup opens, so this waits until that is done.
+            if let Some(popup) = find_descendant::<gtk::Popover>(actions.upcast_ref()) {
+                popup.connect_show({
+                    let actions = actions.clone();
+                    move |_| {
+                        let actions = actions.clone();
+                        glib::idle_add_local_once(move || select_current(&actions));
+                    }
+                });
+            }
+            // Typing while the list has focus starts the search: the key goes into the search box, which takes focus.
+            if let (Some(list), Some(search)) = (
+                find_descendant::<gtk::ListView>(actions.upcast_ref()),
+                find_descendant::<gtk::SearchEntry>(actions.upcast_ref()),
+            ) {
+                let keys = gtk::EventControllerKey::new();
+                keys.connect_key_pressed(move |_, key, _, state| {
+                    let modifiers = gtk::gdk::ModifierType::CONTROL_MASK | gtk::gdk::ModifierType::ALT_MASK | gtk::gdk::ModifierType::SUPER_MASK;
+                    let Some(ch) = key.to_unicode().filter(|ch| !ch.is_control()) else { return glib::Propagation::Proceed };
+                    if state.intersects(modifiers) {
+                        return glib::Propagation::Proceed;
+                    }
+                    search.grab_focus();
+                    let mut position = search.text().chars().count() as i32;
+                    search.insert_text(&ch.to_string(), &mut position);
+                    // Inserting leaves the caret where it was, so the next key would go in before this one.
+                    search.set_position(-1);
+                    glib::Propagation::Stop
+                });
+                list.add_controller(keys);
+            }
             let add = icon_button("list-add-symbolic", "Add binding");
             let toolbar = gtk::Box::new(gtk::Orientation::Horizontal, 6);
             toolbar.append(&actions);
@@ -72,6 +121,8 @@ mod imp {
 
             let list = gtk::ListBox::new();
             list.set_selection_mode(gtk::SelectionMode::Single);
+            // A click only selects a row; double-clicking or pressing Enter opens its editor.
+            list.set_activate_on_single_click(false);
             let scroller = gtk::ScrolledWindow::new();
             scroller.set_child(Some(&list));
             scroller.set_vexpand(true);
@@ -81,19 +132,47 @@ mod imp {
             scroller.set_overlay_scrolling(false);
             obj.append(&scroller);
 
-            let search = gtk::SearchEntry::new();
+            // The search field: the text, then the keybind it is filtered to as keycaps, and its buttons inside.
+            let search = gtk::Entry::new();
+            search.set_has_frame(false);
             search.set_hexpand(true);
             search.set_placeholder_text(Some("Search actions or shortcuts"));
-            obj.append(&search);
+            // The keybind's keys take the entry's place while the list is filtered to one.
+            let keybind_chips = gtk::Box::new(gtk::Orientation::Horizontal, 3);
+            keybind_chips.set_hexpand(true);
+            keybind_chips.set_halign(gtk::Align::Start);
+            keybind_chips.set_visible(false);
+            let clear = icon_button("edit-clear-symbolic", "Clear the search and keybind");
+            clear.add_css_class("flat");
+            clear.set_visible(false);
+            let keybind = icon_button("input-keyboard-symbolic", "Search by keybind");
+            keybind.add_css_class("flat");
+            let field = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+            field.add_css_class("search-field");
+            field.set_hexpand(true);
+            field.append(&gtk::Image::from_icon_name("system-search-symbolic"));
+            field.append(&search);
+            field.append(&keybind_chips);
+            field.append(&clear);
+            field.append(&keybind);
+            // The contexts to filter by: every context, or one of them.
+            let mut titles = vec!["All contexts"];
+            titles.extend(Scope::ALL.iter().map(|scope| scope.title()));
+            let contexts = gtk::DropDown::from_strings(&titles);
+            let search_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+            search_row.append(&field);
+            search_row.append(&contexts);
+            obj.append(&search_row);
 
             let import = labelled_button("document-import-symbolic", "Import", "Import keybindings from a file");
             let export = labelled_button("document-export-symbolic", "Export", "Export keybindings to a file");
-            let reset = labelled_button("document-revert-symbolic", "Reset", "Reset every binding to its default");
-            let undo = labelled_button("edit-undo-symbolic", "Undo", "Restore the bindings from when preferences opened");
+            let defaults = labelled_button("document-revert-symbolic", "Defaults", "Put every binding back to its default");
+            let reset = labelled_button("view-refresh-symbolic", "Reset", "Restore the bindings from when preferences opened");
+            let undo = labelled_button("edit-undo-symbolic", "Undo", "Undo the last change");
             undo.set_hexpand(true);
             undo.set_halign(gtk::Align::End);
             let footer = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-            for button in [&import, &export, &reset, &undo] {
+            for button in [&import, &export, &defaults, &reset, &undo] {
                 footer.append(button);
             }
             obj.append(&footer);
@@ -103,31 +182,81 @@ mod imp {
                 let weak = weak.clone();
                 move |_| with_list(&weak, |list| list.add_binding())
             });
+            // Delete removes the selected binding.
+            let delete = gtk::EventControllerKey::new();
+            delete.connect_key_pressed({
+                let weak = weak.clone();
+                move |_, key, _, state| {
+                    if chord_from_event(key, state).is_none_or(|chord| chord.format() != "delete") {
+                        return glib::Propagation::Proceed;
+                    }
+                    with_list(&weak, |list| list.delete_selected());
+                    glib::Propagation::Stop
+                }
+            });
+            list.add_controller(delete);
             list.connect_row_activated({
                 let weak = weak.clone();
                 move |_, row| with_list(&weak, |list| list.change_row(row.index()))
             });
-            search.connect_search_changed({
-                let list = list.clone();
-                move |_| list.invalidate_filter()
+            search.connect_changed({
+                let weak = weak.clone();
+                move |_| with_list(&weak, |list| list.update_search())
             });
+            // A row shows when its binding has the keybind and context filtered to, if any, and its action or chord
+            // matches the search text.
             list.set_filter_func({
                 let weak = weak.clone();
                 let search = search.clone();
                 move |row| {
+                    let Some(obj) = weak.upgrade() else { return true };
+                    let imp = obj.imp();
+                    let keybind = imp.keybind.borrow().clone();
+                    let context = imp.context_filter.get().and_then(selected_context);
                     let needle = search.text().to_lowercase();
-                    if needle.is_empty() {
+                    if keybind.is_none() && context.is_none() && needle.is_empty() {
                         return true;
                     }
-                    let Some(obj) = weak.upgrade() else { return true };
-                    let bindings = obj.imp().bindings.borrow();
-                    bindings.get(row.index() as usize).is_some_and(|(action, binding)| {
-                        action.label.to_lowercase().contains(&needle)
+                    let bindings = imp.bindings.borrow();
+                    let Some((action, binding)) = bindings.get(row.index() as usize) else { return false };
+                    keybind.as_ref().is_none_or(|chord| binding.chord == *chord)
+                        && context.is_none_or(|scope| binding.context == scope)
+                        && (needle.is_empty()
+                            || action.label.to_lowercase().contains(&needle)
                             || action.name.contains(&needle)
-                            || binding.chord.contains(&needle)
-                    })
+                            || binding.chord.contains(&needle))
                 }
             });
+            contexts.connect_selected_notify({
+                let list = list.clone();
+                move |_| list.invalidate_filter()
+            });
+            keybind.connect_clicked({
+                let weak = weak.clone();
+                move |_| with_list(&weak, |list| list.start_keybind_capture())
+            });
+            clear.connect_clicked({
+                let weak = weak.clone();
+                move |_| with_list(&weak, |list| list.clear_search())
+            });
+            // While capturing, the next key combination is the keybind to find. Escape clears the filter instead.
+            let keys = gtk::EventControllerKey::new();
+            keys.set_propagation_phase(gtk::PropagationPhase::Capture);
+            keys.connect_key_pressed({
+                let weak = weak.clone();
+                move |_, key, _, state| {
+                    let Some(editor) = weak.upgrade() else { return glib::Propagation::Proceed };
+                    if !editor.imp().capturing.get() {
+                        return glib::Propagation::Proceed;
+                    }
+                    // A lone modifier is not a combination yet, so it is ignored.
+                    if let Some(chord) = chord_from_event(key, state) {
+                        editor.capture_keybind((chord.key != "escape").then(|| chord.format()));
+                    }
+                    glib::Propagation::Stop
+                }
+            });
+            obj.add_controller(keys);
             import.connect_clicked({
                 let weak = weak.clone();
                 move |_| with_list(&weak, |list| list.import())
@@ -136,17 +265,30 @@ mod imp {
                 let weak = weak.clone();
                 move |_| with_list(&weak, |list| list.export())
             });
+            defaults.connect_clicked({
+                let weak = weak.clone();
+                move |_| with_list(&weak, |list| list.confirm_defaults())
+            });
             reset.connect_clicked({
                 let weak = weak.clone();
-                move |_| with_list(&weak, |list| list.confirm_reset())
+                move |_| with_list(&weak, |list| list.reset())
             });
-            undo.connect_clicked(move |_| with_list(&weak, |list| list.undo()));
+            undo.connect_clicked({
+                let weak = weak.clone();
+                move |_| with_list(&weak, |list| list.undo())
+            });
 
             let _ = self.list.set(list);
             let _ = self.search.set(search);
             let _ = self.conflicts.set(conflicts);
             let _ = self.actions.set(actions);
+            let _ = self.reset.set(reset);
             let _ = self.undo.set(undo);
+            let _ = self.keybind_button.set(keybind);
+            let _ = self.search_clear.set(clear);
+            let _ = self.binding_sizes.set(gtk::SizeGroup::new(gtk::SizeGroupMode::Horizontal));
+            let _ = self.search_keybind.set(keybind_chips);
+            let _ = self.context_filter.set(contexts);
         }
     }
 
@@ -243,13 +385,44 @@ mod imp {
             }
             let scope = grid.child_at(2, 0);
             if let Some(scope_label) = scope.as_ref().and_then(|scope| scope.first_child()).and_downcast::<gtk::Label>() {
-                scope_label.set_label(action.scope.title());
+                let titles: Vec<&str> = action.contexts.iter().map(|context| context.title()).collect();
+                scope_label.set_label(&titles.join(", "));
             }
             if let Some(scope_icon) = scope.as_ref().and_then(|scope| scope.last_child()).and_downcast::<gtk::Image>() {
-                scope_icon.set_icon_name(Some(action.scope.icon()));
+                scope_icon.set_icon_name(Some(action.default_context().icon()));
             }
         });
         factory
+    }
+
+    /// Selects the current action in the picker's popup, scrolls it into view and focuses the list. The list
+    /// has no size until the popup is laid out, so the scroll waits for the first frame that gives it one.
+    fn select_current(actions: &gtk::DropDown) {
+        let Some(list) = find_descendant::<gtk::ListView>(actions.upcast_ref()) else { return };
+        list.grab_focus();
+        let actions = actions.clone();
+        list.add_tick_callback(move |list, _| {
+            if list.height() == 0 {
+                return glib::ControlFlow::Continue;
+            }
+            list.scroll_to(actions.selected(), gtk::ListScrollFlags::SELECT, None);
+            glib::ControlFlow::Break
+        });
+    }
+
+    /// The first widget of type `T` below `widget`, searched depth first.
+    fn find_descendant<T: IsA<gtk::Widget>>(widget: &gtk::Widget) -> Option<T> {
+        let mut child = widget.first_child();
+        while let Some(current) = child {
+            if let Some(found) = current.downcast_ref::<T>() {
+                return Some(found.clone());
+            }
+            if let Some(found) = find_descendant::<T>(&current) {
+                return Some(found);
+            }
+            child = current.next_sibling();
+        }
+        None
     }
 
     /// A button with an icon and a label, and a tooltip that says more.
@@ -262,6 +435,14 @@ mod imp {
         let button = gtk::Button::from_icon_name(icon);
         button.set_tooltip_text(Some(tooltip));
         button
+    }
+
+    /// The context the dropdown picks, or `None` for every context.
+    fn selected_context(contexts: &gtk::DropDown) -> Option<Scope> {
+        match contexts.selected() {
+            0 => None,
+            index => Scope::ALL.get(index as usize - 1).copied(),
+        }
     }
 
     /// Runs `f` on the editor if it still exists.
@@ -297,7 +478,8 @@ impl KeybindingList {
         let mut bindings = Vec::new();
         for action in ACTIONS {
             for binding in keybindings::with_table(|table| table.bindings(action.name).to_vec()) {
-                list.append(&self.binding_row(action, &binding));
+                let clashes = keybindings::with_table(|table| table.conflicts(action.name, &binding.chord, binding.context));
+                list.append(&self.binding_row(action, &binding, &clashes));
                 bindings.push((action, binding));
             }
         }
@@ -305,8 +487,83 @@ impl KeybindingList {
         list.invalidate_filter();
         self.update_conflicts();
         let changed = imp.snapshot.borrow().as_ref().is_some_and(|snapshot| keybindings::with_table(|table| *table != *snapshot));
+        if let Some(reset) = imp.reset.get() {
+            reset.set_sensitive(changed);
+        }
         if let Some(undo) = imp.undo.get() {
-            undo.set_sensitive(changed);
+            undo.set_sensitive(!imp.history.borrow().is_empty());
+        }
+    }
+
+    /// Waits for the next key combination, which becomes the keybind the list is filtered to.
+    fn start_keybind_capture(&self) {
+        self.imp().capturing.set(true);
+        self.update_search();
+    }
+
+    /// Ends the capture: `chord` is the keybind to filter to, or `None` to clear it.
+    fn capture_keybind(&self, chord: Option<String>) {
+        let imp = self.imp();
+        imp.capturing.set(false);
+        imp.keybind.replace(chord);
+        self.update_search();
+    }
+
+    /// Empties the search text and the keybind, so the list shows every binding again.
+    fn clear_search(&self) {
+        let imp = self.imp();
+        if let Some(search) = imp.search.get() {
+            search.set_text("");
+        }
+        imp.keybind.replace(None);
+        self.update_search();
+    }
+
+    /// Shows the search field's state, then filters the list again: the keybind it is filtered to as keycaps, its
+    /// clear button while it has text or a keybind, its keybind button lit while capturing, and its placeholder.
+    fn update_search(&self) {
+        let imp = self.imp();
+        let keybind = imp.keybind.borrow().clone();
+        let capturing = imp.capturing.get();
+        if let Some(chips) = imp.search_keybind.get() {
+            while let Some(child) = chips.first_child() {
+                chips.remove(&child);
+            }
+            if let Some(chord) = &keybind {
+                chips.append(&KeybindLabel::new(chord));
+            }
+        }
+        let has_text = imp.search.get().is_some_and(|search| !search.text().is_empty());
+        let clearable = has_text || keybind.is_some();
+        // The clear button takes the keybind button's place while there is something to clear.
+        if let Some(clear) = imp.search_clear.get() {
+            clear.set_visible(clearable);
+        }
+        if let Some(button) = imp.keybind_button.get() {
+            button.set_visible(!clearable);
+        }
+        // The keybind's keys replace the entry while the list is filtered to one.
+        if let Some(search) = imp.search.get() {
+            search.set_visible(keybind.is_none());
+        }
+        if let Some(chips) = imp.search_keybind.get() {
+            chips.set_visible(keybind.is_some());
+        }
+        if let Some(search) = imp.search.get() {
+            let placeholder = if capturing { "Press a key combination\u{2026}" } else { "Search actions or shortcuts" };
+            search.set_placeholder_text(Some(placeholder));
+        }
+        if let Some(button) = imp.keybind_button.get() {
+            if capturing {
+                button.add_css_class("suggested-action");
+                button.set_tooltip_text(Some("Press the keys to find their actions, or Escape to clear the filter"));
+            } else {
+                button.remove_css_class("suggested-action");
+                button.set_tooltip_text(Some("Search by keybind"));
+            }
+        }
+        if let Some(list) = imp.list.get() {
+            list.invalidate_filter();
         }
     }
 
@@ -315,10 +572,10 @@ impl KeybindingList {
         let imp = self.imp();
         let conflict = imp.bindings.borrow().iter().find_map(|(action, binding)| {
             let chord = &binding.chord;
-            let others = keybindings::with_table(|table| table.conflicts(action.name, chord));
+            let others = keybindings::with_table(|table| table.conflicts(action.name, chord, binding.context));
             (!others.is_empty()).then(|| {
-                let names: Vec<&str> = std::iter::once(action.name).chain(others.iter().map(|other| other.name)).collect();
-                format!("Conflicts - {chord} in {}: {}", action.scope.title().to_lowercase(), names.join(", "))
+                let names: Vec<&str> = std::iter::once(action.name).chain(others.iter().map(|(other, _)| other.name)).collect();
+                format!("Conflicts - {chord} in {}: {}", binding.context.title().to_lowercase(), names.join(", "))
             })
         });
         let label = imp.conflicts.get().expect("conflicts is built in constructed");
@@ -339,10 +596,11 @@ impl KeybindingList {
         let Some(picker) = self.imp().actions.get() else { return };
         let Some(action) = ACTIONS.get(picker.selected() as usize) else { return };
         let weak = self.downgrade();
-        binding_dialog::show(self, action, None, move |chord, value| {
-            keybindings::with_table(|table| table.add_with_value(action.name, &chord, value));
+        binding_dialog::show(self, action, None, move |chord, value, context| {
             if let Some(list) = weak.upgrade() {
-                list.commit();
+                list.edit(|table| {
+                    table.add(action.name, &chord, context, value);
+                });
             }
         }, None);
     }
@@ -353,13 +611,14 @@ impl KeybindingList {
         let weak = self.downgrade();
         let previous = binding.chord.clone();
         let previous_for_delete = binding.chord.clone();
-        binding_dialog::show(self, action, Some((binding.chord, binding.value)), move |new_chord, value| {
-            keybindings::with_table(|table| {
-                table.remove(action.name, &previous);
-                table.add_with_value(action.name, &new_chord, value);
-            });
+        binding_dialog::show(self, action, Some((binding.chord, binding.value, binding.context)), move |new_chord, value, context| {
             if let Some(list) = weak.upgrade() {
-                list.commit();
+                list.edit(|table| {
+                    table.remove(action.name, &previous);
+                    table.add(action.name, &new_chord, context, value);
+                });
+                // The rows are rebuilt by the change, so the edited binding is selected again.
+                list.select_binding(action.name, &new_chord);
             }
         }, Some(Box::new({
             let weak = self.downgrade();
@@ -373,41 +632,101 @@ impl KeybindingList {
     }
 
     fn remove_binding(&self, action: &'static ActionInfo, chord: &str) {
-        keybindings::with_table(|table| table.remove(action.name, chord));
-        self.commit();
+        self.edit(|table| table.remove(action.name, chord));
+    }
+
+    /// Deletes the selected binding, then selects the binding after it, or the one before it at the end of the list.
+    fn delete_selected(&self) {
+        let Some(list) = self.imp().list.get() else { return };
+        let Some(row) = list.selected_row() else { return };
+        let index = row.index();
+        let Some((action, binding)) = self.imp().bindings.borrow().get(index as usize).cloned() else { return };
+        self.edit(|table| table.remove(action.name, &binding.chord));
+        self.select_near(index);
+    }
+
+    /// Selects the first visible row from `index` on, or else the last visible row before it.
+    fn select_near(&self, index: i32) {
+        let Some(list) = self.imp().list.get() else { return };
+        let count = self.imp().bindings.borrow().len() as i32;
+        let rows: Vec<gtk::ListBoxRow> = (0..count).filter_map(|i| list.row_at_index(i)).collect();
+        let index = index as usize;
+        let after = rows.iter().skip(index).find(|row| row.is_child_visible());
+        let before = rows.iter().take(index).rev().find(|row| row.is_child_visible());
+        if let Some(row) = after.or(before) {
+            list.select_row(Some(row));
+        }
     }
 
     /// Asks before putting every binding back to its default.
-    fn confirm_reset(&self) {
+    fn confirm_defaults(&self) {
         use adw::prelude::AlertDialogExt;
         let dialog = adw::AlertDialog::new(
-            Some("Reset Keybindings?"),
-            Some("Every binding will be put back to its default. Undo can still restore the bindings from when preferences opened."),
+            Some("Restore Defaults?"),
+            Some("Every binding will be put back to its default. Undo can still bring back the bindings from before."),
         );
         dialog.add_response("cancel", "Cancel");
-        dialog.add_response("reset", "Reset");
-        dialog.set_response_appearance("reset", adw::ResponseAppearance::Destructive);
+        dialog.add_response("defaults", "Restore");
+        dialog.set_response_appearance("defaults", adw::ResponseAppearance::Destructive);
         dialog.set_default_response(Some("cancel"));
         dialog.set_close_response("cancel");
         let weak = self.downgrade();
-        dialog.connect_response(Some("reset"), move |_, _| {
+        dialog.connect_response(Some("defaults"), move |_, _| {
             if let Some(list) = weak.upgrade() {
-                list.reset();
+                list.restore_defaults();
             }
         });
         adw::prelude::AdwDialogExt::present(&dialog, Some(self));
     }
 
+    /// Puts every binding back to its default.
+    fn restore_defaults(&self) {
+        self.edit(|table| table.reset_all());
+    }
+
     /// Puts the bindings back as they were when the editor opened.
-    fn undo(&self) {
+    fn reset(&self) {
         let Some(snapshot) = self.imp().snapshot.borrow().clone() else { return };
-        keybindings::with_table(|table| *table = snapshot);
+        self.edit(|table| *table = snapshot);
+    }
+
+    /// Puts back the bindings from before the last change, and selects the binding that was selected then.
+    fn undo(&self) {
+        let Some((previous, selected)) = self.imp().history.borrow_mut().pop() else { return };
+        keybindings::with_table(|table| *table = previous);
+        self.commit();
+        if let Some((name, chord)) = selected {
+            self.select_binding(name, &chord);
+        }
+    }
+
+    /// Makes a change to the bindings. The bindings from before it are kept, with the selected binding, so undo can
+    /// put them back, then they are saved and shown. A change that leaves the bindings as they were is not kept.
+    fn edit(&self, change: impl FnOnce(&mut BindingTable)) {
+        let before = keybindings::with_table(|table| table.clone());
+        let selected = self.selected_binding();
+        keybindings::with_table(change);
+        if keybindings::with_table(|table| *table != before) {
+            self.imp().history.borrow_mut().push((before, selected));
+        }
         self.commit();
     }
 
-    fn reset(&self) {
-        keybindings::with_table(|table| table.reset_all());
-        self.commit();
+    /// The action's name and the chord of the selected row's binding, if a row is selected.
+    fn selected_binding(&self) -> Option<(&'static str, String)> {
+        let row = self.imp().list.get()?.selected_row()?;
+        let bindings = self.imp().bindings.borrow();
+        let (action, binding) = bindings.get(row.index() as usize)?;
+        Some((action.name, binding.chord.clone()))
+    }
+
+    /// Selects the row of the binding of the action `name` with `chord`, if there is one.
+    fn select_binding(&self, name: &str, chord: &str) {
+        let Some(list) = self.imp().list.get() else { return };
+        let index = self.imp().bindings.borrow().iter().position(|(action, binding)| action.name == name && binding.chord == chord);
+        if let Some(row) = index.and_then(|index| list.row_at_index(index as i32)) {
+            list.select_row(Some(&row));
+        }
     }
 
     /// Loads a bindings file over the current set. Problems are printed, and the rest still apply.
@@ -419,14 +738,15 @@ impl KeybindingList {
             let Some(path) = result.ok().and_then(|file| file.path()) else { return };
             match std::fs::read_to_string(&path) {
                 Ok(text) => {
-                    for problem in keybindings::with_table(|table| table.apply_yaml(&text)) {
-                        eprintln!("rsimgv: keybindings: {problem}");
+                    if let Some(list) = weak.upgrade() {
+                        list.edit(|table| {
+                            for problem in table.apply_yaml(&text) {
+                                eprintln!("rsimgv: keybindings: {problem}");
+                            }
+                        });
                     }
                 }
                 Err(err) => eprintln!("rsimgv: could not read {}: {err}", path.display()),
-            }
-            if let Some(list) = weak.upgrade() {
-                list.commit();
             }
         });
     }
@@ -444,9 +764,11 @@ impl KeybindingList {
         });
     }
 
-    /// A row: the action's icon and label, the value it passes if it takes one, its chord in monospace, and its
-    /// scope's icon, which removes it.
-    fn binding_row(&self, action: &'static ActionInfo, binding: &Binding) -> gtk::ListBoxRow {
+    /// A row: the action's icon and label, the value it passes if it takes one, then the context it is active in and
+    /// the binding's keys.
+    fn binding_row(&self, action: &'static ActionInfo, binding: &Binding, clashes: &[(&'static ActionInfo, Scope)]) -> gtk::ListBoxRow {
+        // The tooltip outlives this call, so it keeps its own copy.
+        let clashes = clashes.to_vec();
         let chord = binding.chord.as_str();
         let content = gtk::Box::new(gtk::Orientation::Horizontal, 12);
         content.set_margin_top(2);
@@ -456,7 +778,11 @@ impl KeybindingList {
         // The value the binding passes, for an action that takes one, as its unit shows it.
         let value = value_info(action.name).map(|info| (info, info.format(binding.value.unwrap_or(info.default))));
 
-        content.append(&gtk::Image::from_icon_name(action.icon));
+        let icon = gtk::Image::from_icon_name(action.icon);
+        if !clashes.is_empty() {
+            icon.add_css_class("conflict");
+        }
+        content.append(&icon);
         let label = gtk::Label::new(None);
         let title = glib::markup_escape_text(action.label);
         match &value {
@@ -466,42 +792,48 @@ impl KeybindingList {
         }
         label.set_xalign(0.0);
         label.set_hexpand(true);
+        if !clashes.is_empty() {
+            label.add_css_class("conflict");
+        }
         content.append(&label);
 
-        let key = gtk::Label::new(Some(chord));
-        key.add_css_class("monospace");
-        content.append(&key);
+        // The context has a fixed width, with its icon before its name. The binding is right-aligned in a slot that
+        // shares its width with every other row's, so the column is as wide as its widest binding.
+        let context = binding.context;
+        let context_cell = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        context_cell.add_css_class("binding-context");
+        context_cell.set_width_request(130);
+        // The cell keeps its width, and its name fills it, pushed to the right.
+        context_cell.set_hexpand(false);
+        let context_label = gtk::Label::new(Some(context.title()));
+        context_label.add_css_class("dim-label");
+        context_label.set_xalign(1.0);
+        context_label.set_hexpand(true);
+        context_cell.append(&context_label);
+        content.append(&context_cell);
 
-        // The scope's icon, which turns into a red remove button while the pointer is over it.
-        let remove = gtk::Button::from_icon_name(action.scope.icon());
-        remove.set_tooltip_text(Some("Remove binding"));
-        remove.add_css_class("flat");
-        remove.add_css_class("binding-remove");
-        remove.set_valign(gtk::Align::Center);
-        let hover = gtk::EventControllerMotion::new();
-        hover.connect_enter({
-            let remove = remove.clone();
-            move |_, _, _| {
-                remove.set_icon_name("user-trash-symbolic");
-                remove.add_css_class("error");
-            }
-        });
-        hover.connect_leave({
-            let remove = remove.clone();
-            move |_| {
-                remove.set_icon_name(action.scope.icon());
-                remove.remove_css_class("error");
-            }
-        });
-        remove.add_controller(hover);
-        let weak = self.downgrade();
-        let removed = chord.to_owned();
-        remove.connect_clicked(move |_| {
-            if let Some(list) = weak.upgrade() {
-                list.remove_binding(action, &removed);
-            }
-        });
-        content.append(&remove);
+        let binding_keys = KeybindLabel::new(chord);
+        binding_keys.set_halign(gtk::Align::End);
+        // A box packs its children from the start, so an expanding spacer before the keys pushes them to the end.
+        let binding_slot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        // The slot must not expand itself: a child that expands would otherwise make it take a share of the row's
+        // spare width, which the name should have to itself.
+        binding_slot.set_hexpand(false);
+        let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        spacer.set_hexpand(true);
+        binding_slot.append(&spacer);
+        // A conflicting binding has a warning sign to the left of its keys, and its keys are yellow.
+        if !clashes.is_empty() {
+            let warning = gtk::Label::new(Some("\u{26a0}"));
+            warning.add_css_class("conflict");
+            binding_slot.append(&warning);
+            binding_keys.add_css_class("conflict");
+        }
+        binding_slot.append(&binding_keys);
+        if let Some(sizes) = self.imp().binding_sizes.get() {
+            sizes.add_widget(&binding_slot);
+        }
+        content.append(&binding_slot);
 
         let row = gtk::ListBoxRow::new();
         row.set_child(Some(&content));
@@ -516,11 +848,11 @@ impl KeybindingList {
                 glib::markup_escape_text(action.name),
             ));
             let scope_title = gtk::Label::new(None);
-            scope_title.set_markup("<b>Scope:</b>");
+            scope_title.set_markup("<b>Active in:</b>");
             let scope = gtk::Box::new(gtk::Orientation::Horizontal, 4);
             scope.append(&scope_title);
-            scope.append(&gtk::Image::from_icon_name(action.scope.icon()));
-            scope.append(&gtk::Label::new(Some(action.scope.title())));
+            scope.append(&gtk::Image::from_icon_name(context.icon()));
+            scope.append(&gtk::Label::new(Some(context.title())));
             let description = gtk::Label::new(Some(action.description));
             description.set_xalign(0.0);
             description.set_wrap(true);
@@ -536,6 +868,24 @@ impl KeybindingList {
             }
             content.append(&description);
             content.append(&scope);
+            // The bindings this one clashes with, each with its context.
+            if !clashes.is_empty() {
+                let heading = gtk::Label::new(None);
+                heading.set_xalign(0.0);
+                heading.set_markup("<b>Conflicts</b>");
+                content.append(&heading);
+                for (other, other_context) in &clashes {
+                    let line = gtk::Label::new(None);
+                    line.set_xalign(0.0);
+                    line.set_markup(&format!(
+                        "<span foreground=\"#f6d32d\">\u{26a0}</span> {} <span alpha=\"55%\">({}, {})</span>",
+                        glib::markup_escape_text(other.label),
+                        glib::markup_escape_text(other.name),
+                        other_context.title(),
+                    ));
+                    content.append(&line);
+                }
+            }
             tooltip.set_custom(Some(&content));
             true
         });
