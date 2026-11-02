@@ -36,6 +36,15 @@
 //!                   fps is frames per second, and speed is a multiple of normal. The playback values are null for
 //!                   a picture; duration, fps and speed are null when a video does not report them yet.
 //!
+//!   messages.show  {"text", "level"?, "position"?, "persistent"?, "seconds"?, "dismissible"?} -> {"id"}
+//!                   Shows a message over the window. level is info (the default), success, warning, error or plain,
+//!                   which is bare text. position is top-left, top-center, top-right, bottom-left, bottom-center (the
+//!                   default) or bottom-right. A message goes away by itself after seconds (4 by default), unless
+//!                   persistent is true, when it stays until it is dismissed. dismissible puts a close button on it,
+//!                   which a persistent message has unless it is false.
+//!   messages.update {"id", "text"}           -> {}   changes the text of a message still up
+//!   messages.dismiss {"id"}                  -> {}   takes a message down; with no id, every message
+//!
 //! "tab" in tabs.files and tabs.select is a tab id, or "current" for the selected tab. "index" is a tab's
 //! position, counted from 0 in tab order.
 
@@ -49,7 +58,8 @@ use serde_json::{json, Value};
 use crate::bookmarks;
 use crate::ipc::Error;
 use crate::keybindings::actions::{find, ACTIONS};
-use crate::ui::Window;
+use crate::ui::{Level, Message, Window};
+use crate::ui::message_overlay::Position;
 
 pub fn handle(window: &Window, method: &str, params: &Value) -> Result<Value, Error> {
     match method {
@@ -260,6 +270,50 @@ pub fn handle(window: &Window, method: &str, params: &Value) -> Result<Value, Er
             });
             Ok(json!({"bookmarks": bookmarks}))
         }
+        "messages.show" => {
+            let mut message = if optional_bool(params, "persistent")?.unwrap_or(false) {
+                Message::persistent(text_param(params, "text")?)
+            } else {
+                Message::notification(text_param(params, "text")?)
+            };
+            if let Some(name) = optional_text(params, "level")? {
+                message = message.level(Level::from_name(name).ok_or_else(|| Error::new("invalid_params", format!("no level named {name}")))?);
+            }
+            if let Some(name) = optional_text(params, "position")? {
+                message = message.at(Position::from_name(name).ok_or_else(|| Error::new("invalid_params", format!("no position named {name}")))?);
+            }
+            if let Some(seconds) = params.get("seconds").filter(|seconds| !seconds.is_null()) {
+                let seconds = seconds
+                    .as_f64()
+                    .filter(|seconds| seconds.is_finite() && *seconds > 0.0)
+                    .ok_or_else(|| Error::new("invalid_params", "the parameter seconds must be a number above 0"))?;
+                message = message.lasting(std::time::Duration::from_secs_f64(seconds));
+            }
+            if let Some(dismissible) = optional_bool(params, "dismissible")? {
+                message = message.dismissible(dismissible);
+            }
+            Ok(json!({"id": window.messages().show(message)}))
+        }
+        "messages.update" => {
+            let id = message_id(params)?;
+            if window.messages().update(id, text_param(params, "text")?) {
+                Ok(json!({}))
+            } else {
+                Err(no_message(id))
+            }
+        }
+        "messages.dismiss" => {
+            if params.get("id").is_none_or(Value::is_null) {
+                window.messages().dismiss_all();
+                return Ok(json!({}));
+            }
+            let id = message_id(params)?;
+            if window.messages().dismiss(id) {
+                Ok(json!({}))
+            } else {
+                Err(no_message(id))
+            }
+        }
         "bookmarks.remove" => {
             let path = Path::new(text_param(params, "path")?);
             window.remove_bookmark(path);
@@ -280,6 +334,31 @@ fn text_param<'a>(params: &'a Value, key: &str) -> Result<&'a str, Error> {
         .get(key)
         .and_then(Value::as_str)
         .ok_or_else(|| Error::new("invalid_params", format!("the parameter {key} must be text")))
+}
+
+fn optional_text<'a>(params: &'a Value, key: &str) -> Result<Option<&'a str>, Error> {
+    match params.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(_) => text_param(params, key).map(Some),
+    }
+}
+
+fn optional_bool(params: &Value, key: &str) -> Result<Option<bool>, Error> {
+    match params.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(_) => bool_param(params, key).map(Some),
+    }
+}
+
+fn message_id(params: &Value) -> Result<u64, Error> {
+    params
+        .get("id")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| Error::new("invalid_params", "the parameter id must be a message's id"))
+}
+
+fn no_message(id: u64) -> Error {
+    Error::new("no_such_message", format!("no message with id {id} is up"))
 }
 
 fn bool_param(params: &Value, key: &str) -> Result<bool, Error> {
