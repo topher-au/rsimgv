@@ -1,5 +1,10 @@
 //! An overlay that lists the keybindings in force where the user is: for each context that applies, each action with
-//! its keys. It is built when it is shown, and again if the context changes while it is up.
+//! its keys. It sits in a corner of the window, clicks go through it, and it moves to another corner when the pointer
+//! goes over it, so it never covers what the pointer is at. It is built when it is shown, and again if the context
+//! changes while it is up.
+
+use std::cell::Cell;
+use std::rc::Rc;
 
 use gtk::prelude::*;
 
@@ -7,48 +12,106 @@ use super::keybind_label::KeybindLabel;
 use crate::keybindings::actions::{value_info, ActionInfo, Scope};
 use crate::keybindings::{self, Binding};
 
-/// The most of the window's height the list takes before it scrolls, as a share.
-const MAX_HEIGHT_SHARE: f64 = 0.7;
-/// The width of the list, in pixels.
-const WIDTH: i32 = 560;
+/// The space between the list and the edges of the window, in pixels.
+const MARGIN: f64 = 12.0;
 
-/// The panel over the window.
+/// A corner of the window.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Corner {
+    TopLeft,
+    #[default]
+    TopRight,
+    BottomLeft,
+    BottomRight,
+}
+
+impl Corner {
+    fn alignment(self) -> (gtk::Align, gtk::Align) {
+        match self {
+            Self::TopLeft => (gtk::Align::Start, gtk::Align::Start),
+            Self::TopRight => (gtk::Align::End, gtk::Align::Start),
+            Self::BottomLeft => (gtk::Align::Start, gtk::Align::End),
+            Self::BottomRight => (gtk::Align::End, gtk::Align::End),
+        }
+    }
+
+    /// The corner across the window, then the one above or below, then the opposite one: the order to try them in
+    /// when the list has to move out of the pointer's way.
+    fn others(self) -> [Corner; 3] {
+        match self {
+            Self::TopLeft => [Self::TopRight, Self::BottomLeft, Self::BottomRight],
+            Self::TopRight => [Self::TopLeft, Self::BottomRight, Self::BottomLeft],
+            Self::BottomLeft => [Self::BottomRight, Self::TopLeft, Self::TopRight],
+            Self::BottomRight => [Self::BottomLeft, Self::TopRight, Self::TopLeft],
+        }
+    }
+}
+
+/// Where a list `size` wide and tall sits in `corner` of a window `area` wide and tall: x, y, width and height.
+fn rect_at(corner: Corner, area: (f64, f64), size: (f64, f64)) -> (f64, f64, f64, f64) {
+    let (horizontal, vertical) = corner.alignment();
+    let x = if horizontal == gtk::Align::Start { MARGIN } else { area.0 - size.0 - MARGIN };
+    let y = if vertical == gtk::Align::Start { MARGIN } else { area.1 - size.1 - MARGIN };
+    (x, y, size.0, size.1)
+}
+
+fn contains(rect: (f64, f64, f64, f64), point: (f64, f64)) -> bool {
+    point.0 >= rect.0 && point.0 < rect.0 + rect.2 && point.1 >= rect.1 && point.1 < rect.1 + rect.3
+}
+
+/// The corner the list moves to when the pointer is at `pointer` over it in `corner`: the first of the others that
+/// the pointer is not over. The list stays where it is if the pointer is not over it, or is over it everywhere.
+fn corner_away(corner: Corner, area: (f64, f64), size: (f64, f64), pointer: (f64, f64)) -> Corner {
+    if !contains(rect_at(corner, area, size), pointer) {
+        return corner;
+    }
+    corner.others().into_iter().find(|other| !contains(rect_at(*other, area, size), pointer)).unwrap_or(corner)
+}
+
+/// The list over the window.
 pub struct KeybindsOverlay {
     revealer: gtk::Revealer,
-    title: gtk::Label,
     sections: gtk::Box,
-    scroller: gtk::ScrolledWindow,
 }
 
 impl KeybindsOverlay {
     /// The overlay, over what `overlay` holds, hidden.
     pub fn new(overlay: &gtk::Overlay) -> Self {
-        let title = gtk::Label::new(None);
-        title.add_css_class("title-3");
-        title.set_xalign(0.0);
-        let sections = gtk::Box::new(gtk::Orientation::Vertical, 12);
-        let scroller = gtk::ScrolledWindow::new();
-        scroller.set_child(Some(&sections));
-        scroller.set_propagate_natural_height(true);
-        scroller.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
-        let panel = gtk::Box::new(gtk::Orientation::Vertical, 10);
-        panel.add_css_class("keybinds-overlay");
-        panel.set_size_request(WIDTH, -1);
-        panel.append(&title);
-        panel.append(&scroller);
+        let sections = gtk::Box::new(gtk::Orientation::Horizontal, 24);
+        sections.add_css_class("keybinds-overlay");
 
         let revealer = gtk::Revealer::new();
         revealer.set_transition_type(gtk::RevealerTransitionType::Crossfade);
         revealer.set_transition_duration(150);
-        revealer.set_child(Some(&panel));
-        revealer.set_halign(gtk::Align::Center);
-        revealer.set_valign(gtk::Align::Center);
-        revealer.set_margin_start(24);
-        revealer.set_margin_end(24);
-        revealer.set_margin_top(24);
-        revealer.set_margin_bottom(24);
+        revealer.set_child(Some(&sections));
+        // Clicks go through to what is under the list.
+        revealer.set_can_target(false);
+        revealer.set_margin_start(MARGIN as i32);
+        revealer.set_margin_end(MARGIN as i32);
+        revealer.set_margin_top(MARGIN as i32);
+        revealer.set_margin_bottom(MARGIN as i32);
+        let corner = Rc::new(Cell::new(Corner::default()));
+        place(&revealer, corner.get());
         overlay.add_overlay(&revealer);
-        Self { revealer, title, sections, scroller }
+
+        // The list takes no events, so the pointer is followed on the window under it.
+        let motion = gtk::EventControllerMotion::new();
+        motion.set_propagation_phase(gtk::PropagationPhase::Capture);
+        motion.connect_motion({
+            let (revealer, overlay) = (revealer.clone(), overlay.downgrade());
+            move |_, x, y| {
+                let Some(overlay) = overlay.upgrade().filter(|_| revealer.reveals_child()) else { return };
+                let area = (f64::from(overlay.width()), f64::from(overlay.height()));
+                let size = (f64::from(revealer.width()), f64::from(revealer.height()));
+                let moved = corner_away(corner.get(), area, size, (x, y));
+                if moved != corner.get() {
+                    corner.set(moved);
+                    place(&revealer, moved);
+                }
+            }
+        });
+        overlay.add_controller(motion);
+        Self { revealer, sections }
     }
 
     pub fn is_shown(&self) -> bool {
@@ -59,18 +122,14 @@ impl KeybindsOverlay {
         self.revealer.set_reveal_child(false);
     }
 
-    /// Lists the keybindings in force in `active` and the global context, and shows the list. `height` is the height of
-    /// the window, which the list stays within.
-    pub fn show(&self, active: &[Scope], height: i32) {
+    /// Lists the keybindings in force in `active` and the global context, and shows the list.
+    pub fn show(&self, active: &[Scope]) {
         self.rebuild(active);
-        self.scroller.set_max_content_height(((f64::from(height) * MAX_HEIGHT_SHARE) as i32).max(160));
         self.revealer.set_reveal_child(true);
     }
 
     /// Makes the list the keybindings in force in `active`, for a context that changed while it is up.
     pub fn rebuild(&self, active: &[Scope]) {
-        let title = active.iter().map(|scope| scope.title()).collect::<Vec<_>>().join(", ");
-        self.title.set_label(&format!("Keybindings: {title}"));
         while let Some(child) = self.sections.first_child() {
             self.sections.remove(&child);
         }
@@ -86,10 +145,9 @@ impl KeybindsOverlay {
         scopes.sort_by_key(|scope| std::cmp::Reverse(scope.depth()));
         for scope in scopes {
             let in_scope: Vec<&(&ActionInfo, Binding)> = rows.iter().filter(|(_, binding)| binding.context == scope).collect();
-            if in_scope.is_empty() {
-                continue;
+            if !in_scope.is_empty() {
+                self.sections.append(&section(scope, &in_scope));
             }
-            self.sections.append(&section(scope, &in_scope));
         }
         if self.sections.first_child().is_none() {
             let none = gtk::Label::new(Some("Nothing is bound here."));
@@ -99,9 +157,17 @@ impl KeybindsOverlay {
     }
 }
 
+/// Puts the list in `corner`.
+fn place(revealer: &gtk::Revealer, corner: Corner) {
+    let (horizontal, vertical) = corner.alignment();
+    revealer.set_halign(horizontal);
+    revealer.set_valign(vertical);
+}
+
 /// One context's actions, each with the keys bound to it there.
 fn section(scope: Scope, rows: &[&(&'static ActionInfo, Binding)]) -> gtk::Box {
     let section = gtk::Box::new(gtk::Orientation::Vertical, 4);
+    section.set_valign(gtk::Align::Start);
     let heading = gtk::Label::new(Some(scope.title()));
     heading.add_css_class("heading");
     heading.set_xalign(0.0);
@@ -146,4 +212,40 @@ fn row_label(action: &ActionInfo, binding: &Binding) -> String {
         return format!("{} ({})", action.label, notification.message);
     }
     action.label.to_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const AREA: (f64, f64) = (1000.0, 800.0);
+    const SIZE: (f64, f64) = (300.0, 200.0);
+
+    #[test]
+    fn the_list_sits_in_its_corner() {
+        assert_eq!(rect_at(Corner::TopLeft, AREA, SIZE), (12.0, 12.0, 300.0, 200.0));
+        assert_eq!(rect_at(Corner::TopRight, AREA, SIZE), (688.0, 12.0, 300.0, 200.0));
+        assert_eq!(rect_at(Corner::BottomLeft, AREA, SIZE), (12.0, 588.0, 300.0, 200.0));
+        assert_eq!(rect_at(Corner::BottomRight, AREA, SIZE), (688.0, 588.0, 300.0, 200.0));
+    }
+
+    #[test]
+    fn the_list_stays_while_the_pointer_is_elsewhere() {
+        assert_eq!(corner_away(Corner::TopRight, AREA, SIZE, (100.0, 400.0)), Corner::TopRight);
+    }
+
+    #[test]
+    fn the_list_moves_across_when_the_pointer_goes_over_it() {
+        assert_eq!(corner_away(Corner::TopRight, AREA, SIZE, (800.0, 50.0)), Corner::TopLeft);
+        assert_eq!(corner_away(Corner::BottomLeft, AREA, SIZE, (50.0, 700.0)), Corner::BottomRight);
+    }
+
+    #[test]
+    fn in_a_narrow_window_it_goes_where_the_pointer_is_not() {
+        // Across the top is no better here, as the two corners overlap at the pointer.
+        let narrow = (500.0, 800.0);
+        assert_eq!(corner_away(Corner::TopRight, narrow, SIZE, (250.0, 50.0)), Corner::BottomRight);
+        // And in a window the list fills, there is nowhere to go.
+        assert_eq!(corner_away(Corner::TopRight, (300.0, 200.0), SIZE, (100.0, 100.0)), Corner::TopRight);
+    }
 }

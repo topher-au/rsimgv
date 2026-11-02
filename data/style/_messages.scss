@@ -39,11 +39,10 @@
   text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9);
 }
 
-// The keybindings list: a dark, translucent panel like a message card, with the keys in their usual look.
+// The keybindings list: small text over a half-transparent window background, with the keys in their usual look.
 .keybinds-overlay {
-  background-color: rgba(30, 30, 30, 0.92);
-  color: white;
-  border-radius: 12px;
-  padding: 14px 18px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
+  margin: 0;
+  padding: 0.5rem;
+  font-size: small;
+  background: color-mix(in srgb, var(--window-bg-color) 50%, transparent);
 }

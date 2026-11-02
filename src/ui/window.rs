@@ -1179,7 +1179,7 @@ impl Window {
         if overlay.is_shown() {
             overlay.hide();
         } else {
-            overlay.show(&self.active_scopes(), self.height());
+            overlay.show(&self.active_scopes());
         }
     }
 
