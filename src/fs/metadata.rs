@@ -11,7 +11,7 @@ use std::rc::Rc;
 use gtk::{gdk_pixbuf, gio, glib};
 use serde_json::{json, Value};
 
-use super::thumbnail::write_atomically;
+use super::thumbnail::{run_program, write_atomically};
 
 /// Files probed at the same time.
 const MAX_JOBS: usize = 3;
@@ -240,7 +240,7 @@ fn read(root: &Path, key: &Key) -> MediaMetadata {
     let file = cache_file(root, path);
     let probe = match cached_probe(&file, mtime, size) {
         Some(probe) => probe,
-        // Without ffprobe nothing is cached, so the next run asks again.
+        // Without ffprobe, or if it stalls, nothing is cached, so the next run asks again.
         None => match run_ffprobe(path) {
             Ok(probe) => {
                 let probe = probe.unwrap_or(Value::Null);
@@ -280,16 +280,14 @@ fn write_cache(file: &Path, mtime: i64, size: u64, probe: &Value) {
 }
 
 /// `ffprobe`'s answer for the file at `path`: its JSON, or `None` if it could not read the file. An error is
-/// returned when `ffprobe` cannot be run at all.
+/// returned when `ffprobe` cannot be run at all, or stalls on the file.
 fn run_ffprobe(path: &Path) -> std::io::Result<Option<Value>> {
-    let output = Command::new("ffprobe")
-        .args(["-v", "error", "-print_format", "json", "-show_format", "-show_streams"])
-        .arg(path)
-        .output()?;
-    if !output.status.success() {
-        return Ok(None);
-    }
-    Ok(serde_json::from_slice(&output.stdout).ok())
+    let output = run_program(
+        Command::new("ffprobe")
+            .args(["-v", "error", "-print_format", "json", "-show_format", "-show_streams"])
+            .arg(path),
+    )?;
+    Ok(output.and_then(|output| serde_json::from_slice(&output).ok()))
 }
 
 #[cfg(test)]

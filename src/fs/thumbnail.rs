@@ -555,30 +555,39 @@ fn video_duration(path: &Path) -> Option<f64> {
         .filter(|seconds| *seconds > 0.0)
 }
 
-/// The standard output of `command` if it succeeds within `TOOL_TIMEOUT`. A run that takes longer is killed, so a
-/// stalled file does not hold its job slot for good.
+/// The standard output of `command` if it succeeds within `TOOL_TIMEOUT`.
 fn run_tool(command: &mut Command) -> Option<Vec<u8>> {
-    let mut child = command.stdout(Stdio::piped()).stderr(Stdio::null()).spawn().ok()?;
-    let mut stdout = child.stdout.take()?;
+    run_program(command).ok().flatten()
+}
+
+/// What `command` wrote to its standard output, or `None` if it reported failure. An error is returned when it cannot
+/// be run, or takes longer than `TOOL_TIMEOUT`: such a run is killed, so a stalled file does not hold its job slot for good.
+pub(super) fn run_program(command: &mut Command) -> std::io::Result<Option<Vec<u8>>> {
+    run_within(command, TOOL_TIMEOUT)
+}
+
+fn run_within(command: &mut Command, timeout: Duration) -> std::io::Result<Option<Vec<u8>>> {
+    let mut child = command.stdout(Stdio::piped()).stderr(Stdio::null()).spawn()?;
+    let mut stdout = child.stdout.take().ok_or(std::io::ErrorKind::BrokenPipe)?;
     // The output is read while the program runs, so a large frame does not fill the pipe and stall it.
     let reader = std::thread::spawn(move || {
         let mut data = Vec::new();
         stdout.read_to_end(&mut data).map(|_| data)
     });
-    let deadline = Instant::now() + TOOL_TIMEOUT;
+    let deadline = Instant::now() + timeout;
     let status = loop {
-        if let Some(status) = child.try_wait().ok()? {
+        if let Some(status) = child.try_wait()? {
             break status;
         }
         if Instant::now() >= deadline {
             let _ = child.kill();
             let _ = child.wait();
-            return None;
+            return Err(std::io::ErrorKind::TimedOut.into());
         }
         std::thread::sleep(Duration::from_millis(20));
     };
-    let data = reader.join().ok()?.ok()?;
-    status.success().then_some(data)
+    let data = reader.join().map_err(|_| std::io::Error::other("the output reader panicked"))??;
+    Ok(status.success().then_some(data))
 }
 
 /// A stamp of when the file at `path` was last modified: its time in nanoseconds since the epoch, or 0 if it cannot
@@ -762,6 +771,20 @@ mod tests {
         thumbnails.request(job.clone(), || true, |_| {});
 
         assert_eq!(thumbnails.inner.waiters.borrow()[&job].len(), 2);
+    }
+
+    #[test]
+    fn a_program_that_takes_too_long_is_stopped() {
+        let outcome = run_within(Command::new("sleep").arg("30"), Duration::from_millis(50));
+        assert_eq!(outcome.unwrap_err().kind(), std::io::ErrorKind::TimedOut);
+    }
+
+    #[test]
+    fn a_program_is_told_apart_from_its_failure() {
+        let output = run_program(Command::new("sh").args(["-c", "printf done"])).unwrap();
+        assert_eq!(output.as_deref(), Some(&b"done"[..]));
+        assert_eq!(run_program(&mut Command::new("false")).unwrap(), None);
+        assert!(run_program(&mut Command::new("rsimgv-no-such-program")).is_err());
     }
 
     #[test]
