@@ -31,6 +31,14 @@ pub fn add(list: &mut Vec<Bookmark>, path: PathBuf, name: String) {
     }
 }
 
+/// Moves the bookmark at `from` to position `to`, among the others. A position past the end changes nothing.
+pub fn move_to(list: &mut Vec<Bookmark>, from: usize, to: usize) {
+    if from < list.len() && to < list.len() {
+        let bookmark = list.remove(from);
+        list.insert(to, bookmark);
+    }
+}
+
 /// The name a folder gets when none is given: its last component.
 pub fn default_name(path: &Path) -> String {
     path.file_name().map_or_else(|| path.to_string_lossy().into_owned(), |name| name.to_string_lossy().into_owned())
@@ -109,6 +117,21 @@ mod tests {
         add(&mut list, PathBuf::from("/photos"), "Holiday".to_owned());
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].name, "Holiday");
+    }
+
+    #[test]
+    fn moving_a_bookmark_keeps_the_others_in_order() {
+        let mut list = Vec::new();
+        for name in ["a", "b", "c"] {
+            add(&mut list, PathBuf::from(format!("/{name}")), name.to_owned());
+        }
+        let names = |list: &[Bookmark]| list.iter().map(|bookmark| bookmark.name.clone()).collect::<Vec<_>>();
+        move_to(&mut list, 0, 2);
+        assert_eq!(names(&list), ["b", "c", "a"], "down");
+        move_to(&mut list, 2, 1);
+        assert_eq!(names(&list), ["b", "a", "c"], "up");
+        move_to(&mut list, 0, 3);
+        assert_eq!(names(&list), ["b", "a", "c"], "past the end changes nothing");
     }
 
     #[test]
