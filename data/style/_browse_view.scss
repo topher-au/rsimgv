@@ -14,6 +14,11 @@
   background-color: color-mix(in srgb, var(--accent-bg-color) 25%, transparent);
 }
 
+// An item marked with others for acting on together.
+.rsimgv-item.marked {
+  background-color: color-mix(in srgb, var(--accent-bg-color) 40%, transparent);
+}
+
 .rsimgv-visual {
   border-radius: 8px;
   background-color: color-mix(in srgb, currentColor 6%, transparent);

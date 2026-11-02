@@ -237,6 +237,9 @@ pub const ACTIONS: &[ActionInfo] = &[
         name: "browse.last", description: "Move the cursor to the last item.", icon: "go-last-symbolic", label: "Last Item", contexts: &[Scope::Global, Scope::Browse], defaults: &["end"],
     },
     ActionInfo {
+        name: "browse.select-all", description: "Mark every item in the folder, to act on them together.", icon: "edit-select-all-symbolic", label: "Select All", contexts: &[Scope::Global, Scope::Browse], defaults: &["ctrl+a"],
+    },
+    ActionInfo {
         name: "browse.open", description: "Open the item under the cursor: a folder is browsed, a picture or video is shown in the viewer.", icon: "document-open-symbolic", label: "Open", contexts: &[Scope::Global, Scope::Browse], defaults: &["e", "return"],
     },
     ActionInfo {

@@ -6,7 +6,8 @@
 //! so the scroller offsets it; the grid reads the scroller's adjustment to know what is visible.
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::rc::Rc;
 
 use gtk::prelude::*;
@@ -26,6 +27,15 @@ fn target_position(current: u32, count: u32, delta: i64) -> u32 {
         return 0;
     }
     (i64::from(current) + delta).clamp(0, i64::from(count) - 1) as u32
+}
+
+/// Adds or removes a CSS class on a widget.
+fn set_class(widget: &gtk::Widget, class: &str, on: bool) {
+    if on {
+        widget.add_css_class(class);
+    } else {
+        widget.remove_css_class(class);
+    }
 }
 
 /// Builds an item's widget once, and fills it in for an item each time it is shown.
@@ -221,6 +231,11 @@ mod imp {
         pub(super) adjustment: RefCell<Option<(glib::WeakRef<gtk::Adjustment>, glib::SignalHandlerId)>>,
         /// The selection whose changes are followed, so they are connected once.
         pub(super) connected: RefCell<Option<glib::WeakRef<gtk::SingleSelection>>>,
+        /// The items marked for acting on together, by path, so a mark follows its item through a relayout.
+        pub(super) marked: RefCell<HashSet<PathBuf>>,
+        /// The position a shift-click extends the marks from: where the last plain or ctrl-click, or the
+        /// last move of the cursor, left the cursor.
+        pub(super) anchor: Cell<Option<u32>>,
     }
 
     #[glib::object_subclass]
@@ -252,7 +267,19 @@ mod imp {
                     if gesture.current_button() != gdk::BUTTON_PRIMARY {
                         return;
                     }
-                    if let Some(position) = grid.position_at(x, y) {
+                    let modifiers = gesture.current_event_state();
+                    let Some(position) = grid.position_at(x, y) else {
+                        if !modifiers.intersects(gdk::ModifierType::CONTROL_MASK | gdk::ModifierType::SHIFT_MASK) {
+                            grid.clear_marks();
+                        }
+                        return;
+                    };
+                    if modifiers.contains(gdk::ModifierType::SHIFT_MASK) {
+                        grid.mark_range_to(position);
+                    } else if modifiers.contains(gdk::ModifierType::CONTROL_MASK) {
+                        grid.toggle_mark(position);
+                    } else {
+                        grid.clear_marks();
                         grid.select(position);
                         if n_press == 2 {
                             grid.emit_by_name::<()>("activate", &[&position]);
@@ -266,9 +293,12 @@ mod imp {
         fn signals() -> &'static [glib::subclass::Signal] {
             use std::sync::LazyLock;
             static SIGNALS: LazyLock<Vec<glib::subclass::Signal>> = LazyLock::new(|| {
-                vec![glib::subclass::Signal::builder("activate")
-                    .param_types([u32::static_type()])
-                    .build()]
+                vec![
+                    glib::subclass::Signal::builder("activate")
+                        .param_types([u32::static_type()])
+                        .build(),
+                    glib::subclass::Signal::builder("marks-changed").build(),
+                ]
             });
             SIGNALS.as_ref()
         }
@@ -338,6 +368,7 @@ impl ItemGrid {
             move |_, _, _, _| {
                 if let Some(grid) = grid.upgrade() {
                     grid.reset();
+                    grid.prune_marks();
                     grid.queue_resize();
                 }
             }
@@ -369,15 +400,106 @@ impl ItemGrid {
         self.imp().table.take();
     }
 
-    /// Selects the item at `position`, and scrolls it into view.
     /// Selects the item at `position`, and scrolls it fully into view. The scroll happens at the grid's next layout,
     /// so it uses the grid's real size, even when the grid is hidden until then.
     pub fn select(&self, position: u32) {
         if let Some(model) = self.imp().model.borrow().as_ref() {
             model.set_selected(position);
         }
+        self.imp().anchor.set(Some(position));
         self.imp().reveal.set(Some(position));
         self.queue_allocate();
+    }
+
+    /// The paths of the marked items, in the order they are listed.
+    pub fn marked_paths(&self) -> Vec<PathBuf> {
+        let marked = self.imp().marked.borrow();
+        if marked.is_empty() {
+            return Vec::new();
+        }
+        (0..self.item_count()).filter_map(|position| self.path_at(position)).filter(|path| marked.contains(path)).collect()
+    }
+
+    /// Marks every item, as a select-all does.
+    pub fn mark_all(&self) {
+        let paths: HashSet<PathBuf> = (0..self.item_count()).filter_map(|position| self.path_at(position)).collect();
+        if !paths.is_empty() {
+            self.imp().marked.replace(paths);
+            self.marks_changed();
+        }
+    }
+
+    /// Unmarks every item.
+    pub fn clear_marks(&self) {
+        if !self.imp().marked.borrow().is_empty() {
+            self.imp().marked.borrow_mut().clear();
+            self.marks_changed();
+        }
+    }
+
+    /// Marks the item at `position` if it is not marked, and unmarks it if it is, as ctrl-click does. The
+    /// cursor moves to it.
+    fn toggle_mark(&self, position: u32) {
+        if let Some(path) = self.path_at(position) {
+            let mut marked = self.imp().marked.borrow_mut();
+            if !marked.remove(&path) {
+                marked.insert(path);
+            }
+            drop(marked);
+            self.marks_changed();
+        }
+        self.select(position);
+    }
+
+    /// Marks the items from the anchor to `position`, in place of the marks before, as shift-click does. The
+    /// cursor moves to `position`, and the anchor stays where it was.
+    fn mark_range_to(&self, position: u32) {
+        let anchor = self.imp().anchor.get().unwrap_or(position);
+        let (first, last) = (anchor.min(position), anchor.max(position));
+        let paths: HashSet<PathBuf> = (first..=last).filter_map(|index| self.path_at(index)).collect();
+        self.imp().marked.replace(paths);
+        self.marks_changed();
+        self.select(position);
+        self.imp().anchor.set(Some(anchor));
+    }
+
+    /// Drops the marks of items that are no longer listed, as when the folder changes.
+    fn prune_marks(&self) {
+        if self.imp().marked.borrow().is_empty() {
+            return;
+        }
+        let listed: HashSet<PathBuf> = (0..self.item_count()).filter_map(|position| self.path_at(position)).collect();
+        let before = self.imp().marked.borrow().len();
+        self.imp().marked.borrow_mut().retain(|path| listed.contains(path));
+        if self.imp().marked.borrow().len() != before {
+            self.marks_changed();
+        }
+    }
+
+    /// Redraws the marks and tells the owner they changed.
+    fn marks_changed(&self) {
+        self.update_selected_classes();
+        self.emit_by_name::<()>("marks-changed", &[]);
+    }
+
+    /// Connects to `marks-changed`, emitted when items are marked or unmarked.
+    pub fn connect_marks_changed<F: Fn(&Self) + 'static>(&self, callback: F) -> glib::SignalHandlerId {
+        self.connect_local("marks-changed", false, move |values| {
+            let grid = values[0].get::<ItemGrid>().expect("grid argument");
+            callback(&grid);
+            None
+        })
+    }
+
+    /// The path of the item at `position`.
+    fn path_at(&self, position: u32) -> Option<PathBuf> {
+        let model = self.imp().model.borrow().clone()?;
+        model.item(position).and_downcast::<FileEntry>().map(|entry| entry.path().to_path_buf())
+    }
+
+    /// Whether the item at `position` is marked.
+    fn is_marked_at(&self, position: u32) -> bool {
+        !self.imp().marked.borrow().is_empty() && self.path_at(position).is_some_and(|path| self.imp().marked.borrow().contains(&path))
     }
 
     /// The widget showing the item at `position`, if it is on screen.
@@ -605,7 +727,7 @@ impl ItemGrid {
             widget.set_visible(true);
             (builders.bind)(&widget, &entry, position);
             imp.shown.borrow_mut().insert(position, widget.clone());
-            self.set_selected_class(&widget, position);
+            self.set_item_classes(&widget, position);
             fresh.push((position, widget));
         }
         imp.shown_range.set(Some((first, end)));
@@ -644,25 +766,19 @@ impl ItemGrid {
         changed
     }
 
-    /// Redraws the selection on the shown items.
+    /// Redraws the selection and the marks on the shown items.
     fn update_selected_classes(&self) {
-        let selected = self.imp().model.borrow().as_ref().map(|model| model.selected());
         for (position, widget) in self.imp().shown.borrow().iter() {
-            widget.remove_css_class("selected");
-            if Some(*position) == selected {
-                widget.add_css_class("selected");
-            }
+            self.set_item_classes(widget, *position);
         }
     }
 
-    fn set_selected_class(&self, widget: &gtk::Widget, position: u32) {
+    /// Sets the `selected` and `marked` classes of a widget showing the item at `position`. A reused widget may
+    /// still have the classes of the item it showed before, so both are set either way.
+    fn set_item_classes(&self, widget: &gtk::Widget, position: u32) {
         let selected = self.imp().model.borrow().as_ref().map(|model| model.selected());
-        // A reused widget may still have the class from the item it showed before.
-        if Some(position) == selected {
-            widget.add_css_class("selected");
-        } else {
-            widget.remove_css_class("selected");
-        }
+        set_class(widget, "selected", Some(position) == selected);
+        set_class(widget, "marked", self.is_marked_at(position));
     }
 
     /// Removes every shown widget, keeping them to reuse.

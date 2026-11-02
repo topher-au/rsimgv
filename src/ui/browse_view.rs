@@ -16,6 +16,7 @@ use gtk::subclass::prelude::*;
 use gtk::{gio, glib};
 
 use crate::fs::thumbnail::{Media as ThumbnailMedia, Size as ThumbnailSize, Thumbnails};
+use super::drag;
 use super::thumbnail_paint::{picture_paintable, ScatteredThumbnail, MAX_PHOTOS, PHOTO_SHARE};
 use crate::fs::metadata::{MediaInfo, MediaMetadata};
 use crate::fs::{natural_cmp, FileEntry, FileStore, Reading};
@@ -788,6 +789,12 @@ mod imp {
                 });
                 cell.add_controller(middle);
 
+                // Dragging an item carries it to other applications, with the marked items if it is one of them.
+                let drag = gtk::DragSource::new();
+                drag.set_actions(gtk::gdk::DragAction::COPY);
+                drag.connect_prepare(|source, _, _| drag_content(&source.widget()?));
+                cell.add_controller(drag);
+
                 // Hovering a video plays its frames; leaving it shows the still thumbnail again.
                 let motion = gtk::EventControllerMotion::new();
                 motion.connect_enter(|controller, _, _| {
@@ -856,6 +863,30 @@ mod imp {
                     view.activate(position);
                 }
             });
+            let view = obj.downgrade();
+            self.grid.connect_marks_changed(move |_| {
+                if let Some(view) = view.upgrade() {
+                    view.update_status();
+                }
+            });
+
+            // A folder dropped on the view is opened, and a file dropped on it shows the folder it is in.
+            let drop = gtk::DropTarget::new(gtk::gdk::FileList::static_type(), gtk::gdk::DragAction::COPY);
+            drop.connect_drop({
+                let view = obj.downgrade();
+                move |_, value, _, _| {
+                    let Some(view) = view.upgrade() else { return false };
+                    let Some(path) = drag::dropped_paths(value).into_iter().next() else { return false };
+                    let folder = if path.is_dir() { Some(path.as_path()) } else { path.parent() };
+                    let Some(folder) = folder else { return false };
+                    if view.path().as_deref() == Some(folder) {
+                        return false;
+                    }
+                    view.emit_by_name::<()>("directory-activated", &[&folder.to_string_lossy().into_owned()]);
+                    true
+                }
+            });
+            obj.add_controller(drop);
 
             // Changing the size or the name mode rebinds every item, which re-lays them out.
             obj.connect_item_size_notify(|view| view.refresh_items());
@@ -964,6 +995,20 @@ fn restore_top_item_after_layout(grid: &super::ItemGrid, anchor: TopItem) {
         }
         glib::ControlFlow::Break
     });
+}
+
+/// The content of a drag from the item in `cell`: every marked item if it is one of them, else the item alone.
+fn drag_content(cell: &gtk::Widget) -> Option<gtk::gdk::ContentProvider> {
+    let view = cell.ancestor(BrowseView::static_type()).and_downcast::<BrowseView>()?;
+    let position = cell.widget_name().parse::<u32>().ok()?;
+    let entry = view.imp().grid.model()?.item(position).and_downcast::<FileEntry>()?;
+    let marked = view.imp().grid.marked_paths();
+    let paths = if marked.iter().any(|path| path == entry.path()) {
+        marked
+    } else {
+        vec![entry.path().to_path_buf()]
+    };
+    Some(drag::file_list(&paths))
 }
 
 /// Lays out one item: a visual box of exactly the item size, the name, and the info line.
@@ -1313,6 +1358,11 @@ impl BrowseView {
         self.keyboard_moved();
     }
 
+    /// Marks every item in the folder, as select-all does.
+    pub fn select_all(&self) {
+        self.imp().grid.mark_all();
+    }
+
     /// Opens the item under the cursor.
     pub fn activate_selected(&self) {
         self.imp().grid.activate_selected();
@@ -1590,6 +1640,12 @@ impl BrowseView {
             return;
         }
         imp.floating_bar.set_loading(false);
+        let marked = imp.grid.marked_paths().len();
+        if marked > 1 {
+            imp.floating_bar.set_labels(Some(&format!("{marked} items selected")), None);
+            imp.floating_bar.set_visible(true);
+            return;
+        }
         let selected = imp.selection.get().and_then(|selection| selection.selected_item());
         let Some(entry) = selected.and_downcast::<FileEntry>() else {
             imp.floating_bar.set_visible(false);

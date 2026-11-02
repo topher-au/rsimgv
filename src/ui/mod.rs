@@ -1,5 +1,6 @@
 mod binding_dialog;
 mod browse_view;
+mod drag;
 mod floating_bar;
 mod film_strip;
 mod thumbnail_paint;
