@@ -795,6 +795,9 @@ const SECTIONS: [(&str, &str, &str); 9] = [
     ("about", "About", "help-about-symbolic"),
 ];
 
+/// The space around the keybinding editor, in pixels, so it does not touch the edges of the dialog.
+const KEYBOARD_PAGE_MARGIN: i32 = 12;
+
 impl PreferencesDialog {
     /// Puts the keybindings editor on the keybindings page, which it fills. The page is a plain box rather than a
     /// preferences page, as that would keep the editor to a narrow column and scroll it as a whole.
@@ -802,6 +805,10 @@ impl PreferencesDialog {
         let editor = KeybindingList::new();
         editor.set_hexpand(true);
         editor.set_vexpand(true);
+        editor.set_margin_top(KEYBOARD_PAGE_MARGIN);
+        editor.set_margin_bottom(KEYBOARD_PAGE_MARGIN);
+        editor.set_margin_start(KEYBOARD_PAGE_MARGIN);
+        editor.set_margin_end(KEYBOARD_PAGE_MARGIN);
         self.imp().keybindings_page.append(&editor);
     }
 
