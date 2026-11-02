@@ -282,7 +282,9 @@ mod tests {
 
     #[test]
     fn malformed_requests_are_answered_with_an_error() {
-        let (calls, _receiver) = mpsc::channel();
+        // With the viewer gone, nothing receives the calls, so a request is answered as not running.
+        let (calls, receiver) = mpsc::channel();
+        drop(receiver);
         assert_eq!(answer("not json", &calls)["error"]["code"], "invalid_json");
         assert_eq!(answer(r#"{"id": 3}"#, &calls)["error"]["code"], "invalid_request");
         assert_eq!(answer(r#"{"id": 4, "method": "tabs.list"}"#, &calls)["error"]["code"], "not_running");
