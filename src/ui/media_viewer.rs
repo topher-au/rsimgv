@@ -15,7 +15,7 @@ use gtk::subclass::prelude::*;
 use gtk::{gdk, gio, glib};
 
 use super::drag;
-use super::image_canvas::{Fit, ImageCanvas, Placement};
+use super::image_canvas::{Fit, ImageCanvas, OriginalFocus, Placement};
 use crate::file_settings::FileSettings;
 use crate::fs::metadata::MediaInfo;
 use crate::fs::thumbnail::Pixels;
@@ -857,6 +857,16 @@ impl MediaViewer {
     /// Limits how much fitting to the window enlarges a small picture, to `factor` times its size; 0 has no limit.
     pub fn set_expand_limit(&self, factor: i32) {
         self.imp().canvas.set_expand_limit(f64::from(factor));
+    }
+
+    /// Sets where a picture shown at its own size sits: at the top, centred, or with the point under the pointer kept.
+    pub fn set_original_focus(&self, focus: OriginalFocus) {
+        self.imp().canvas.set_original_focus(focus);
+    }
+
+    /// Sets whether zooming out may go below the picture's own size.
+    pub fn set_minimum_zoom_unlocked(&self, unlocked: bool) {
+        self.imp().canvas.set_minimum_unlocked(unlocked);
     }
 
     /// Whether a new picture keeps the fit mode last chosen, rather than fitting the window.

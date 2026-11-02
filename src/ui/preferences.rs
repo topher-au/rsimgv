@@ -129,6 +129,10 @@ mod imp {
         #[template_child]
         pub image_fit_row: TemplateChild<adw::ComboRow>,
         #[template_child]
+        pub original_focus_row: TemplateChild<adw::ComboRow>,
+        #[template_child]
+        pub unlock_minimum_zoom_row: TemplateChild<adw::SwitchRow>,
+        #[template_child]
         pub keep_fit_mode_row: TemplateChild<adw::SwitchRow>,
         #[template_child]
         pub zoom_step_row: TemplateChild<adw::SpinRow>,
@@ -574,6 +578,7 @@ fn bind_switches(settings: &gio::Settings, imp: &imp::PreferencesDialog) {
         ("smooth-scrolling", &imp.smooth_scrolling_row),
         ("image-info-in-title", &imp.image_info_in_title_row),
         ("keep-fit-mode", &imp.keep_fit_mode_row),
+        ("unlock-minimum-zoom", &imp.unlock_minimum_zoom_row),
         ("smooth-upscaling", &imp.smooth_upscaling_row),
         ("viewer-thumbnail-bar-shown", &imp.thumbnail_bar_shown_row),
         ("viewer-thumbnail-bar-overlay", &imp.thumbnail_bar_overlay_row),
@@ -586,7 +591,7 @@ fn bind_switches(settings: &gio::Settings, imp: &imp::PreferencesDialog) {
 
 /// Binds each combo row to a string setting whose value is one of `choices`, by position in the row.
 fn bind_choices(settings: &gio::Settings, imp: &imp::PreferencesDialog) {
-    let combos: [(&str, &glib::Object, &[&str]); 18] = [
+    let combos: [(&str, &glib::Object, &[&str]); 19] = [
         ("folder-end", imp.folder_end_row.upcast_ref(), &["stop", "loop", "next-folder"]),
         ("sort-by", imp.default_sort_by_row.upcast_ref(), &["name", "modified", "size", "type"]),
         ("sort-order", imp.default_sort_order_row.upcast_ref(), &["ascending", "descending"]),
@@ -600,7 +605,8 @@ fn bind_choices(settings: &gio::Settings, imp: &imp::PreferencesDialog) {
         ("filename-display", imp.filename_row.upcast_ref(), &["off", "wrapped", "ellipsized"]),
         ("show-directories", imp.show_directories_row.upcast_ref(), &["none", "first-last", "inline"]),
         ("zoom-indicator", imp.zoom_indicator_row.upcast_ref(), &["on", "off", "auto"]),
-        ("image-fit", imp.image_fit_row.upcast_ref(), &["window", "width", "height", "original"]),
+        ("image-fit", imp.image_fit_row.upcast_ref(), &["window", "width", "height", "fill", "original"]),
+        ("original-focus", imp.original_focus_row.upcast_ref(), &["top", "center", "cursor"]),
         ("scaling-filter", imp.scaling_filter_row.upcast_ref(), &["linear", "nearest"]),
         ("info-layout", imp.info_layout_dropdown.upcast_ref(), &["disabled", "stacked", "inline"]),
         ("svp-fps-mode", imp.svp_fps_mode_row.upcast_ref(), &["default", "fixed", "variable", "display"]),
@@ -767,6 +773,18 @@ pub(crate) mod tests {
         assert!(!imp.svp_group.is_sensitive(), "SVP needs mpv");
         settings.reset("video-backend");
         assert!(imp.mpv_group.get_visible() && imp.svp_group.is_sensitive());
+
+        // The image rows are bound to their settings.
+        imp.image_fit_row.set_selected(3);
+        assert_eq!(settings.string("image-fit"), "fill");
+        settings.reset("image-fit");
+        imp.original_focus_row.set_selected(2);
+        assert_eq!(settings.string("original-focus"), "cursor");
+        settings.reset("original-focus");
+        assert!(!imp.unlock_minimum_zoom_row.is_active(), "the minimum zoom is locked by default");
+        imp.unlock_minimum_zoom_row.set_active(true);
+        assert!(settings.boolean("unlock-minimum-zoom"));
+        settings.reset("unlock-minimum-zoom");
 
         // The Folder Navigation rows are bound to their settings.
         imp.folder_end_row.set_selected(2);

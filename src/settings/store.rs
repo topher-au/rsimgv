@@ -99,6 +99,8 @@ const LAYOUT: &[(&str, &str, &str)] = &[
     ("image-info-in-title", "viewer", "image-info-in-title"),
     ("image-fit", "image", "fit"),
     ("keep-fit-mode", "image", "keep-fit"),
+    ("original-focus", "image", "original-focus"),
+    ("unlock-minimum-zoom", "image", "unlock-minimum-zoom"),
     ("zoom-step", "image", "zoom-step"),
     ("expand-up-to-factor", "image", "expand-up-to-factor"),
     ("zoom-indicator", "image", "zoom-indicator"),

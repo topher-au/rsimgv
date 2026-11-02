@@ -211,10 +211,24 @@
         <choice value="window"/>
         <choice value="width"/>
         <choice value="height"/>
+        <choice value="fill"/>
         <choice value="original"/>
       </choices>
       <default>'window'</default>
-      <summary>How an image is sized when it is opened: to fit the window, its width, or its height, or at its own size</summary>
+      <summary>How an image is sized when it is opened: to fit the window, its width or its height, to cover the window, or at its own size</summary>
+    </key>
+    <key name="original-focus" type="s">
+      <choices>
+        <choice value="top"/>
+        <choice value="center"/>
+        <choice value="cursor"/>
+      </choices>
+      <default>'center'</default>
+      <summary>Where an image shown at its own size sits: its top at the top of the window, its centre in the middle, or the point under the pointer kept in place</summary>
+    </key>
+    <key name="unlock-minimum-zoom" type="b">
+      <default>false</default>
+      <summary>Let zooming out go below the image's own size; locked, zooming out stops at 100%</summary>
     </key>
     <key name="scaling-filter" type="s">
       <choices>

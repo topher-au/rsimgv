@@ -11,7 +11,7 @@ use gtk::{gdk, gio, glib};
 use crate::keybindings::actions::Scope;
 use super::browse_view::{InfoField, ListedFile};
 use crate::bookmarks::{self, Bookmark};
-use super::image_canvas::{Fit, PAN_STEP};
+use super::image_canvas::{Fit, OriginalFocus, PAN_STEP};
 use super::media_controls::SEEK_STEP;
 use super::media_viewer::{side_from_name, ZoomIndicator, VOLUME_STEP};
 use super::key_handler::ActionKeyHandler;
@@ -640,6 +640,8 @@ impl Window {
         viewer.set_zoom_step(settings.int("zoom-step"));
         viewer.set_expand_limit(settings.int("expand-up-to-factor"));
         viewer.set_keep_fit(settings.boolean("keep-fit-mode"));
+        viewer.set_original_focus(OriginalFocus::from_name(&settings.string("original-focus")));
+        viewer.set_minimum_zoom_unlocked(settings.boolean("unlock-minimum-zoom"));
         viewer.set_default_fit(Fit::from_name(&settings.string("image-fit")).unwrap_or_default());
         viewer.set_smooth_scrolling(settings.boolean("smooth-scrolling"));
         viewer.set_scaling(settings.string("scaling-filter") == "nearest", settings.boolean("smooth-upscaling"));
@@ -779,6 +781,7 @@ impl Window {
         bound_action(&image, &weak, "fit-window", |window| window.imp().viewer.set_fit(Fit::Window));
         bound_action(&image, &weak, "fit-width", |window| window.imp().viewer.set_fit(Fit::Width));
         bound_action(&image, &weak, "fit-height", |window| window.imp().viewer.set_fit(Fit::Height));
+        bound_action(&image, &weak, "fit-fill", |window| window.imp().viewer.set_fit(Fit::Fill));
         bound_action(&image, &weak, "fit-original", |window| window.imp().viewer.set_fit(Fit::Original));
         bound_action(&image, &weak, "pan-up", |window| window.imp().viewer.pan(0.0, -PAN_STEP));
         bound_action(&image, &weak, "pan-down", |window| window.imp().viewer.pan(0.0, PAN_STEP));
@@ -1857,8 +1860,10 @@ const WHEEL_VOLUME_STEP: f64 = 5.0;
 const WHEEL_SEEK_STEP: f64 = 5.0;
 
 /// The settings the viewer and the window title are set from, applied again whenever one changes.
-const VIEWER_SETTINGS: [&str; 21] = [
+const VIEWER_SETTINGS: [&str; 23] = [
     "folder-end",
+    "original-focus",
+    "unlock-minimum-zoom",
     "zoom-step",
     "expand-up-to-factor",
     "keep-fit-mode",

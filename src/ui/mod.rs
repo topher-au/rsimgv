@@ -52,6 +52,7 @@ mod tests {
         super::fs_tree::tests::run_scenarios();
         super::overlay_split_view::tests::run_scenarios();
         super::path_bar::tests::run_scenarios();
+        super::image_canvas::tests::run_scenarios();
         super::navigation_bar::tests::run_scenarios();
         super::preferences::tests::run_scenarios();
         super::browse_view::tests::run_scenarios();

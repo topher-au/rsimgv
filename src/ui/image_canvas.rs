@@ -23,14 +23,38 @@ const BLUR_RADIUS: f64 = 40.0;
 /// How dark the blurred background is: the black laid over it.
 const DIM: gdk::RGBA = gdk::RGBA::new(0.0, 0.0, 0.0, 0.55);
 
-/// A fit mode: the picture is scaled to fit the view, its width, its height, or shown at its own size.
+/// A fit mode: the picture is scaled to fit the view, its width or its height, to cover the view, or shown at its own size.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Fit {
     #[default]
     Window,
     Width,
     Height,
+    /// Scaled up or down until it covers the whole view, so what overhangs is cropped.
+    Fill,
     Original,
+}
+
+/// Where the picture sits when it is shown at its own size.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum OriginalFocus {
+    /// Its top edge is at the top of the view.
+    Top,
+    #[default]
+    Center,
+    /// The point under the pointer stays where it is, as when zooming at the pointer.
+    Cursor,
+}
+
+impl OriginalFocus {
+    /// The behaviour a setting value names, or the default for any other.
+    pub fn from_name(name: &str) -> Self {
+        match name {
+            "top" => Self::Top,
+            "cursor" => Self::Cursor,
+            _ => Self::Center,
+        }
+    }
 }
 
 impl Fit {
@@ -40,12 +64,13 @@ impl Fit {
             Fit::Window => "window",
             Fit::Width => "width",
             Fit::Height => "height",
+            Fit::Fill => "fill",
             Fit::Original => "original",
         }
     }
 
     pub fn from_name(name: &str) -> Option<Self> {
-        [Fit::Window, Fit::Width, Fit::Height, Fit::Original].into_iter().find(|fit| fit.name() == name)
+        [Fit::Window, Fit::Width, Fit::Height, Fit::Fill, Fit::Original].into_iter().find(|fit| fit.name() == name)
     }
 
     /// The fit mode after this one, for cycling through them.
@@ -53,7 +78,8 @@ impl Fit {
         match self {
             Fit::Window => Fit::Width,
             Fit::Width => Fit::Height,
-            Fit::Height => Fit::Original,
+            Fit::Height => Fit::Fill,
+            Fit::Fill => Fit::Original,
             Fit::Original => Fit::Window,
         }
     }
@@ -111,6 +137,10 @@ mod imp {
         /// The fit mode last chosen, which a new picture gets, and whether it does rather than fitting the window.
         pub(super) last_fit: Cell<Option<Fit>>,
         pub(super) keep_fit: Cell<bool>,
+        /// Where a picture shown at its own size sits.
+        pub(super) original_focus: Cell<OriginalFocus>,
+        /// Whether zooming out may go below the picture's own size.
+        pub(super) minimum_unlocked: Cell<bool>,
         /// How much one zoom step changes the scale, as a factor.
         pub(super) zoom_step: Cell<f64>,
         /// The most fitting to the window enlarges a picture smaller than the view, as a multiple of its size; 0 has no limit.
@@ -278,16 +308,60 @@ impl ImageCanvas {
         let fit = if imp.keep_fit.get() { imp.last_fit.get().unwrap_or(default) } else { default };
         imp.fit.set(Some(fit));
         imp.texture.replace(texture);
-        self.imp().offset.set((0.0, 0.0));
+        imp.offset.set(self.fit_offset(fit, None));
         self.snap();
     }
 
-    /// Fits the picture to the view in `fit` mode, centred again.
+    /// Fits the picture to the view in `fit` mode, placed again: centred, or as the focus says at its own size.
     pub fn set_fit(&self, fit: Fit) {
-        self.imp().fit.set(Some(fit));
-        self.imp().last_fit.set(Some(fit));
-        self.imp().offset.set((0.0, 0.0));
+        let imp = self.imp();
+        let from = self.target_view();
+        imp.fit.set(Some(fit));
+        imp.last_fit.set(Some(fit));
+        imp.offset.set(self.fit_offset(fit, from));
         self.ease();
+    }
+
+    /// The offset a picture starts at in `fit`. At its own size that is set by the focus: at the top, or under the
+    /// pointer where `from`, the view it was in, had the point that is under it. Otherwise it is centred.
+    fn fit_offset(&self, fit: Fit, from: Option<View>) -> (f64, f64) {
+        let imp = self.imp();
+        if fit != Fit::Original {
+            return (0.0, 0.0);
+        }
+        let offset = match (imp.original_focus.get(), from, imp.pointer.get()) {
+            (OriginalFocus::Top, _, _) => (0.0, self.pan_limit(1.0).1),
+            (OriginalFocus::Cursor, Some(from), Some((px, py))) => {
+                let (view_width, view_height) = self.view_size();
+                let (cx, cy) = (px - view_width / 2.0, py - view_height / 2.0);
+                let ratio = 1.0 / from.scale;
+                (cx - (cx - from.offset.0) * ratio, cy - (cy - from.offset.1) * ratio)
+            }
+            _ => (0.0, 0.0),
+        };
+        // Kept within the view's edges, so a drag starts from where the picture is.
+        let (max_x, max_y) = self.pan_limit(1.0);
+        (offset.0.clamp(-max_x, max_x), offset.1.clamp(-max_y, max_y))
+    }
+
+    /// Sets where a picture shown at its own size sits.
+    pub fn set_original_focus(&self, focus: OriginalFocus) {
+        self.imp().original_focus.set(focus);
+    }
+
+    /// Sets whether zooming out may go below the picture's own size. Locked, it stops there.
+    pub fn set_minimum_unlocked(&self, unlocked: bool) {
+        self.imp().minimum_unlocked.set(unlocked);
+    }
+
+    /// The scale after zooming from `scale` by `factor`. Zooming out is held at the picture's own size while the
+    /// minimum is locked, though a picture already smaller than that, as a fit makes it, stays as it is.
+    fn zoomed(&self, scale: f64, factor: f64) -> f64 {
+        if factor >= 1.0 {
+            return (scale * factor).min(MAX_SCALE);
+        }
+        let floor = if self.imp().minimum_unlocked.get() { MIN_SCALE } else { MIN_SCALE.max(scale.min(1.0)) };
+        (scale * factor).max(floor)
     }
 
     /// Moves to the fit mode after the current one. From a zoom, that is the first fit mode.
@@ -409,7 +483,7 @@ impl ImageCanvas {
             self.zoom_by(factor);
             return;
         };
-        let scale = (view.scale * factor).clamp(MIN_SCALE, MAX_SCALE);
+        let scale = self.zoomed(view.scale, factor);
         let ratio = scale / view.scale;
         // The pointer's place relative to the view's centre, less the offset, is the point on the picture,
         // which moves with the scale.
@@ -425,7 +499,7 @@ impl ImageCanvas {
 
     fn zoom_by(&self, factor: f64) {
         let Some(scale) = self.current_scale() else { return };
-        self.imp().zoom.set((scale * factor).clamp(MIN_SCALE, MAX_SCALE));
+        self.imp().zoom.set(self.zoomed(scale, factor));
         self.imp().fit.set(None);
         self.ease();
     }
@@ -509,6 +583,7 @@ impl ImageCanvas {
             Some(Fit::Window) => fitted((view_width / texture_width).min(view_height / texture_height)),
             Some(Fit::Width) => view_width / texture_width,
             Some(Fit::Height) => view_height / texture_height,
+            Some(Fit::Fill) => (view_width / texture_width).max(view_height / texture_height),
             Some(Fit::Original) => 1.0,
             None => self.imp().zoom.get(),
         })
@@ -578,5 +653,73 @@ impl ImageCanvas {
         snapshot.pop();
         snapshot.append_color(&DIM, &whole);
         snapshot.pop();
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+
+    /// A canvas of 800 by 600 showing a 2000 by 1000 picture.
+    fn canvas() -> ImageCanvas {
+        let canvas = ImageCanvas::default();
+        canvas.allocate(800, 600, -1, None);
+        let bytes = glib::Bytes::from_owned(vec![0u8; 2000 * 1000 * 4]);
+        canvas.set_texture(Some(gdk::MemoryTexture::new(2000, 1000, gdk::MemoryFormat::R8g8b8a8, &bytes, 2000 * 4).upcast()));
+        canvas
+    }
+
+    fn scale(canvas: &ImageCanvas) -> f64 {
+        canvas.target_view().expect("a view").scale
+    }
+
+    fn offset(canvas: &ImageCanvas) -> (f64, f64) {
+        canvas.target_view().expect("a view").offset
+    }
+
+    pub(crate) fn run_scenarios() {
+        let canvas = canvas();
+        canvas.set_smooth_scrolling(false);
+        assert!((scale(&canvas) - 0.4).abs() < 1e-9, "fits the window by default");
+
+        canvas.set_fit(Fit::Fill);
+        assert!((scale(&canvas) - 0.6).abs() < 1e-9, "fill covers the window, so the larger of the two scales");
+        assert_eq!(Fit::Height.next(), Fit::Fill, "fill comes between height and original size");
+        assert_eq!(Fit::from_name("fill"), Some(Fit::Fill));
+
+        // With the minimum locked, zooming out stops at the picture's own size, and a fit smaller than that stays put.
+        canvas.set_fit(Fit::Window);
+        canvas.zoom_out();
+        assert!((scale(&canvas) - 0.4).abs() < 1e-9, "a fit below 100% does not jump up when zooming out");
+        canvas.zoom_in();
+        assert!((scale(&canvas) - 0.5).abs() < 1e-9, "zooming in still works from a fit");
+        canvas.set_fit(Fit::Original);
+        canvas.zoom_in();
+        canvas.zoom_out();
+        canvas.zoom_out();
+        assert!((scale(&canvas) - 1.0).abs() < 1e-9, "locked, zooming out stops at 100%");
+        canvas.set_minimum_unlocked(true);
+        canvas.zoom_out();
+        assert!(scale(&canvas) < 1.0, "unlocked, zooming out goes below 100%");
+        canvas.set_minimum_unlocked(false);
+
+        // At its own size the picture sits where the focus says.
+        canvas.set_original_focus(OriginalFocus::Center);
+        canvas.set_fit(Fit::Original);
+        assert_eq!(offset(&canvas), (0.0, 0.0), "centred");
+        canvas.set_original_focus(OriginalFocus::Top);
+        canvas.set_fit(Fit::Original);
+        assert_eq!(offset(&canvas), (0.0, 200.0), "its top edge at the top of the view");
+
+        // At the cursor, the point under the pointer stays under it.
+        canvas.set_original_focus(OriginalFocus::Cursor);
+        canvas.set_fit(Fit::Window);
+        canvas.imp().pointer.set(Some((700.0, 100.0)));
+        canvas.set_fit(Fit::Original);
+        assert_eq!(offset(&canvas), (-450.0, 200.0), "scaled about the pointer, then held within the view's edges");
+        canvas.imp().pointer.set(None);
+        canvas.set_fit(Fit::Window);
+        canvas.set_fit(Fit::Original);
+        assert_eq!(offset(&canvas), (0.0, 0.0), "with no pointer, centred");
     }
 }

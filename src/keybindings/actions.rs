@@ -306,7 +306,7 @@ pub const ACTIONS: &[ActionInfo] = &[
         name: "image.zoom-out-at-pointer", description: "Shrink the picture, keeping the point under the pointer in place.", icon: "zoom-out-symbolic", label: "Zoom Out at Pointer", contexts: &[Scope::Global, Scope::Image], defaults: &[],
     },
     ActionInfo {
-        name: "image.fit-cycle", description: "Switch to the next fit mode: window, width, height, then original size.", icon: "zoom-fit-best-symbolic", label: "Cycle Fit Mode", contexts: &[Scope::Global, Scope::Image], defaults: &["f"],
+        name: "image.fit-cycle", description: "Switch to the next fit mode: window, width, height, fill, then original size.", icon: "zoom-fit-best-symbolic", label: "Cycle Fit Mode", contexts: &[Scope::Global, Scope::Image], defaults: &["f"],
     },
     ActionInfo {
         name: "image.fit-window", description: "Scale the picture to fit the window.", icon: "zoom-fit-best-symbolic", label: "Fit Window", contexts: &[Scope::Global, Scope::Image], defaults: &["1"],
@@ -316,6 +316,9 @@ pub const ACTIONS: &[ActionInfo] = &[
     },
     ActionInfo {
         name: "image.fit-height", description: "Scale the picture to the height of the window.", icon: "zoom-fit-best-symbolic", label: "Fit Height", contexts: &[Scope::Global, Scope::Image], defaults: &["3"],
+    },
+    ActionInfo {
+        name: "image.fit-fill", description: "Scale the picture to cover the window, cropping what overhangs.", icon: "zoom-fit-best-symbolic", label: "Fill Window", contexts: &[Scope::Global, Scope::Image], defaults: &["5"],
     },
     ActionInfo {
         name: "image.fit-original", description: "Show the picture at its own size.", icon: "zoom-original-symbolic", label: "Original Size", contexts: &[Scope::Global, Scope::Image], defaults: &["4"],

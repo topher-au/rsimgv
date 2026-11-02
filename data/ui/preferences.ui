@@ -507,12 +507,6 @@
                               </object>
                             </child>
                             <child>
-                              <object class="AdwSwitchRow" id="blurred_background_row">
-                                <property name="title">Blurred background behind images</property>
-                                <property name="subtitle">A zoomed, cropped, dimmed and blurred copy of the picture fills the viewer behind it.</property>
-                              </object>
-                            </child>
-                            <child>
                               <object class="AdwSwitchRow" id="viewer_status_bar_row">
                                 <property name="title">Status bar</property>
                                 <property name="subtitle">Shows the item's position, name, resolution, frame rate and file size under it</property>
@@ -598,17 +592,19 @@
                         <property name="icon-name">image-x-generic-symbolic</property>
                         <child>
                           <object class="AdwPreferencesGroup">
+                            <property name="title">Fit</property>
                             <child>
                               <object class="AdwComboRow" id="image_fit_row">
-                                <property name="title">Image fit</property>
+                                <property name="title">Default fit</property>
                                 <property name="subtitle">How a picture is sized when it opens</property>
                                 <property name="model">
                                   <object class="GtkStringList">
                                     <items>
                                       <item>Fit to window</item>
-                                      <item>Fit to width</item>
-                                      <item>Fit to height</item>
-                                      <item>Original size</item>
+                                      <item>Stretch to width</item>
+                                      <item>Stretch to height</item>
+                                      <item>Stretch to window</item>
+                                      <item>One-to-one</item>
                                     </items>
                                   </object>
                                 </property>
@@ -616,20 +612,21 @@
                             </child>
                             <child>
                               <object class="AdwSwitchRow" id="keep_fit_mode_row">
-                                <property name="title">Keep fit mode when switching images</property>
-                                <property name="subtitle">Otherwise each image fits the window. Zoom is always reset.</property>
+                                <property name="title">Maintain fit mode when switching images</property>
+                                <property name="subtitle">Otherwise each image opens in the default fit. Zoom is always reset.</property>
                               </object>
                             </child>
                             <child>
-                              <object class="AdwSpinRow" id="zoom_step_row">
-                                <property name="title">Zoom step</property>
-                                <property name="subtitle">How much, in percent, each zoom in or out changes the size</property>
-                                <property name="adjustment">
-                                  <object class="GtkAdjustment">
-                                    <property name="lower">5</property>
-                                    <property name="upper">100</property>
-                                    <property name="step-increment">5</property>
-                                    <property name="page-increment">25</property>
+                              <object class="AdwComboRow" id="original_focus_row">
+                                <property name="title">One-to-one focus</property>
+                                <property name="subtitle">Where a picture sits when shown at its own size: its top, its centre, or the point under the pointer</property>
+                                <property name="model">
+                                  <object class="GtkStringList">
+                                    <items>
+                                      <item>Top</item>
+                                      <item>Center</item>
+                                      <item>At cursor</item>
+                                    </items>
                                   </object>
                                 </property>
                               </object>
@@ -658,6 +655,31 @@
                                     </property>
                                   </object>
                                 </child>
+                              </object>
+                            </child>
+                          </object>
+                        </child>
+                        <child>
+                          <object class="AdwPreferencesGroup">
+                            <property name="title">Zoom</property>
+                            <child>
+                              <object class="AdwSwitchRow" id="unlock_minimum_zoom_row">
+                                <property name="title">Unlock minimum zoom</property>
+                                <property name="subtitle">Off, zooming out stops at 100%, the picture's own size</property>
+                              </object>
+                            </child>
+                            <child>
+                              <object class="AdwSpinRow" id="zoom_step_row">
+                                <property name="title">Zoom step</property>
+                                <property name="subtitle">How much, in percent, each zoom in or out changes the size</property>
+                                <property name="adjustment">
+                                  <object class="GtkAdjustment">
+                                    <property name="lower">5</property>
+                                    <property name="upper">100</property>
+                                    <property name="step-increment">5</property>
+                                    <property name="page-increment">25</property>
+                                  </object>
+                                </property>
                               </object>
                             </child>
                             <child>
@@ -704,6 +726,17 @@
                               <object class="AdwSwitchRow" id="smooth_upscaling_row">
                                 <property name="title">Smooth upscaling</property>
                                 <property name="subtitle">Off draws enlarged pictures with sharp pixels, whatever the filter</property>
+                              </object>
+                            </child>
+                          </object>
+                        </child>
+                        <child>
+                          <object class="AdwPreferencesGroup">
+                            <property name="title">Background</property>
+                            <child>
+                              <object class="AdwSwitchRow" id="blurred_background_row">
+                                <property name="title">Blurred background behind images</property>
+                                <property name="subtitle">A zoomed, cropped, dimmed and blurred copy of the picture fills the viewer behind it.</property>
                               </object>
                             </child>
                           </object>
