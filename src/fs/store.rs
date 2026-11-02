@@ -389,6 +389,51 @@ mod tests {
     }
 
     #[test]
+    fn a_reader_joining_a_read_in_progress_gets_every_entry_before_the_end() {
+        let dir = folder("late-join", 250);
+        let ctx = glib::MainContext::new();
+        ctx.with_thread_default(|| {
+            let store = FileStore::default();
+            let joined = Rc::new(RefCell::new(None));
+            let seen = Rc::new(RefCell::new(0));
+            let at_end = Rc::new(Cell::new(None));
+            let done = Rc::new(Cell::new(false));
+            let first = {
+                let (store, joined, seen, at_end, done) = (store.clone(), joined.clone(), seen.clone(), at_end.clone(), done.clone());
+                let batches = Rc::new(Cell::new(0));
+                let folder = dir.clone();
+                store.clone().read(
+                    &dir,
+                    move |batch: &[FileEntry]| {
+                        batches.set(batches.get() + 1);
+                        // Joins after the first batch, while the rest of the folder is still being read.
+                        if batches.get() == 1 && joined.borrow().is_none() {
+                            let (seen, at_end, done) = (seen.clone(), at_end.clone(), done.clone());
+                            let late = store.read(
+                                &folder,
+                                {
+                                    let seen = seen.clone();
+                                    move |batch: &[FileEntry]| *seen.borrow_mut() += batch.len()
+                                },
+                                move |_| {
+                                    at_end.set(Some(*seen.borrow()));
+                                    done.set(true);
+                                },
+                            );
+                            *joined.borrow_mut() = Some(late);
+                        }
+                    },
+                    |_| {},
+                )
+            };
+            run_until(&ctx, "late join", || done.get());
+            assert_eq!(at_end.get(), Some(250), "every entry arrives before the end is reported");
+            drop(first);
+        })
+        .unwrap();
+    }
+
+    #[test]
     fn cancelling_the_last_reader_drops_the_read() {
         let dir = folder("cancel", 250);
         let ctx = glib::MainContext::new();
