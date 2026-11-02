@@ -13,6 +13,8 @@ mod imp {
     pub struct FileEntry {
         pub(super) path: OnceCell<PathBuf>,
         pub(super) info: OnceCell<gio::FileInfo>,
+        /// The display name, kept so that sorting compares names without making a copy of each one.
+        pub(super) name: OnceCell<String>,
     }
 
     #[glib::object_subclass]
@@ -31,6 +33,7 @@ glib::wrapper! {
 impl FileEntry {
     pub fn new(path: PathBuf, info: gio::FileInfo) -> Self {
         let entry: Self = glib::Object::new();
+        let _ = entry.imp().name.set(info.display_name().to_string());
         let _ = entry.imp().path.set(path);
         let _ = entry.imp().info.set(info);
         entry
@@ -45,7 +48,12 @@ impl FileEntry {
     }
 
     pub fn name(&self) -> String {
-        self.info().display_name().to_string()
+        self.sort_name().to_owned()
+    }
+
+    /// The display name, borrowed.
+    pub fn sort_name(&self) -> &str {
+        self.imp().name.get().expect("name is set in new")
     }
 
     pub fn is_dir(&self) -> bool {

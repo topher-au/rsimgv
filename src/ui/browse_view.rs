@@ -655,7 +655,6 @@ mod imp {
         pub(super) loading: Cell<bool>,
         /// Whether the saved scroll position is still being restored after a folder lists.
         pub(super) restoring_scroll: Cell<bool>,
-        /// What to do once the folder has listed, such as selecting its first picture or video.
         /// What runs once the folder it is for has listed, with that folder.
         pub(super) pending: RefCell<Option<(PathBuf, Box<dyn FnOnce(&super::BrowseView)>)>>,
         /// The sorted model, so its sorter can be set aside while a folder lists.
@@ -843,7 +842,7 @@ mod imp {
                         (true, _) => 0,
                         (false, is_dir) => u8::from(!is_dir),
                     };
-                    let order = compare_by(settings.by, a, b).then_with(|| natural_cmp(&a.name(), &b.name()));
+                    let order = compare_by(settings.by, a, b).then_with(|| natural_cmp(a.sort_name(), b.sort_name()));
                     let order = if settings.descending { order.reverse() } else { order };
                     match rank(a).cmp(&rank(b)).then(order) {
                         std::cmp::Ordering::Less => gtk::Ordering::Smaller,
