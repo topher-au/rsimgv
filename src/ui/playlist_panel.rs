@@ -73,7 +73,6 @@ impl PlaylistPanel {
 
         let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
         content.set_width_request(PANEL_WIDTH);
-        content.add_css_class("rsimgv-playlist");
         content.append(&heading);
         let (transport, shuffle) = transport_row();
         content.append(&transport);
