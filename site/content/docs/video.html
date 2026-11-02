@@ -1,0 +1,74 @@
+title: Playing video
+desc: Video playback in rsimgv with libmpv or GStreamer: controls, the seek overlay, speed, volume, remembered positions and mpv options.
+---
+<p class="lead">Videos open in the same viewer as pictures. Playback is by libmpv unless you choose GTK's own GStreamer backend, and everything you do to a video is an action you can bind to a key.</p>
+
+{{shot video-viewer "A video playing, with the seek overlay at the top and the controls at the bottom"}}
+
+<h2>Controls</h2>
+<p>Move the pointer toward the bottom of the viewer (the lowest fifth of it) and the video's controls appear: previous, play or pause, stop, next, a position slider with the elapsed and remaining time, fullscreen, auto-advance, and a mute button with a volume slider. <kbd>P</kbd> pins the controls so they stay shown.</p>
+
+<table>
+<thead><tr><th>Action</th><th>Default key</th><th>What it does</th></tr></thead>
+<tbody>
+<tr><td>Play / Pause</td><td><kbd>Space</kbd></td><td>Plays the video, or pauses it while it plays.</td></tr>
+<tr><td>Seek Forward / Backward</td><td><kbd>→</kbd> / <kbd>←</kbd></td><td>Skips 5 seconds.</td></tr>
+<tr><td>Volume Up / Down</td><td><kbd>↑</kbd> / <kbd>↓</kbd></td><td>Raises or lowers the volume by 5%.</td></tr>
+<tr><td>Mute</td><td><kbd>M</kbd></td><td>Mutes the sound, or unmutes it.</td></tr>
+<tr><td>Toggle Repeat</td><td><kbd>R</kbd></td><td>Plays the video again from the start when it ends.</td></tr>
+<tr><td>Toggle Auto-Advance</td><td><kbd>N</kbd></td><td>When a video ends, shows the next item in the folder.</td></tr>
+</tbody>
+</table>
+
+<h3>Bindings that take a value</h3>
+<p>Four actions have no default key because each binding supplies its own amount. In the keybinding editor, choose the action, press a key, and set the value:</p>
+<table>
+<thead><tr><th>Action</th><th>Value</th><th>Example</th></tr></thead>
+<tbody>
+<tr><td><code>video.seek</code></td><td>Seconds, −3600 to 3600; negative goes back.</td><td><kbd>Shift</kbd>+<kbd>→</kbd> seeks +30 s.</td></tr>
+<tr><td><code>video.volume</code></td><td>Percent change, −100 to 100.</td><td>+10% on <kbd>Shift</kbd>+<kbd>↑</kbd>.</td></tr>
+<tr><td><code>video.set-speed</code></td><td>A multiple of normal speed, 0.05 to 16.</td><td><kbd>1</kbd> sets 1×, <kbd>2</kbd> sets 2×.</td></tr>
+<tr><td><code>video.adjust-speed</code></td><td>Percent change, e.g. +25 for 0.25× faster.</td><td><kbd>]</kbd> speeds up, <kbd>[</kbd> slows down.</td></tr>
+</tbody>
+</table>
+<p>The same speed is reported by <code>view.info</code> in the <a href="remote-control.html">remote control interface</a>, along with the position, duration and frame rate.</p>
+
+<h2>The seek overlay</h2>
+<p>When you skip through a video, a progress bar and the time appear over it. It shows where you will land, so you can tap the key repeatedly and watch it move. The <em>Overlay</em> tab of the video preferences sets it up:</p>
+{{shot prefs-videos-overlay "The Overlay tab of the video preferences"}}
+<dl>
+  <dt>Show an overlay when skipping</dt><dd>The master switch.</dd>
+  <dt>Position</dt><dd>One of six places: top, bottom, left or right corners, or centred at the top or bottom.</dd>
+  <dt>Progress bar, and its width</dt><dd>On by default, 360 pixels wide, from 120 to 1200.</dd>
+  <dt>Time, and its format</dt><dd><code>elapsed-total</code> (0:13 / 0:20), <code>remaining-total</code>, <code>elapsed</code> or <code>remaining</code>.</dd>
+  <dt>Time shown</dt><dd>How long the overlay stays up after a skip, 0.5 to 10 seconds, 2 by default.</dd>
+  <dt>Always show while playing</dt><dd>Keeps the overlay up for as long as a video plays, instead of only after a skip.</dd>
+</dl>
+
+<h2>Remembered position and speed</h2>
+<p>rsimgv remembers where you left a video and the speed you were playing it at, and resumes from there next time. If you left it within two seconds of the start or the end, it starts from the beginning instead. The memory is keyed by the file's contents rather than its name, so it survives moving or renaming; see <a href="files.html#per-file-settings">per-file settings</a>.</p>
+
+<h2>Previews in the browse grid</h2>
+<p>In the browse grid a video's thumbnail is a frame a tenth of the way in, and resting the pointer on it plays a strip of frames spread through the video, made with <code>ffmpeg</code>. <em>Video frame previews</em> in <em>Browsing → Thumbnails</em> turns that off.</p>
+{{shot browse-videos "Video thumbnails in the browse grid"}}
+
+<h2>Choosing the backend</h2>
+<p><em>Player backend</em> on the <em>Player</em> tab of the video preferences chooses what plays videos. The change applies to the next video you open.</p>
+{{shot prefs-videos "The Videos page of the preferences"}}
+<dl>
+  <dt><code>mpv</code> (default)</dt><dd>libmpv, rendered in software into memory for GTK to show. SVP and mpv options apply to this backend.</dd>
+  <dt><code>gtk</code></dt><dd>GStreamer, through GTK's own media backend.</dd>
+</dl>
+
+<h2>Configuring mpv</h2>
+<p>rsimgv starts mpv with sensible defaults: no window of its own, hardware decoding set to <code>auto-safe</code>, <code>keep-open</code> so a finished video stays on its last frame, no on-screen controller, and mpv's default key bindings off, because rsimgv handles the keys. Two places let you change that:</p>
+<ol>
+  <li><strong>mpv options</strong> in <em>Videos → Player</em> take mpv command-line options such as <code>--hwdec=auto-copy</code>. Options that would give mpv a window of its own (<code>vo</code>, <code>wid</code>, <code>gpu-context</code>, <code>fs</code>, <code>fullscreen</code>) are ignored.</li>
+  <li><strong><code>mpv.conf</code></strong> in <code>~/.config/rsimgv/mpv/</code> is an ordinary mpv config file kept with rsimgv's settings, along with mpv's scripts. rsimgv watches it, and players made after a change use the new options.</li>
+</ol>
+
+<h3>Driving mpv directly</h3>
+<p>Each player listens for mpv's JSON IPC on <code>/tmp/rsimgv-mpv-&lt;pid in hex&gt;</code> unless your options name another socket, so tools that speak mpv's protocol can reach it. The socket appears only once a video has been opened.</p>
+
+<h2>Rotated videos</h2>
+<p>libmpv's software renderer cannot rotate frames, and a quarter turn makes it fail. rsimgv leaves the renderer's rotation off and turns such videos upright with a filter instead, so a phone video shot in portrait plays the right way up.</p>

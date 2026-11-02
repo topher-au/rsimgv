@@ -1,0 +1,85 @@
+title: Browsing folders
+desc: The folder tree, the browse grid, selection, sorting, filtering, thumbnails and folder previews in rsimgv.
+---
+<p class="lead">The browse view shows the current folder as a grid of folders and files. Beside it, the sidebar's folder tree lets you jump anywhere on the file system.</p>
+
+{{shot browse-grid "The browse grid, the folder tree and the status pill at the bottom right"}}
+
+<h2>The folder tree</h2>
+<p>The tree is rooted at <code>/</code>. Folders expand on demand, so opening a deep path never walks the whole disk. Selecting a folder in the tree browses it and reveals its path; a path is framed so that the folder and as many of its children as fit are on screen.</p>
+<ul>
+  <li><strong>Click</strong> a folder to browse it, or its arrow to expand or collapse it. <strong>Double-click</strong> toggles expansion too.</li>
+  <li><strong>Middle-click</strong> a folder to open it in a background tab.</li>
+  <li>By default, expanding a folder leaves the others open. Turn on <em>Collapse other folders when navigating</em> (<code>browse.collapse-on-navigate</code>) to close the folders outside the current path each time you move.</li>
+  <li>Drag the edge between the sidebar and the content to resize it. The width is remembered.</li>
+  <li><kbd>F9</kbd> shows or hides the sidebar.</li>
+</ul>
+
+<h2>The browse grid</h2>
+<p>Folders come first, then files, each in natural name order, so numbered files sort the way you expect. The grid lays out only the items on screen, which keeps folders with thousands of entries responsive. A pill at the bottom right says what is selected and how large it is.</p>
+
+<h3>Moving and opening</h3>
+<table>
+<thead><tr><th>To</th><th>Do</th></tr></thead>
+<tbody>
+<tr><td>Move the cursor</td><td>Arrow keys, or <kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd></td></tr>
+<tr><td>Page up or down</td><td><kbd>Page Up</kbd> / <kbd>Page Down</kbd></td></tr>
+<tr><td>First or last item</td><td><kbd>Home</kbd> / <kbd>End</kbd></td></tr>
+<tr><td>Open the item</td><td>Double-click, <kbd>Enter</kbd> or <kbd>E</kbd>. A folder is browsed; a picture or video opens in the viewer.</td></tr>
+<tr><td>Go to the parent folder</td><td><kbd>Q</kbd> or <kbd>Backspace</kbd>, or <kbd>Alt</kbd>+<kbd>↑</kbd></td></tr>
+</tbody>
+</table>
+<p>Entering a folder with nothing chosen starts the cursor on its first item.</p>
+
+<h3>Selecting several items</h3>
+<p><kbd>Ctrl</kbd>-click toggles an item's mark, <kbd>Shift</kbd>-click marks the range to it, and <kbd>Ctrl</kbd>+<kbd>A</kbd> marks every item. Clicking on empty space clears the marks. Marked items are what a drag carries, and what actions act on together.</p>
+
+<h3>Dragging to other applications</h3>
+<p>Drag an item out of the grid and other applications receive it as a file, as the <code>text/uri-list</code> of its location. If the item is one of the marked ones, the whole marked set travels. A list of files dropped onto rsimgv is read back the same way.</p>
+
+<h2>What is listed</h2>
+<dl>
+  <dt>Media only</dt><dd>By default only pictures and videos appear, plus folders. Turn <code>browse.media-only</code> off, or press <kbd>Ctrl</kbd>+<kbd>M</kbd>, to see every file.</dd>
+  <dt>Hidden files</dt><dd>Hidden files and folders are not listed unless you turn on <code>browse.show-hidden</code> from the main menu or with <kbd>Ctrl</kbd>+<kbd>H</kbd>.</dd>
+  <dt>Directories</dt><dd><code>browse.show-directories</code> chooses where folders go: <code>first-last</code> puts them before the files when the order is ascending and after when it is descending, <code>inline</code> sorts them among the files, and <code>none</code> hides them.</dd>
+</dl>
+
+<h2>Sorting</h2>
+<p>The sort menu in the header sorts by <em>Alphabetical</em>, <em>Modification Time</em>, <em>Size</em> or <em>Type</em>, ascending or descending. By default a choice changes the default for every folder. Turn on <em>Remember folder sort settings</em> (<code>navigation.remember-folder-sort</code>) and the menu changes only the folder you are in, which keeps that sort the next time you open it; folders without one use the default sort and order from <em>General → Folder Navigation</em>.</p>
+<p>Remembered sorts are kept in <code>folder_sort.yaml</code>; see <a href="files.html">Files and folders</a>.</p>
+
+<h2>Item appearance</h2>
+{{shot prefs-browsing-items "Browsing preferences: items"}}
+<dl>
+  <dt>Item size</dt><dd>The size in pixels of each item's picture or icon, from 32 to 2048. <kbd>Ctrl</kbd>+<kbd>=</kbd> and <kbd>Ctrl</kbd>+<kbd>-</kbd> make items larger and smaller.</dd>
+  <dt>Filename</dt><dd>Names can be <code>ellipsized</code>, <code>wrapped</code> over two lines, or hidden (<code>off</code>).</dd>
+  <dt>Item info</dt><dd>A line under the name with the details you choose, in the order you set, laid out <code>inline</code> separated by bullets, <code>stacked</code> one per line, or <code>disabled</code>. Fields are size, modified time, content type, resolution, duration, frame rate, codec, bit rate and audio.</dd>
+  <dt>Crop thumbnails</dt><dd>Fill each item's square with its picture, cutting off the edges, instead of fitting the whole picture in.</dd>
+  <dt>Tooltip</dt><dd>Resting the pointer on an item shows its description: name, type, path, size and modification time. A selection keeps the previews until the pointer moves, and <code>browse.show-tooltip</code> can be bound to a key to show the tooltip for the item under the cursor.</dd>
+</dl>
+
+<h2>Thumbnails</h2>
+<p>Pictures and videos show a thumbnail. They are made in the background, a few at a time, by a pool of threads, and a request that no item on screen wants any more is dropped before it runs, so scrolling past thousands of items does not queue up work.</p>
+{{shot prefs-browsing-thumbnails "Browsing preferences: thumbnails"}}
+<ul>
+  <li>A <strong>video</strong>'s still thumbnail is a frame a tenth of the way in. With <em>Video frame previews</em> on, resting the pointer on a video plays a sequence of frames spread through it. They come from <code>ffmpeg</code> and are cached.</li>
+  <li>Thumbnails are cached on disk in <code>~/.cache/rsimgv</code>, so they are not made again the next time they are shown. A thumbnail is reused while the file's modification time is unchanged, and thumbnails not made for a while are swept away at start-up.</li>
+  <li>Thumbnails that scroll out of view can be released from memory and loaded again when they return. Both the cache and this release are settings under <em>Advanced</em>.</li>
+  <li>How many thumbnails are made at the same time is the <em>Thread count</em>, at most the number of threads on the system.</li>
+</ul>
+
+<h2>Folder previews</h2>
+<p>With <em>Show folder previews</em> on, each folder's icon carries a cascade of the first pictures and videos inside it.</p>
+{{shot folder-previews "Folders with previews of the pictures inside them"}}
+<ul>
+  <li><strong>Folder previews</strong> sets the most pictures and videos shown, from 1 to 12.</li>
+  <li><strong>Fit previews to pictures</strong> shows as many as their dimensions allow instead of a set number.</li>
+  <li><strong>Cycle folder previews</strong> steps the preview through the folder's media while the pointer is over the folder, or while it is the item last selected and the pointer is over none.</li>
+</ul>
+{{shot prefs-browsing-folders "Browsing preferences: folders and folder previews"}}
+
+<h2>Related</h2>
+<ul>
+  <li><a href="navigation.html">Navigation, tabs and bookmarks</a> for moving between folders.</li>
+  <li><a href="settings.html#browsing">Settings reference: browsing</a> for every option and its default.</li>
+</ul>

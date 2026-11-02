@@ -1,0 +1,72 @@
+title: Keybindings and mouse
+desc: How rsimgv's contextual keybindings work, every action with its default keys, the keybinding editor and mouse options.
+---
+<p class="lead">Every key press is resolved against a table of bindings that depends on where you are. The same key can move the cursor in the browse view, pan a picture, and raise the volume of a video.</p>
+
+{{shot keybinds-overlay-viewer "F1 shows the keybindings in force where you are"}}
+
+<h2>Contexts</h2>
+<p>A binding belongs to a <strong>context</strong>. There are five, and a more specific context wins when two of them bind the same key:</p>
+<table>
+<thead><tr><th>Context</th><th>Active</th><th>Specificity</th></tr></thead>
+<tbody>
+<tr><td><strong>Global</strong></td><td>Everywhere.</td><td>Least specific</td></tr>
+<tr><td><strong>Browsing</strong></td><td>While you browse a folder.</td><td>More specific</td></tr>
+<tr><td><strong>Viewer</strong></td><td>In the viewer, whatever it shows.</td><td>More specific</td></tr>
+<tr><td><strong>Picture</strong></td><td>While the viewer shows a picture.</td><td>Most specific</td></tr>
+<tr><td><strong>Video</strong></td><td>While the viewer shows a video.</td><td>Most specific</td></tr>
+</tbody>
+</table>
+<p>That is why <kbd>↑</kbd> pans a picture up and raises a video's volume: <code>image.pan-up</code> is bound in <em>Picture</em> and <code>video.volume-up</code> in <em>Video</em>. Picture and Video sit inside Viewer, so a viewer binding applies to both unless one of them binds the same key itself.</p>
+<p>An action has a home context, which its name's prefix gives (<code>browse.</code>, <code>view.</code>, <code>image.</code>, <code>video.</code>, or <code>win.</code> and <code>app.</code> for Global). Actions that act on the window can be bound in any context. Actions that need what they act on, such as the browse cursor, a picture or a video, can be bound where that is, or in Global. Viewer actions can be bound in the viewer as a whole, or only for pictures or only for videos. Two settings that change what the viewer lists as well, hidden files and media-only, can be bound anywhere.</p>
+
+<h2>See what is bound: F1</h2>
+<p>Press <kbd>F1</kbd> to show a list of the keybindings in force where you are: the ones for browsing, or for the viewer, a picture or a video, and the global ones. The list sits in a corner, lets clicks through, and moves away from the pointer when it gets near. Press <kbd>F1</kbd> again to hide it.</p>
+{{shot keybinds-overlay-browse "F1 while browsing"}}
+
+<h2>The keybinding editor</h2>
+<p>Open it with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>,</kbd> or from <em>Preferences → Controls → Keyboard</em>.</p>
+{{shot prefs-keybindings "The Keyboard page of the preferences"}}
+<ul>
+  <li>Every action is listed with its icon, description, context and keys.</li>
+  <li>The search box at the bottom filters by action name or shortcut.</li>
+  <li>Add a key with <strong>+</strong>, press the combination you want, and choose its context. If it conflicts with a binding that could also be pressed in an overlapping context, you are told.</li>
+  <li>Some actions take extra settings per binding: the seconds, percentage or speed of the video actions, the script to run, or a notification's message, level and duration.</li>
+  <li><strong>Undo</strong> steps back through your edits.</li>
+</ul>
+<p>Only the chords that differ from the defaults are saved, to <code>keybindings.yaml</code>, so new default keys in later versions still reach you for the actions you have not touched.</p>
+
+<h3>The bindings file</h3>
+<p>The file sits beside the settings file. A plain chord is a string; a binding with a value, a script, a notification or a non-default context is a mapping with a <code>key</code> and the extra fields.</p>
+<pre><code>schema: 1
+actions:
+  view.next:
+    - period
+    - key: space
+      context: image
+  video.seek:
+    - key: shift+right
+      value: 30
+  script:
+    - key: ctrl+shift+r
+      script: Reveal in file manager
+  win.notify:
+    - key: ctrl+shift+n
+      message: Hello from rsimgv
+      level: success
+      seconds: 3</code></pre>
+<p>Chords are written as modifiers joined with <code>+</code> to a key name, such as <code>ctrl+shift+equal</code>, <code>alt+left</code> or <code>page_down</code>. Modifiers are <code>ctrl</code>, <code>alt</code>, <code>shift</code> and <code>super</code>, in any order and case. The <code>context</code> of a binding is one of <code>global</code>, <code>browse</code>, <code>view</code>, <code>image</code> or <code>video</code>; leave it out for the action's own. The editor writes this file for you.</p>
+
+<h2>Mouse and scroll wheel</h2>
+<p>The <em>Mouse</em> tab of <em>Controls</em> sets what the side buttons and the wheel do.</p>
+{{shot prefs-mouse "Mouse and scrolling preferences"}}
+<dl>
+  <dt>Back button, Forward button</dt><dd>One of <code>back</code>, <code>up</code>, <code>previous</code>, <code>next</code>, <code>forward</code> or <code>none</code>. By default back and forward go through the folder history.</dd>
+  <dt>Scrolling on images</dt><dd><code>ctrl-zoom</code> (the default) zooms while <kbd>Ctrl</kbd> is held, <code>zoom</code> zooms always, <code>step</code> steps between items, <code>none</code> does nothing.</dd>
+  <dt>Scrolling on videos</dt><dd><code>volume</code>, <code>seek</code>, <code>step</code> between items, or <code>none</code> (the default).</dd>
+  <dt>Scroll speed</dt><dd>How far each notch of the wheel moves, as a percentage of the normal amount, from 10 to 400.</dd>
+</dl>
+
+<h2>Every action and its default keys</h2>
+<p>This table is generated from the source, so it lists every action rsimgv has. The names in <code>code</code> are what the <a href="remote-control.html#actions">remote control interface</a> and <code>keybindings.yaml</code> use.</p>
+{{include _keybindings.html}}

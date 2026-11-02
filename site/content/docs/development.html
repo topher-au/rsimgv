@@ -1,0 +1,63 @@
+title: Development
+desc: Source layout, building, testing and the technology behind rsimgv.
+---
+<p class="lead">rsimgv is written in Rust with GTK 4 and libadwaita. It is free software under the GPL-3.0-or-later, and its source is on git.topher.au.</p>
+
+<h2>Source</h2>
+<ul>
+  <li><a href="https://git.topher.au/topher/rsimgv">git.topher.au/topher/rsimgv</a>, the main repository.</li>
+  <li><a href="https://github.com/topher-au/rsimgv">github.com/topher-au/rsimgv</a>, a mirror of the main branch.</li>
+</ul>
+
+<h2>Technology</h2>
+<table>
+<thead><tr><th>Part</th><th>Used for</th></tr></thead>
+<tbody>
+<tr><td>Rust, <code>gtk4</code> 0.11 and <code>libadwaita</code> 0.9</td><td>The application and its interface.</td></tr>
+<tr><td>Meson</td><td>The build, which runs Cargo, compiles the stylesheets with <code>sassc</code>, builds the GResource bundle and installs everything.</td></tr>
+<tr><td>GSettings with a custom backend</td><td>Settings, stored as YAML. The backend is a GObject subclass in C (<code>src/settings/backend.c</code>) because the Rust bindings do not expose what is needed to subclass <code>GSettingsBackend</code>.</td></tr>
+<tr><td>libmpv</td><td>Video playback, rendered in software into memory.</td></tr>
+<tr><td>OpenCV</td><td>Bicubic resampling and sharpening of pictures.</td></tr>
+<tr><td><code>serde_yaml_ng</code>, <code>serde_json</code></td><td>The YAML files and the JSON interface.</td></tr>
+<tr><td>VapourSynth and SVP plugins</td><td>Optional frame interpolation.</td></tr>
+</tbody>
+</table>
+
+<h2>Project layout</h2>
+<pre><code>src/
+  main.rs            application startup, actions, icon theme registration
+  fs/                directory entries, lazy tree nodes, natural sort, thumbnails
+  settings/          GSettings backend (backend.c) and YAML storage (store.rs)
+  keybindings/       the action catalogue, chords and the binding table
+  mpv/               a safe wrapper over libmpv
+  ui/                widgets: window, folder tree, browse view, item grid, path bar,
+                     navigation bar, viewer, thumbnail bar, preferences, overlays
+  ipc.rs, remote.rs  the JSON interface and the methods it offers
+  svp.rs, svp_manager.rs  SVP integration
+  bookmarks.rs, folder_sort.rs, file_settings.rs, scripts.rs
+data/
+  ui/                GTK XML templates for every window and widget
+  style/             SCSS, compiled to CSS at build time
+  icons/             application and symbolic icons (hicolor theme layout)
+  *.gschema.xml      GSettings schema
+  rsimgv.gresource.xml  bundle manifest
+build-aux/           build helper that runs cargo from Meson
+scripts/             build, install, dist and test helpers
+packaging/arch/      PKGBUILD</code></pre>
+
+<h2>Building and testing</h2>
+<pre><code>./dev.sh          # rebuild and run rsimgv
+./dev.sh test     # rebuild and run the test suite
+scripts/test.sh   # the same, or only tests whose names contain an argument</code></pre>
+<p>The tests need a display. On a machine without one, <code>scripts/test.sh</code> runs them under <code>xvfb-run -a</code>. They run on a single thread, because GTK runs on one.</p>
+
+<h2>Design notes</h2>
+<ul>
+  <li><strong>The browse grid is its own widget.</strong> Only the items on screen have widgets, rows are filled left to right and the block of rows is centred, so folders with many files stay responsive.</li>
+  <li><strong>Thumbnails are demand-driven.</strong> A few are made at a time, and a request that nothing on screen wants any more is dropped before it runs.</li>
+  <li><strong>Everything is an action.</strong> The keybinding table, scripts, notifications and the remote control interface all resolve to the same catalogue of named actions.</li>
+  <li><strong>Settings apply live.</strong> The YAML file is watched, and a change made in the file, the dialog or the menu has the same effect at once.</li>
+</ul>
+
+<h2>This website</h2>
+<p>This site is a separate repository. Its pages are HTML fragments that a small Python script wraps in the site layout; the keybinding and settings references are generated from rsimgv's own source, so they cannot drift from the code.</p>

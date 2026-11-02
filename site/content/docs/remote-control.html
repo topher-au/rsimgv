@@ -1,0 +1,125 @@
+title: Remote control (IPC)
+desc: Drive a running rsimgv from other programs with its JSON interface over a Unix socket, TCP or HTTP: every method, with examples.
+---
+<p class="lead">A running rsimgv can be driven by other programs. Anything you can do with a key, you can do with a request: run an action, open a tab, select a file, ask what the viewer is showing, take a screenshot of it, or put a message on screen.</p>
+
+<h2>Turn it on</h2>
+<p>The interface is off by default. Enable one or more transports under <em>General → Remote control</em> in the preferences, and they start or stop straight away.</p>
+{{shot prefs-remote-control "The Remote control tab of the general preferences"}}
+<table>
+<thead><tr><th>Transport</th><th>Where</th><th>Notes</th></tr></thead>
+<tbody>
+<tr><td><strong>Unix socket</strong></td><td><code>rsimgv.sock</code> in your runtime directory, or the path you set</td><td>Mode 0600, so only you can use it. One request per line.</td></tr>
+<tr><td><strong>TCP</strong></td><td>port 9700 by default</td><td>One request per line. Listens on 127.0.0.1 only.</td></tr>
+<tr><td><strong>HTTP</strong></td><td><code>POST /ipc</code> on port 9780 by default</td><td>Listens on 127.0.0.1 only. The request is the body, and must be sent with <code>Content-Type: application/json</code>.</td></tr>
+</tbody>
+</table>
+<div class="callout warn"><strong>Allow other machines</strong><p>The TCP and HTTP ports accept only localhost unless you turn on <em>Allow other machines to control rsimgv</em>, which makes them listen on every interface. Anyone who can reach them can control rsimgv, and there is no authentication, so only do this on a network you trust.</p></div>
+<p>HTTP refuses a request without the JSON content type. A web page cannot send that cross-site without a preflight request, which rsimgv never answers, so other sites cannot drive it through your browser.</p>
+
+<h2>Protocol</h2>
+<p>A request is a JSON object with an <code>id</code>, a <code>method</code> and <code>params</code>. The answer carries the same <code>id</code> and either a <code>result</code> or an <code>error</code> with a short <code>code</code> to match on and a <code>message</code> for people.</p>
+<pre><code>{"id": 1, "method": "tabs.list", "params": {}}
+
+{"id": 1, "result": {"tabs": [{"id": 1, "index": 0, "path": "/home/me/Pictures", "active": true}]}}
+{"id": 1, "error": {"code": "...", "message": "..."}}</code></pre>
+<p>Requests are carried out on the window's own thread, so they see exactly what you see. A request that is not answered within five seconds is given up on.</p>
+
+<h3>Examples</h3>
+<pre><code># HTTP
+curl -s http://localhost:9780/ipc -H 'Content-Type: application/json' \
+  -d '{"id":1,"method":"navigate.to","params":{"path":"/home/me/Pictures"}}'
+
+# Unix socket, one line in and one line out
+echo '{"id":1,"method":"window.info","params":{}}' | socat - UNIX-CONNECT:$XDG_RUNTIME_DIR/rsimgv.sock
+
+# TCP
+echo '{"id":1,"method":"files.selected","params":{}}' | nc localhost 9700</code></pre>
+<pre><code>import json, urllib.request
+
+def call(method, **params):
+    request = urllib.request.Request(
+        "http://localhost:9780/ipc",
+        data=json.dumps({"id": 1, "method": method, "params": params}).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+    reply = json.load(urllib.request.urlopen(request))
+    if "error" in reply:
+        raise RuntimeError(reply["error"]["message"])
+    return reply["result"]
+
+call("navigate.to", path="/home/me/Pictures")
+print(call("view.info"))</code></pre>
+<p>The repository's <code>scripts/get_screenshot.py</code> is a complete small client: it asks <code>view.info</code> for what the viewer shows and <code>view.screenshot</code> for a PNG of it.</p>
+
+<h2 id="actions">Actions</h2>
+<dl>
+  <dt><code>actions.list</code></dt><dd>Lists every action: <code>name</code>, <code>label</code>, <code>description</code>, its default <code>scope</code>, the <code>contexts</code> it can be bound in, its <code>icon</code> and its default key <code>defaults</code>.</dd>
+  <dt><code>actions.run</code> <code>{"name", "value"?}</code></dt><dd>Runs the action <code>name</code>, with <code>value</code> for the actions that take one, such as <code>video.seek</code>. <code>win.notify</code> takes <code>{"message", "level"?, "seconds"?}</code> instead and shows the message over the window.</dd>
+</dl>
+<p>All the names are in the <a href="keybindings.html#every-action-and-its-default-keys">action table</a>. For instance, <code>{"method": "actions.run", "params": {"name": "video.play-pause"}}</code> toggles playback.</p>
+
+<h2>Window</h2>
+<dl>
+  <dt><code>window.info</code></dt><dd>Returns <code>current_path</code>, <code>selected_file</code> and <code>show_sidebar</code>.</dd>
+  <dt><code>window.set_show_sidebar</code> <code>{"show"}</code></dt><dd>Shows or hides the sidebar.</dd>
+</dl>
+
+<h2 id="tabs">Tabs</h2>
+<dl>
+  <dt><code>tabs.list</code></dt><dd>Returns <code>tabs</code>: each with an <code>id</code>, its <code>index</code>, its <code>path</code> and whether it is <code>active</code>.</dd>
+  <dt><code>tabs.current</code></dt><dd>Returns the selected tab's <code>id</code> and <code>index</code>, both null when no tab is open.</dd>
+  <dt><code>tabs.open</code> <code>{"path", "activate"?}</code></dt><dd>Opens a tab on a folder. <code>activate</code> defaults to false, so it opens in the background. Returns its <code>id</code> and <code>index</code>.</dd>
+  <dt><code>tabs.activate</code> <code>{"index"}</code> or <code>{"id"}</code></dt><dd>Selects a tab.</dd>
+  <dt><code>tabs.close</code> <code>{"index"}</code></dt><dd>Closes a tab.</dd>
+  <dt><code>tabs.files</code> <code>{"tab"}</code></dt><dd>Lists a tab's files: <code>name</code>, <code>path</code> and <code>is_dir</code>.</dd>
+  <dt><code>tabs.select</code> <code>{"tab", "file"}</code></dt><dd>Selects a file in a tab, by name or path. Returns the <code>selected</code> name.</dd>
+</dl>
+<p>Wherever a <code>tab</code> is asked for, it is a tab's id, or <code>"current"</code> for the selected tab. An <code>index</code> is a tab's position counted from 0 in tab order.</p>
+
+<h2>Navigation</h2>
+<dl>
+  <dt><code>navigate.back</code>, <code>navigate.forward</code>, <code>navigate.up</code> <code>{"n"?}</code></dt><dd>Go back, forward or up <code>n</code> times (default 1). Returns how many it <code>moved</code>. Up stops at the root.</dd>
+  <dt><code>navigate.to</code> <code>{"path"}</code></dt><dd>Browse a folder.</dd>
+  <dt><code>navigate.next</code>, <code>navigate.previous</code></dt><dd>Go to the next or previous folder in tree order. Returns its <code>path</code>, or null at the end or start.</dd>
+  <dt><code>navigate.next_media</code>, <code>navigate.previous_media</code></dt><dd>Go to the next or previous folder that has a picture or video, or return null if there is none.</dd>
+</dl>
+
+<h2>Files</h2>
+<dl>
+  <dt><code>files.list</code> <code>{"path"?}</code></dt><dd>With no path, the selected tab's items in the order the tab shows them. With a path, that folder's contents from disk, including hidden files, sorted by name. Returns <code>files</code>, an object keyed by name with each file's <code>path</code>, <code>is_dir</code>, <code>size</code> and <code>modified</code>.</dd>
+  <dt><code>files.select</code> <code>{"file"}</code></dt><dd>Selects a file in the selected tab, by name.</dd>
+  <dt><code>files.select_index</code> <code>{"index"}</code></dt><dd>Selects by position; a negative index counts from the end.</dd>
+  <dt><code>files.selected</code></dt><dd>Returns the selected file's <code>name</code> and <code>index</code>, or null when nothing is selected.</dd>
+</dl>
+
+<h2>Bookmarks</h2>
+<dl>
+  <dt><code>bookmarks.add</code> <code>{"path", "name"?}</code></dt><dd>Bookmarks a folder. The name defaults to the folder's own.</dd>
+  <dt><code>bookmarks.remove</code> <code>{"path"}</code></dt><dd>Removes a bookmark.</dd>
+  <dt><code>bookmarks.list</code></dt><dd>Returns <code>bookmarks</code>, each with a <code>name</code> and a <code>path</code>.</dd>
+</dl>
+
+<h2>The viewer</h2>
+<dl>
+  <dt><code>view.info</code></dt><dd>Describes the item the viewer shows: <code>directory</code>, <code>filename</code>, <code>mime_type</code>, <code>width</code> and <code>height</code> in pixels, and for videos <code>position</code> and <code>duration</code> in seconds, <code>fps</code> and <code>speed</code>. The playback values are null for a picture, and duration, fps and speed are null when a video does not report them yet.</dd>
+  <dt><code>view.screenshot</code></dt><dd>Returns the picture or video frame the viewer shows, at its own size, as base64-encoded PNG in <code>data</code>, with its <code>format</code>, <code>width</code> and <code>height</code>.</dd>
+</dl>
+<pre><code>import base64
+shot = call("view.screenshot")
+open("frame.png", "wb").write(base64.b64decode(shot["data"]))</code></pre>
+
+<h2 id="messages">Messages</h2>
+<dl>
+  <dt><code>messages.show</code> <code>{"text", "level"?, "position"?, "persistent"?, "seconds"?, "dismissible"?}</code></dt><dd>Shows a message over the window and returns its <code>id</code>. <code>level</code> is <code>info</code> (the default), <code>success</code>, <code>warning</code>, <code>error</code> or <code>plain</code>. <code>position</code> is <code>top-left</code>, <code>top-center</code>, <code>top-right</code>, <code>bottom-left</code>, <code>bottom-center</code> (the default) or <code>bottom-right</code>. It goes away after <code>seconds</code> (4 by default) unless <code>persistent</code> is true, when it stays until dismissed. <code>dismissible</code> puts a close button on it, which a persistent message has unless it is false.</dd>
+  <dt><code>messages.update</code> <code>{"id", "text"}</code></dt><dd>Changes the text of a message that is still up.</dd>
+  <dt><code>messages.dismiss</code> <code>{"id"?}</code></dt><dd>Takes a message down; with no id, every message.</dd>
+</dl>
+
+<h2>Ideas</h2>
+<ul>
+  <li>A <strong>hotkey daemon</strong> or stream-deck button that sends <code>actions.run</code> for <code>video.play-pause</code> or <code>view.next</code>.</li>
+  <li>A <strong>sorting workflow</strong> in which a script calls <code>files.selected</code>, files the picture away, then calls <code>actions.run</code> with <code>view.next</code>.</li>
+  <li>A <strong>kiosk or slideshow</strong> controller that calls <code>navigate.to</code> and steps the viewer on a timer.</li>
+  <li>A <strong>progress display</strong> for a long job, using <code>messages.show</code> and <code>messages.update</code>.</li>
+</ul>

@@ -1,0 +1,28 @@
+title: Command line
+desc: Opening files and folders from the command line, and how a running rsimgv takes over a second launch.
+---
+<pre><code>rsimgv [FILE_OR_FOLDER...]
+rsimgv --version</code></pre>
+
+<h2>Arguments</h2>
+<p>Each argument opens in a new tab of the open window, or of a new window if none is open.</p>
+<ul>
+  <li>A <strong>folder</strong> opens in its tab.</li>
+  <li>A <strong>file</strong> opens a tab on its folder with the file selected, and a picture or video also opens in the viewer.</li>
+</ul>
+<p>A running rsimgv takes the arguments of a second launch, so <code>rsimgv photo.jpg</code> from a terminal or a file manager adds a tab to the window you already have instead of starting another copy.</p>
+
+<h2>As the default viewer</h2>
+<p>The installed desktop file declares <code>image/*</code> and <code>video/*</code> and runs <code>rsimgv %F</code>, so rsimgv appears in "Open With" lists for pictures and videos and can be chosen as the default application for them.</p>
+
+<h2>Options</h2>
+<dl>
+  <dt><code>--version</code></dt><dd>Print the version and exit.</dd>
+</dl>
+
+<h2>Environment</h2>
+<dl>
+  <dt><code>RSIMGV_CONFIG</code></dt><dd>Use another settings file instead of <code>~/.config/rsimgv/rsimgv.conf</code>.</dd>
+  <dt><code>XDG_CONFIG_HOME</code>, <code>XDG_CACHE_HOME</code>, <code>XDG_DATA_HOME</code></dt><dd>Move the configuration, thumbnail cache and data directories, as for any XDG application.</dd>
+</dl>
+<p>Development builds that are run from the source tree also read <code>GSETTINGS_SCHEMA_DIR</code> and <code>RSIMGV_GRESOURCE</code>, which <code>dev.sh</code> sets to the build directory.</p>

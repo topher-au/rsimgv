@@ -1,0 +1,49 @@
+title: Settings reference
+desc: Every rsimgv setting with its YAML name, default and allowed values, and how the configuration file works.
+---
+<p class="lead">Settings live in a YAML file and apply the moment they change, whether you edit them in the preferences dialog, from the main menu, or in the file itself while rsimgv runs.</p>
+
+<h2>The configuration file</h2>
+<p>Settings are stored in <code>~/.config/rsimgv/rsimgv.conf</code>. Set <code>RSIMGV_CONFIG</code> to use another file. rsimgv reads and writes them through GSettings, using a backend that stores them in that file, so the schema (<code>data/au.topher.rimgv.gschema.xml</code>) defines what exists, what each setting is for and what values it accepts. A setting that is missing from the file has its default.</p>
+<pre><code>window:
+  width: 1280
+  height: 800
+  maximized: false
+browse:
+  show-hidden: false
+  media-only: true
+  item-size: 160
+  filename-display: ellipsized
+  show-directories: first-last
+  info-fields: [size, modified, resolution]
+navigation:
+  folder-end: next-folder
+  remember-folder-sort: true
+viewer:
+  image-preloading: true
+  thumbnail-bar:
+    side: bottom
+    pinned: true
+image:
+  fit: window
+  keep-fit: true
+  original-focus: center
+  zoom-step: 25
+  scaling-filter: cubic-sharp
+video:
+  backend: mpv
+  seek-overlay-position: top-middle
+thumbnails:
+  threads: 4
+  cache: true
+  unload-offscreen: true
+remote:
+  http-enabled: true
+  http-port: 9780</code></pre>
+<p>Each setting is written as <code>group.name</code>, as in the first column of the tables below, and a dot in a name is a nested mapping, so <code>viewer.thumbnail-bar.side</code> is written as <code>thumbnail-bar:</code> then <code>side:</code> under <code>viewer:</code>. The second line of each entry is the setting's key in the schema, which is what <code>gsettings</code> and the source use. Settings that have no group of their own are kept under <code>settings:</code> with their schema key, such as <code>settings.directory-previews</code>.</p>
+
+<div class="callout"><strong>Where the dialog puts things</strong><p>The preferences dialog is organised by task, not by group: <em>General</em>, <em>Browsing</em>, <em>Viewer</em>, <em>Images</em>, <em>Videos</em>, <em>Controls</em>, <em>Scripts</em> and <em>Advanced</em>. It has a search box, reached with the magnifier in its header, that finds a setting by name or description.</p></div>
+
+{{shot prefs-general "General preferences"}}
+
+{{include _settings.html}}

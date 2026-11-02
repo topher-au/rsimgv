@@ -1,0 +1,22 @@
+title: rsimgv documentation
+desc: Documentation for rsimgv, an integrated file explorer and media viewer for GNOME.
+---
+<p class="lead">rsimgv puts a folder tree, a browse grid and a media viewer side by side, so you can move through a library of pictures and videos without leaving the window. This documentation covers installing it, using it, customising it and driving it from other programs.</p>
+
+{{shot browse-grid "rsimgv browsing a folder of pictures"}}
+
+<h2>Where to start</h2>
+<div class="cards">
+  <div class="card"><h3>Getting started</h3><p>Requirements, building, installing and what you see on first launch.</p><a class="more" href="getting-started.html">Read →</a></div>
+  <div class="card"><h3>Browsing folders</h3><p>The tree, the grid, sorting, filters, thumbnails and folder previews.</p><a class="more" href="browsing.html">Read →</a></div>
+  <div class="card"><h3>The picture viewer</h3><p>Fit modes, zoom, the thumbnail bar and stepping through a folder.</p><a class="more" href="viewer.html">Read →</a></div>
+  <div class="card"><h3>Keybindings and mouse</h3><p>Contexts, every action with its default keys, and the editor.</p><a class="more" href="keybindings.html">Read →</a></div>
+  <div class="card"><h3>Settings reference</h3><p>Every setting, its default and its values.</p><a class="more" href="settings.html">Read →</a></div>
+  <div class="card"><h3>Remote control</h3><p>The JSON interface and every method it offers.</p><a class="more" href="remote-control.html">Read →</a></div>
+</div>
+
+<h2>How rsimgv is laid out</h2>
+<p>The window has a <strong>sidebar</strong> holding a bookmarks list and the folder tree, and a <strong>content area</strong> to its right. The content area has a header with navigation buttons and the path bar, a tab bar when more than one tab is open, and the browse grid. Opening a picture or video replaces the grid with the viewer, which has its own header, an optional thumbnail bar, and an optional status bar. Press <kbd>Q</kbd> or <kbd>Esc</kbd> to return to the grid.</p>
+<p>Everything you can do from the keyboard is an <em>action</em>, with a name such as <code>view.next</code>. Actions are what keybindings, scripts and the remote control interface all speak in terms of, which is why the same list appears in each of those pages.</p>
+
+<div class="callout"><strong>Status</strong><p>rsimgv is at version 0.1.0 and in early development. The browsing and viewing features described here work today; file operations such as copy, move and delete are still to come.</p></div>

@@ -1,0 +1,45 @@
+title: SVP frame interpolation
+desc: Smooth video playback in rsimgv with SmoothVideo Project: requirements, output frame rate modes and options.
+---
+<p class="lead">SVP (SmoothVideo Project) makes video look fluid by synthesising frames between the real ones. rsimgv can run videos played through libmpv through SVP's VapourSynth plugins, the same way SVP's own <code>svpctl</code> does.</p>
+
+{{shot prefs-videos-svp "The SVP tab of the video preferences"}}
+
+<div class="callout"><strong>rsimgv does not include SVP</strong><p>You need SmoothVideo Project installed separately. rsimgv only loads the plugin libraries SVP installs.</p></div>
+
+<h2>Requirements</h2>
+<ul>
+  <li>SVP installed, with its VapourSynth plugin libraries (<code>libsvpflow1_vs64.so</code> and <code>libsvpflow2_vs64.so</code>, or the same names without <code>_vs64</code>) in one directory. The default directory is <code>/opt/svp/plugins</code>.</li>
+  <li>An mpv build with VapourSynth support, because rsimgv loads SVP through mpv's <code>vapoursynth</code> filter.</li>
+  <li>The <code>mpv</code> video backend. The SVP page offers to switch to it when it is not the chosen one.</li>
+  <li>Optionally an NVIDIA GPU, for SVP's optical flow analysis on the GPU. Without it, SVP's CPU analysis is used.</li>
+</ul>
+
+<h2>Turning it on</h2>
+<ol class="steps">
+  <li><strong>Open the SVP tab</strong><br><kbd>Ctrl</kbd>+<kbd>,</kbd> for the preferences, then <em>Videos → SVP</em>.</li>
+  <li><strong>Check the plugin directory</strong><br>Point <em>Plugin directory</em> at the folder holding SVP's libraries.</li>
+  <li><strong>Switch on <em>Interpolate frames with SVP</em></strong><br>It applies to videos you open from then on.</li>
+</ol>
+
+<h2>Output frame rate</h2>
+<p>How the rate SVP is asked to produce is chosen is the <em>Output frame rate</em>:</p>
+<table>
+<thead><tr><th>Mode</th><th>Output rate</th></tr></thead>
+<tbody>
+<tr><td><code>default</code></td><td>The source's own rate, within the limits.</td></tr>
+<tr><td><code>fixed</code></td><td>The target rate, within the limits.</td></tr>
+<tr><td><code>variable</code></td><td>The target rate divided by the playback speed, so playing faster does not push the output past what can be made.</td></tr>
+<tr><td><code>display</code> (default)</td><td>Your display's refresh rate divided by the speed, so the frames shown each second match the display.</td></tr>
+</tbody>
+</table>
+<p>In <code>fixed</code> and <code>variable</code>, a <em>Target frame rate</em> of 0 means the source's rate. Whatever the mode picks is rounded to a whole number of frames a second and kept between the <em>Minimum</em> (60 by default) and <em>Maximum</em> (240 by default) frame rates. Because the target follows the playback speed in the <code>display</code> and <code>variable</code> modes, slow motion and fast forward keep the output within range.</p>
+
+<h2>NVIDIA optical flow</h2>
+<p><em>NVIDIA optical flow</em> (on by default) runs SVP's motion analysis on the GPU through SVP's second plugin, rather than on the CPU. Turn it off if you have no NVIDIA GPU.</p>
+
+<h2>SVP's manager socket</h2>
+<p>SVP's libraries expect to find a local server, normally run by <code>svpctl</code> or SVP Manager, at <code>/tmp/com.svpteam.svp</code>. While SVP is on, rsimgv serves that socket itself, answering handshakes and leaving SVP's settings as they are, so no other SVP process needs to be running. Each client is served on a thread of its own, so a busy main thread does not hold up the filter.</p>
+
+<h2>Settings</h2>
+<p>See the <a href="settings.html#svp">SVP section of the settings reference</a> for the setting names and defaults.</p>

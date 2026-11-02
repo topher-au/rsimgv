@@ -1,0 +1,54 @@
+title: Navigation, tabs and bookmarks
+desc: The path bar, location entry, history, tabs, bookmarks and mouse buttons in rsimgv.
+---
+<p class="lead">There are several ways to get where you are going: breadcrumbs, a typed path, history, the folder tree, tabs, bookmarks, and folder-to-folder stepping that never leaves the keyboard.</p>
+
+<h2>The path bar</h2>
+<p>The header holds a path bar of clickable breadcrumbs. It starts at your home folder when you are inside it, shown as <em>Home</em>, and at <code>/</code> otherwise. Long names shrink in the middle so the whole path stays in view.</p>
+<ul>
+  <li><strong>Click</strong> a segment to open that folder here.</li>
+  <li><strong>Middle-click</strong> a segment to open it in a background tab.</li>
+  <li><strong>Ctrl-click</strong> a segment to open it in a new window.</li>
+  <li><strong>Right-click</strong> a segment for its context menu.</li>
+  <li>Hover a segment while dragging files and it opens after a short delay.</li>
+</ul>
+
+<h2>Typing a location</h2>
+{{shot location-bar "The path bar turned into a text entry"}}
+<p>Click the current folder in the path bar, or press <kbd>Ctrl</kbd>+<kbd>L</kbd>, and it becomes a text entry. Type a path and press <kbd>Enter</kbd>. A leading <code>~</code> means your home folder. <kbd>Ctrl</kbd>+<kbd>O</kbd> opens a folder chooser instead.</p>
+
+<h2>History</h2>
+<p>The header has back, forward and up buttons. They also answer to <kbd>Alt</kbd>+<kbd>←</kbd>, <kbd>Alt</kbd>+<kbd>→</kbd> and <kbd>Alt</kbd>+<kbd>↑</kbd>. <strong>Long-press</strong> back or forward to list the history in that direction and jump straight to an entry. Up stops at the root.</p>
+<p>The mouse's side buttons are bound to back and forward by default, and can be changed to up, previous item, next item or nothing in <em>Controls → Mouse</em>.</p>
+{{shot prefs-mouse "Mouse and scrolling preferences"}}
+
+<h2>Stepping between folders</h2>
+<p>Four actions walk the folder tree without touching it. None has a default key, so bind the ones you want in the <a href="keybindings.html">keybinding editor</a>:</p>
+<table>
+<thead><tr><th>Action</th><th>What it does</th></tr></thead>
+<tbody>
+<tr><td><code>win.next-folder</code>, <code>win.previous-folder</code></td><td>Go to the next or previous folder in depth-first order of the folder tree. In the viewer, go to the next or previous folder with a picture or video and show its first one.</td></tr>
+<tr><td><code>win.next-media-folder</code>, <code>win.previous-media-folder</code></td><td>Go to the next or previous folder that contains a picture or video, selecting its first item (or its last, going backwards).</td></tr>
+</tbody>
+</table>
+<p>In the viewer, <em>When reaching the end</em> (<code>navigation.folder-end</code>) decides what stepping past the first or last item does: <code>stop</code>, <code>loop</code> around the folder, or go on to the <code>next-folder</code> that has media.</p>
+
+<h2>Tabs</h2>
+<p>Each tab is a window onto a folder and keeps its own state. Open one by middle-clicking a folder in the tree, the grid or the path bar, or by passing several arguments on the <a href="command-line.html">command line</a>. Right-click a tab for its menu:</p>
+<ul>
+  <li><strong>Duplicate</strong> opens another tab on the same folder.</li>
+  <li><strong>New window</strong> moves the folder to a window of its own.</li>
+  <li><strong>Copy path</strong> puts the folder's path on the clipboard.</li>
+  <li><strong>Close others</strong> and <strong>Close</strong>.</li>
+</ul>
+<p>Tabs can also be listed, opened, activated and closed through the <a href="remote-control.html#tabs">remote control interface</a>.</p>
+
+<h2>Bookmarks</h2>
+{{shot bookmark-dialog "Bookmarking the current folder"}}
+<p>Press <kbd>Ctrl</kbd>+<kbd>D</kbd> to bookmark the folder you are in. A dialog asks for a name, which defaults to the folder's own; bookmarking a folder that is already bookmarked renames it. Bookmarks collect in a collapsible list above the folder tree, and <code>win.toggle-bookmarks</code> expands or collapses it.</p>
+{{shot bookmarks-sidebar "A bookmark in the sidebar, above the folder tree"}}
+<p>Bookmarks are kept in <code>bookmarks.yaml</code> beside the settings file, and can be added, listed and removed remotely with <code>bookmarks.add</code>, <code>bookmarks.list</code> and <code>bookmarks.remove</code>.</p>
+
+<h2>Start location</h2>
+<p>A new window opens on the folder you last had open, at <code>/</code>, at your home folder, or at a specific folder, as <em>Start location</em> says. When it is the last folder, the item you last had selected is selected again.</p>
+{{shot prefs-general "General preferences: start location and folder navigation"}}
