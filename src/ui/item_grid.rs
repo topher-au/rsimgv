@@ -592,6 +592,14 @@ impl ItemGrid {
         self.select(0);
     }
 
+    /// Selects the item at `position` without scrolling to it, for a view that keeps its scroll position.
+    pub fn select_in_place(&self, position: u32) {
+        if let Some(model) = self.imp().model.borrow().as_ref() {
+            model.set_selected(position);
+        }
+        self.imp().anchor.set(Some(position));
+    }
+
     /// Moves the selection to the last item.
     pub fn select_last(&self) {
         let count = self.item_count();

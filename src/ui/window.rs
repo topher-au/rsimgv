@@ -590,7 +590,9 @@ impl Window {
                 // Once the folder lists, the item selected the last time this location was shown is selected again,
                 // or else, going up to a parent, the item that leads to the folder shown before.
                 let selected = imp.navigation.selected().or_else(|| previous.as_deref().and_then(|previous| child_toward(path, previous)));
-                if let Some(name) = selected {
+                // A step to another folder with media has arranged which item to select, which the item remembered
+                // for the folder does not replace.
+                if let (Some(name), false) = (selected, browse.has_pending_for(path)) {
                     browse.set_pending(path, move |view| {
                         view.select_named(&name);
                     });
