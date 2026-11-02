@@ -7,6 +7,7 @@ mod scripts;
 mod svp;
 mod svp_manager;
 mod bookmarks;
+mod playlist;
 mod file_settings;
 mod folder_sort;
 mod keybindings;
@@ -138,6 +139,7 @@ fn main() -> glib::ExitCode {
         register_icons();
         keybindings::load();
         bookmarks::load();
+        playlist::load();
         ipc_server.borrow_mut().apply(&ipc_config(&startup_settings));
         apply_thumbnail_settings(&startup_settings);
 

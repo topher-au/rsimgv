@@ -66,6 +66,24 @@ pub fn has_media(folder: &Path) -> bool {
     read.flatten().any(|entry| entry.path().is_file() && is_media_name(&entry.file_name().to_string_lossy()))
 }
 
+/// The pictures and videos in `folder` and the folders under it, depth first, each folder's in name order. Hidden files
+/// and folders are left out unless `show_hidden`. This reads the disk, so it runs on a worker thread.
+pub fn media_files(folder: &Path, show_hidden: bool) -> Vec<PathBuf> {
+    let mut files: Vec<(String, PathBuf)> = std::fs::read_dir(folder)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| (entry.file_name().to_string_lossy().into_owned(), entry.path()))
+        .filter(|(name, path)| (show_hidden || !name.starts_with('.')) && is_media_name(name) && path.is_file())
+        .collect();
+    files.sort_by(|(a, _), (b, _)| natural_cmp(a, b));
+    let mut found: Vec<PathBuf> = files.into_iter().map(|(_, path)| path).collect();
+    for child in child_directories(folder, show_hidden) {
+        found.extend(media_files(&child, show_hidden));
+    }
+    found
+}
+
 /// The next folder in depth-first order that holds a picture or video. Folders without media are passed over.
 pub fn next_media_folder(
     current: &Path,

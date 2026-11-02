@@ -19,6 +19,12 @@
   background-color: color-mix(in srgb, var(--accent-bg-color) 40%, transparent);
 }
 
+// An item in the playlist has a line around its picture.
+.rsimgv-item.in-playlist .rsimgv-visual {
+  outline: 2px solid var(--accent-bg-color);
+  outline-offset: -2px;
+}
+
 .rsimgv-visual {
   border-radius: 8px;
   background-color: color-mix(in srgb, currentColor 6%, transparent);

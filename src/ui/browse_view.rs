@@ -1719,6 +1719,16 @@ impl BrowseView {
         self.imp().grid.mark_all();
     }
 
+    /// The paths of the marked items, in the order they are listed.
+    pub fn marked_paths(&self) -> Vec<PathBuf> {
+        self.imp().grid.marked_paths()
+    }
+
+    /// Shows again which of the items are in the playlist, as it has changed.
+    pub fn refresh_playlist_marks(&self) {
+        self.imp().grid.update_selected_classes();
+    }
+
     /// Opens the item under the cursor.
     pub fn activate_selected(&self) {
         self.imp().grid.activate_selected();

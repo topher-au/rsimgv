@@ -98,6 +98,11 @@
                   </object>
                 </child>
                 <child>
+                  <object class="GtkExpander" id="playlist_expander">
+                    <style><class name="rsimgv-sidebar-section"/></style>
+                  </object>
+                </child>
+                <child>
                   <object class="GtkExpander" id="filesystem_expander">
                     <property name="expanded">true</property>
                     <style><class name="rsimgv-sidebar-section"/></style>
