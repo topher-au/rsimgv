@@ -55,4 +55,4 @@ See `tools/screenshots/README.md` to retake them.
 
 ## Licence
 
-The rsimgv application is GPL-3.0-or-later. No separate licence has been chosen for this site's source yet.
+This site's source is released under the GNU General Public Licence, version 3 or later, the same as rsimgv. See `LICENSE`.
