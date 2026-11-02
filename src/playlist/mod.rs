@@ -4,7 +4,9 @@
 pub mod format;
 
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::hash_map::RandomState;
+use std::collections::{HashMap, HashSet};
+use std::hash::{BuildHasher, Hasher};
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -12,21 +14,42 @@ use format::Format;
 
 use crate::settings::config_path;
 
-/// The line in the playlist's own file saying which item it was left on. Other players ignore it, as a comment.
+/// The lines in the playlist's own file that say which item it was left on, and the shuffled order, as indices into the
+/// original order. Other players ignore them, as comments.
 const CURRENT_TAG: &str = "#X-RSIMGV-CURRENT:";
+const SHUFFLE_TAG: &str = "#X-RSIMGV-SHUFFLE:";
 
 /// Each path appears once, so an item is known by its path, and adding one twice changes nothing.
+///
+/// The items are kept in the order the user made them, which is what is saved. Shuffling makes a second order, in
+/// `shuffled`, that is what the list shows and plays in while it is on. Changing the order in one leaves the other as
+/// it was, and removing an item removes it from both.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Playlist {
     items: Vec<PathBuf>,
+    shuffled: Option<Vec<PathBuf>>,
     members: HashSet<PathBuf>,
-    /// The item last shown, which playing starts from.
+    /// The index, in `order`, of the item last shown, which playing starts from.
     current: Option<usize>,
 }
 
 impl Playlist {
+    /// The items in the order they were made, whether or not they are shuffled.
     pub fn items(&self) -> &[PathBuf] {
         &self.items
+    }
+
+    /// The items in the order they are shown and played in: the shuffled order while shuffling, else `items`.
+    pub fn order(&self) -> &[PathBuf] {
+        self.shuffled.as_deref().unwrap_or(self.items.as_slice())
+    }
+
+    fn order_mut(&mut self) -> &mut Vec<PathBuf> {
+        self.shuffled.as_mut().unwrap_or(&mut self.items)
+    }
+
+    pub fn is_shuffled(&self) -> bool {
+        self.shuffled.is_some()
     }
 
     pub fn len(&self) -> usize {
@@ -37,6 +60,11 @@ impl Playlist {
         self.items.is_empty()
     }
 
+    /// The item last shown, if there is one.
+    pub fn current_path(&self) -> Option<&Path> {
+        self.current.and_then(|current| self.order().get(current)).map(PathBuf::as_path)
+    }
+
     pub fn contains(&self, path: &Path) -> bool {
         self.members.contains(path)
     }
@@ -45,15 +73,34 @@ impl Playlist {
         self.current
     }
 
-    /// Adds the paths not already there to the end. Returns how many were added.
+    /// Adds the paths not already there to the end of each order. Returns how many were added.
     pub fn add(&mut self, paths: impl IntoIterator<Item = PathBuf>) -> usize {
         let before = self.items.len();
         for path in paths {
             if self.members.insert(path.clone()) {
+                if let Some(shuffled) = self.shuffled.as_mut() {
+                    shuffled.push(path.clone());
+                }
                 self.items.push(path);
             }
         }
         self.items.len() - before
+    }
+
+    /// Shuffles the order the list plays in, or goes back to the order the items were made in. Shuffling puts the item
+    /// shown first, so it keeps playing.
+    pub fn set_shuffled(&mut self, on: bool) {
+        self.set_shuffled_with(on, random_source());
+    }
+
+    /// `set_shuffled`, with the random numbers from `next`, which gives a number below the bound it is passed.
+    fn set_shuffled_with(&mut self, on: bool, next: impl FnMut(usize) -> usize) {
+        let current = self.current_path().map(Path::to_path_buf);
+        self.shuffled = on.then(|| {
+            let shown = current.as_ref().and_then(|path| self.items.iter().position(|item| item == path));
+            shuffle_order(&self.items, shown, next)
+        });
+        self.current = current.and_then(|path| self.order().iter().position(|item| *item == path));
     }
 
     /// Makes the playlist `paths`, starting again from the first.
@@ -72,44 +119,37 @@ impl Playlist {
         self.retain(|item| !item.ancestors().any(|ancestor| paths.contains(ancestor)))
     }
 
-    /// Removes the item at `index`, if there is one. Returns whether there was.
+    /// Removes the item at `index` in `order`, if there is one. Returns whether there was.
     pub fn remove_at(&mut self, index: usize) -> bool {
-        let Some(path) = self.items.get(index).cloned() else { return false };
+        let Some(path) = self.order().get(index).cloned() else { return false };
         self.retain(|item| item != path) == 1
     }
 
-    /// Keeps the items `keep` says to, and returns how many went. If the current item goes, the one after it takes its
-    /// place, or at the end the one before.
+    /// Keeps the items `keep` says to, in both orders, and returns how many went. If the current item goes, the one
+    /// after it takes its place, or at the end the one before.
     fn retain(&mut self, keep: impl Fn(&Path) -> bool) -> usize {
-        let current = self.current;
-        let items = std::mem::take(&mut self.items);
-        let total = items.len();
-        let mut gone_before_current = 0;
-        for (index, item) in items.into_iter().enumerate() {
-            if keep(&item) {
-                self.items.push(item);
-            } else {
-                self.members.remove(&item);
-                if current.is_some_and(|current| index < current) {
-                    gone_before_current += 1;
-                }
-            }
+        let total = self.len();
+        let gone_before_current = self.current.map_or(0, |current| self.order().iter().take(current).filter(|item| !keep(item)).count());
+        self.items.retain(|item| keep(item));
+        if let Some(shuffled) = self.shuffled.as_mut() {
+            shuffled.retain(|item| keep(item));
         }
-        let last = self.items.len().checked_sub(1);
-        self.current = current.zip(last).map(|(current, last)| (current - gone_before_current).min(last));
-        total - self.items.len()
+        self.members = self.items.iter().cloned().collect();
+        let last = self.len().checked_sub(1);
+        self.current = self.current.zip(last).map(|(current, last)| (current - gone_before_current).min(last));
+        total - self.len()
     }
 
     /// Makes the item at `index` the current one, if there is one.
     pub fn set_current(&mut self, index: usize) {
-        if index < self.items.len() {
+        if index < self.len() {
             self.current = Some(index);
         }
     }
 
     /// Makes the item `path` the current one, if it is there. Returns whether that changed anything.
     pub fn set_current_path(&mut self, path: &Path) -> bool {
-        let index = self.members.contains(path).then(|| self.items.iter().position(|item| item == path)).flatten();
+        let index = self.members.contains(path).then(|| self.order().iter().position(|item| item == path)).flatten();
         let changed = index.is_some() && index != self.current;
         if changed {
             self.current = index;
@@ -117,13 +157,15 @@ impl Playlist {
         changed
     }
 
-    /// Moves the item at `from` to the place of the one at `to`. Returns whether it moved.
+    /// Moves the item at `from` to the place of the one at `to`, in the order shown. The other order is left as it
+    /// was. Returns whether it moved.
     pub fn move_item(&mut self, from: usize, to: usize) -> bool {
-        if from == to || from >= self.items.len() || to >= self.items.len() {
+        if from == to || from >= self.len() || to >= self.len() {
             return false;
         }
-        let item = self.items.remove(from);
-        self.items.insert(to, item);
+        let order = self.order_mut();
+        let item = order.remove(from);
+        order.insert(to, item);
         self.current = self.current.map(|current| match current {
             current if current == from => to,
             current if from < current && current <= to => current - 1,
@@ -136,7 +178,7 @@ impl Playlist {
     /// The item to go to from the current one, going round from one end to the other. With no current item, the first
     /// going forward and the last going back.
     pub fn step_index(&self, forward: bool) -> Option<usize> {
-        let last = self.items.len().checked_sub(1)?;
+        let last = self.len().checked_sub(1)?;
         Some(match (self.current, forward) {
             (Some(current), true) if current < last => current + 1,
             (Some(current), false) if current > 0 => current - 1,
@@ -150,25 +192,79 @@ impl Playlist {
         (!self.is_empty()).then(|| self.current.unwrap_or(0))
     }
 
-    /// The text of the playlist's own file: an M3U file, with the current item noted in it.
+    /// The text of the playlist's own file: an M3U file of the items in the order they were made, with the item shown,
+    /// and the shuffled order if there is one, noted in it.
     fn to_saved_text(&self) -> String {
         let text = format::write(Format::M3u, &self.items);
-        match self.current {
-            Some(current) => text.replacen('\n', &format!("\n{CURRENT_TAG}{current}\n"), 1),
-            None => text,
+        let positions: HashMap<&Path, usize> = self.items.iter().enumerate().map(|(index, item)| (item.as_path(), index)).collect();
+        let mut notes = String::new();
+        if let Some(current) = self.current_path().and_then(|path| positions.get(path)) {
+            notes.push_str(&format!("{CURRENT_TAG}{current}\n"));
         }
+        if let Some(shuffled) = &self.shuffled {
+            let indices: Vec<String> = shuffled.iter().filter_map(|item| positions.get(item.as_path())).map(usize::to_string).collect();
+            notes.push_str(&format!("{SHUFFLE_TAG}{}\n", indices.join(",")));
+        }
+        text.replacen('\n', &format!("\n{notes}"), 1)
     }
 
+    /// The playlist a saved file holds. A shuffled order that does not hold each item exactly once is not used.
     fn from_saved_bytes(bytes: &[u8], base: &Path) -> Self {
+        let text = format::decode(bytes);
+        let saved = format::read(bytes, base).paths;
         let mut playlist = Self::default();
-        playlist.add(format::read(bytes, base).paths);
-        let current = format::decode(bytes).lines().find_map(|line| line.strip_prefix(CURRENT_TAG)?.trim().parse::<usize>().ok());
-        if let Some(current) = current {
-            playlist.set_current(current);
+        playlist.add(saved.iter().cloned());
+        let note = |tag: &str| text.lines().find_map(|line| line.strip_prefix(tag)).map(str::trim);
+        if let Some(indices) = note(SHUFFLE_TAG) {
+            let mut seen = HashSet::new();
+            let shuffled: Vec<PathBuf> = indices
+                .split(',')
+                .filter_map(|index| index.trim().parse::<usize>().ok())
+                .filter_map(|index| saved.get(index).cloned())
+                .filter(|item| seen.insert(item.clone()))
+                .collect();
+            if shuffled.len() == playlist.len() {
+                playlist.shuffled = Some(shuffled);
+            }
+        }
+        let current = note(CURRENT_TAG).and_then(|index| index.parse::<usize>().ok()).and_then(|index| saved.get(index));
+        if let Some(current) = current.cloned() {
+            playlist.set_current_path(&current);
         }
         playlist
     }
 }
+
+/// The order `items` is shuffled into, with `shown` (an index into `items`) first if there is one. `next(bound)` gives a
+    /// number from 0 to `bound`, exclusive, and the rest are shuffled with it (Fisher–Yates).
+    fn shuffle_order(items: &[PathBuf], shown: Option<usize>, mut next: impl FnMut(usize) -> usize) -> Vec<PathBuf> {
+        let mut order = items.to_vec();
+        let mut rest = 0;
+        if let Some(shown) = shown.filter(|shown| *shown < order.len()) {
+            order.swap(0, shown);
+            rest = 1;
+        }
+        let tail = &mut order[rest..];
+        for index in (1..tail.len()).rev() {
+            let other = next(index + 1);
+            tail.swap(index, other);
+        }
+        order
+    }
+
+    /// A source of numbers for shuffling. It is seeded from a hasher's random keys, which is enough to vary the order;
+    /// it is not for anything that must be unpredictable.
+    fn random_source() -> impl FnMut(usize) -> usize {
+        let mut state = RandomState::new().build_hasher().finish();
+        move |bound| {
+            state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            let mut z = state;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            z ^= z >> 31;
+            (z % bound as u64) as usize
+        }
+    }
 
 thread_local! {
     static PLAYLIST: RefCell<Playlist> = RefCell::new(Playlist::default());
@@ -267,9 +363,9 @@ mod tests {
         let moved = |from, to, current| {
             let mut list = playlist(&["a", "b", "c", "d", "e"]);
             list.set_current(current);
-            let shown = list.items()[current].clone();
+            let shown = list.order()[current].clone();
             assert!(list.move_item(from, to));
-            assert_eq!(list.items()[list.current().unwrap()], shown, "from {from} to {to} with {current} current");
+            assert_eq!(list.order()[list.current().unwrap()], shown, "from {from} to {to} with {current} current");
         };
         for (from, to) in [(0, 4), (4, 0), (1, 3), (3, 1), (2, 3)] {
             for current in 0..5 {
@@ -278,7 +374,7 @@ mod tests {
         }
         let mut list = playlist(&["a", "b", "c"]);
         assert!(list.move_item(0, 2));
-        assert_eq!(list.items(), paths(&["b", "c", "a"]));
+        assert_eq!(list.order(), paths(&["b", "c", "a"]));
         assert!(!list.move_item(1, 1) && !list.move_item(0, 3) && !list.move_item(3, 0));
     }
 
@@ -326,5 +422,108 @@ mod tests {
         assert_eq!(Playlist::from_saved_bytes(unstarted.to_saved_text().as_bytes(), Path::new("/")), unstarted);
         assert_eq!(Playlist::from_saved_bytes(Playlist::default().to_saved_text().as_bytes(), Path::new("/")), Playlist::default());
         assert_eq!(Playlist::from_saved_bytes(b"#X-RSIMGV-CURRENT:9\n/a\n", Path::new("/")).current(), None, "out of range");
+    }
+
+    fn counting(bound: usize) -> impl FnMut(usize) -> usize {
+        let mut calls = 0;
+        move |_| {
+            calls += 1;
+            (calls * 7) % bound
+        }
+    }
+
+    #[test]
+    fn shuffling_keeps_the_items_in_their_own_order() {
+        let mut list = playlist(&["a", "b", "c", "d", "e"]);
+        list.set_current(3);
+        list.set_shuffled_with(true, counting(100));
+        assert!(list.is_shuffled());
+        assert_eq!(list.items(), paths(&["a", "b", "c", "d", "e"]), "the made order is untouched");
+        let mut shown = list.order().to_vec();
+        assert_eq!(shown[0], PathBuf::from("/d"), "the item shown comes first");
+        shown.sort();
+        assert_eq!(shown, paths(&["a", "b", "c", "d", "e"]), "every item is there once");
+        assert_eq!(list.current(), Some(0), "and it is still the one shown");
+    }
+
+    #[test]
+    fn turning_shuffle_off_brings_back_the_made_order() {
+        let mut list = playlist(&["a", "b", "c"]);
+        list.set_shuffled_with(true, counting(10));
+        list.set_shuffled(false);
+        assert!(!list.is_shuffled());
+        assert_eq!(list.order(), paths(&["a", "b", "c"]));
+    }
+
+    #[test]
+    fn a_change_to_one_order_leaves_the_other_alone() {
+        let mut list = playlist(&["a", "b", "c"]);
+        list.set_shuffled_with(true, counting(10));
+        let shuffled = list.order().to_vec();
+        assert!(list.move_item(0, 2));
+        assert_ne!(list.order(), shuffled.as_slice());
+        assert_eq!(list.items(), paths(&["a", "b", "c"]), "moving in the shuffled order does not move the made order");
+        list.set_shuffled(false);
+        assert_eq!(list.order(), paths(&["a", "b", "c"]));
+    }
+
+    #[test]
+    fn adding_and_removing_change_both_orders() {
+        let mut list = playlist(&["a", "b", "c"]);
+        list.set_shuffled_with(true, counting(10));
+        assert_eq!(list.add(paths(&["d"])), 1);
+        assert_eq!(list.order().last(), Some(&PathBuf::from("/d")));
+        assert!(list.remove_at(1));
+        assert_eq!(list.len(), 3);
+        list.set_shuffled(false);
+        assert!(!list.contains(Path::new("/b")) && list.order().len() == 3);
+        assert_eq!(list.order(), paths(&["a", "c", "d"]));
+    }
+
+    #[test]
+    fn stepping_follows_the_shuffled_order() {
+        let mut list = playlist(&["a", "b", "c"]);
+        list.set_shuffled_with(true, counting(10));
+        let order = list.order().to_vec();
+        list.set_current(0);
+        assert_eq!(list.step_index(true), Some(1));
+        assert_eq!(list.order()[1], order[1]);
+        assert_eq!(list.current_path(), Some(order[0].as_path()));
+    }
+
+    #[test]
+    fn the_saved_file_keeps_both_orders_and_the_item_shown() {
+        let mut list = playlist(&["a", "b", "c", "d"]);
+        list.set_shuffled_with(true, counting(10));
+        list.set_current_path(Path::new("/c"));
+        let text = list.to_saved_text();
+        assert!(text.contains("#X-RSIMGV-SHUFFLE:"), "{text}");
+        let loaded = Playlist::from_saved_bytes(text.as_bytes(), Path::new("/"));
+        assert_eq!(loaded.items(), list.items());
+        assert_eq!(loaded.order(), list.order());
+        assert_eq!(loaded.current_path(), Some(Path::new("/c")));
+    }
+
+    #[test]
+    fn a_shuffled_order_that_does_not_fit_the_items_is_dropped() {
+        let text = "#EXTM3U\n#X-RSIMGV-SHUFFLE:0,0,1\n/a\n/b\n/c\n";
+        let loaded = Playlist::from_saved_bytes(text.as_bytes(), Path::new("/"));
+        assert!(!loaded.is_shuffled());
+        assert_eq!(loaded.order(), paths(&["a", "b", "c"]));
+    }
+
+    #[test]
+    fn shuffle_order_is_a_permutation_that_starts_with_the_shown_item() {
+        let items = paths(&["a", "b", "c", "d", "e", "f"]);
+        let mut random = random_source();
+        for shown in [None, Some(0), Some(5)] {
+            let order = shuffle_order(&items, shown, &mut random);
+            let mut sorted = order.clone();
+            sorted.sort();
+            assert_eq!(sorted, items);
+            if let Some(shown) = shown {
+                assert_eq!(order[0], items[shown]);
+            }
+        }
     }
 }
