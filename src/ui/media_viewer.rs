@@ -98,6 +98,14 @@ async fn decode_picture(path: PathBuf) -> Option<Pixels> {
     }
 }
 
+/// When the file with metadata `file` was last modified, in seconds since the epoch, or 0 if it is unknown.
+fn mtime_secs(file: &std::fs::Metadata) -> i64 {
+    file.modified()
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |time| time.as_secs() as i64)
+}
+
 /// Whether `path` is a video, judged by its content type.
 pub fn is_video(path: &Path) -> bool {
     gio::content_type_guess(Some(path), None::<&[u8]>).0.starts_with("video/")
@@ -1098,14 +1106,28 @@ impl MediaViewer {
         let (index, len) = (imp.index.get(), imp.paths.borrow().len());
         imp.status_counter.set_label(&format!("[{}/{}]", index + 1, len));
         imp.status_name.set_label(&path.file_name().map_or_else(String::new, |name| name.to_string_lossy().into_owned()));
-        let Ok(file) = std::fs::metadata(&path) else { return };
-        let size = file.len();
-        let mtime = file
-            .modified()
-            .ok()
-            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
-            .map_or(0, |time| time.as_secs() as i64);
+        // The file is read on a worker, so a slow or remote file does not hold up the viewer.
+        let stat_path = path.clone();
+        let weak = self.downgrade();
+        glib::spawn_future_local(async move {
+            let stat = gio::spawn_blocking(move || std::fs::metadata(&stat_path).map(|file| (file.len(), mtime_secs(&file))))
+                .await;
+            let Some(viewer) = weak.upgrade() else { return };
+            // The file is only shown if it is still the one shown when its stat returns.
+            if let Ok(Ok((size, mtime))) = stat {
+                viewer.show_file_status(&path, size, mtime);
+            }
+        });
+    }
+
+    /// Shows the size and metadata of the shown file at `path`, which has `size` bytes and was modified at `mtime`.
+    fn show_file_status(&self, path: &Path, size: u64, mtime: i64) {
+        let imp = self.imp();
+        if self.shown_path().as_deref() != Some(path) {
+            return;
+        }
         imp.status_size.set_label(&glib::format_size(size).to_string());
+        let path = path.to_path_buf();
 
         let metadata = MediaInfo::shared().get(&path, mtime, size).or_else(|| {
             // The request is only wanted while this item is still the one shown.
