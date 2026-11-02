@@ -6,6 +6,7 @@
 //! file asks to open it in the viewer.
 
 use std::cell::{Cell, OnceCell, RefCell};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
@@ -301,10 +302,14 @@ fn request_thumbnail(
 /// The most entries of a folder looked at to find its pictures, so a huge folder does not hold up the view.
 const SCATTER_SCAN: usize = 500;
 
+/// The most folders whose scans are kept, so the cache stays small when browsing many folders.
+const MAX_CACHED_SCANS: usize = 256;
+
 /// Every picture and video of `folder`, with their modification times and kinds, in a shuffled order. The order is
 /// random, but the same for the same folder, so scrolling does not reshuffle them. Hidden entries and folders are
-/// skipped.
-fn scattered_media(folder: &Path, random: &mut Seeded) -> Vec<Picture> {
+/// skipped. This reads the disk, so it runs on a worker thread.
+fn scattered_media(folder: &Path) -> Vec<Picture> {
+    let mut random = Seeded::for_folder(folder);
     let Ok(read) = std::fs::read_dir(folder) else { return Vec::new() };
     let mut paths: Vec<PathBuf> = read.filter_map(|entry| entry.ok().map(|entry| entry.path())).take(SCATTER_SCAN).collect();
     paths.sort();
@@ -339,6 +344,24 @@ fn scattered_media(folder: &Path, random: &mut Seeded) -> Vec<Picture> {
     media
 }
 
+/// Scans `folder` for its previews on a worker thread, keeps the result for as long as the folder has the
+/// modification time `modified`, and calls `then` with it on the main thread.
+fn scan_folder(view: &BrowseView, folder: PathBuf, modified: i64, then: impl FnOnce(Rc<Vec<Picture>>) + 'static) {
+    let view = view.downgrade();
+    glib::spawn_future_local(async move {
+        let scan = folder.clone();
+        let media = Rc::new(gio::spawn_blocking(move || scattered_media(&scan)).await.unwrap_or_default());
+        if let Some(view) = view.upgrade() {
+            let mut scans = view.imp().folder_scans.borrow_mut();
+            if scans.len() >= MAX_CACHED_SCANS {
+                scans.clear();
+            }
+            scans.insert(folder, (modified, media.clone()));
+        }
+        then(media);
+    });
+}
+
 /// How long each set of a folder's preview pictures stays up while it cycles.
 const CYCLE_INTERVAL: std::time::Duration = std::time::Duration::from_millis(1000);
 
@@ -350,7 +373,7 @@ struct Cycle {
     cell: glib::WeakRef<gtk::Box>,
     folder: PathBuf,
     /// Every picture and video of the folder, in the order the previews take them.
-    media: Vec<Picture>,
+    media: Rc<Vec<Picture>>,
     scattered: ScatteredThumbnail,
     /// The most pictures a page takes.
     slots: usize,
@@ -449,11 +472,30 @@ fn folder_paintable(icon: &gtk::Image, entry: &FileEntry, size: i32) -> Option<g
 }
 
 /// Shows the folder `entry`'s icon filling its item, with up to the preview count of its pictures and videos scattered
-/// over it, each once it is made. A folder with none keeps its plain icon.
+/// over it, each once it is made. A folder with none keeps its plain icon. The folder is scanned on a worker thread
+/// unless its scan is already kept, and the previews are laid out once the scan is in.
 fn request_scattered(view: &BrowseView, cell: &gtk::Box, entry: &FileEntry, icon: &gtk::Image, size: i32) {
-    let folder = entry.path().to_path_buf();
-    let mut random = Seeded::for_folder(&folder);
-    let mut media = scattered_media(&folder, &mut random);
+    let modified = modified_secs(entry);
+    if let Some(media) = view.cached_scan(entry.path(), modified) {
+        show_scattered(view, cell, entry, icon, size, &media);
+        return;
+    }
+    let (weak_view, weak_cell, weak_icon) = (view.downgrade(), cell.downgrade(), icon.downgrade());
+    let entry = entry.clone();
+    scan_folder(view, entry.path().to_path_buf(), modified, move |media| {
+        let (Some(view), Some(cell), Some(icon)) = (weak_view.upgrade(), weak_cell.upgrade(), weak_icon.upgrade()) else {
+            return;
+        };
+        // The cell may have been bound to another item while the folder was scanned.
+        if shows(&view, &cell, entry.path()) {
+            show_scattered(&view, &cell, &entry, &icon, size, &media);
+        }
+    });
+}
+
+/// Lays out the scattered previews of folder `entry` over its `icon`, from its scanned `media`, and requests each
+/// picture that fits.
+fn show_scattered(view: &BrowseView, cell: &gtk::Box, entry: &FileEntry, icon: &gtk::Image, size: i32, media: &[Picture]) {
     if media.is_empty() {
         return;
     }
@@ -461,30 +503,59 @@ fn request_scattered(view: &BrowseView, cell: &gtk::Box, entry: &FileEntry, icon
     icon.set_pixel_size(size);
     let fitted = view.folder_preview_fit();
     let slots = if fitted { MAX_PHOTOS } else { view.preview_count() };
-    let shown = view.page_length(cell, &folder, &media, 0, fitted, slots);
-    media.truncate(shown);
+    let shown = view.page_length(cell, entry.path(), media, 0, fitted, slots);
     let scattered = ScatteredThumbnail::new(folder_paintable(icon, entry, size), slots, fitted);
-    for (index, (path, modified, _, kind)) in media.into_iter().enumerate() {
-        let icon = icon.downgrade();
-        let scattered = scattered.clone();
-        let turn = photo_turn(&path);
-        Thumbnails::shared().request_still(
-            &path,
-            modified,
-            kind,
-            ThumbnailSize::for_pixels(size),
-            wanted_for(view, cell, &folder),
-            move |texture| {
-                scattered.set_photo(index, texture, turn);
-                if let Some(icon) = icon.upgrade() {
-                    icon.set_pixel_size(size);
-                    icon.set_paintable(Some(&scattered));
-                    if let Some(visual) = icon.parent() {
-                        visual.add_css_class("has-thumbnail");
-                    }
+    for (index, picture) in media.iter().take(shown).enumerate() {
+        request_photo(view, cell, icon, &scattered, index, picture, size);
+    }
+}
+
+/// Requests the picture `index` of a folder's scattered previews, and shows it on `icon` once it is made.
+fn request_photo(view: &BrowseView, cell: &gtk::Box, icon: &gtk::Image, scattered: &ScatteredThumbnail, index: usize, picture: &Picture, size: i32) {
+    let (path, modified, _, kind) = picture;
+    let folder = path.parent().unwrap_or(path);
+    let icon = icon.downgrade();
+    let scattered = scattered.clone();
+    let turn = photo_turn(path);
+    Thumbnails::shared().request_still(
+        path,
+        *modified,
+        *kind,
+        ThumbnailSize::for_pixels(size),
+        wanted_for(view, cell, folder),
+        move |texture| {
+            scattered.set_photo(index, texture, turn);
+            if let Some(icon) = icon.upgrade() {
+                icon.set_pixel_size(size);
+                icon.set_paintable(Some(&scattered));
+                if let Some(visual) = icon.parent() {
+                    visual.add_css_class("has-thumbnail");
                 }
-            },
-        );
+            }
+        },
+    );
+}
+
+/// Lays out the scattered previews of the folder `entry` in `cell` again, once a picture's metadata is known. The
+/// folder's scan and its preview object are kept, so only the pictures that now fit are requested, and the others
+/// are taken off.
+fn relayout_scattered(view: &BrowseView, cell: &gtk::Box, entry: &FileEntry) {
+    let Some(scattered) = scattered_in(cell) else { return };
+    // A cycling folder's previews show its current page, which the cycle lays out itself.
+    if view.imp().cycle.borrow().as_ref().is_some_and(|cycle| cycle.scattered == scattered) {
+        return;
+    }
+    let (Some(icon), Some(media)) = (icon_of(cell), view.cached_scan(entry.path(), modified_secs(entry))) else { return };
+    let fitted = view.folder_preview_fit();
+    let slots = if fitted { MAX_PHOTOS } else { view.preview_count() };
+    let shown = view.page_length(cell, entry.path(), &media, 0, fitted, slots);
+    let size = view.item_size();
+    for (index, picture) in media.iter().take(slots).enumerate() {
+        if index < shown {
+            request_photo(view, cell, &icon, &scattered, index, picture, size);
+        } else {
+            scattered.clear_photo(index);
+        }
     }
 }
 
@@ -565,6 +636,8 @@ mod imp {
         /// The folder whose preview pictures are cycling, if any.
         pub(super) cycle: RefCell<Option<Cycle>>,
         pub(super) cycle_timer: RefCell<Option<glib::SourceId>>,
+        /// The pictures and videos scanned for each folder's previews, with the folder's modification time then.
+        pub(super) folder_scans: RefCell<HashMap<PathBuf, (i64, Rc<Vec<Picture>>)>>,
         /// The item under the pointer, for the folder preview cycle.
         pub(super) hovered_cell: RefCell<Option<glib::WeakRef<gtk::Box>>>,
         /// The popover that shows an item's description, below the item, and the timer that opens it.
@@ -1766,13 +1839,21 @@ impl BrowseView {
         self.directory_previews() && entry_in(self, cell).is_some_and(|entry| entry.is_dir())
     }
 
+    /// The pictures and videos scanned for `folder`'s previews, if the scan is kept and the folder has not changed since
+    /// it was made, which its modification time `modified` tells.
+    fn cached_scan(&self, folder: &Path, modified: i64) -> Option<Rc<Vec<Picture>>> {
+        let scans = self.imp().folder_scans.borrow();
+        let (scanned, media) = scans.get(folder)?;
+        (*scanned == modified).then(|| media.clone())
+    }
+
     /// Starts cycling the previews of the folder in `cell`, if they are up and there is more than one picture to cycle.
     fn start_cycle(&self, cell: &gtk::Box) {
         let Some(entry) = entry_in(self, cell) else { return };
         let Some(scattered) = scattered_in(cell) else { return };
         let folder = entry.path().to_path_buf();
-        let mut random = Seeded::for_folder(&folder);
-        let media = scattered_media(&folder, &mut random);
+        // The folder's pictures come from its scan, which its cell made when it was bound; without it there is nothing to cycle yet.
+        let Some(media) = self.cached_scan(&folder, modified_secs(&entry)) else { return };
         if media.len() < 2 {
             return;
         }
@@ -1859,7 +1940,7 @@ impl BrowseView {
             MediaInfo::shared().request(path, modified, size, wanted_for(self, cell, folder), move || {
                 let (Some(view), Some(cell)) = (weak_view.upgrade(), weak_cell.upgrade()) else { return };
                 if let Some(entry) = entry_in(&view, &cell) {
-                    style_item(&view, &cell, &entry);
+                    relayout_scattered(&view, &cell, &entry);
                 }
             })
         });
