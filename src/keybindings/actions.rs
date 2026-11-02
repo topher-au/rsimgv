@@ -426,6 +426,9 @@ pub const ACTIONS: &[ActionInfo] = &[
         name: "video.mute", description: "Mute the sound, or unmute it.", icon: "audio-volume-muted-symbolic", label: "Mute", defaults: &["m"],
     },
     ActionInfo {
+        name: "video.toggle-svp", description: "Turn SVP frame interpolation on or off.", icon: "video-display-symbolic", label: "Toggle SVP", defaults: &["v"],
+    },
+    ActionInfo {
         name: "video.repeat", description: "Play the video again from the start when it ends, or stop repeating it.", icon: "media-playlist-repeat-symbolic", label: "Toggle Repeat", defaults: &["r"],
     },
     ActionInfo {
@@ -468,6 +471,7 @@ mod tests {
         assert_eq!(contexts("browse.cursor-up"), [Scope::Global, Scope::Browse]);
         assert_eq!(contexts("image.zoom-in"), [Scope::Global, Scope::Image]);
         assert_eq!(contexts("video.mute"), [Scope::Global, Scope::Video]);
+        assert_eq!(contexts("video.toggle-svp"), [Scope::Global, Scope::Video]);
     }
 
     #[test]
