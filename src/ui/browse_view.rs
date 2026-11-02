@@ -653,6 +653,8 @@ mod imp {
         folder_preview_count: Cell<i32>,
         /// The read of the folder shown. Opening another folder, or stopping, cancels it.
         pub(super) reading: RefCell<Option<Reading>>,
+        /// Whether a refresh was asked for while the folder was being read, so it is made once the read is done.
+        pub(super) refresh_skipped: Cell<bool>,
         /// The video under the pointer, whose frames play while it is hovered.
         pub(super) hovered: RefCell<Option<Hover>>,
         pub(super) hover_generation: Cell<u64>,
@@ -1267,6 +1269,9 @@ impl BrowseView {
             if let (Some(scroller), false) = (&scroller, selecting) {
                 restore_scroll_after_layout(&view, scroller, saved);
             }
+            if view.imp().refresh_skipped.replace(false) {
+                view.refresh();
+            }
         };
         let reading = files.read(path, on_batch, on_done);
         imp.reading.replace(Some(reading));
@@ -1342,6 +1347,7 @@ impl BrowseView {
     fn refresh(&self) {
         let imp = self.imp();
         if imp.reading.borrow().is_some() {
+            imp.refresh_skipped.set(true);
             return;
         }
         let Some(path) = self.path() else { return };
@@ -1359,6 +1365,9 @@ impl BrowseView {
                 view.imp().reading.take();
                 if result.is_ok() {
                     view.reconcile(&listed.borrow());
+                }
+                if view.imp().refresh_skipped.replace(false) {
+                    view.refresh();
                 }
             }
         };

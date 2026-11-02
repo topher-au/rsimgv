@@ -11,7 +11,8 @@ pub fn child_directories(folder: &Path, show_hidden: bool) -> Vec<PathBuf> {
     let Ok(read) = std::fs::read_dir(folder) else { return Vec::new() };
     let mut children: Vec<(String, PathBuf)> = read
         .flatten()
-        .filter(|entry| entry.path().is_dir())
+        // A symbolic link is not followed, so a link back up the tree cannot make the walk endless.
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
         .map(|entry| (entry.file_name().to_string_lossy().into_owned(), entry.path()))
         .filter(|(name, _)| show_hidden || !name.starts_with('.'))
         .collect();

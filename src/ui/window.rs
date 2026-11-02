@@ -677,23 +677,23 @@ impl Window {
         // In the viewer, the folder steps go to the next folder with media, and show its first item.
         bound_action(self, &weak, "next-folder", |window| {
             if window.viewer_is_open() {
-                window.step_media_folder(true);
+                window.step_media_folder_later(true);
             } else {
-                window.step_folder(true);
+                window.step_folder_later(true);
             }
         });
         bound_action(self, &weak, "previous-folder", |window| {
             if window.viewer_is_open() {
-                window.step_media_folder(false);
+                window.step_media_folder_later(false);
             } else {
-                window.step_folder(false);
+                window.step_folder_later(false);
             }
         });
         bound_action(self, &weak, "next-media-folder", |window| {
-            window.step_media_folder(true);
+            window.step_media_folder_later(true);
         });
         bound_action(self, &weak, "previous-media-folder", |window| {
-            window.step_media_folder(false);
+            window.step_media_folder_later(false);
         });
         bound_action(self, &weak, "toggle-sidebar", |window| {
             let split = &window.imp().split;
@@ -1122,15 +1122,54 @@ impl Window {
     /// such folder, in which case the window stays where it is.
     pub fn step_media_folder(&self, forward: bool) -> Option<PathBuf> {
         let current = self.current_path()?;
-        let show_hidden = self.imp().settings.get().is_some_and(|settings| settings.boolean("show-hidden"));
-        let children = |folder: &Path| crate::fs::walk::child_directories(folder, show_hidden);
-        let has_media = |folder: &Path| crate::fs::walk::has_media(folder);
-        let target = if forward {
-            crate::fs::walk::next_media_folder(&current, &children, &has_media)
-        } else {
-            crate::fs::walk::previous_media_folder(&current, &children, &has_media)
-        }?;
+        let target = walk_folder(&current, self.show_hidden(), forward, true)?;
+        self.show_media_folder(target, forward)
+    }
 
+    /// Shows the next folder, or the previous one, in depth-first order of the folder tree. Returns the folder shown,
+    /// or `None` when there is no such folder, in which case the window stays where it is.
+    pub fn step_folder(&self, forward: bool) -> Option<PathBuf> {
+        let current = self.current_path()?;
+        let target = walk_folder(&current, self.show_hidden(), forward, false)?;
+        self.navigate(&target).then_some(target)
+    }
+
+    /// Steps to the next or previous folder with media, as `step_media_folder` does, for the keys. The tree is walked
+    /// on a worker thread, so a large or slow tree does not freeze the window while it is searched.
+    pub fn step_media_folder_later(&self, forward: bool) {
+        let Some(current) = self.current_path() else { return };
+        let show_hidden = self.show_hidden();
+        let weak = self.downgrade();
+        glib::spawn_future_local(async move {
+            let walked = gio::spawn_blocking(move || walk_folder(&current, show_hidden, forward, true)).await;
+            if let (Some(window), Some(target)) = (weak.upgrade(), walked.ok().flatten()) {
+                window.show_media_folder(target, forward);
+            }
+        });
+    }
+
+    /// Shows the next or previous folder, as `step_folder` does, for the keys. The tree is walked on a worker thread.
+    pub fn step_folder_later(&self, forward: bool) {
+        let Some(current) = self.current_path() else { return };
+        let show_hidden = self.show_hidden();
+        let weak = self.downgrade();
+        glib::spawn_future_local(async move {
+            let walked = gio::spawn_blocking(move || walk_folder(&current, show_hidden, forward, false)).await;
+            if let (Some(window), Some(target)) = (weak.upgrade(), walked.ok().flatten()) {
+                window.navigate(&target);
+            }
+        });
+    }
+
+    /// Whether hidden folders are listed, from the settings.
+    fn show_hidden(&self) -> bool {
+        self.imp().settings.get().is_some_and(|settings| settings.boolean("show-hidden"))
+    }
+
+    /// Opens the folder `target` that a media-folder step found: in the viewer its first picture or video is shown,
+    /// and while browsing its first or last is selected, once the folder has listed. Returns the folder moved to, or
+    /// `None` when the window could not move there.
+    fn show_media_folder(&self, target: PathBuf, forward: bool) -> Option<PathBuf> {
         // The arrangement waits for the folder to list, so it is set before the folder is shown.
         let viewer = self.viewer_is_open();
         let last = !forward && !viewer;
@@ -1156,20 +1195,6 @@ impl Window {
             }
             None
         }
-    }
-
-    /// Shows the next folder, or the previous one, in depth-first order of the folder tree. Returns the folder shown,
-    /// or `None` when there is no such folder, in which case the window stays where it is.
-    pub fn step_folder(&self, forward: bool) -> Option<PathBuf> {
-        let current = self.current_path()?;
-        let show_hidden = self.imp().settings.get().is_some_and(|settings| settings.boolean("show-hidden"));
-        let children = |folder: &Path| crate::fs::walk::child_directories(folder, show_hidden);
-        let target = if forward {
-            crate::fs::walk::next_folder(&current, &children)
-        } else {
-            crate::fs::walk::previous_folder(&current, &children)
-        }?;
-        self.navigate(&target).then_some(target)
     }
 
     /// Moves to the folder above the one shown.
@@ -2168,4 +2193,17 @@ fn bound_action(map: &impl IsA<gio::ActionMap>, window: &glib::WeakRef<Window>, 
         }
     });
     map.add_action(&action);
+}
+
+/// The folder a step moves to from `current`, in depth-first order of the folder tree: the next or previous folder,
+/// or with `media` the next or previous one that holds a picture or video. This reads the disk, so it runs on a
+/// worker thread.
+fn walk_folder(current: &Path, show_hidden: bool, forward: bool, media: bool) -> Option<PathBuf> {
+    let children = |folder: &Path| crate::fs::walk::child_directories(folder, show_hidden);
+    match (forward, media) {
+        (true, false) => crate::fs::walk::next_folder(current, &children),
+        (false, false) => crate::fs::walk::previous_folder(current, &children),
+        (true, true) => crate::fs::walk::next_media_folder(current, &children, &|folder| crate::fs::walk::has_media(folder)),
+        (false, true) => crate::fs::walk::previous_media_folder(current, &children, &|folder| crate::fs::walk::has_media(folder)),
+    }
 }
