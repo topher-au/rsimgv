@@ -198,6 +198,12 @@ impl ScatteredThumbnail {
         self.invalidate_contents();
     }
 
+    /// How many pictures are up.
+    #[cfg(test)]
+    pub fn shown(&self) -> usize {
+        self.imp().photos.borrow().iter().flatten().count()
+    }
+
     /// Takes photo `index` away, so its place is empty.
     pub fn clear_photo(&self, index: usize) {
         if let Some(photo) = self.imp().photos.borrow_mut().get_mut(index) {

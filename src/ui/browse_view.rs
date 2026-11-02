@@ -1198,6 +1198,7 @@ mod imp {
             obj.connect_directory_previews_notify(|view| view.refresh_items());
             obj.connect_folder_preview_cycle_notify(|view| view.update_cycle());
             obj.connect_folder_preview_count_notify(|view| view.refresh_items());
+            obj.connect_folder_preview_fit_notify(|view| view.refresh_items());
             obj.connect_show_directories_notify(|view| {
                 view.refresh_filter();
                 view.resort();
@@ -2572,10 +2573,48 @@ pub(crate) mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
+    /// Changing whether previews are fitted reaches the folders already on screen.
+    fn the_fit_setting_reaches_folders_on_screen() {
+        let root = std::env::temp_dir().join(format!("rsimgv-browse-fit-setting-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let folder = root.join("album");
+        fs::create_dir_all(&folder).unwrap();
+        for index in 0..12 {
+            // Wide pictures cover less of the item, so more of them fit than the set number.
+            let pixbuf = gtk::gdk_pixbuf::Pixbuf::new(gtk::gdk_pixbuf::Colorspace::Rgb, false, 8, 64, 32).unwrap();
+            pixbuf.fill(0x3366ccff);
+            pixbuf.savev(folder.join(format!("{index:02}.png")), "png", &[]).unwrap();
+        }
+
+        let view = BrowseView::new();
+        view.set_directory_previews(true);
+        view.set_folder_preview_count(4);
+        let window = gtk::Window::new();
+        window.set_default_size(600, 400);
+        window.set_child(Some(&view));
+        window.present();
+        view.set_path(&root);
+        wait_for("listing", || view.item_count() == 1);
+        let shown = || {
+            let cell = view.imp().grid.first_child().and_downcast::<gtk::Box>()?;
+            scattered_in(&cell).map(|scattered| scattered.shown())
+        };
+        wait_for("the set number of previews", || shown() == Some(4));
+
+        view.set_folder_preview_fit(true);
+        wait_for("as many previews as fit", || shown() == Some(9));
+        view.set_folder_preview_fit(false);
+        wait_for("the set number again", || shown() == Some(4));
+
+        window.destroy();
+        let _ = fs::remove_dir_all(&root);
+    }
+
     pub(crate) fn run_scenarios() {
         item_size_change_reaches_rendered_items();
         modified_selection_is_not_reported_as_lost();
         a_fitted_folder_is_laid_out_once_per_picture();
+        the_fit_setting_reaches_folders_on_screen();
         let root = std::env::temp_dir().join(format!("rsimgv-browse-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("sub")).unwrap();
