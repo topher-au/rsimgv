@@ -1453,6 +1453,8 @@ impl BrowseView {
             imp.scroll_memory.borrow_mut().insert(old, scroller.vadjustment().value());
         }
         let saved = imp.scroll_memory.borrow().get(path).copied().unwrap_or(0.0);
+        // Listing the folder already shown again is not entering it.
+        let entering = imp.path.borrow().as_deref() != Some(path);
         imp.path.replace(Some(path.to_path_buf()));
         imp.loading.set(true);
         // A folder lists in the order it is read, and is sorted once it is in: sorting each batch as it arrives would cost
@@ -1500,6 +1502,14 @@ impl BrowseView {
             let selecting = pending.is_some();
             if let Some(run) = pending {
                 run(&view);
+            } else if entering && view.imp().grid.item_count() > 0 {
+                // A folder entered with no choice of item starts on its first. One that was scrolled before keeps its
+                // place, with the first item selected out of sight.
+                if saved > 0.0 {
+                    view.imp().grid.select_in_place(0);
+                } else {
+                    view.imp().grid.select_first();
+                }
             }
             if let (Some(scroller), false) = (&scroller, selecting) {
                 restore_scroll_after_layout(&view, scroller, saved);
@@ -1766,6 +1776,11 @@ impl BrowseView {
         let imp = self.imp();
         let (Some(sorted), Some(sorter)) = (imp.sorted.get(), imp.sorter.get()) else { return };
         sorted.set_sorter(if sorting { Some(sorter) } else { None::<&gtk::CustomSorter> });
+    }
+
+    /// Whether something is arranged for once `folder` has listed.
+    pub fn has_pending_for(&self, folder: &Path) -> bool {
+        self.imp().pending.borrow().as_ref().is_some_and(|(pending, _)| pending == folder)
     }
 
     /// Drops whatever was arranged with `set_pending`.
