@@ -165,6 +165,8 @@ mod imp {
         #[template_child]
         pub seek_overlay_always_row: TemplateChild<adw::SwitchRow>,
         #[template_child]
+        pub svp_banner: TemplateChild<adw::Banner>,
+        #[template_child]
         pub mpv_args_row: TemplateChild<adw::EntryRow>,
         #[template_child]
         pub scaling_filter_row: TemplateChild<adw::ComboRow>,
@@ -255,8 +257,8 @@ glib::wrapper! {
 }
 
 impl PreferencesDialog {
-    /// Shows the options of the chosen video backend, and lets SVP be changed only while mpv plays videos. The extra
-    /// mpv options are saved when applied.
+    /// Shows the options of the chosen video backend, and lets SVP be changed only while mpv plays videos, with a
+    /// banner that offers mpv while it does not. The extra mpv options are saved when applied.
     fn bind_video_backend(&self, settings: &gio::Settings) {
         use adw::prelude::EntryRowExt;
         let imp = self.imp();
@@ -266,6 +268,17 @@ impl PreferencesDialog {
             let settings = settings.clone();
             move |row| {
                 let _ = settings.set_string("mpv-args", &row.text());
+            }
+        });
+        settings
+            .bind("video-backend", &*imp.svp_banner, "revealed")
+            .mapping(|variant, _| Some((variant.str()? != "mpv").to_value()))
+            .get_only()
+            .build();
+        imp.svp_banner.connect_button_clicked({
+            let settings = settings.clone();
+            move |_| {
+                let _ = settings.set_string("video-backend", "mpv");
             }
         });
         let groups = [("visible", &imp.mpv_group, "mpv"), ("visible", &imp.gstreamer_group, "gtk"), ("sensitive", &imp.svp_group, "mpv")];
@@ -782,6 +795,10 @@ pub(crate) mod tests {
         assert_eq!(settings.string("video-backend"), "gtk");
         assert!(!imp.mpv_group.get_visible() && imp.gstreamer_group.get_visible(), "GStreamer's options replace mpv's");
         assert!(!imp.svp_group.is_sensitive(), "SVP needs mpv");
+        assert!(imp.svp_banner.is_revealed(), "the banner offers mpv while another backend is chosen");
+        imp.svp_banner.emit_by_name::<()>("button-clicked", &[]);
+        assert_eq!(settings.string("video-backend"), "mpv", "its button chooses mpv");
+        assert!(!imp.svp_banner.is_revealed());
         settings.reset("video-backend");
         assert!(imp.mpv_group.get_visible() && imp.svp_group.is_sensitive());
 

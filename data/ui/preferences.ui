@@ -235,7 +235,7 @@
                             <property name="icon-name">network-server-symbolic</property>
                             <child>
                               <object class="AdwPreferencesGroup">
-                                <property name="description">Other programs can control rsimgv by sending it JSON commands.</property>
+                                <property name="description">The remote control server lets other programs drive rsimgv by sending it JSON requests: to list and open tabs, move between folders, run actions and read what is shown. Each request is answered with a JSON response. See the &lt;a href="https://github.com/topher-au/rsimgv/blob/main/src/ipc.rs"&gt;documentation&lt;/a&gt; for the requests it takes.</property>
                                 <child>
                                   <object class="AdwSwitchRow" id="ipc_socket_row">
                                     <property name="title">Unix socket</property>
@@ -797,7 +797,12 @@
                             <property name="icon-name">video-display-symbolic</property>
                             <child>
                               <object class="AdwPreferencesGroup">
-                                <property name="description">SVP requires the MPV player backend.</property>
+                                <child>
+                                  <object class="AdwBanner" id="svp_banner">
+                                    <property name="title">SVP needs the MPV player backend</property>
+                                    <property name="button-label">Use MPV</property>
+                                  </object>
+                                </child>
                               </object>
                             </child>
                             <child>
