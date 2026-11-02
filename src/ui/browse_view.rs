@@ -339,7 +339,7 @@ fn scattered_media(folder: &Path) -> Vec<Picture> {
     let mut media: Vec<Picture> = paths
         .into_iter()
         .filter_map(|path| {
-            let name = path.file_name()?.to_str()?;
+            let name = path.file_name()?.to_string_lossy();
             if name.starts_with('.') {
                 return None;
             }

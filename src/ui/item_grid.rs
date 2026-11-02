@@ -412,7 +412,7 @@ impl ItemGrid {
         for shown in gone {
             let removed = imp.shown.borrow_mut().remove(&shown);
             if let Some(widget) = removed {
-                widget.set_child_visible(false);
+                put_spare(&widget);
                 imp.spare.borrow_mut().push(widget);
             }
         }
@@ -734,7 +734,7 @@ impl ItemGrid {
             // Taken out first: hiding a cell can run handlers that look at the shown cells.
             let removed = imp.shown.borrow_mut().remove(&position);
             if let Some(widget) = removed {
-                widget.set_child_visible(false);
+                put_spare(&widget);
                 imp.spare.borrow_mut().push(widget);
             }
         }
@@ -822,7 +822,7 @@ impl ItemGrid {
         imp.shown_range.set(None);
         let shown: Vec<gtk::Widget> = imp.shown.borrow_mut().drain().map(|(_, widget)| widget).collect();
         for widget in shown {
-            widget.set_child_visible(false);
+            put_spare(&widget);
             imp.spare.borrow_mut().push(widget);
         }
     }
@@ -868,4 +868,11 @@ mod tests {
     fn a_move_with_nothing_selected_starts_at_the_first_item() {
         assert_eq!(target_position(u32::MAX, 10, 3), 0);
     }
+}
+
+/// Hides a widget that is no longer shown, and forgets the item it showed: its name is what says which item a widget
+/// shows, so a spare widget must not still claim one.
+fn put_spare(widget: &gtk::Widget) {
+    widget.set_child_visible(false);
+    widget.set_widget_name("");
 }

@@ -57,6 +57,9 @@ pub fn settings_file(hash: &str) -> PathBuf {
 pub struct FileSettings {
     file: PathBuf,
     values: Mapping,
+    /// The settings as the file last had them, from this read or write. The keys that differ from it are the ones
+    /// this instance changed.
+    base: Mapping,
 }
 
 impl FileSettings {
@@ -67,12 +70,8 @@ impl FileSettings {
 
     /// The settings kept in `file`. A missing or unreadable file gives none.
     fn at(file: PathBuf) -> Self {
-        let values = std::fs::read_to_string(&file)
-            .ok()
-            .and_then(|text| serde_yaml_ng::from_str::<Value>(&text).ok())
-            .and_then(|value| value.as_mapping().cloned())
-            .unwrap_or_default();
-        Self { file, values }
+        let values = read_mapping(&file);
+        Self { base: values.clone(), file, values }
     }
 
     /// The value of `key`, if it is set.
@@ -126,9 +125,27 @@ impl FileSettings {
     }
 
     /// Writes the settings through a temporary file, so a crash never leaves them half-written. With none left,
-    /// the file is removed instead.
-    fn save(&self) -> std::io::Result<()> {
-        if self.values.is_empty() {
+    /// the file is removed instead. Another window may have saved other keys of the file since this one read it, so
+    /// only the keys this instance changed are written onto what the file holds now.
+    fn save(&mut self) -> std::io::Result<()> {
+        let mut merged = read_mapping(&self.file);
+        let keys: Vec<Value> = self.values.keys().chain(self.base.keys()).cloned().collect();
+        for key in keys {
+            if self.values.get(&key) == self.base.get(&key) {
+                continue;
+            }
+            match self.values.get(&key) {
+                Some(value) => {
+                    merged.insert(key, value.clone());
+                }
+                None => {
+                    merged.remove(&key);
+                }
+            }
+        }
+        self.values = merged.clone();
+        self.base = merged.clone();
+        if merged.is_empty() {
             return match std::fs::remove_file(&self.file) {
                 Err(err) if err.kind() != std::io::ErrorKind::NotFound => Err(err),
                 _ => Ok(()),
@@ -137,14 +154,36 @@ impl FileSettings {
         if let Some(parent) = self.file.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let text = serde_yaml_ng::to_string(&Value::Mapping(self.values.clone())).map_err(std::io::Error::other)?;
+        let text = serde_yaml_ng::to_string(&Value::Mapping(merged)).map_err(std::io::Error::other)?;
         crate::atomic_file::write(&self.file, text.as_bytes())
     }
+}
+
+/// The mapping in the settings `file`, or none if it is missing or does not parse.
+fn read_mapping(file: &Path) -> Mapping {
+    std::fs::read_to_string(file)
+        .ok()
+        .and_then(|text| serde_yaml_ng::from_str::<Value>(&text).ok())
+        .and_then(|value| value.as_mapping().cloned())
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_save_keeps_the_keys_another_window_saved() {
+        let file = std::env::temp_dir().join(format!("rsimgv-merge-{}", std::process::id())).join("ab.yaml");
+        let mut first = FileSettings::at(file.clone());
+        let mut second = FileSettings::at(file.clone());
+        first.set("position", 12.5).unwrap();
+        second.set("speed", 1.5).unwrap();
+        let saved = FileSettings::at(file.clone());
+        assert_eq!(saved.get_f64("position"), Some(12.5), "the other window's key is kept");
+        assert_eq!(saved.get_f64("speed"), Some(1.5));
+        let _ = std::fs::remove_dir_all(file.parent().unwrap());
+    }
 
     fn hash_of(name: &str, data: &[u8]) -> String {
         let path = std::env::temp_dir().join(format!("rsimgv-moviehash-{}-{name}", std::process::id()));
