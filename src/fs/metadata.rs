@@ -147,10 +147,16 @@ impl MediaInfo {
             return Some(metadata);
         }
         let key: Key = (path.to_path_buf(), mtime, size);
+        let waiter = Waiter {
+            wanted: Rc::new(wanted),
+            on_ready: Box::new(on_ready),
+        };
         let mut waiters = self.inner.waiters.borrow_mut();
-        if waiters.contains_key(&key) {
-            // Already being read: the first request is told when it is, so this one keeps no waiter of its own,
-            // which would otherwise pile up each time the file is asked for.
+        if let Some(list) = waiters.get_mut(&key) {
+            // Already being read: this request is told too when it is. Requests that no longer want the file are
+            // dropped first, so the list does not grow each time a cell asks again.
+            list.retain(|waiter| (waiter.wanted)());
+            list.push(waiter);
             drop(waiters);
             // Asked for again while queued, so it is wanted now: it moves to the front of the queue.
             let mut queue = self.inner.queue.borrow_mut();
@@ -160,10 +166,6 @@ impl MediaInfo {
             }
             return None;
         }
-        let waiter = Waiter {
-            wanted: Rc::new(wanted),
-            on_ready: Box::new(on_ready),
-        };
         waiters.insert(key.clone(), vec![waiter]);
         drop(waiters);
         self.inner.queue.borrow_mut().push_back(key);
