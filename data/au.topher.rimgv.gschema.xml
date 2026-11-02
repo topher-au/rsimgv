@@ -154,6 +154,14 @@
       <default>-1</default>
       <summary>Sidebar width chosen by dragging, in pixels; -1 uses the default width</summary>
     </key>
+    <key name="sidebar-bookmarks-expanded" type="b">
+      <default>true</default>
+      <summary>Whether the sidebar's bookmarks section is expanded</summary>
+    </key>
+    <key name="sidebar-filesystem-expanded" type="b">
+      <default>true</default>
+      <summary>Whether the sidebar's filesystem section is expanded</summary>
+    </key>
     <key name="viewer-thumbnail-bar" type="s">
       <choices>
         <choice value="top"/>

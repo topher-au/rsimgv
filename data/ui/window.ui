@@ -36,29 +36,121 @@
                 <property name="orientation">vertical</property>
                 <child>
                   <object class="GtkExpander" id="bookmarks_expander">
-                    <property name="label">Bookmarks</property>
                     <property name="expanded">true</property>
-                    <property name="margin-start">6</property>
-                    <property name="margin-end">6</property>
-                    <property name="margin-top">6</property>
+                    <style><class name="rsimgv-sidebar-section"/></style>
+                    <property name="label-widget">
+                      <object class="GtkBox">
+                        <property name="spacing">2</property>
+                        <property name="hexpand">true</property>
+                        <child>
+                          <object class="GtkLabel">
+                            <property name="label">Bookmarks</property>
+                            <property name="hexpand">true</property>
+                            <property name="xalign">0</property>
+                            <style>
+                              <class name="caption-heading"/>
+                              <class name="dimmed"/>
+                            </style>
+                          </object>
+                        </child>
+                        <child>
+                          <object class="GtkButton">
+                            <property name="icon-name">bookmark-new-symbolic</property>
+                            <property name="tooltip-text">Bookmark this folder</property>
+                            <property name="action-name">win.bookmark-folder</property>
+                            <property name="focus-on-click">false</property>
+                            <style>
+                              <class name="flat"/>
+                              <class name="rsimgv-sidebar-section-button"/>
+                            </style>
+                          </object>
+                        </child>
+                      </object>
+                    </property>
                     <property name="child">
-                      <object class="GtkListBox" id="bookmarks_list">
-                        <property name="selection-mode">single</property>
-                        <style><class name="navigation-sidebar"/></style>
+                      <!-- A long list scrolls, so that it cannot push the folder tree out of the sidebar. -->
+                      <object class="GtkScrolledWindow">
+                        <property name="hscrollbar-policy">never</property>
+                        <property name="propagate-natural-height">true</property>
+                        <property name="max-content-height">240</property>
+                        <property name="child">
+                          <object class="GtkListBox" id="bookmarks_list">
+                            <property name="selection-mode">single</property>
+                            <style>
+                              <class name="navigation-sidebar"/>
+                              <class name="rsimgv-bookmarks"/>
+                            </style>
+                            <child type="placeholder">
+                              <object class="GtkLabel">
+                                <property name="label">No bookmarks yet</property>
+                                <property name="margin-top">4</property>
+                                <property name="margin-bottom">8</property>
+                                <style>
+                                  <class name="caption"/>
+                                  <class name="dimmed"/>
+                                </style>
+                              </object>
+                            </child>
+                          </object>
+                        </property>
                       </object>
                     </property>
                   </object>
                 </child>
                 <child>
                   <object class="GtkExpander" id="playlist_expander">
-                    <property name="margin-start">6</property>
-                    <property name="margin-end">6</property>
-                    <property name="margin-top">6</property>
+                    <style><class name="rsimgv-sidebar-section"/></style>
                   </object>
                 </child>
                 <child>
-                  <object class="RsimgvFsTree" id="tree">
-                    <property name="vexpand">true</property>
+                  <object class="GtkExpander" id="filesystem_expander">
+                    <property name="expanded">true</property>
+                    <style><class name="rsimgv-sidebar-section"/></style>
+                    <property name="label-widget">
+                      <object class="GtkBox">
+                        <property name="spacing">2</property>
+                        <property name="hexpand">true</property>
+                        <child>
+                          <object class="GtkLabel">
+                            <property name="label">Filesystem</property>
+                            <property name="hexpand">true</property>
+                            <property name="xalign">0</property>
+                            <style>
+                              <class name="caption-heading"/>
+                              <class name="dimmed"/>
+                            </style>
+                          </object>
+                        </child>
+                        <child>
+                          <object class="GtkToggleButton" id="filesystem_root_button">
+                            <property name="icon-name">drive-harddisk-symbolic</property>
+                            <property name="tooltip-text">Root the tree at the filesystem root</property>
+                            <property name="focus-on-click">false</property>
+                            <style>
+                              <class name="flat"/>
+                              <class name="rsimgv-sidebar-section-button"/>
+                            </style>
+                          </object>
+                        </child>
+                        <child>
+                          <object class="GtkToggleButton" id="filesystem_home_button">
+                            <property name="icon-name">user-home-symbolic</property>
+                            <property name="tooltip-text">Root the tree at the home folder</property>
+                            <property name="focus-on-click">false</property>
+                            <property name="group">filesystem_root_button</property>
+                            <style>
+                              <class name="flat"/>
+                              <class name="rsimgv-sidebar-section-button"/>
+                            </style>
+                          </object>
+                        </child>
+                      </object>
+                    </property>
+                    <property name="child">
+                      <object class="RsimgvFsTree" id="tree">
+                        <property name="vexpand">true</property>
+                      </object>
+                    </property>
                   </object>
                 </child>
               </object>

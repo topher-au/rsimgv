@@ -17,6 +17,8 @@ const MAX_LIST_HEIGHT: i32 = 260;
 
 pub struct PlaylistPanel {
     expander: gtk::Expander,
+    /// The section's heading, which says how many items there are.
+    title: gtk::Label,
     view: gtk::ListView,
     empty: gtk::Label,
     scroller: gtk::ScrolledWindow,
@@ -54,13 +56,22 @@ impl PlaylistPanel {
         empty.set_margin_top(6);
         empty.set_margin_bottom(6);
         empty.set_margin_start(6);
-        empty.add_css_class("dim-label");
+        empty.add_css_class("caption");
+        empty.add_css_class("dimmed");
 
         let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
         content.append(&toolbar());
         content.append(&empty);
         content.append(&scroller);
         expander.set_child(Some(&content));
+
+        // The heading looks like those of the sidebar's other sections.
+        let title = gtk::Label::new(None);
+        title.set_hexpand(true);
+        title.set_xalign(0.0);
+        title.add_css_class("caption-heading");
+        title.add_css_class("dimmed");
+        expander.set_label_widget(Some(&title));
 
         let drop = gtk::DropTarget::new(gdk::FileList::static_type(), gdk::DragAction::COPY);
         drop.connect_drop(|target, value, _, _| {
@@ -70,7 +81,7 @@ impl PlaylistPanel {
         });
         expander.add_controller(drop);
 
-        let panel = Self { expander: expander.clone(), view, empty, scroller, paths, shown: RefCell::new(Vec::new()), current, rows };
+        let panel = Self { expander: expander.clone(), title, view, empty, scroller, paths, shown: RefCell::new(Vec::new()), current, rows };
         panel.refresh();
         expander.set_expanded(!panel.shown.borrow().is_empty());
         panel
@@ -86,7 +97,7 @@ impl PlaylistPanel {
         let added: Vec<&str> = items[start..items.len() - end].iter().map(String::as_str).collect();
         self.paths.splice(start as u32, (shown.len() - start - end) as u32, &added);
 
-        self.expander.set_label(Some(&if items.is_empty() { "Playlist".to_owned() } else { format!("Playlist ({})", items.len()) }));
+        self.title.set_label(&if items.is_empty() { "Playlist".to_owned() } else { format!("Playlist ({})", items.len()) });
         self.empty.set_visible(items.is_empty());
         self.scroller.set_visible(!items.is_empty());
         *shown = items;

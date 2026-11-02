@@ -14,13 +14,17 @@ use std::sync::LazyLock;
 use crate::fs::FsNode;
 
 const HIDDEN_CLASS: &str = "rsimgv-hidden-dir";
-/// What a tree shows: the folders expanded in it, the selected folder, and the scroll position.
+/// The root a tree returns to when it is asked to show a folder outside its own.
+const FILESYSTEM_ROOT: &str = "/";
+/// What a tree shows: its root, the folders expanded in it, the selected folder, and the scroll position.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct TreeSnapshot {
     pub expanded: Vec<PathBuf>,
     pub selected: Option<PathBuf>,
     /// The saved scroll position, or `None` for a tree that has never been shown, which is framed on its selection.
     pub scroll: Option<f64>,
+    /// The tree's root, or `None` for a tree that has never been shown, which keeps the root it finds if it can.
+    pub root: Option<PathBuf>,
 }
 
 impl TreeSnapshot {
@@ -30,6 +34,7 @@ impl TreeSnapshot {
             expanded: path.ancestors().skip(1).map(Path::to_path_buf).collect(),
             selected: Some(path.to_path_buf()),
             scroll: None,
+            root: None,
         }
     }
 }
@@ -117,6 +122,7 @@ mod imp {
                     Signal::builder("open-in-new-tab-requested")
                         .param_types([String::static_type()])
                         .build(),
+                    Signal::builder("root-changed").build(),
                 ]
             });
             SIGNALS.as_ref()
@@ -294,6 +300,8 @@ impl FsTree {
         let selection = gtk::SingleSelection::new(Some(model.clone()));
         selection.set_autoselect(false);
         selection.set_can_unselect(true);
+        // The selection starts on the first row, because it autoselected until now.
+        selection.set_selected(gtk::INVALID_LIST_POSITION);
         let weak = self.downgrade();
         selection.connect_selected_item_notify(move |selection| {
             let Some(tree) = weak.upgrade() else { return };
@@ -311,8 +319,28 @@ impl FsTree {
         imp.root.replace(Some(root));
         imp.tree_model.replace(Some(model));
         imp.filter.replace(Some(filter));
+        // A reveal still under way belongs to the tree just replaced.
+        imp.reveal_generation.set(imp.reveal_generation.get() + 1);
         self.refresh_root_rows();
+        self.emit_by_name::<()>("root-changed", &[]);
         Ok(())
+    }
+
+    /// The directory the tree is rooted at.
+    pub fn root_path(&self) -> Option<PathBuf> {
+        self.imp().root.borrow().as_ref().map(|root| root.path().to_path_buf())
+    }
+
+    /// Calls `callback(tree)` whenever the tree gets a new root.
+    pub fn connect_root_changed<F>(&self, callback: F) -> glib::SignalHandlerId
+    where
+        F: Fn(&Self) + 'static,
+    {
+        self.connect_local("root-changed", false, move |values| {
+            let tree = values[0].get::<FsTree>().expect("tree argument");
+            callback(&tree);
+            None
+        })
     }
 
     pub fn show_hidden(&self) -> bool {
@@ -476,13 +504,19 @@ impl FsTree {
             expanded,
             selected: self.selected_path(),
             scroll: Some(imp.scroller.vadjustment().value()),
+            root: self.root_path(),
         }
     }
 
-    /// Shows a snapshot: collapses the tree to its root, expands the saved folders, and selects the saved
-    /// folder once its row has loaded, then restores the saved scroll position.
+    /// Shows a snapshot: returns to its root, collapses the tree to that root, expands the saved folders, and
+    /// selects the saved folder once its row has loaded, then restores the saved scroll position.
     pub fn restore(&self, snapshot: TreeSnapshot) {
         let imp = self.imp();
+        if let Some(root) = snapshot.root.as_deref().filter(|&root| self.root_path().as_deref() != Some(root)) {
+            if let Err(err) = self.set_root_path(root) {
+                eprintln!("rsimgv: {err:#}");
+            }
+        }
         if let Some(model) = imp.tree_model.borrow().clone() {
             if let Some(root) = model.row(0).and_then(|row| node_of(&row)) {
                 collapse_except(&model, &[root.path().to_path_buf()]);
@@ -529,8 +563,15 @@ impl FsTree {
     }
 
     /// Shows `path` in the tree: expands to it, selects it and scrolls it into view. Other folders
-    /// are collapsed only if `collapse-on-navigate` is set.
+    /// are collapsed only if `collapse-on-navigate` is set. A folder outside the tree's root sends
+    /// the tree back to the filesystem root.
     pub fn reveal_path(&self, path: &Path) {
+        let outside = self.root_path().is_some_and(|root| path.is_absolute() && !path.starts_with(root));
+        if outside {
+            if let Err(err) = self.set_root_path(Path::new(FILESYSTEM_ROOT)) {
+                eprintln!("rsimgv: {err:#}");
+            }
+        }
         self.expand_to_path(path, self.collapse_on_navigate());
     }
 
@@ -1232,7 +1273,57 @@ pub(crate) mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
+    /// A folder outside the root sends the tree back to the filesystem root, and one inside leaves the root alone.
+    fn reveal_outside_root_returns_to_filesystem_root() {
+        let root = temp_root("fs-tree-outside");
+        fs::create_dir_all(root.join("inside/deep")).unwrap();
+        fs::create_dir_all(root.join("outside")).unwrap();
+
+        let tree = FsTree::new();
+        tree.set_root_path(&root.join("inside")).unwrap();
+        assert_eq!(tree.selected_path(), None, "a new root selects nothing");
+        let changes = Rc::new(Cell::new(0));
+        let sink = changes.clone();
+        tree.connect_root_changed(move |_| sink.set(sink.get() + 1));
+
+        tree.reveal_path(&root.join("inside/deep"));
+        wait_for("deep selected", || tree.selected_path() == Some(root.join("inside/deep")));
+        assert_eq!(tree.root_path(), Some(root.join("inside")), "a folder inside keeps the root");
+        assert_eq!(changes.get(), 0);
+
+        tree.reveal_path(&root.join("outside"));
+        assert_eq!(tree.root_path(), Some(PathBuf::from(FILESYSTEM_ROOT)), "a folder outside changes the root");
+        assert_eq!(changes.get(), 1);
+        wait_for("outside selected", || tree.selected_path() == Some(root.join("outside")));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// A snapshot brings back its root, and one that names no root keeps the root the tree has.
+    fn snapshot_keeps_root() {
+        let root = temp_root("fs-tree-snapshot-root");
+        fs::create_dir_all(root.join("one/child")).unwrap();
+        fs::create_dir_all(root.join("two")).unwrap();
+
+        let tree = FsTree::new();
+        tree.set_root_path(&root.join("one")).unwrap();
+        let saved = tree.snapshot();
+        assert_eq!(saved.root, Some(root.join("one")));
+
+        tree.set_root_path(&root.join("two")).unwrap();
+        tree.restore(saved);
+        assert_eq!(tree.root_path(), Some(root.join("one")), "the saved root returns");
+
+        tree.restore(TreeSnapshot::revealing(&root.join("one/child")));
+        assert_eq!(tree.root_path(), Some(root.join("one")), "a new tab's tree keeps a root that holds its folder");
+        wait_for("child selected", || tree.selected_path() == Some(root.join("one/child")));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
     pub(crate) fn run_scenarios() {
+        reveal_outside_root_returns_to_filesystem_root();
+        snapshot_keeps_root();
         toggle_keeps_row_in_place();
         frames_selection_with_its_children();
         context_request_reports_node();

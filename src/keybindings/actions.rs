@@ -285,6 +285,9 @@ pub const ACTIONS: &[ActionInfo] = &[
         name: "win.toggle-playlist", description: "Show the playlist in the sidebar, or hide it.", icon: "view-list-symbolic", label: "Toggle Playlist Panel", defaults: &["ctrl+shift+p"],
     },
     ActionInfo {
+        name: "win.toggle-filesystem", description: "Expand or collapse the folder tree in the sidebar.", icon: "drive-harddisk-symbolic", label: "Toggle Filesystem", defaults: &[],
+    },
+    ActionInfo {
         name: "win.toggle-sidebar", description: "Show or hide the sidebar.", icon: "sidebar-show-symbolic", label: "Toggle Sidebar", defaults: &["f9"],
     },
     ActionInfo {

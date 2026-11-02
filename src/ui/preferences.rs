@@ -366,7 +366,16 @@ impl PreferencesDialog {
         bind_port(settings, &imp.zoom_step_row, "zoom-step");
         bind_port(settings, &imp.seek_overlay_width_row, "seek-overlay-width");
         settings.bind("seek-overlay-seconds", &*imp.seek_overlay_seconds_row, "value").build();
-        // The overlay's other options mean nothing while it is off.
+        bind_port(settings, &imp.scroll_speed_row, "scroll-speed");
+        bind_port(settings, &imp.thumbnail_bar_size_row, "viewer-thumbnail-bar-size");
+        dialog.bind_video_backend(settings);
+        dialog.bind_remote(settings);
+        settings.bind("ipc-external-access", &*imp.ipc_external_row, "active").build();
+
+        bind_switches(settings, dialog.imp());
+        bind_choices(settings, dialog.imp());
+        // The overlay's other options mean nothing while it is off. This comes after the rows' own bindings, as a
+        // two-way binding takes over its row's "sensitive" and would replace this one.
         for row in [
             imp.seek_overlay_position_row.upcast_ref::<gtk::Widget>(),
             imp.seek_overlay_bar_row.upcast_ref(),
@@ -378,14 +387,6 @@ impl PreferencesDialog {
         ] {
             settings.bind("seek-overlay", row, "sensitive").get_only().build();
         }
-        bind_port(settings, &imp.scroll_speed_row, "scroll-speed");
-        bind_port(settings, &imp.thumbnail_bar_size_row, "viewer-thumbnail-bar-size");
-        dialog.bind_video_backend(settings);
-        dialog.bind_remote(settings);
-        settings.bind("ipc-external-access", &*imp.ipc_external_row, "active").build();
-
-        bind_switches(settings, dialog.imp());
-        bind_choices(settings, dialog.imp());
         dialog.bind_start_directory(settings);
         bind_info_fields(settings, &dialog);
         // The scale steps through no limit, shown as "-", then 1x to 4x, with a mark at each.

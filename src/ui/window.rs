@@ -58,6 +58,12 @@ mod imp {
         /// The playlist in the sidebar, made once the template is built.
         pub(super) playlist_panel: std::cell::OnceCell<PlaylistPanel>,
         #[template_child]
+        pub filesystem_expander: TemplateChild<gtk::Expander>,
+        #[template_child]
+        pub filesystem_root_button: TemplateChild<gtk::ToggleButton>,
+        #[template_child]
+        pub filesystem_home_button: TemplateChild<gtk::ToggleButton>,
+        #[template_child]
         pub sidebar_header_toggle: TemplateChild<gtk::ToggleButton>,
         #[template_child]
         pub content_sidebar_toggle: TemplateChild<gtk::ToggleButton>,
@@ -228,6 +234,8 @@ impl Window {
         // Settings drive the view: the browse view's properties and the tree follow their keys, and
         // the menu's "Show Hidden Directories" item is an action bound to its key.
         settings.bind("collapse-on-navigate", &tree, "collapse-on-navigate").build();
+        settings.bind("sidebar-bookmarks-expanded", &*imp.bookmarks_expander, "expanded").build();
+        settings.bind("sidebar-filesystem-expanded", &*imp.filesystem_expander, "expanded").build();
         tree.set_show_hidden(settings.boolean("show-hidden"));
         let tree_for_settings = tree.clone();
         settings.connect_changed(Some("show-hidden"), move |settings, _| {
@@ -456,7 +464,7 @@ impl Window {
     /// The actions behind the context menus. Each takes the path it works on as its parameter.
     fn add_context_actions(&self) {
         let weak = self.downgrade();
-        for name in ["open-path", "open-in-new-tab", "open-in-new-window", "copy-path", "show-properties"] {
+        for name in ["open-path", "open-in-new-tab", "open-in-new-window", "copy-path", "show-properties", "rename-bookmark", "remove-bookmark"] {
             let action = gio::SimpleAction::new(name, Some(glib::VariantTy::STRING));
             let weak = weak.clone();
             action.connect_activate(move |_, parameter| {
@@ -472,6 +480,8 @@ impl Window {
                     "open-in-new-window" => window.open_in_new_window(&path),
                     "copy-path" => window.clipboard().set_text(&path.to_string_lossy()),
                     "show-properties" => window.show_properties(&path),
+                    "rename-bookmark" => window.ask_bookmark_name("Rename Bookmark", path),
+                    "remove-bookmark" => window.remove_bookmark(&path),
                     _ => {}
                 }
             });
@@ -543,12 +553,7 @@ impl Window {
 
     /// Shows a context menu for a folder or file at (`x`, `y`) within `parent`. Folders can be opened in a tab or a window.
     fn show_context_menu(&self, parent: &gtk::Widget, path: &Path, is_dir: bool, x: f64, y: f64) {
-        let target = path.to_string_lossy().into_owned();
-        let item = |label: &str, action: &str| {
-            let item = gio::MenuItem::new(Some(label), None);
-            item.set_action_and_target_value(Some(action), Some(&target.to_variant()));
-            item
-        };
+        let item = |label: &str, action: &str| path_menu_item(label, action, path);
         let menu = gio::Menu::new();
         if is_dir {
             menu.append_item(&item("Open", "win.open-path"));
@@ -569,18 +574,31 @@ impl Window {
             menu.append_section(None, &playlist_section);
         }
         menu.append_section(None, &details);
+        popup_menu(parent, &menu, x, y);
+    }
 
-        let popover = gtk::PopoverMenu::from_model(Some(&menu));
-        popover.set_parent(parent);
-        popover.set_has_arrow(false);
-        popover.set_pointing_to(Some(&gtk::gdk::Rectangle::new(x as i32, y as i32, 0, 0)));
-        // The menu activates its item's action after closing, so the popover must stay in the
-        // widget tree until then or actions like `win.open-in-new-tab` aren't found.
-        popover.connect_closed(|popover| {
-            let popover = popover.clone();
-            glib::idle_add_local_once(move || popover.unparent());
-        });
-        popover.popup();
+    /// Shows a context menu for the bookmark of `path`, for a press at (`x`, `y`) within its row. The menu belongs
+    /// to the list rather than the row, because removing the bookmark rebuilds the rows.
+    fn show_bookmark_menu(&self, row: &gtk::Widget, path: &Path, x: f64, y: f64) {
+        let list = &self.imp().bookmarks_list;
+        let point = gtk::graphene::Point::new(x as f32, y as f32);
+        let (x, y) = row.compute_point(&**list, &point).map_or((x, y), |p| (f64::from(p.x()), f64::from(p.y())));
+
+        let item = |label: &str, action: &str| path_menu_item(label, action, path);
+        let menu = gio::Menu::new();
+        let open = gio::Menu::new();
+        open.append_item(&item("Open in New Tab", "win.open-in-new-tab"));
+        open.append_item(&item("Open in New Window", "win.open-in-new-window"));
+        menu.append_section(None, &open);
+        let bookmark = gio::Menu::new();
+        bookmark.append_item(&item("Rename…", "win.rename-bookmark"));
+        bookmark.append_item(&item("Remove", "win.remove-bookmark"));
+        menu.append_section(None, &bookmark);
+        let details = gio::Menu::new();
+        details.append_item(&item("Copy Path", "win.copy-path"));
+        details.append_item(&item("Properties", "win.show-properties"));
+        menu.append_section(None, &details);
+        popup_menu(list.upcast_ref(), &menu, x, y);
     }
 
     /// The items a context menu on `path` acts on, as text: every marked item if it is one of them, else `path` alone.
@@ -619,6 +637,30 @@ impl Window {
         adw::prelude::AdwDialogExt::present(&dialog, Some(self));
     }
 
+    /// Roots the tree at `root`, and shows the folder in it if it lies under `root`. The folder itself does not change.
+    fn set_tree_root(&self, root: &Path) {
+        let imp = self.imp();
+        if imp.tree.root_path().as_deref() == Some(root) {
+            return;
+        }
+        if let Err(err) = imp.tree.set_root_path(root) {
+            eprintln!("rsimgv: {err:#}");
+            self.sync_tree_root_buttons();
+            return;
+        }
+        if let Some(path) = self.current_path().filter(|path| path.starts_with(root)) {
+            imp.tree.reveal_path(&path);
+        }
+    }
+
+    /// Marks the header button of the root the tree has.
+    fn sync_tree_root_buttons(&self) {
+        let imp = self.imp();
+        let root = imp.tree.root_path();
+        imp.filesystem_root_button.set_active(root.as_deref() == Some(Path::new("/")));
+        imp.filesystem_home_button.set_active(root.as_deref() == Some(glib::home_dir().as_path()));
+    }
+
     /// Shows `path` in the path bar, the browse view, and the tab's title. It does not change the
     /// history or the tree; navigation and tab switching do that.
     fn show_path(&self, path: &Path) {
@@ -649,6 +691,7 @@ impl Window {
         if let Some(page) = imp.tab_view.selected_page() {
             label_page(&page, path);
         }
+        self.sync_bookmark_selection();
     }
 
     /// Shows `path` in the viewer, which steps through the pictures and videos `view` lists. A file the
@@ -770,6 +813,10 @@ impl Window {
         bound_action(self, &weak, "bookmark-folder", Window::bookmark_current_folder);
         bound_action(self, &weak, "toggle-bookmarks", |window| {
             let expander = &window.imp().bookmarks_expander;
+            expander.set_expanded(!expander.is_expanded());
+        });
+        bound_action(self, &weak, "toggle-filesystem", |window| {
+            let expander = &window.imp().filesystem_expander;
             expander.set_expanded(!expander.is_expanded());
         });
         bound_action(self, &weak, "edit-location", Window::edit_location);
@@ -1388,10 +1435,16 @@ impl Window {
         WidgetExt::activate_action(self, name, action_parameter(name, value).as_ref()).is_ok()
     }
 
-    /// Asks for a name for the folder shown, then bookmarks it. The name defaults to the folder's own.
+    /// Asks for a name for the folder shown, then bookmarks it.
     fn bookmark_current_folder(&self) {
         let Some(path) = self.current_path() else { return };
-        let dialog = adw::AlertDialog::new(Some("Bookmark Folder"), Some(&path.display().to_string()));
+        self.ask_bookmark_name("Bookmark Folder", path);
+    }
+
+    /// Asks for a name for the bookmark of `path`, then saves it. The name offered is the bookmark's own, or else the
+    /// folder's.
+    fn ask_bookmark_name(&self, heading: &str, path: PathBuf) {
+        let dialog = adw::AlertDialog::new(Some(heading), Some(&path.display().to_string()));
         adw::prelude::AlertDialogExt::add_response(&dialog, "cancel", "Cancel");
         adw::prelude::AlertDialogExt::add_response(&dialog, "save", "Save");
         adw::prelude::AlertDialogExt::set_response_appearance(&dialog, "save", adw::ResponseAppearance::Suggested);
@@ -1399,7 +1452,8 @@ impl Window {
         adw::prelude::AlertDialogExt::set_close_response(&dialog, "cancel");
 
         let entry = gtk::Entry::new();
-        entry.set_text(&bookmarks::default_name(&path));
+        let current = bookmarks::with(|list| list.iter().find(|bookmark| bookmark.path == path).map(|bookmark| bookmark.name.clone()));
+        entry.set_text(&current.unwrap_or_else(|| bookmarks::default_name(&path)));
         entry.set_activates_default(true);
         adw::prelude::AlertDialogExt::set_extra_child(&dialog, Some(&entry));
 
@@ -1426,42 +1480,114 @@ impl Window {
         self.refresh_bookmarks();
     }
 
-    /// Shows the bookmarks in the sidebar: each one's name, a button to remove it, and a click opens it.
+    /// Shows the bookmarks in the sidebar, in their saved order.
     fn refresh_bookmarks(&self) {
         let list = &self.imp().bookmarks_list;
-        while let Some(row) = list.first_child() {
-            list.remove(&row);
-        }
+        list.remove_all();
         let saved: Vec<Bookmark> = bookmarks::with(|bookmarks| bookmarks.clone());
         for bookmark in saved {
             list.append(&self.bookmark_row(&bookmark));
         }
+        self.sync_bookmark_selection();
     }
 
+    /// Highlights the bookmark of the folder shown, if it has one.
+    fn sync_bookmark_selection(&self) {
+        let list = &self.imp().bookmarks_list;
+        let current = self.current_path();
+        let position = bookmarks::with(|bookmarks| bookmarks.iter().position(|bookmark| Some(&bookmark.path) == current.as_ref()));
+        let row = position.and_then(|position| list.row_at_index(position as i32));
+        list.select_row(row.as_ref());
+    }
+
+    /// Moves the bookmark at `from` to position `to`, and saves the bookmarks.
+    fn move_bookmark(&self, from: usize, to: usize) {
+        bookmarks::with(|list| bookmarks::move_to(list, from, to));
+        self.bookmarks_changed();
+    }
+
+    /// A row of the bookmarks list. A click opens the folder, a middle-click opens it in a new tab, and a right-click
+    /// shows a menu. Dragging the row onto another reorders the list.
     fn bookmark_row(&self, bookmark: &Bookmark) -> gtk::ListBoxRow {
         let content = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        content.append(&gtk::Image::from_icon_name(bookmark_icon(&bookmark.path)));
         let label = gtk::Label::new(Some(&bookmark.name));
         label.set_xalign(0.0);
         label.set_hexpand(true);
         label.set_ellipsize(gtk::pango::EllipsizeMode::End);
-        label.set_tooltip_text(Some(&bookmark.path.display().to_string()));
         content.append(&label);
 
-        let remove = gtk::Button::from_icon_name("user-trash-symbolic");
+        let remove = gtk::Button::from_icon_name("window-close-symbolic");
         remove.set_tooltip_text(Some("Remove bookmark"));
         remove.add_css_class("flat");
+        remove.add_css_class("rsimgv-bookmark-remove");
+        remove.set_focus_on_click(false);
+        remove.set_valign(gtk::Align::Center);
         let weak = self.downgrade();
         let path = bookmark.path.clone();
         remove.connect_clicked(move |_| {
-            bookmarks::with(|list| list.retain(|saved| saved.path != path));
             if let Some(window) = weak.upgrade() {
-                window.bookmarks_changed();
+                window.remove_bookmark(&path);
             }
         });
         content.append(&remove);
 
         let row = gtk::ListBoxRow::new();
         row.set_child(Some(&content));
+        row.set_tooltip_text(Some(&bookmark.path.display().to_string()));
+
+        let menu = gtk::GestureClick::new();
+        menu.set_button(gdk::BUTTON_SECONDARY);
+        let weak = self.downgrade();
+        let path = bookmark.path.clone();
+        menu.connect_pressed(move |gesture, _, x, y| {
+            if let (Some(window), Some(row)) = (weak.upgrade(), gesture.widget()) {
+                window.show_bookmark_menu(&row, &path, x, y);
+            }
+        });
+        row.add_controller(menu);
+
+        let middle = gtk::GestureClick::new();
+        middle.set_button(gdk::BUTTON_MIDDLE);
+        let weak = self.downgrade();
+        let path = bookmark.path.clone();
+        middle.connect_pressed(move |_, _, _, _| {
+            if let Some(window) = weak.upgrade().filter(|_| path.is_dir()) {
+                window.open_background_tab(&path);
+            }
+        });
+        row.add_controller(middle);
+
+        let drag = gtk::DragSource::new();
+        drag.set_actions(gdk::DragAction::MOVE);
+        drag.connect_prepare(|drag, _, _| {
+            let row = drag.widget().and_downcast::<gtk::ListBoxRow>()?;
+            Some(gdk::ContentProvider::for_value(&row.index().to_value()))
+        });
+        drag.connect_drag_begin(|drag, _| {
+            if let Some(row) = drag.widget() {
+                drag.set_icon(Some(&gtk::WidgetPaintable::new(Some(&row))), 0, 0);
+            }
+        });
+        row.add_controller(drag);
+
+        let drop = gtk::DropTarget::new(i32::static_type(), gdk::DragAction::MOVE);
+        let weak = self.downgrade();
+        drop.connect_drop(move |drop, value, _, _| {
+            let (Some(row), Ok(from)) = (drop.widget().and_downcast::<gtk::ListBoxRow>(), value.get::<i32>()) else {
+                return false;
+            };
+            let to = row.index();
+            let weak = weak.clone();
+            // Moving a bookmark rebuilds the rows, which must outlast the drop being handled.
+            glib::idle_add_local_once(move || {
+                if let Some(window) = weak.upgrade() {
+                    window.move_bookmark(from as usize, to as usize);
+                }
+            });
+            true
+        });
+        row.add_controller(drop);
         row
     }
 
@@ -2108,8 +2234,31 @@ impl Window {
                 if let Some(path) = path {
                     window.navigate(&path);
                 }
+                // A folder that could not be opened, or the one already shown, leaves the highlight as it was.
+                window.sync_bookmark_selection();
             }
         });
+        // The header's buttons pick the tree's root, and show which one it has.
+        for (button, root) in [
+            (&*imp.filesystem_root_button, PathBuf::from("/")),
+            (&*imp.filesystem_home_button, glib::home_dir()),
+        ] {
+            let weak = weak.clone();
+            button.connect_toggled(move |button| {
+                if let (true, Some(window)) = (button.is_active(), weak.upgrade()) {
+                    window.set_tree_root(&root);
+                }
+            });
+        }
+        imp.tree.connect_root_changed({
+            let weak = weak.clone();
+            move |_| {
+                if let Some(window) = weak.upgrade() {
+                    window.sync_tree_root_buttons();
+                }
+            }
+        });
+        self.sync_tree_root_buttons();
         imp.viewer.connect_item_changed({
             let weak = weak.clone();
             move |_, path| {
@@ -3140,6 +3289,20 @@ pub(crate) mod tests {
         assert!(!imp.tree.is_expanded(&root.join("alpha")), "collapse-on-navigate closes other folders");
         imp.tree.set_collapse_on_navigate(false);
 
+        // The header's buttons show and change the tree's root, without changing the folder shown.
+        assert!(imp.filesystem_root_button.is_active(), "the tree starts at the filesystem root");
+        imp.filesystem_home_button.set_active(true);
+        assert_eq!(imp.tree.root_path(), Some(glib::home_dir()), "the home button roots the tree at the home folder");
+        assert!(!imp.filesystem_root_button.is_active());
+        assert_eq!(window.current_path(), Some(root.join("gamma")), "changing the root is not a navigation");
+
+        // A folder outside the root returns the tree to the filesystem root.
+        imp.tree.set_root_path(&root.join("alpha")).unwrap();
+        window.navigate(&root.join("delta"));
+        assert_eq!(imp.tree.root_path(), Some(PathBuf::from("/")));
+        assert!(imp.filesystem_root_button.is_active(), "the button follows the root");
+        wait_for("delta selected in the new root", || imp.tree.selected_path() == Some(root.join("delta")));
+
         let _ = fs::remove_dir_all(&root);
     }
 }
@@ -3166,6 +3329,39 @@ fn valued_action(map: &impl IsA<gio::ActionMap>, window: &glib::WeakRef<Window>,
 }
 
 /// Adds an action named `name` to `map` that runs `run` on the window, if the window still exists.
+/// A menu item that runs `action` on `path`.
+fn path_menu_item(label: &str, action: &str, path: &Path) -> gio::MenuItem {
+    let item = gio::MenuItem::new(Some(label), None);
+    item.set_action_and_target_value(Some(action), Some(&path.to_string_lossy().into_owned().to_variant()));
+    item
+}
+
+/// Pops up `menu` at (`x`, `y`) within `parent`.
+fn popup_menu(parent: &gtk::Widget, menu: &gio::Menu, x: f64, y: f64) {
+    let popover = gtk::PopoverMenu::from_model(Some(menu));
+    popover.set_parent(parent);
+    popover.set_has_arrow(false);
+    popover.set_pointing_to(Some(&gtk::gdk::Rectangle::new(x as i32, y as i32, 0, 0)));
+    // The menu activates its item's action after closing, so the popover must stay in the
+    // widget tree until then or actions like `win.open-in-new-tab` aren't found.
+    popover.connect_closed(|popover| {
+        let popover = popover.clone();
+        glib::idle_add_local_once(move || popover.unparent());
+    });
+    popover.popup();
+}
+
+/// The icon of a bookmark: the tree's own for the home folder and `/`, and a folder for anything else.
+fn bookmark_icon(path: &Path) -> &'static str {
+    if path == glib::home_dir().as_path() {
+        "user-home-symbolic"
+    } else if path == Path::new("/") {
+        "drive-harddisk-symbolic"
+    } else {
+        "folder-symbolic"
+    }
+}
+
 fn bound_action(map: &impl IsA<gio::ActionMap>, window: &glib::WeakRef<Window>, name: &str, run: fn(&Window)) {
     let action = gio::SimpleAction::new(name, None);
     let window = window.clone();
