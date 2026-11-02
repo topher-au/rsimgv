@@ -2135,6 +2135,46 @@ pub(crate) mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
+    /// Stepping past a folder's last item goes on to the next folder's first, and back past its first to the previous
+    /// folder's last, while the setting asks for it.
+    fn viewer_steps_between_folders(app: &adw::Application, settings: &gio::Settings) {
+        let root = std::env::temp_dir().join(format!("rsimgv-folder-end-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let (alpha, gamma) = (root.join("alpha"), root.join("gamma"));
+        let pixbuf = gtk::gdk_pixbuf::Pixbuf::new(gtk::gdk_pixbuf::Colorspace::Rgb, false, 8, 8, 8).unwrap();
+        for folder in [&alpha, &gamma] {
+            fs::create_dir_all(folder).unwrap();
+            for name in ["one.png", "two.png"] {
+                pixbuf.savev(folder.join(name), "png", &[]).unwrap();
+            }
+        }
+
+        settings.set_string("folder-end", "next-folder").unwrap();
+        let window = Window::new(app, settings);
+        window.navigate(&alpha);
+        let browse = window.active_browse().unwrap();
+        wait_for("the first folder to list", || browse.media_paths().len() == 2);
+        window.open_viewer(&browse, &alpha.join("two.png"));
+        let viewer = window.imp().viewer.clone();
+
+        viewer.step(true);
+        wait_for("the next folder's first item", || {
+            window.current_path().as_ref() == Some(&gamma) && viewer.shown_item().map(|item| item.path) == Some(gamma.join("one.png"))
+        });
+        assert!(window.viewer_is_open(), "the viewer stays open");
+
+        viewer.step(false);
+        wait_for("the previous folder's last item", || {
+            window.current_path().as_ref() == Some(&alpha) && viewer.shown_item().map(|item| item.path) == Some(alpha.join("two.png"))
+        });
+
+        settings.reset("folder-end");
+        viewer.step(true);
+        assert_eq!(window.current_path().as_ref(), Some(&alpha), "stopping stays in the folder");
+        window.destroy();
+        let _ = fs::remove_dir_all(&root);
+    }
+
     /// While folders remember their sorts the sort menu changes only the folder shown, and the others use the default.
     fn folders_remember_their_sorts(app: &adw::Application, settings: &gio::Settings) {
         let root = std::env::temp_dir().join(format!("rsimgv-sorts-{}", std::process::id()));
@@ -2246,6 +2286,7 @@ pub(crate) mod tests {
         let settings = crate::settings::open("au.topher.rimgv");
         tabs_keep_their_own_state(&app, &settings);
         folders_remember_their_sorts(&app, &settings);
+        viewer_steps_between_folders(&app, &settings);
         context_actions_work(&app, &settings);
         window_size_is_saved(&app, &settings);
         size_change_is_saved_without_closing(&app, &settings);
