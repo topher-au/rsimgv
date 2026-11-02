@@ -666,7 +666,14 @@ fn show_scattered(view: &BrowseView, cell: &gtk::Box, entry: &FileEntry, icon: &
     let fitted = view.folder_preview_fit();
     let slots = if fitted { MAX_PHOTOS } else { view.preview_count() };
     let shown = view.page_length(cell, entry.path(), media, 0, fitted, slots);
-    let scattered = ScatteredThumbnail::new(folder_paintable(icon, entry, size), slots, fitted);
+    let base = folder_paintable(icon, entry, size);
+    let has_base = base.is_some();
+    let scattered = ScatteredThumbnail::new(base, slots, fitted);
+    // The previews go up now, showing the folder's icon, so that metadata coming in before the first picture can lay
+    // them out. A folder with no icon keeps what the image shows until a picture is made.
+    if has_base {
+        icon.set_paintable(Some(&scattered));
+    }
     for (index, picture) in media.iter().take(shown).enumerate() {
         request_photo(view, cell, icon, &scattered, index, picture, size);
     }
@@ -2610,11 +2617,37 @@ pub(crate) mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
+    /// A folder's previews are up once it is scanned, before any picture is made, so metadata that comes in first
+    /// can lay them out. These pictures can never be made, so a folder waiting for its first would wait for good.
+    fn a_folder_s_previews_are_up_before_its_first_picture() {
+        let root = std::env::temp_dir().join(format!("rsimgv-browse-early-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let folder = root.join("album");
+        fs::create_dir_all(&folder).unwrap();
+        fs::write(folder.join("broken.png"), "not really a picture").unwrap();
+
+        let view = BrowseView::new();
+        view.set_directory_previews(true);
+        let window = gtk::Window::new();
+        window.set_default_size(600, 400);
+        window.set_child(Some(&view));
+        window.present();
+        view.set_path(&root);
+        wait_for("listing", || view.item_count() == 1);
+        wait_for("the previews", || {
+            view.imp().grid.first_child().and_downcast::<gtk::Box>().is_some_and(|cell| scattered_in(&cell).is_some())
+        });
+
+        window.destroy();
+        let _ = fs::remove_dir_all(&root);
+    }
+
     pub(crate) fn run_scenarios() {
         item_size_change_reaches_rendered_items();
         modified_selection_is_not_reported_as_lost();
         a_fitted_folder_is_laid_out_once_per_picture();
         the_fit_setting_reaches_folders_on_screen();
+        a_folder_s_previews_are_up_before_its_first_picture();
         let root = std::env::temp_dir().join(format!("rsimgv-browse-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("sub")).unwrap();
