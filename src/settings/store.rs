@@ -265,9 +265,7 @@ fn save(file: &Path, values: &BTreeMap<String, Value>) -> std::io::Result<()> {
     if let Some(parent) = file.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let temp = file.with_extension("conf.tmp");
-    std::fs::write(&temp, text)?;
-    std::fs::rename(temp, file)
+    crate::atomic_file::write(file, text.as_bytes())
 }
 
 /// A YAML value as the GVariant of type `ty`, if it fits that type.

@@ -1,3 +1,4 @@
+mod atomic_file;
 mod fs;
 mod ipc;
 mod remote;

@@ -138,9 +138,7 @@ impl FileSettings {
             std::fs::create_dir_all(parent)?;
         }
         let text = serde_yaml_ng::to_string(&Value::Mapping(self.values.clone())).map_err(std::io::Error::other)?;
-        let temp = self.file.with_extension("tmp");
-        std::fs::write(&temp, text)?;
-        std::fs::rename(temp, &self.file)
+        crate::atomic_file::write(&self.file, text.as_bytes())
     }
 }
 
