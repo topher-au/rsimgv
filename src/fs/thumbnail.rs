@@ -17,6 +17,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::rc::Rc;
 
+use gtk::glib::object::Cast;
 use gtk::prelude::PaintableExt;
 use gtk::{gdk, gdk_pixbuf, gio, glib};
 
@@ -206,10 +207,11 @@ impl Thumbnails {
     }
 
     /// Hands what was made to the requests that still want it.
-    fn finish(&self, key: Key, textures: Option<Vec<gdk::Texture>>) {
+    fn finish(&self, key: Key, made: Option<Vec<Pixels>>) {
         self.inner.running.set(self.inner.running.get() - 1);
         let waiters = self.inner.waiters.borrow_mut().remove(&key).unwrap_or_default();
-        if let Some(textures) = textures {
+        if let Some(made) = made {
+            let textures: Vec<gdk::Texture> = made.iter().map(Pixels::texture).collect();
             self.remember(key, textures.clone());
             for waiter in waiters {
                 if (waiter.wanted)() {
@@ -256,26 +258,50 @@ fn key(path: &Path, mtime: i64, size: Size, job: Job) -> Key {
     }
 }
 
+/// The decoded pixels of one thumbnail. Decoding happens on a worker thread; only the cheap wrap into a texture
+/// happens on the main loop, since a texture cannot leave the main thread.
+struct Pixels {
+    bytes: glib::Bytes,
+    width: i32,
+    height: i32,
+    stride: usize,
+    alpha: bool,
+}
+
+impl Pixels {
+    fn from_pixbuf(pixbuf: &gdk_pixbuf::Pixbuf) -> Self {
+        Self {
+            bytes: pixbuf.read_pixel_bytes(),
+            width: pixbuf.width(),
+            height: pixbuf.height(),
+            stride: pixbuf.rowstride() as usize,
+            alpha: pixbuf.has_alpha(),
+        }
+    }
+
+    /// The pixels of a PNG, decoded.
+    fn from_png(data: &[u8]) -> Option<Self> {
+        let stream = gio::MemoryInputStream::from_bytes(&glib::Bytes::from(data));
+        gdk_pixbuf::Pixbuf::from_stream(&stream, None::<&gio::Cancellable>).ok().map(|pixbuf| Self::from_pixbuf(&pixbuf))
+    }
+
+    fn texture(&self) -> gdk::Texture {
+        let format = if self.alpha { gdk::MemoryFormat::R8g8b8a8 } else { gdk::MemoryFormat::R8g8b8 };
+        gdk::MemoryTexture::new(self.width, self.height, format, &self.bytes, self.stride).upcast()
+    }
+}
+
 /// Makes one job on a worker thread, then shows it on the main loop.
 async fn run(thumbnails: Thumbnails, key: Key) {
     let root = thumbnails.inner.root.clone();
     let work = key.clone();
-    let made = gio::spawn_blocking(move || make(&root, &work))
-        .await
-        .ok()
-        .flatten();
-    let textures = made.and_then(|parts| {
-        parts
-            .iter()
-            .map(|bytes| gdk::Texture::from_bytes(bytes).ok())
-            .collect::<Option<Vec<_>>>()
-    });
-    thumbnails.finish(key, textures);
+    let made = gio::spawn_blocking(move || make(&root, &work)).await.ok().flatten();
+    thumbnails.finish(key, made);
 }
 
-/// The PNGs of a job: from the cache under `root` where they are current, or made and cached now.
+/// The pixels of a job: from the cache under `root` where they are current, or made and cached now.
 /// `None` if the file cannot be decoded.
-fn make(root: &Path, key: &Key) -> Option<Vec<glib::Bytes>> {
+fn make(root: &Path, key: &Key) -> Option<Vec<Pixels>> {
     let uri = glib::filename_to_uri(&key.path, None).ok()?;
     let digest = glib::compute_checksum_for_string(glib::ChecksumType::Md5, uri.as_str())?;
     match key.job {
@@ -353,18 +379,16 @@ fn video_duration(path: &Path) -> Option<f64> {
         .filter(|seconds| *seconds > 0.0)
 }
 
-/// The PNG at `file` if it was made from the file at `mtime`. Otherwise the pixbuf from `produce`, saved
+/// The pixels at `file` if they were made from the file at `mtime`. Otherwise the pixbuf from `produce`, saved
 /// as a thumbnail with its metadata, and cached at `file`.
-fn cached_or_made(
-    file: &Path,
-    uri: &str,
-    mtime: i64,
-    produce: impl FnOnce() -> Option<gdk_pixbuf::Pixbuf>,
-) -> Option<glib::Bytes> {
-    // A cached thumbnail is current only if the file has not changed since it was made.
-    if let Ok(cached) = gdk_pixbuf::Pixbuf::from_file(file) {
-        if cached.option("tEXt::Thumb::MTime").and_then(|value| value.parse::<i64>().ok()) == Some(mtime) {
-            return std::fs::read(file).ok().map(glib::Bytes::from_owned);
+fn cached_or_made(file: &Path, uri: &str, mtime: i64, produce: impl FnOnce() -> Option<gdk_pixbuf::Pixbuf>) -> Option<Pixels> {
+    // A cached thumbnail is current only if the file has not changed since it was made. Its time is read from
+    // the PNG's text chunks, so the picture is decoded once, when it is shown.
+    if let Ok(data) = std::fs::read(file) {
+        if png_text(&data, "Thumb::MTime").and_then(|value| value.parse::<i64>().ok()) == Some(mtime) {
+            if let Some(pixels) = Pixels::from_png(&data) {
+                return Some(pixels);
+            }
         }
     }
 
@@ -382,7 +406,31 @@ fn cached_or_made(
         .ok()?;
     // A cache that cannot be written only costs the next run its decode.
     let _ = write_atomically(file, &data);
-    Some(glib::Bytes::from_owned(data))
+    Some(Pixels::from_pixbuf(&picture))
+}
+
+/// The text of the `keyword` tEXt chunk in the PNG `data`, read from the chunk headers without decoding the
+/// picture. Text chunks come before the picture data, so the search stops there.
+fn png_text<'a>(data: &'a [u8], keyword: &str) -> Option<&'a str> {
+    const SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
+    let mut rest = data.strip_prefix(SIGNATURE)?;
+    while rest.len() >= 12 {
+        let length = u32::from_be_bytes(rest[..4].try_into().ok()?) as usize;
+        let kind = &rest[4..8];
+        let body = rest.get(8..8 + length)?;
+        match kind {
+            b"tEXt" => {
+                let mut parts = body.splitn(2, |&byte| byte == 0);
+                if parts.next()? == keyword.as_bytes() {
+                    return std::str::from_utf8(parts.next()?).ok();
+                }
+            }
+            b"IDAT" | b"IEND" => return None,
+            _ => {}
+        }
+        rest = rest.get(12 + length..)?;
+    }
+    None
 }
 
 /// Writes `data` to `file` through a temporary file, so a reader never sees half of it.
@@ -440,7 +488,7 @@ mod tests {
         // Same modification time: the cached file is used, so it is not rewritten.
         let modified = std::fs::metadata(&file).unwrap().modified().unwrap();
         let again = make(&root, &key(1000)).expect("read");
-        assert_eq!(first[0].as_ref(), again[0].as_ref());
+        assert_eq!(first[0].bytes.as_ref(), again[0].bytes.as_ref());
         assert_eq!(std::fs::metadata(&file).unwrap().modified().unwrap(), modified);
 
         // A changed picture makes a new thumbnail.
@@ -503,12 +551,18 @@ mod tests {
         // A four-second clip gives one frame a second.
         assert_eq!(frames.len(), 4);
         for frame in &frames {
-            let pixbuf = gdk_pixbuf::Pixbuf::from_stream(
-                &gio::MemoryInputStream::from_bytes(frame),
-                None::<&gio::Cancellable>,
-            )
-            .unwrap();
-            assert!(pixbuf.width() <= 128 && pixbuf.height() <= 128);
+            assert!(frame.width <= 128 && frame.height <= 128);
         }
+    }
+
+    #[test]
+    fn the_cache_time_is_read_from_the_png_text_chunks() {
+        let (_, dir) = folder("text-chunk");
+        let path = picture(&dir, 16, 16);
+        let pixbuf = gdk_pixbuf::Pixbuf::from_file(&path).unwrap();
+        let data = pixbuf.save_to_bufferv("png", &[("tEXt::Thumb::MTime", "1234")]).unwrap();
+        assert_eq!(png_text(&data, "Thumb::MTime"), Some("1234"));
+        assert_eq!(png_text(&data, "Thumb::Missing"), None);
+        assert_eq!(png_text(b"not a png", "Thumb::MTime"), None);
     }
 }
