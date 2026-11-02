@@ -1,10 +1,10 @@
 //! The preferences dialog. Its rows are bound to the application's GSettings keys, so a change
 //! made here, from the menu, or by another instance applies immediately.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use adw::prelude::{AdwDialogExt, PreferencesGroupExt, PreferencesPageExt};
+use adw::prelude::{ActionRowExt, AdwDialogExt, PreferencesGroupExt, PreferencesPageExt, PreferencesRowExt};
 use adw::subclass::prelude::*;
 
 use super::keybinding_list::KeybindingList;
@@ -128,17 +128,67 @@ mod imp {
         pub smooth_upscaling_row: TemplateChild<adw::SwitchRow>,
         #[template_child]
         pub keybindings_page: TemplateChild<adw::PreferencesPage>,
+        #[template_child]
+        pub back_button_row: TemplateChild<adw::ComboRow>,
+        #[template_child]
+        pub forward_button_row: TemplateChild<adw::ComboRow>,
+        #[template_child]
+        pub scroll_image_row: TemplateChild<adw::ComboRow>,
+        #[template_child]
+        pub scroll_video_row: TemplateChild<adw::ComboRow>,
+        #[template_child]
+        pub scroll_speed_row: TemplateChild<adw::SpinRow>,
+        #[template_child]
+        pub section_list: TemplateChild<gtk::ListBox>,
+        #[template_child]
+        pub section_stack: TemplateChild<gtk::Stack>,
+        #[template_child]
+        pub tab_stack: TemplateChild<gtk::Stack>,
+        #[template_child]
+        pub search_button: TemplateChild<gtk::Button>,
+        #[template_child]
+        pub content_toolbar: TemplateChild<adw::ToolbarView>,
+        #[template_child]
+        pub search_bar: TemplateChild<gtk::SearchBar>,
+        #[template_child]
+        pub search_entry: TemplateChild<gtk::SearchEntry>,
+        #[template_child]
+        pub window_title: TemplateChild<adw::WindowTitle>,
+        #[template_child]
+        pub browse_stack: TemplateChild<adw::ViewStack>,
+        #[template_child]
+        pub general_stack: TemplateChild<adw::ViewStack>,
+        #[template_child]
+        pub about_version_row: TemplateChild<adw::ActionRow>,
+        #[template_child]
+        pub app_version_box: TemplateChild<gtk::Box>,
+        #[template_child]
+        pub gtk_version_box: TemplateChild<gtk::Box>,
+        #[template_child]
+        pub app_version: TemplateChild<gtk::Label>,
+        #[template_child]
+        pub gtk_version: TemplateChild<gtk::Label>,
+        #[template_child]
+        pub scripts_list: TemplateChild<gtk::ListBox>,
+        #[template_child]
+        pub add_script_button: TemplateChild<gtk::Button>,
+        #[template_child]
+        pub edit_script_button: TemplateChild<gtk::Button>,
+        #[template_child]
+        pub remove_script_button: TemplateChild<gtk::Button>,
         /// The handler that keeps the size row in step with the setting; removed when the dialog closes.
         pub(super) size_handler: RefCell<Option<glib::SignalHandlerId>>,
         /// The handler that rebuilds the info list when the setting changes; removed when the dialog closes.
         pub(super) info_handler: RefCell<Option<glib::SignalHandlerId>>,
+        /// The handler that rebuilds the scripts list when the setting changes; removed when the dialog closes.
+        pub(super) scripts_handler: RefCell<Option<glib::SignalHandlerId>>,
     }
 
     #[glib::object_subclass]
     impl ObjectSubclass for PreferencesDialog {
         const NAME: &'static str = "RsimgvPreferencesDialog";
         type Type = super::PreferencesDialog;
-        type ParentType = adw::PreferencesDialog;
+        type ParentType = adw::Dialog;
 
         fn class_init(klass: &mut Self::Class) {
             klass.bind_template();
@@ -152,12 +202,11 @@ mod imp {
     impl ObjectImpl for PreferencesDialog {}
     impl WidgetImpl for PreferencesDialog {}
     impl AdwDialogImpl for PreferencesDialog {}
-    impl PreferencesDialogImpl for PreferencesDialog {}
 }
 
 glib::wrapper! {
     pub struct PreferencesDialog(ObjectSubclass<imp::PreferencesDialog>)
-        @extends adw::PreferencesDialog, adw::Dialog, gtk::Widget,
+        @extends adw::Dialog, gtk::Widget,
         @implements gtk::Accessible, gtk::Buildable, gtk::ConstraintTarget;
 }
 
@@ -210,6 +259,14 @@ impl PreferencesDialog {
         let imp = dialog.imp();
 
         dialog.build_keybindings_page();
+        dialog.bind_sections();
+        dialog.bind_scripts(settings);
+        imp.about_version_row.set_subtitle(env!("CARGO_PKG_VERSION"));
+        imp.app_version.set_label(env!("CARGO_PKG_VERSION"));
+        let gtk_version = format!("{}.{}.{}", gtk::major_version(), gtk::minor_version(), gtk::micro_version());
+        imp.gtk_version.set_label(&gtk_version);
+        imp.app_version_box.set_tooltip_text(Some(&format!("rsimgv {}", env!("CARGO_PKG_VERSION"))));
+        imp.gtk_version_box.set_tooltip_text(Some(&format!("GTK {gtk_version}")));
 
         settings.bind("show-hidden", &*imp.show_hidden_row, "active").build();
         settings.bind("collapse-on-navigate", &*imp.collapse_on_navigate_row, "active").build();
@@ -235,6 +292,7 @@ impl PreferencesDialog {
         bind_port(settings, &imp.svp_fps_maximum_row, "svp-fps-maximum");
         settings.bind("viewer-status-bar", &*imp.viewer_status_bar_row, "active").build();
         bind_port(settings, &imp.zoom_step_row, "zoom-step");
+        bind_port(settings, &imp.scroll_speed_row, "scroll-speed");
         bind_port(settings, &imp.thumbnail_bar_size_row, "viewer-thumbnail-bar-size");
         dialog.bind_mpv_args(settings);
         dialog.bind_remote(settings);
@@ -295,8 +353,184 @@ impl PreferencesDialog {
             if let Some(handler) = dialog.imp().info_handler.take() {
                 settings.disconnect(handler);
             }
+            if let Some(handler) = dialog.imp().scripts_handler.take() {
+                settings.disconnect(handler);
+            }
         });
         dialog
+    }
+}
+
+/// One script in the Scripts page: what it is called, the command it runs, and whether to wait for it to finish.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct Script {
+    name: String,
+    command: String,
+    wait: bool,
+}
+
+impl Script {
+    /// The entry this script takes in the `scripts` setting, a JSON object.
+    fn to_setting(&self) -> String {
+        serde_json::json!({ "name": self.name, "command": self.command, "wait": self.wait }).to_string()
+    }
+
+    /// The script an entry of the `scripts` setting holds, or `None` if the entry is not one.
+    fn from_setting(text: &str) -> Option<Self> {
+        let value: serde_json::Value = serde_json::from_str(text).ok()?;
+        Some(Self {
+            name: value.get("name")?.as_str()?.to_owned(),
+            command: value.get("command")?.as_str()?.to_owned(),
+            wait: value.get("wait")?.as_bool()?,
+        })
+    }
+}
+
+/// The scripts in the `scripts` setting, in order. Entries that are not scripts are skipped.
+fn read_scripts(settings: &gio::Settings) -> Vec<Script> {
+    settings.strv("scripts").iter().filter_map(|text| Script::from_setting(text)).collect()
+}
+
+/// Saves `scripts` as the `scripts` setting.
+fn write_scripts(settings: &gio::Settings, scripts: &[Script]) {
+    let entries: Vec<String> = scripts.iter().map(Script::to_setting).collect();
+    let entries: Vec<&str> = entries.iter().map(String::as_str).collect();
+    let _ = settings.set_strv("scripts", entries.as_slice());
+}
+
+impl PreferencesDialog {
+    /// Lists the scripts, and adds, edits or removes them through a dialog. Each change is saved to the
+    /// `scripts` setting, and the list follows that setting.
+    fn bind_scripts(&self, settings: &gio::Settings) {
+        let imp = self.imp();
+        let editing: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+
+        let name_row = adw::EntryRow::builder().title("Name").build();
+        let command_row = adw::EntryRow::builder().title("Command").build();
+        let wait_row = adw::SwitchRow::builder().title("Wait to finish").build();
+        let fields = adw::PreferencesGroup::builder().description("Keywords: %file%").build();
+        fields.add(&name_row);
+        fields.add(&command_row);
+        fields.add(&wait_row);
+        let page = adw::PreferencesPage::new();
+        page.add(&fields);
+        let cancel = gtk::Button::with_label("Cancel");
+        let save = gtk::Button::builder().label("Create").css_classes(["suggested-action"]).sensitive(false).build();
+        let header = adw::HeaderBar::new();
+        header.pack_start(&cancel);
+        header.pack_end(&save);
+        let view = adw::ToolbarView::new();
+        view.add_top_bar(&header);
+        view.set_content(Some(&page));
+        let script_dialog = adw::Dialog::builder().content_width(420).child(&view).build();
+
+        // Saving needs a name and a command.
+        let update_save = {
+            let (name_row, command_row, save) = (name_row.clone(), command_row.clone(), save.clone());
+            move || save.set_sensitive(!name_row.text().trim().is_empty() && !command_row.text().trim().is_empty())
+        };
+        name_row.connect_changed({
+            let update_save = update_save.clone();
+            move |_| update_save()
+        });
+        command_row.connect_changed(move |_| update_save());
+
+        // Opens the dialog empty for a new script, or filled in for the script at `index`.
+        let parent = self.downgrade();
+        let show = {
+            let (script_dialog, name_row, command_row, wait_row, save, editing) =
+                (script_dialog.clone(), name_row.clone(), command_row.clone(), wait_row.clone(), save.clone(), editing.clone());
+            let settings = settings.clone();
+            move |index: Option<usize>| {
+                let script = index.and_then(|index| read_scripts(&settings).get(index).cloned()).unwrap_or_default();
+                name_row.set_text(&script.name);
+                command_row.set_text(&script.command);
+                wait_row.set_active(script.wait);
+                script_dialog.set_title(if index.is_some() { "Edit script" } else { "New application/script" });
+                save.set_label(if index.is_some() { "Save" } else { "Create" });
+                editing.set(index);
+                if let Some(parent) = parent.upgrade() {
+                    script_dialog.present(Some(&parent));
+                }
+            }
+        };
+
+        cancel.connect_clicked({
+            let script_dialog = script_dialog.clone();
+            move |_| {
+                script_dialog.close();
+            }
+        });
+        save.connect_clicked({
+            let (script_dialog, name_row, command_row, wait_row, editing) =
+                (script_dialog.clone(), name_row.clone(), command_row.clone(), wait_row.clone(), editing.clone());
+            let settings = settings.clone();
+            move |_| {
+                let script = Script {
+                    name: name_row.text().trim().to_owned(),
+                    command: command_row.text().trim().to_owned(),
+                    wait: wait_row.is_active(),
+                };
+                let mut scripts = read_scripts(&settings);
+                match editing.get() {
+                    Some(index) if index < scripts.len() => scripts[index] = script,
+                    _ => scripts.push(script),
+                }
+                write_scripts(&settings, &scripts);
+                script_dialog.close();
+            }
+        });
+
+        let list = imp.scripts_list.clone();
+        let selected_index = move || list.selected_row().map(|row| row.index() as usize);
+        imp.add_script_button.connect_clicked({
+            let show = show.clone();
+            move |_| show(None)
+        });
+        imp.edit_script_button.connect_clicked({
+            let (show, selected_index) = (show.clone(), selected_index.clone());
+            move |_| {
+                if let Some(index) = selected_index() {
+                    show(Some(index));
+                }
+            }
+        });
+        imp.remove_script_button.connect_clicked({
+            let (settings, selected_index) = (settings.clone(), selected_index.clone());
+            move |_| {
+                if let Some(index) = selected_index() {
+                    let mut scripts = read_scripts(&settings);
+                    if index < scripts.len() {
+                        scripts.remove(index);
+                        write_scripts(&settings, &scripts);
+                    }
+                }
+            }
+        });
+
+        // Only a selected script can be edited or removed.
+        imp.scripts_list.connect_row_selected({
+            let (edit, remove) = (imp.edit_script_button.clone(), imp.remove_script_button.clone());
+            move |_, row| {
+                edit.set_sensitive(row.is_some());
+                remove.set_sensitive(row.is_some());
+            }
+        });
+
+        // The list is rebuilt from the setting now, and again whenever the setting changes.
+        let list = imp.scripts_list.clone();
+        let rebuild = move |settings: &gio::Settings| {
+            while let Some(child) = list.first_child() {
+                list.remove(&child);
+            }
+            for script in read_scripts(settings) {
+                let row = adw::ActionRow::builder().title(script.name.as_str()).subtitle(script.command.as_str()).build();
+                list.append(&row);
+            }
+        };
+        rebuild(settings);
+        let handler = settings.connect_changed(Some("scripts"), move |settings, _| rebuild(settings));
+        imp.scripts_handler.replace(Some(handler));
     }
 }
 
@@ -320,7 +554,11 @@ fn bind_switches(settings: &gio::Settings, imp: &imp::PreferencesDialog) {
 
 /// Binds each combo row to a string setting whose value is one of `choices`, by position in the row.
 fn bind_choices(settings: &gio::Settings, imp: &imp::PreferencesDialog) {
-    let combos: [(&str, &glib::Object, &[&str]); 11] = [
+    let combos: [(&str, &glib::Object, &[&str]); 15] = [
+        ("mouse-back", imp.back_button_row.upcast_ref(), &["back", "up", "previous", "next", "forward", "none"]),
+        ("mouse-forward", imp.forward_button_row.upcast_ref(), &["back", "up", "previous", "next", "forward", "none"]),
+        ("scroll-image", imp.scroll_image_row.upcast_ref(), &["ctrl-zoom", "zoom", "step", "none"]),
+        ("scroll-video", imp.scroll_video_row.upcast_ref(), &["volume", "seek", "step", "none"]),
         ("video-backend", imp.video_backend_row.upcast_ref(), &["mpv", "gtk"]),
         ("viewer-thumbnail-bar", imp.thumbnail_bar_row.upcast_ref(), &["top", "left", "bottom", "right"]),
         ("start-location", imp.start_location_row.upcast_ref(), &["last", "root", "home", "specific"]),
@@ -477,12 +715,372 @@ pub(crate) mod tests {
     }
 }
 
+/// The sections in the sidebar, in the order of the stack's pages: name, title and icon.
+const SECTIONS: [(&str, &str, &str); 9] = [
+    ("general", "General", "preferences-system-symbolic"),
+    ("browsing", "Browsing", "folder-symbolic"),
+    ("viewer", "Viewer", "applications-multimedia-symbolic"),
+    ("images", "Images", "image-x-generic-symbolic"),
+    ("videos", "Videos", "video-x-generic-symbolic"),
+    ("keybindings", "Controls", "input-keyboard-symbolic"),
+    ("scripts", "Scripts", "utilities-terminal-symbolic"),
+    ("advanced", "Advanced", "applications-engineering-symbolic"),
+    ("about", "About", "help-about-symbolic"),
+];
+
 impl PreferencesDialog {
     /// Puts the keybindings editor on the keybindings page.
     fn build_keybindings_page(&self) {
+        let imp = self.imp();
+        let editor = KeybindingList::new();
         let group = adw::PreferencesGroup::new();
-        group.add(&KeybindingList::new());
-        self.imp().keybindings_page.add(&group);
+        group.add(&editor);
+        imp.keybindings_page.add(&group);
+    }
+
+    /// Names the sections, lists them in the sidebar, and joins each section's tab row to its stack.
+    fn bind_sections(&self) {
+        let imp = self.imp();
+        self.build_tabs();
+        for &(_, title, icon) in &SECTIONS {
+            let row = adw::ActionRow::builder().title(title).build();
+            row.add_prefix(&gtk::Image::from_icon_name(icon));
+            imp.section_list.append(&row);
+        }
+
+        let stack = imp.section_stack.clone();
+        let tab_stack = imp.tab_stack.clone();
+        imp.section_list.add_css_class("preferences-sections");
+        imp.section_list.connect_row_selected(move |_, row| {
+            if let Some(&(name, _, _)) = row.and_then(|row| SECTIONS.get(row.index() as usize)) {
+                stack.set_visible_child_name(name);
+                tab_stack.set_visible_child_name(name);
+            }
+        });
+
+        self.build_search();
+
+        let first = imp.section_list.row_at_index(0);
+        imp.section_list.select_row(first.as_ref());
+    }
+
+    /// Gives every section a tab row at the top of the content. A section with one page is put in a stack of its
+    /// own, so every page shows its tabs in the same place.
+    fn build_tabs(&self) {
+        let imp = self.imp();
+        let children: Vec<gtk::Widget> = imp.section_stack.pages().iter::<gtk::StackPage>().flatten().map(|page| page.child()).collect();
+        for child in &children {
+            imp.section_stack.remove(child);
+        }
+        for (child, &(name, _, _)) in children.into_iter().zip(SECTIONS.iter()) {
+            let stack = child.downcast::<adw::ViewStack>().unwrap_or_else(|page| {
+                let stack = adw::ViewStack::new();
+                stack.add_named(&page, None);
+                stack
+            });
+            let switcher = adw::ViewSwitcher::builder().policy(adw::ViewSwitcherPolicy::Wide).build();
+            bind_tabs(&switcher, &stack);
+            if stack.pages().n_items() == 1 {
+                switcher.add_css_class("single-tab");
+            }
+            imp.section_stack.add_named(&stack, Some(name));
+            imp.tab_stack.add_named(&switcher, Some(name));
+        }
+    }
+
+    /// Closes the dialog when a click lands outside it, on the dimmed background of `window`. A click over the dialog
+    /// is ignored. The click is watched in the capture phase, so it is seen before anything under it.
+    pub fn close_on_outside_click(&self, window: &gtk::Window) {
+        let click = gtk::GestureClick::new();
+        click.set_propagation_phase(gtk::PropagationPhase::Capture);
+        click.connect_pressed({
+            let dialog = self.downgrade();
+            let window_ref = window.downgrade();
+            move |_, _, x, y| {
+                let (Some(dialog), Some(window)) = (dialog.upgrade(), window_ref.upgrade()) else { return };
+                let Some(content) = adw::prelude::AdwDialogExt::child(&dialog) else { return };
+                let Some(bounds) = content.compute_bounds(&window) else { return };
+                if !bounds.contains_point(&gtk::graphene::Point::new(x as f32, y as f32)) {
+                    adw::prelude::AdwDialogExt::close(&dialog);
+                }
+            }
+        });
+        window.add_controller(click.clone());
+        // The click handler lives only as long as the dialog is open.
+        let window_ref = window.downgrade();
+        adw::prelude::AdwDialogExt::connect_closed(self, move |_| {
+            if let Some(window) = window_ref.upgrade() {
+                window.remove_controller(&click);
+            }
+        });
+    }
+
+    /// Shows the section named `name`, as picking its sidebar row does.
+    pub fn show_section(&self, name: &str) {
+        let Some(index) = SECTIONS.iter().position(|(section, _, _)| *section == name) else {
+            return;
+        };
+        let imp = self.imp();
+        let row = imp.section_list.row_at_index(index as i32);
+        imp.section_list.select_row(row.as_ref());
+    }
+}
+
+/// Collects the preference rows under `widget`, including itself.
+fn collect_rows(widget: &gtk::Widget, rows: &mut Vec<gtk::Widget>) {
+    if widget.is::<adw::PreferencesRow>() {
+        rows.push(widget.clone());
+    }
+    let mut child = widget.first_child();
+    while let Some(current) = child {
+        collect_rows(&current, rows);
+        child = current.next_sibling();
+    }
+}
+
+/// The most results the search lists at once.
+const MAX_RESULTS: usize = 50;
+
+/// The stack page that lists the search results in place of a section.
+const SEARCH_PAGE: &str = "search";
+
+/// One preference in the search: where it lives, and how to reach it.
+struct SearchEntry {
+    title: String,
+    /// The section and tab it is under, shown beneath its title.
+    path: String,
+    /// The index into `SECTIONS`.
+    section: usize,
+    /// The browse or media stack and the tab page holding the row, when it is under a tab.
+    tab: Option<(adw::ViewStack, gtk::Widget)>,
+    row: gtk::Widget,
+}
+
+impl PreferencesDialog {
+    /// Builds the search: a bar under the header that filters the preferences as the user types. While the bar has
+    /// text, the matching preferences replace the section. Activating a result closes the bar and shows its setting.
+    fn build_search(&self) {
+        let imp = self.imp();
+        let entries = Rc::new(index_preferences(&imp.section_stack));
+        let matches = Rc::new(RefCell::new(Vec::<usize>::new()));
+
+        let list = gtk::ListBox::builder()
+            .selection_mode(gtk::SelectionMode::Single)
+            .margin_top(12)
+            .margin_bottom(12)
+            .margin_start(12)
+            .margin_end(12)
+            .build();
+        list.add_css_class("boxed-list");
+        let results = gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).child(&list).build();
+        imp.section_stack.add_named(&results, Some(SEARCH_PAGE));
+
+        let bar = imp.search_bar.clone();
+        let search = imp.search_entry.clone();
+        bar.connect_entry(&search);
+
+        // Enter activates the first result, and Down moves from the field into the list.
+        let activate: Rc<dyn Fn(usize)> = {
+            let (dialog, entries, matches, bar) = (self.downgrade(), entries.clone(), matches.clone(), bar.clone());
+            Rc::new(move |position: usize| {
+                let Some(dialog) = dialog.upgrade() else { return };
+                let Some(&index) = matches.borrow().get(position) else { return };
+                bar.set_search_mode(false);
+                dialog.reveal(&entries[index]);
+            })
+        };
+        let activate_row = activate.clone();
+        list.connect_row_activated(move |_, row| activate_row(row.index() as usize));
+        let activate_first = activate.clone();
+        search.connect_activate(move |_| activate_first(0));
+        let keys = gtk::EventControllerKey::new();
+        let list_for_keys = list.clone();
+        keys.connect_key_pressed(move |_, key, _, _| {
+            if key == gtk::gdk::Key::Down {
+                if let Some(row) = list_for_keys.row_at_index(0) {
+                    row.grab_focus();
+                    return glib::Propagation::Stop;
+                }
+            }
+            glib::Propagation::Proceed
+        });
+        search.add_controller(keys);
+
+        let dialog_for_text = self.downgrade();
+        let (entries_for_text, matches_for_text, list_for_text) = (entries.clone(), matches.clone(), list.clone());
+        search.connect_search_changed(move |search| {
+            let query = search.text();
+            fill_results(&list_for_text, &entries_for_text, &matches_for_text, &query);
+            if let Some(dialog) = dialog_for_text.upgrade() {
+                dialog.show_section_or_results(!query.is_empty());
+            }
+        });
+
+        // Closing the bar clears the search and goes back to the section picked in the sidebar.
+        let dialog_for_close = self.downgrade();
+        let search_for_close = search.clone();
+        bar.connect_search_mode_enabled_notify(move |bar| {
+            if bar.is_search_mode() {
+                return;
+            }
+            search_for_close.set_text("");
+            if let Some(dialog) = dialog_for_close.upgrade() {
+                dialog.show_section_or_results(false);
+            }
+        });
+        let bar_for_button = bar.clone();
+        imp.search_button.connect_clicked(move |_| bar_for_button.set_search_mode(!bar_for_button.is_search_mode()));
+
+        // Ctrl+F and F3 open the search from anywhere in the dialog.
+        let keys = gtk::EventControllerKey::new();
+        keys.connect_key_pressed({
+            let (bar, search) = (bar.clone(), search.clone());
+            move |_, key, _, state| {
+                let ctrl_f = state.contains(gtk::gdk::ModifierType::CONTROL_MASK) && (key == gtk::gdk::Key::f || key == gtk::gdk::Key::F);
+                if !ctrl_f && key != gtk::gdk::Key::F3 {
+                    return glib::Propagation::Proceed;
+                }
+                bar.set_search_mode(true);
+                search.grab_focus();
+                glib::Propagation::Stop
+            }
+        });
+        if let Some(content) = adw::prelude::AdwDialogExt::child(self) {
+            content.add_controller(keys);
+        }
+    }
+
+    /// Shows the search results while `searching`, or else the section picked in the sidebar.
+    fn show_section_or_results(&self, searching: bool) {
+        let imp = self.imp();
+        if searching {
+            imp.section_stack.set_visible_child_name(SEARCH_PAGE);
+            return;
+        }
+        let name = imp.section_list.selected_row().and_then(|row| SECTIONS.get(row.index() as usize));
+        if let Some(&(name, _, _)) = name {
+            imp.section_stack.set_visible_child_name(name);
+        }
+    }
+
+    /// Shows a search result's setting: its section and tab, with its row scrolled into view.
+    fn reveal(&self, entry: &SearchEntry) {
+        self.show_section(SECTIONS[entry.section].0);
+        if let Some((stack, page)) = &entry.tab {
+            stack.set_visible_child(page);
+        }
+        let row = entry.row.clone();
+        glib::idle_add_local_once(move || scroll_to_row(&row));
+    }
+}
+
+/// Lists every preference under the sections, in section order, each with the path to its tab.
+fn index_preferences(section_stack: &gtk::Stack) -> Vec<SearchEntry> {
+    let mut entries = Vec::new();
+    for (section, page) in section_stack.pages().iter::<gtk::StackPage>().flatten().enumerate() {
+        let section_title = SECTIONS[section].1;
+        match page.child().downcast::<adw::ViewStack>() {
+            Ok(stack) => {
+                for tab in stack.pages().iter::<adw::ViewStackPage>().flatten() {
+                    let tab_page = tab.child();
+                    let Ok(preferences) = tab_page.clone().downcast::<adw::PreferencesPage>() else { continue };
+                    let path = if stack.pages().n_items() == 1 { section_title.to_owned() } else { format!("{section_title} › {}", preferences.title()) };
+                    index_rows(&mut entries, &tab_page, section, &path, Some((stack.clone(), tab_page.clone())));
+                }
+            }
+            Err(child) => index_rows(&mut entries, &child, section, section_title, None),
+        }
+    }
+    entries
+}
+
+/// Adds each titled preference row under `page`.
+fn index_rows(entries: &mut Vec<SearchEntry>, page: &gtk::Widget, section: usize, path: &str, tab: Option<(adw::ViewStack, gtk::Widget)>) {
+    let mut rows = Vec::new();
+    collect_rows(page, &mut rows);
+    for row in rows {
+        let Some(title) = row.downcast_ref::<adw::PreferencesRow>().map(|row| row.title().to_string()) else { continue };
+        if title.is_empty() {
+            continue;
+        }
+        entries.push(SearchEntry { title, path: path.to_owned(), section, tab: tab.clone(), row });
+    }
+}
+
+/// Fills the result list with the entries matching `query`, best match first.
+fn fill_results(list: &gtk::ListBox, entries: &[SearchEntry], matches: &RefCell<Vec<usize>>, query: &str) {
+    let mut scored: Vec<(i32, usize)> = entries
+        .iter()
+        .enumerate()
+        .filter_map(|(index, entry)| {
+            let by_title = fuzzy_score(query, &entry.title).map(|score| score * 2);
+            let by_path = fuzzy_score(query, &entry.path);
+            by_title.max(by_path).map(|score| (score, index))
+        })
+        .collect();
+    scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+
+    while let Some(child) = list.first_child() {
+        list.remove(&child);
+    }
+    let mut found = matches.borrow_mut();
+    found.clear();
+    for (_, index) in scored.into_iter().take(MAX_RESULTS) {
+        let entry = &entries[index];
+        let row = adw::ActionRow::builder()
+            .title(entry.title.as_str())
+            .subtitle(entry.path.as_str())
+            .activatable(true)
+            .build();
+        list.append(&row);
+        found.push(index);
+    }
+}
+
+/// How well `query` matches `text`. Every character of the query must appear in the text, in order; matches
+/// that are consecutive or start a word score higher, and gaps lower. Case is ignored. `None` when it does not match.
+fn fuzzy_score(query: &str, text: &str) -> Option<i32> {
+    let query: Vec<char> = query.chars().filter(|c| !c.is_whitespace()).flat_map(char::to_lowercase).collect();
+    let text: Vec<char> = text.chars().flat_map(char::to_lowercase).collect();
+    let mut score = 0;
+    let mut next = 0;
+    let mut previous: Option<usize> = None;
+    for wanted in query {
+        let found = (next..text.len()).find(|&i| text[i] == wanted)?;
+        score += 1;
+        if previous.is_some_and(|p| p + 1 == found) {
+            score += 4;
+        }
+        if found == 0 || !text[found - 1].is_alphanumeric() {
+            score += 3;
+        }
+        score -= (found - next).min(5) as i32;
+        previous = Some(found);
+        next = found + 1;
+    }
+    Some(score)
+}
+
+/// Scrolls the page holding `row` so the row sits near the top, and focuses it.
+fn scroll_to_row(row: &gtk::Widget) {
+    let Some(scrolled) = row.ancestor(gtk::ScrolledWindow::static_type()).and_then(|w| w.downcast::<gtk::ScrolledWindow>().ok()) else {
+        return;
+    };
+    let Some(content) = scrolled.child() else { return };
+    let Some(bounds) = row.compute_bounds(&content) else { return };
+    let adjustment = scrolled.vadjustment();
+    let top = f64::from(bounds.y()) - 48.0;
+    adjustment.set_value(top.clamp(adjustment.lower(), (adjustment.upper() - adjustment.page_size()).max(adjustment.lower())));
+    row.grab_focus();
+}
+
+/// Joins a section's tab row to its stack, titling and iconing each tab from its page.
+fn bind_tabs(switcher: &adw::ViewSwitcher, stack: &adw::ViewStack) {
+    switcher.set_stack(Some(stack));
+    for page in stack.pages().iter::<adw::ViewStackPage>().flatten() {
+        let Ok(child) = page.child().downcast::<adw::PreferencesPage>() else { continue };
+        page.set_title(Some(&child.title()));
+        page.set_icon_name(child.icon_name().as_deref());
     }
 }
 
@@ -531,5 +1129,41 @@ impl PreferencesDialog {
                 }
             });
         });
+    }
+}
+
+#[cfg(test)]
+mod search_tests {
+    use super::fuzzy_score;
+
+    #[test]
+    fn fuzzy_matches_characters_in_order_only() {
+        assert!(fuzzy_score("isz", "Item size").is_some());
+        assert!(fuzzy_score("zsi", "Item size").is_none());
+        assert!(fuzzy_score("", "Item size").is_some());
+    }
+
+    #[test]
+    fn consecutive_matches_rank_above_scattered_ones() {
+        let together = fuzzy_score("size", "Item size").unwrap();
+        let scattered = fuzzy_score("size", "Show items zoomed in every case").unwrap();
+        assert!(together > scattered);
+    }
+}
+
+#[cfg(test)]
+mod script_tests {
+    use super::Script;
+
+    #[test]
+    fn a_script_survives_a_round_trip_through_the_setting() {
+        let script = Script { name: "Open in GIMP".into(), command: "gimp %file%".into(), wait: true };
+        assert_eq!(Script::from_setting(&script.to_setting()), Some(script));
+    }
+
+    #[test]
+    fn entries_that_are_not_scripts_are_skipped() {
+        assert_eq!(Script::from_setting("not json"), None);
+        assert_eq!(Script::from_setting(r#"{"name": "x"}"#), None);
     }
 }

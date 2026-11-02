@@ -124,6 +124,7 @@ impl Window {
         let window: Self = glib::Object::builder().property("application", app).build();
         let imp = window.imp();
         let _ = imp.settings.set(settings.clone());
+        window.bind_pointer();
 
         // The window opens at the size and state it had when it was last closed.
         window.set_default_size(settings.int("window-width"), settings.int("window-height"));
@@ -716,6 +717,7 @@ impl Window {
         bound_action(&browse, &weak, "cursor-page-down", |window| window.with_browse(|view| view.move_cursor_page(1)));
         bound_action(&browse, &weak, "first", |window| window.with_browse(|view| view.select_first()));
         bound_action(&browse, &weak, "last", |window| window.with_browse(|view| view.select_last()));
+        bound_action(&browse, &weak, "select-all", |window| window.with_browse(|view| view.select_all()));
         bound_action(&browse, &weak, "open", |window| window.with_browse(|view| view.activate_selected()));
         bound_action(&browse, &weak, "toggle-hidden", |window| window.toggle_setting("show-hidden"));
         bound_action(&browse, &weak, "toggle-media-only", |window| window.toggle_setting("media-only"));
@@ -768,6 +770,92 @@ impl Window {
         bound_action(&image, &weak, "pan-left", |window| window.imp().viewer.pan(-PAN_STEP, 0.0));
         bound_action(&image, &weak, "pan-right", |window| window.imp().viewer.pan(PAN_STEP, 0.0));
         self.insert_action_group("image", Some(&image));
+    }
+
+    /// Makes the side buttons run what their Mouse settings say, and the scroll wheel over the viewer do what its
+    /// settings say.
+    fn bind_pointer(&self) {
+        let buttons = gtk::GestureClick::new();
+        buttons.set_button(0);
+        buttons.connect_pressed({
+            let weak = self.downgrade();
+            move |gesture, _, _, _| {
+                let Some(window) = weak.upgrade() else { return };
+                match gesture.current_button() {
+                    8 => window.run_mouse_setting("mouse-back"),
+                    9 => window.run_mouse_setting("mouse-forward"),
+                    _ => {}
+                }
+            }
+        });
+        self.add_controller(buttons);
+
+        let wheel = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::VERTICAL);
+        wheel.connect_scroll({
+            let weak = self.downgrade();
+            move |controller, _, dy| {
+                let Some(window) = weak.upgrade() else { return glib::Propagation::Proceed };
+                let ctrl = controller.current_event_state().contains(gtk::gdk::ModifierType::CONTROL_MASK);
+                window.scroll_viewer(dy, ctrl)
+            }
+        });
+        self.imp().viewer.add_controller(wheel);
+    }
+
+    /// Runs the window or viewer action that the mouse setting `setting` names, or nothing for `none`.
+    fn run_mouse_setting(&self, setting: &str) {
+        let Some(settings) = self.imp().settings.get() else { return };
+        let action = match settings.string(setting).as_str() {
+            "back" => "win.navigate-back",
+            "up" => "win.navigate-up",
+            "forward" => "win.navigate-forward",
+            "previous" if self.viewer_is_open() => "view.previous",
+            "previous" => "browse.cursor-previous",
+            "next" if self.viewer_is_open() => "view.next",
+            "next" => "browse.cursor-next",
+            _ => return,
+        };
+        self.run_action(action, None);
+    }
+
+    /// Runs what the scroll wheel does over the viewer's picture or video, as the Mouse settings say, scaled by the
+    /// scroll speed. Returns whether it used the scroll, so nothing else scrolls too.
+    fn scroll_viewer(&self, dy: f64, ctrl: bool) -> glib::Propagation {
+        let Some(settings) = self.imp().settings.get() else { return glib::Propagation::Proceed };
+        let viewer = &self.imp().viewer;
+        let speed = f64::from(settings.int("scroll-speed")) / 100.0;
+        // A trackpad sends small amounts, so a notch counts as at most one.
+        let notch = dy.clamp(-1.0, 1.0);
+        let used = if viewer.shows_video() {
+            match settings.string("scroll-video").as_str() {
+                "volume" => self.run_action("video.volume", Some(-notch * WHEEL_VOLUME_STEP * speed)),
+                "seek" => self.run_action("video.seek", Some(-notch * WHEEL_SEEK_STEP * speed)),
+                "step" => self.step_by_scroll(notch),
+                _ => false,
+            }
+        } else {
+            match settings.string("scroll-image").as_str() {
+                "ctrl-zoom" if ctrl => self.zoom_by_scroll(notch * speed),
+                "zoom" => self.zoom_by_scroll(notch * speed),
+                "step" => self.step_by_scroll(notch),
+                _ => false,
+            }
+        };
+        if used { glib::Propagation::Stop } else { glib::Propagation::Proceed }
+    }
+
+    /// Zooms the picture by `notches` of the scroll wheel. Always returns true, since the zoom uses the scroll.
+    fn zoom_by_scroll(&self, notches: f64) -> bool {
+        self.imp().viewer.zoom_wheel(notches);
+        true
+    }
+
+    /// Moves to the item before or after the viewer's, as a scroll up or down asks. Returns whether it moved.
+    fn step_by_scroll(&self, notch: f64) -> bool {
+        if notch == 0.0 {
+            return false;
+        }
+        self.run_action(if notch < 0.0 { "view.previous" } else { "view.next" }, None)
     }
 
     /// Runs the action `name` on this window, as a key binding would, passing `value` if the action takes one.
@@ -918,6 +1006,19 @@ impl Window {
                 window.show_file_in(view, &file, open);
             }
         });
+    }
+
+    /// Shows a file dropped on the viewer: in the viewer, in the active tab's folder. A file in another folder
+    /// first browses to its folder, and is shown once that has listed.
+    fn open_dropped_file(&self, path: &Path) {
+        let Some(browse) = self.active_browse() else { return };
+        let Some(folder) = path.parent() else { return };
+        if browse.path().as_deref() == Some(folder) {
+            self.open_viewer(&browse, path);
+        } else {
+            self.navigate(folder);
+            self.show_file_once_listed(&browse, path, true);
+        }
     }
 
     /// Shows the file `path` in `browse`: in the viewer if `open` is set and it is a picture or video, and
@@ -1341,6 +1442,14 @@ impl Window {
                 }
             }
         });
+        imp.viewer.connect_file_dropped({
+            let weak = weak.clone();
+            move |_, path| {
+                if let Some(window) = weak.upgrade() {
+                    window.open_dropped_file(path);
+                }
+            }
+        });
         imp.viewer.connect_back_requested({
             let weak = weak.clone();
             move |_| {
@@ -1613,12 +1722,17 @@ impl Window {
         if let Some(settings) = self.imp().settings.get() {
             let dialog = PreferencesDialog::new(settings);
             if let Some(page) = page {
-                adw::prelude::PreferencesDialogExt::set_visible_page_name(&dialog, page);
+                dialog.show_section(page);
             }
             adw::prelude::AdwDialogExt::present(&dialog, Some(self));
+            dialog.close_on_outside_click(self.upcast_ref());
         }
     }
 }
+
+/// How far one notch of the scroll wheel moves a video's volume, in percent, and its position, in seconds.
+const WHEEL_VOLUME_STEP: f64 = 5.0;
+const WHEEL_SEEK_STEP: f64 = 5.0;
 
 /// The settings the viewer and the window title are set from, applied again whenever one changes.
 const VIEWER_SETTINGS: [&str; 20] = [
@@ -1668,10 +1782,8 @@ fn add_setting_radio_action(window: &Window, settings: &gio::Settings, key: &'st
     let set_from = {
         let settings = settings.clone();
         move |parameter: Option<&glib::Variant>| {
-            eprintln!("rsimgv: {key} set from {parameter:?}");
             if let Some(value) = parameter.and_then(|value| value.get::<String>()) {
-                let result = settings.set_string(key, &value);
-                eprintln!("rsimgv: {key} = {value} (set: {result:?})");
+                let _ = settings.set_string(key, &value);
             }
         }
     };

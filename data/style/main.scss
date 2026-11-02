@@ -92,3 +92,29 @@ keybind {
   padding: 6px 10px;
   margin: 8px;
 }
+
+preferencespage box.vertical {
+  margin: 6px 0;
+}
+
+/* A section with one tab shows its tab row without a background behind the tab. */
+viewswitcher.single-tab button {
+  background: transparent;
+  box-shadow: none;
+}
+
+/* The sidebar sections are shorter than the default list rows. */
+.preferences-sections > row {
+  min-height: 0;
+  padding-top: 2px;
+  padding-bottom: 2px;
+}
+
+/* The content inside each row, which keeps its own vertical padding and margin. */
+.preferences-sections > row > box {
+  min-height: 0;
+  margin-top: 0;
+  margin-bottom: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+}

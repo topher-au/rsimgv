@@ -33,7 +33,9 @@ mod imp {
         /// what undo puts back, and selects again.
         pub(super) history: RefCell<Vec<(BindingTable, Option<(&'static str, String)>)>>,
         pub(super) keybind_button: OnceCell<gtk::Button>,
-        pub(super) context_filter: OnceCell<gtk::DropDown>,
+        pub(super) context_filter: OnceCell<adw::SplitButton>,
+        /// The context the list is filtered to, or `None` for every context.
+        pub(super) context: Cell<Option<Scope>>,
         /// Whether the next key combination becomes the keybind the list is filtered to.
         pub(super) capturing: Cell<bool>,
         /// The keybind the list is filtered to, if any.
@@ -107,17 +109,13 @@ mod imp {
                 list.add_controller(keys);
             }
             let add = icon_button("list-add-symbolic", "Add binding");
-            let toolbar = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-            toolbar.append(&actions);
-            toolbar.append(&add);
-            obj.append(&toolbar);
 
+            // Always present, so the list does not move when a conflict appears or clears.
             let conflicts = gtk::Label::new(None);
-            conflicts.set_xalign(0.0);
-            conflicts.set_wrap(true);
+            conflicts.set_justify(gtk::Justification::Center);
+            conflicts.set_ellipsize(gtk::pango::EllipsizeMode::End);
+            conflicts.set_size_request(-1, 24);
             conflicts.add_css_class("warning");
-            conflicts.set_visible(false);
-            obj.append(&conflicts);
 
             let list = gtk::ListBox::new();
             list.set_selection_mode(gtk::SelectionMode::Single);
@@ -130,7 +128,6 @@ mod imp {
             scroller.set_has_frame(true);
             // A classic scrollbar beside the rows, so it never covers their remove buttons.
             scroller.set_overlay_scrolling(false);
-            obj.append(&scroller);
 
             // The search field: the text, then the keybind it is filtered to as keycaps, and its buttons inside.
             let search = gtk::Entry::new();
@@ -155,27 +152,79 @@ mod imp {
             field.append(&keybind_chips);
             field.append(&clear);
             field.append(&keybind);
-            // The contexts to filter by: every context, or one of them.
-            let mut titles = vec!["All contexts"];
-            titles.extend(Scope::ALL.iter().map(|scope| scope.title()));
-            let contexts = gtk::DropDown::from_strings(&titles);
-            let search_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-            search_row.append(&field);
-            search_row.append(&contexts);
-            obj.append(&search_row);
+            // The contexts to filter by: a split button that shows the chosen one. Its menu lists every context with
+            // its icon, and its main button goes back to every context.
+            let contexts = adw::SplitButton::new();
+            contexts.set_tooltip_text(Some("Filter by context"));
+            let options: Vec<(Option<Scope>, &'static str, &'static str)> = std::iter::once((None, "All contexts", "view-list-symbolic"))
+                .chain(Scope::ALL.iter().map(|scope| (Some(*scope), scope.title(), scope.icon())))
+                .collect();
+            let context_menu = gtk::ListBox::new();
+            context_menu.set_selection_mode(gtk::SelectionMode::None);
+            for (_, title, icon) in &options {
+                let line = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+                line.append(&gtk::Image::from_icon_name(icon));
+                line.append(&gtk::Label::new(Some(title)));
+                context_menu.append(&line);
+            }
+            let context_popover = gtk::Popover::new();
+            context_popover.set_child(Some(&context_menu));
+            contexts.set_popover(Some(&context_popover));
+            context_menu.connect_row_activated({
+                let weak = obj.downgrade();
+                let popover = context_popover.clone();
+                move |_, row| {
+                    let scope = options[row.index() as usize].0;
+                    popover.popdown();
+                    with_list(&weak, |list| list.choose_context(scope));
+                }
+            });
+            contexts.connect_clicked({
+                let weak = obj.downgrade();
+                move |_| with_list(&weak, |list| list.choose_context(None))
+            });
+            let _ = self.context_filter.set(contexts.clone());
+            obj.choose_context(None);
 
             let import = labelled_button("document-import-symbolic", "Import", "Import keybindings from a file");
             let export = labelled_button("document-export-symbolic", "Export", "Export keybindings to a file");
             let defaults = labelled_button("document-revert-symbolic", "Defaults", "Put every binding back to its default");
             let reset = labelled_button("view-refresh-symbolic", "Reset", "Restore the bindings from when preferences opened");
             let undo = labelled_button("edit-undo-symbolic", "Undo", "Undo the last change");
-            undo.set_hexpand(true);
-            undo.set_halign(gtk::Align::End);
-            let footer = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-            for button in [&import, &export, &defaults, &reset, &undo] {
-                footer.append(button);
+
+            // The header row: the action picker, the add button, then a menu of the file and reset actions. Each menu
+            // item closes the menu.
+            let menu_items = gtk::Box::new(gtk::Orientation::Vertical, 2);
+            let menu_popover = gtk::Popover::new();
+            for button in [&import, &export, &defaults, &reset] {
+                button.add_css_class("flat");
+                button.connect_clicked({
+                    let popover = menu_popover.clone();
+                    move |_| popover.popdown()
+                });
+                menu_items.append(button);
             }
-            obj.append(&footer);
+            menu_popover.set_child(Some(&menu_items));
+            let menu = gtk::MenuButton::new();
+            menu.set_icon_name("view-more-symbolic");
+            menu.set_tooltip_text(Some("More keybinding actions"));
+            menu.set_popover(Some(&menu_popover));
+            // The row above the list: the action picker, the add button, then undo.
+            let top = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+            top.append(&actions);
+            top.append(&add);
+            top.append(&undo);
+            obj.append(&top);
+            obj.append(&scroller);
+            obj.append(&conflicts);
+
+            // The row under the list: the context filter, the search field, then the menu.
+            let filter = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+            filter.append(&contexts);
+            filter.append(&field);
+            filter.append(&menu);
+            filter.set_hexpand(true);
+            obj.append(&filter);
 
             let weak = obj.downgrade();
             add.connect_clicked({
@@ -212,7 +261,7 @@ mod imp {
                     let Some(obj) = weak.upgrade() else { return true };
                     let imp = obj.imp();
                     let keybind = imp.keybind.borrow().clone();
-                    let context = imp.context_filter.get().and_then(selected_context);
+                    let context = imp.context.get();
                     let needle = search.text().to_lowercase();
                     if keybind.is_none() && context.is_none() && needle.is_empty() {
                         return true;
@@ -226,10 +275,6 @@ mod imp {
                             || action.name.contains(&needle)
                             || binding.chord.contains(&needle))
                 }
-            });
-            contexts.connect_selected_notify({
-                let list = list.clone();
-                move |_| list.invalidate_filter()
             });
             keybind.connect_clicked({
                 let weak = weak.clone();
@@ -288,7 +333,6 @@ mod imp {
             let _ = self.search_clear.set(clear);
             let _ = self.binding_sizes.set(gtk::SizeGroup::new(gtk::SizeGroupMode::Horizontal));
             let _ = self.search_keybind.set(keybind_chips);
-            let _ = self.context_filter.set(contexts);
         }
     }
 
@@ -437,13 +481,6 @@ mod imp {
         button
     }
 
-    /// The context the dropdown picks, or `None` for every context.
-    fn selected_context(contexts: &gtk::DropDown) -> Option<Scope> {
-        match contexts.selected() {
-            0 => None,
-            index => Scope::ALL.get(index as usize - 1).copied(),
-        }
-    }
 
     /// Runs `f` on the editor if it still exists.
     fn with_list(weak: &glib::WeakRef<super::KeybindingList>, f: impl FnOnce(&super::KeybindingList)) {
@@ -567,6 +604,20 @@ impl KeybindingList {
         }
     }
 
+    /// Filters the list to one context, or to every context for `None`, and shows that on the context button.
+    fn choose_context(&self, scope: Option<Scope>) {
+        let imp = self.imp();
+        imp.context.set(scope);
+        if let Some(button) = imp.context_filter.get() {
+            let (title, icon) = scope.map_or(("All contexts", "view-list-symbolic"), |scope| (scope.title(), scope.icon()));
+            button.set_label(title);
+            button.set_icon_name(icon);
+        }
+        if let Some(list) = imp.list.get() {
+            list.invalidate_filter();
+        }
+    }
+
     /// Shows the first chord that is bound to more than one action whose scopes overlap, if there is one.
     fn update_conflicts(&self) {
         let imp = self.imp();
@@ -580,7 +631,6 @@ impl KeybindingList {
         });
         let label = imp.conflicts.get().expect("conflicts is built in constructed");
         label.set_label(conflict.as_deref().unwrap_or_default());
-        label.set_visible(conflict.is_some());
     }
 
     /// Saves the bindings file and shows the new rows.
