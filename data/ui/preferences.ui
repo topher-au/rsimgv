@@ -394,7 +394,7 @@
                                 <child>
                                   <object class="AdwSwitchRow" id="video_frame_previews_row">
                                     <property name="title">Video frame previews</property>
-                                    <property name="subtitle">Plays a video's frames while the pointer is over it, which takes time to make</property>
+                                    <property name="subtitle">Plays a video's frames while the pointer is over it, or while it is the item last selected and the pointer is over none. The frames take time to make</property>
                                   </object>
                                 </child>
                               </object>
@@ -473,7 +473,7 @@
                                 <child>
                                   <object class="AdwSwitchRow" id="folder_preview_cycle_row">
                                     <property name="title">Cycle folder previews</property>
-                                    <property name="subtitle">While a folder is hovered or selected, its preview pictures cycle through its media</property>
+                                    <property name="subtitle">While the pointer is over a folder, or it is the item last selected and the pointer is over none, its preview pictures cycle through its media</property>
                                   </object>
                                 </child>
                               </object>

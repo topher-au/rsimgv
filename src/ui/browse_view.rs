@@ -832,13 +832,13 @@ mod imp {
         /// Crop each picture and video thumbnail to a square that fills the item's visual part.
         #[property(get, set)]
         thumbnail_crop: Cell<bool>,
-        /// Generate the frames a video plays while it is hovered.
+        /// Generate the frames a video plays while it is the active item.
         #[property(get, set)]
         video_frame_previews: Cell<bool>,
         /// Show a cascade of a folder's first pictures and videos over its icon.
         #[property(get, set)]
         directory_previews: Cell<bool>,
-        /// Cycle a folder's preview pictures through its media while the folder is hovered or selected.
+        /// Cycle a folder's preview pictures through its media while the folder is the active item.
         #[property(get, set)]
         folder_preview_cycle: Cell<bool>,
         /// Fit as many previews to a folder's icon as their pictures' dimensions allow, rather than a set number.
@@ -851,7 +851,7 @@ mod imp {
         pub(super) reading: RefCell<Option<Reading>>,
         /// Whether a refresh was asked for while the folder was being read, so it is made once the read is done.
         pub(super) refresh_skipped: Cell<bool>,
-        /// The video under the pointer, whose frames play while it is hovered.
+        /// The video whose frames are playing: the active item, when it is a video.
         pub(super) hovered: RefCell<Option<Hover>>,
         pub(super) hover_generation: Cell<u64>,
         /// The folder whose preview pictures are cycling, if any.
@@ -1024,7 +1024,7 @@ mod imp {
                             view.imp().restoring_scroll.set(false);
                             view.emit_by_name::<()>("selection-changed", &[&view.selected_name().unwrap_or_default()]);
                         }
-                        view.update_cycle();
+                        view.update_previews();
                     }
                 }
             });
@@ -1214,6 +1214,7 @@ mod imp {
             obj.connect_thumbnail_crop_notify(|view| view.refresh_items());
             obj.connect_directory_previews_notify(|view| view.refresh_items());
             obj.connect_folder_preview_cycle_notify(|view| view.update_cycle());
+            obj.connect_video_frame_previews_notify(|view| view.update_video_preview());
             obj.connect_folder_preview_count_notify(|view| view.refresh_items());
             obj.connect_folder_preview_fit_notify(|view| view.refresh_items());
             obj.connect_show_directories_notify(|view| {
@@ -1240,7 +1241,7 @@ mod imp {
     impl BoxImpl for BrowseView {}
 }
 
-/// The video under the pointer. `generation` tells the frame playback whether it is still current.
+/// The video whose frames play. `generation` tells the frame playback whether it is still current.
 struct Hover {
     cell: glib::WeakRef<gtk::Box>,
     path: PathBuf,
@@ -2081,7 +2082,7 @@ impl BrowseView {
         popover.popup();
     }
 
-    /// Cycles the preview pictures of the folder that is hovered, or else selected, and stops cycling any other.
+    /// Cycles the preview pictures of the folder that is the active item, and stops cycling any other.
     fn update_cycle(&self) {
         let target = if self.folder_preview_cycle() { self.cycle_target() } else { None };
         let cycling = self.imp().cycle.borrow().as_ref().and_then(|cycle| cycle.cell.upgrade());
@@ -2094,16 +2095,28 @@ impl BrowseView {
         }
     }
 
-    /// The cell of the folder to cycle: the one under the pointer if it is a folder, else the selected one if it is.
-    fn cycle_target(&self) -> Option<gtk::Box> {
+    /// The cell of the item the previews belong to: the one under the pointer, or while the pointer is over none, the
+    /// one selected last.
+    fn active_cell(&self) -> Option<gtk::Box> {
         let imp = self.imp();
         let hovered = imp.hovered_cell.borrow().as_ref().and_then(|cell| cell.upgrade());
-        let selected = imp
-            .grid
-            .model()
-            .and_then(|model| imp.grid.cell_at(model.selected()))
-            .and_then(|widget| widget.downcast::<gtk::Box>().ok());
-        hovered.into_iter().chain(selected).find(|cell| self.is_folder_cell(cell))
+        hovered.or_else(|| {
+            imp.grid
+                .model()
+                .and_then(|model| imp.grid.cell_at(model.selected()))
+                .and_then(|widget| widget.downcast::<gtk::Box>().ok())
+        })
+    }
+
+    /// Brings the folder cycle and the video frames to the active item.
+    fn update_previews(&self) {
+        self.update_cycle();
+        self.update_video_preview();
+    }
+
+    /// The cell of the folder to cycle: the active item, if it is a folder.
+    fn cycle_target(&self) -> Option<gtk::Box> {
+        self.active_cell().filter(|cell| self.is_folder_cell(cell))
     }
 
     /// The most pictures scattered over a folder's icon, at least one.
@@ -2311,15 +2324,38 @@ impl BrowseView {
         }
     }
 
-    /// Starts playing the frames of the video in `cell`, once they are made.
+    /// Makes the item under the pointer the active one.
     fn hover_enter(&self, cell: &gtk::Box) {
         self.imp().hovered_cell.replace(Some(cell.downgrade()));
-        self.update_cycle();
-        self.stop_hover();
-        let Some(entry) = entry_in(self, cell) else { return };
-        if thumbnail_media(&entry) != Some(ThumbnailMedia::Video) || !self.video_frame_previews() {
-            return;
+        self.update_previews();
+    }
+
+    /// Whether `cell` shows a video whose frames are to play.
+    fn plays_video_frames(&self, cell: &gtk::Box) -> bool {
+        self.video_frame_previews() && entry_in(self, cell).is_some_and(|entry| thumbnail_media(&entry) == Some(ThumbnailMedia::Video))
+    }
+
+    /// Plays the frames of the video in the active item, and stops the ones playing in any other.
+    fn update_video_preview(&self) {
+        let target = self
+            .active_cell()
+            .filter(|cell| self.plays_video_frames(cell))
+            .and_then(|cell| entry_in(self, &cell).map(|entry| (cell, entry.path().to_path_buf())));
+        let playing = self.imp().hovered.borrow().as_ref().map(|hover| (hover.cell.upgrade(), hover.path.clone()));
+        if let (Some((cell, path)), Some((Some(playing_cell), playing_path))) = (&target, &playing) {
+            if cell == playing_cell && path == playing_path {
+                return;
+            }
         }
+        self.stop_hover();
+        if let Some((cell, _)) = target {
+            self.play_video_frames(&cell);
+        }
+    }
+
+    /// Starts playing the frames of the video in `cell`, once they are made.
+    fn play_video_frames(&self, cell: &gtk::Box) {
+        let Some(entry) = entry_in(self, cell) else { return };
         let imp = self.imp();
         let generation = imp.hover_generation.get() + 1;
         imp.hover_generation.set(generation);
@@ -2386,21 +2422,18 @@ impl BrowseView {
         });
     }
 
-    /// Stops the hover playback in `cell` when the pointer leaves it.
+    /// Hands the active item back to the selected one when the pointer leaves `cell`. That waits for the events being
+    /// handled, as a pointer going from one item to the next leaves the first before it enters the second.
     fn hover_leave(&self, cell: &gtk::Box) {
-        let hovered_here = self
-            .imp()
-            .hovered
-            .borrow()
-            .as_ref()
-            .is_some_and(|hover| hover.cell.upgrade().as_ref() == Some(cell));
-        if hovered_here {
-            self.stop_hover();
-        }
         let left_hovered = self.imp().hovered_cell.borrow().as_ref().and_then(|hovered| hovered.upgrade()).is_some_and(|hovered| &hovered == cell);
         if left_hovered {
             self.imp().hovered_cell.take();
-            self.update_cycle();
+            let view = self.downgrade();
+            glib::idle_add_local_once(move || {
+                if let Some(view) = view.upgrade() {
+                    view.update_previews();
+                }
+            });
         }
     }
 

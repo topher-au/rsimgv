@@ -15,7 +15,7 @@
     </key>
     <key name="video-frame-previews" type="b">
       <default>true</default>
-      <summary>Generate the frames a video plays while hovered in the browse view</summary>
+      <summary>Generate the frames a video plays while it is under the pointer, or is the item last selected and the pointer is over none</summary>
     </key>
     <key name="directory-previews" type="b">
       <default>false</default>
@@ -103,7 +103,7 @@
     </key>
     <key name="folder-preview-cycle" type="b">
       <default>false</default>
-      <summary>Cycle a folder's preview pictures through its media while it is hovered or selected</summary>
+      <summary>Cycle a folder's preview pictures through its media while it is under the pointer, or is the item last selected and the pointer is over none</summary>
     </key>
     <key name="item-size" type="i">
       <default>128</default>
