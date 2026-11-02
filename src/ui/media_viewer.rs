@@ -330,6 +330,8 @@ mod imp {
         pub(super) svp: RefCell<Option<crate::svp::Config>>,
         /// Whether SVP is applied to the video shown.
         pub(super) svp_active: Cell<bool>,
+        /// This viewer's hold on the server SVP's libraries connect to, kept while SVP is on.
+        pub(super) svp_manager: RefCell<Option<std::rc::Rc<crate::svp_manager::Manager>>>,
     }
 
     #[glib::object_subclass]
@@ -956,6 +958,10 @@ impl MediaViewer {
             let speed = stream.speed().unwrap_or(1.0);
             self.apply_svp(&stream, speed);
         }
+        // With no video shown, nothing above has let go of the server.
+        if !self.imp().svp.borrow().as_ref().is_some_and(|config| config.enabled) {
+            self.imp().svp_manager.take();
+        }
     }
 
     /// Applies SVP to the video `stream` plays at `speed`, once mpv knows the video's frame rate. The video's filter
@@ -988,6 +994,7 @@ impl MediaViewer {
         const OSD_MILLIS: u32 = 2500;
         if !config.enabled {
             let _ = stream.set_video_filter("");
+            self.imp().svp_manager.take();
             if self.imp().svp_active.replace(false) {
                 stream.show_text("SVP off", OSD_MILLIS);
             }
@@ -1012,6 +1019,16 @@ impl MediaViewer {
             return;
         }
         println!("rsimgv: SVP script written to {}", path.display());
+        // The server comes first, as SVP's libraries connect to it as soon as the filter loads them. SVP still plays
+        // without it, as it did before there was one.
+        if self.imp().svp_manager.borrow().is_none() {
+            match crate::svp_manager::shared() {
+                Ok(manager) => {
+                    self.imp().svp_manager.replace(Some(manager));
+                }
+                Err(err) => eprintln!("rsimgv: SVP manager: {err}"),
+            }
+        }
         match stream.set_video_filter(&crate::svp::filter(&path)) {
             Ok(()) => {
                 println!("rsimgv: SVP filter set: {}", crate::svp::filter(&path));
