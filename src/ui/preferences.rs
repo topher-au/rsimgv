@@ -111,6 +111,12 @@ mod imp {
         #[template_child]
         pub folder_end_row: TemplateChild<adw::ComboRow>,
         #[template_child]
+        pub remember_folder_sort_row: TemplateChild<adw::SwitchRow>,
+        #[template_child]
+        pub default_sort_by_row: TemplateChild<adw::ComboRow>,
+        #[template_child]
+        pub default_sort_order_row: TemplateChild<adw::ComboRow>,
+        #[template_child]
         pub open_fullscreen_row: TemplateChild<adw::SwitchRow>,
         #[template_child]
         pub auto_hide_cursor_row: TemplateChild<adw::SwitchRow>,
@@ -552,6 +558,7 @@ impl PreferencesDialog {
 /// Binds each switch row to its boolean setting.
 fn bind_switches(settings: &gio::Settings, imp: &imp::PreferencesDialog) {
     let switches = [
+        ("remember-folder-sort", &imp.remember_folder_sort_row),
         ("open-fullscreen", &imp.open_fullscreen_row),
         ("auto-hide-cursor", &imp.auto_hide_cursor_row),
         ("smooth-scrolling", &imp.smooth_scrolling_row),
@@ -569,8 +576,10 @@ fn bind_switches(settings: &gio::Settings, imp: &imp::PreferencesDialog) {
 
 /// Binds each combo row to a string setting whose value is one of `choices`, by position in the row.
 fn bind_choices(settings: &gio::Settings, imp: &imp::PreferencesDialog) {
-    let combos: [(&str, &glib::Object, &[&str]); 16] = [
+    let combos: [(&str, &glib::Object, &[&str]); 18] = [
         ("folder-end", imp.folder_end_row.upcast_ref(), &["stop", "loop", "next-folder"]),
+        ("sort-by", imp.default_sort_by_row.upcast_ref(), &["name", "modified", "size", "type"]),
+        ("sort-order", imp.default_sort_order_row.upcast_ref(), &["ascending", "descending"]),
         ("mouse-back", imp.back_button_row.upcast_ref(), &["back", "up", "previous", "next", "forward", "none"]),
         ("mouse-forward", imp.forward_button_row.upcast_ref(), &["back", "up", "previous", "next", "forward", "none"]),
         ("scroll-image", imp.scroll_image_row.upcast_ref(), &["ctrl-zoom", "zoom", "step", "none"]),

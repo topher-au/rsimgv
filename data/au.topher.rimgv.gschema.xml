@@ -280,7 +280,7 @@
         <choice value="type"/>
       </choices>
       <default>'name'</default>
-      <summary>What the browse view sorts files and folders by: name, modification time, size or type</summary>
+      <summary>What the browse view sorts files and folders by, in a folder with no remembered sort: name, modification time, size or type</summary>
     </key>
     <key name="sort-order" type="s">
       <choices>
@@ -288,7 +288,11 @@
         <choice value="descending"/>
       </choices>
       <default>'ascending'</default>
-      <summary>Whether the browse view sorts ascending or descending</summary>
+      <summary>Whether the browse view sorts ascending or descending, in a folder with no remembered sort</summary>
+    </key>
+    <key name="remember-folder-sort" type="b">
+      <default>false</default>
+      <summary>Keep the sort chosen in the sort menu for that folder alone, rather than changing the default</summary>
     </key>
     <key name="folder-end" type="s">
       <choices>

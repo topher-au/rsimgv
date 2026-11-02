@@ -5,6 +5,7 @@ mod remote;
 mod svp;
 mod bookmarks;
 mod file_settings;
+mod folder_sort;
 mod keybindings;
 mod mpv;
 mod settings;

@@ -190,6 +190,41 @@
                                     </property>
                                   </object>
                                 </child>
+                                <child>
+                                  <object class="AdwSwitchRow" id="remember_folder_sort_row">
+                                    <property name="title">Remember folder sort settings</property>
+                                    <property name="subtitle">The sort menu changes only the folder shown, which keeps that sort</property>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="AdwComboRow" id="default_sort_by_row">
+                                    <property name="title">Default sorting</property>
+                                    <property name="subtitle">How folders with no remembered sort are sorted</property>
+                                    <property name="model">
+                                      <object class="GtkStringList">
+                                        <items>
+                                          <item>Alphabetical</item>
+                                          <item>Modification Time</item>
+                                          <item>Size</item>
+                                          <item>Type</item>
+                                        </items>
+                                      </object>
+                                    </property>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="AdwComboRow" id="default_sort_order_row">
+                                    <property name="title">Default sort order</property>
+                                    <property name="model">
+                                      <object class="GtkStringList">
+                                        <items>
+                                          <item>Ascending</item>
+                                          <item>Descending</item>
+                                        </items>
+                                      </object>
+                                    </property>
+                                  </object>
+                                </child>
                               </object>
                             </child>
                           </object>

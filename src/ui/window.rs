@@ -212,8 +212,16 @@ impl Window {
             tree_for_settings.set_show_hidden(settings.boolean("show-hidden"));
         });
         window.add_action(&settings.create_action("show-hidden"));
-        add_setting_radio_action(&window, settings, "sort-by");
-        add_setting_radio_action(&window, settings, "sort-order");
+        add_sort_action(&window, settings, "sort-by");
+        add_sort_action(&window, settings, "sort-order");
+        settings.connect_changed(Some("remember-folder-sort"), {
+            let weak = window.downgrade();
+            move |_, _| {
+                if let Some(window) = weak.upgrade() {
+                    window.apply_sort_settings();
+                }
+            }
+        });
         add_show_directories_action(&window, settings);
 
         window.add_context_actions();
@@ -588,6 +596,7 @@ impl Window {
                     });
                 }
                 browse.set_path(path);
+                self.apply_folder_sort(&browse);
             }
         }
         if let Some(page) = imp.tab_view.selected_page() {
@@ -1402,6 +1411,7 @@ impl Window {
         // A tab opened in the background loads its folder now; its history and tree wait in its state.
         if !select && imp.tab_view.n_pages() > 1 {
             browse.set_path(path);
+            self.apply_folder_sort(&browse);
             return id;
         }
         imp.tab_view.set_selected_page(&page);
@@ -1646,6 +1656,72 @@ impl Window {
                 browse.set_active(selected.as_ref() == Some(&page));
             }
         }
+        self.sync_sort_actions();
+    }
+
+    /// Sorts `browse` as its folder is remembered, or else by the default. The folder is listed before this, while
+    /// the view is not sorting, so a change of sort does not first sort the folder it is leaving.
+    fn apply_folder_sort(&self, browse: &BrowseView) {
+        let Some(settings) = self.imp().settings.get() else { return };
+        let remembered = browse.path().filter(|_| settings.boolean("remember-folder-sort")).and_then(|path| crate::folder_sort::remembered(&path));
+        let (by, order) = match remembered {
+            Some(sort) => (sort.by, sort.order),
+            None => (settings.string("sort-by").to_string(), settings.string("sort-order").to_string()),
+        };
+        if browse.sort_by() != by {
+            browse.set_sort_by(by);
+        }
+        if browse.sort_order() != order {
+            browse.set_sort_order(order);
+        }
+        if self.active_browse().as_ref() == Some(browse) {
+            self.sync_sort_actions();
+        }
+    }
+
+    /// Applies a change of the default sort, or of whether folders remember theirs, to every tab.
+    fn apply_sort_settings(&self) {
+        let tabs = &self.imp().tab_view;
+        for index in 0..tabs.n_pages() {
+            if let Ok(browse) = tabs.nth_page(index).child().downcast::<BrowseView>() {
+                self.apply_folder_sort(&browse);
+            }
+        }
+        self.sync_sort_actions();
+    }
+
+    /// Has the sort menu show how the active tab is sorted, or with no tab the default.
+    fn sync_sort_actions(&self) {
+        let Some(settings) = self.imp().settings.get() else { return };
+        let (by, order) = match self.active_browse() {
+            Some(browse) => (browse.sort_by(), browse.sort_order()),
+            None => (settings.string("sort-by").to_string(), settings.string("sort-order").to_string()),
+        };
+        for (key, value) in [("sort-by", by), ("sort-order", order)] {
+            if let Some(action) = self.lookup_action(key).and_downcast::<gio::SimpleAction>() {
+                action.set_state(&value.to_variant());
+            }
+        }
+    }
+
+    /// Applies a choice in the sort menu: to the folder shown alone while folders remember their sorts, otherwise to
+    /// the default, which every tab follows.
+    fn choose_sort(&self, key: &str, value: &str) {
+        let Some(settings) = self.imp().settings.get() else { return };
+        let remembering = self.active_browse().filter(|_| settings.boolean("remember-folder-sort"));
+        let Some((browse, path)) = remembering.and_then(|browse| browse.path().map(|path| (browse, path))) else {
+            let _ = settings.set_string(key, value);
+            return;
+        };
+        match key {
+            "sort-by" => browse.set_sort_by(value),
+            _ => browse.set_sort_order(value),
+        }
+        let sort = crate::folder_sort::FolderSort { by: browse.sort_by(), order: browse.sort_order() };
+        if let Err(err) = crate::folder_sort::remember(&path, &sort) {
+            eprintln!("rsimgv: could not remember the sort of {}: {err}", path.display());
+        }
+        self.sync_sort_actions();
     }
 
     /// The browse view of the selected tab.
@@ -1687,9 +1763,8 @@ impl Window {
             settings.bind("folder-preview-count", browse, "folder-preview-count").build();
             settings.bind("folder-preview-fit", browse, "folder-preview-fit").build();
             settings.bind("show-hidden", browse, "show-hidden").build();
-            settings.bind("sort-by", browse, "sort-by").build();
-            settings.bind("sort-order", browse, "sort-order").build();
         }
+        self.apply_folder_sort(browse);
         // The active tab's selection is what the history remembers for its current location.
         browse.connect_selection_changed({
             let weak = self.downgrade();
@@ -1823,26 +1898,30 @@ fn shows_directories(settings: &gio::Settings) -> bool {
     settings.string("show-directories") != "none"
 }
 
-/// Adds a stateful action for the string setting `key`, whose radio items in the sort menu set it. Menu items
-/// activate their action, and some pass the new value as a change of state, so both set the setting.
-fn add_setting_radio_action(window: &Window, settings: &gio::Settings, key: &'static str) {
+/// Adds a stateful action for the sort setting `key`, whose radio items in the sort menu choose it. Menu items
+/// activate their action, and some pass the new value as a change of state, so both make the choice.
+fn add_sort_action(window: &Window, settings: &gio::Settings, key: &'static str) {
     let action = gio::SimpleAction::new_stateful(key, Some(glib::VariantTy::STRING), &settings.string(key).to_variant());
-    let set_from = {
-        let settings = settings.clone();
+    let choose = {
+        let weak = window.downgrade();
         move |parameter: Option<&glib::Variant>| {
-            if let Some(value) = parameter.and_then(|value| value.get::<String>()) {
-                let _ = settings.set_string(key, &value);
+            if let (Some(window), Some(value)) = (weak.upgrade(), parameter.and_then(|value| value.get::<String>())) {
+                window.choose_sort(key, &value);
             }
         }
     };
     action.connect_activate({
-        let set_from = set_from.clone();
-        move |_, parameter| set_from(parameter)
+        let choose = choose.clone();
+        move |_, parameter| choose(parameter)
     });
-    action.connect_change_state(move |_, parameter| set_from(parameter));
+    action.connect_change_state(move |_, parameter| choose(parameter));
     settings.connect_changed(Some(key), {
-        let action = action.clone();
-        move |settings, _| action.set_state(&settings.string(key).to_variant())
+        let weak = window.downgrade();
+        move |_, _| {
+            if let Some(window) = weak.upgrade() {
+                window.apply_sort_settings();
+            }
+        }
     });
     window.add_action(&action);
 }
@@ -2056,6 +2135,52 @@ pub(crate) mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
+    /// While folders remember their sorts the sort menu changes only the folder shown, and the others use the default.
+    fn folders_remember_their_sorts(app: &adw::Application, settings: &gio::Settings) {
+        let root = std::env::temp_dir().join(format!("rsimgv-sorts-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("alpha")).unwrap();
+        fs::create_dir_all(root.join("gamma")).unwrap();
+        let (alpha, gamma) = (root.join("alpha"), root.join("gamma"));
+
+        let window = Window::new(app, settings);
+        window.navigate(&alpha);
+        let browse = window.active_browse().unwrap();
+        let menu_state = |key: &str| window.lookup_action(key).unwrap().state().unwrap().get::<String>().unwrap();
+        assert_eq!(browse.sort_by(), "name", "a folder starts with the default");
+
+        settings.set_boolean("remember-folder-sort", true).unwrap();
+        window.choose_sort("sort-by", "size");
+        assert_eq!(browse.sort_by(), "size", "the folder shown takes the choice");
+        assert_eq!(menu_state("sort-by"), "size", "and the menu shows it");
+        assert_eq!(settings.string("sort-by"), "name", "the default stays as it was");
+
+        window.navigate(&gamma);
+        assert_eq!(browse.sort_by(), "name", "another folder uses the default");
+        assert_eq!(menu_state("sort-by"), "name");
+        window.navigate(&alpha);
+        assert_eq!(browse.sort_by(), "size", "coming back brings the folder's own sort");
+
+        settings.set_string("sort-by", "type").unwrap();
+        assert_eq!(browse.sort_by(), "size", "a remembered sort outranks the default");
+        window.navigate(&gamma);
+        assert_eq!(browse.sort_by(), "type", "a folder without one follows the default");
+
+        settings.set_boolean("remember-folder-sort", false).unwrap();
+        window.navigate(&alpha);
+        assert_eq!(browse.sort_by(), "type", "with remembering off, every folder uses the default");
+        window.choose_sort("sort-order", "descending");
+        assert_eq!(settings.string("sort-order"), "descending", "and the menu changes the default");
+        assert_eq!(browse.sort_order(), "descending");
+
+        settings.reset("sort-by");
+        settings.reset("sort-order");
+        settings.reset("remember-folder-sort");
+        window.destroy();
+        let _ = fs::remove_file(crate::settings::config_path().with_file_name("folder_sort.yaml"));
+        let _ = fs::remove_dir_all(&root);
+    }
+
     /// A size change is saved shortly after it happens, without waiting for the window to close.
     fn size_change_is_saved_without_closing(app: &adw::Application, settings: &gio::Settings) {
         let window = Window::new(app, settings);
@@ -2120,6 +2245,7 @@ pub(crate) mod tests {
         gio::prelude::ApplicationExt::register(&app, gio::Cancellable::NONE).expect("register test application");
         let settings = crate::settings::open("au.topher.rimgv");
         tabs_keep_their_own_state(&app, &settings);
+        folders_remember_their_sorts(&app, &settings);
         context_actions_work(&app, &settings);
         window_size_is_saved(&app, &settings);
         size_change_is_saved_without_closing(&app, &settings);
