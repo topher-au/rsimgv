@@ -255,6 +255,9 @@ pub const ACTIONS: &[ActionInfo] = &[
         name: "win.toggle-bookmarks", description: "Expand or collapse the bookmarks list in the sidebar.", icon: "user-bookmarks-symbolic", label: "Toggle Bookmarks", defaults: &[],
     },
     ActionInfo {
+        name: "win.toggle-filesystem", description: "Expand or collapse the folder tree in the sidebar.", icon: "drive-harddisk-symbolic", label: "Toggle Filesystem", defaults: &[],
+    },
+    ActionInfo {
         name: "win.toggle-sidebar", description: "Show or hide the sidebar.", icon: "sidebar-show-symbolic", label: "Toggle Sidebar", defaults: &["f9"],
     },
     ActionInfo {

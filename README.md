@@ -14,9 +14,12 @@ library of pictures and videos without leaving the window. The media viewer is n
 
 ## Features
 
-- **Folder tree** rooted at `/`. Folders expand on demand, and selecting one reveals its path. Expansion
-  can keep other folders open or collapse them, and a path is framed so the folder and as many of its
-  children as fit are on screen.
+- **Folder tree** rooted at `/` or the home folder, picked by the buttons on its section header. Going to
+  a folder outside the root returns the tree to `/`. Folders expand on demand, and selecting one reveals
+  its path. Expansion can keep other folders open or collapse them, and a path is framed so the folder and
+  as many of its children as fit are on screen.
+- **Bookmarks** in a collapsible section above the tree. The bookmark of the folder shown is highlighted.
+  Drag a bookmark to reorder it, middle-click it to open a new tab, or right-click it to rename or remove it.
 - **Browse view** showing the current folder as a grid of files and folders. Folders come first, then
   files, in natural name order. Item size is adjustable, names can be ellipsized or wrapped, and the info
   line shows size and modification time.

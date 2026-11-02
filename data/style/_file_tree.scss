@@ -1,3 +1,44 @@
+// A sidebar section's header: an arrow, a title, and small buttons at the end.
+expander-widget.rsimgv-sidebar-section > box > title {
+  min-height: 24px;
+  padding: 3px 6px 3px 8px;
+}
+
+expander-widget.rsimgv-sidebar-section > box > title:hover {
+  background-color: color-mix(in srgb, currentColor 5%, transparent);
+}
+
+button.rsimgv-sidebar-section-button {
+  min-width: 22px;
+  min-height: 22px;
+  padding: 1px;
+}
+
+// Bookmarks are as compact as the rows of the folder tree below them.
+.rsimgv-bookmarks > row {
+  min-height: 26px;
+  padding: 0 2px 0 8px;
+  margin-bottom: 1px;
+}
+
+// A row's remove button appears when the row is pointed at, or reached by the keyboard.
+.rsimgv-bookmarks > row button.rsimgv-bookmark-remove {
+  min-width: 20px;
+  min-height: 20px;
+  padding: 1px;
+  opacity: 0;
+}
+
+.rsimgv-bookmarks > row:hover button.rsimgv-bookmark-remove,
+.rsimgv-bookmarks > row button.rsimgv-bookmark-remove:focus {
+  opacity: 1;
+}
+
+// The row a dragged bookmark would take the place of.
+.rsimgv-bookmarks > row:drop(active) {
+  background-color: color-mix(in srgb, currentColor 15%, transparent);
+}
+
 // Hidden (dot-prefixed) directories, shown when the toggle is on.
 .rsimgv-hidden-dir {
   opacity: 0.5;
