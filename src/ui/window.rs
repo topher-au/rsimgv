@@ -19,6 +19,7 @@ use super::fs_tree::TreeSnapshot;
 use super::path_bar::OpenTarget;
 use super::{BrowseView, FsTree, HeaderBar, MediaViewer, MessageOverlay, NavigationBar, OverlaySplitView, PathBar, PreferencesDialog, ShownItem};
 use super::{Level, Message};
+use super::message_overlay::{MessageId, Position};
 
 mod imp {
     use super::*;
@@ -37,6 +38,8 @@ mod imp {
         pub message_layer: TemplateChild<gtk::Overlay>,
         /// The messages over the window, made once the template is built.
         pub messages: std::cell::OnceCell<MessageOverlay>,
+        /// The message naming the folder the viewer moved to, while it is up, so the next one replaces it.
+        pub(super) folder_notice: Cell<Option<MessageId>>,
         #[template_child]
         pub viewer: TemplateChild<MediaViewer>,
         #[template_child]
@@ -587,6 +590,9 @@ impl Window {
     fn show_path(&self, path: &Path) {
         let imp = self.imp();
         let previous = imp.current_path.replace(Some(path.to_path_buf()));
+        if previous.as_deref() != Some(path) && self.viewer_is_open() {
+            self.announce_folder(path);
+        }
         if let Err(err) = imp.path_bar.set_path(path) {
             eprintln!("rsimgv: {err:#}");
         }
@@ -1161,10 +1167,22 @@ impl Window {
 
     /// Shows `message` over the window as a notification of `level`, one of `NOTIFICATION_LEVELS` (an unknown one is
     /// `info`), for `seconds`.
-    pub fn show_notification(&self, message: &str, level: &str, seconds: f64) {
+    pub fn show_notification(&self, message: &str, level: &str, seconds: f64) -> MessageId {
         let seconds = if seconds.is_finite() { seconds.clamp(0.1, MAX_NOTIFICATION_SECONDS) } else { DEFAULT_NOTIFICATION_SECONDS };
         let level = Level::from_name(level).unwrap_or_default();
-        self.messages().show(Message::notification(message).level(level).lasting(std::time::Duration::from_secs_f64(seconds)));
+        self.messages().show(Message::notification(message).level(level).lasting(std::time::Duration::from_secs_f64(seconds)))
+    }
+
+    /// Names `folder` over the window, as the viewer moves to it. A name still up from the last move is taken down.
+    fn announce_folder(&self, folder: &Path) {
+        let name = folder.file_name().map_or_else(|| folder.display().to_string(), |name| name.to_string_lossy().into_owned());
+        let messages = self.messages();
+        if let Some(previous) = self.imp().folder_notice.take() {
+            messages.dismiss(previous);
+        }
+        // At the top, clear of the video controls that come up at the bottom.
+        let notice = messages.show(Message::notification(name).at(Position::TopCenter));
+        self.imp().folder_notice.set(Some(notice));
     }
 
     /// Shows `text` over the window for a few seconds, as something that went wrong.

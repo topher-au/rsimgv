@@ -71,7 +71,9 @@ fn handle(window: &Window, key: gdk::Key, state: gdk::ModifierType) -> glib::Pro
     };
     if action.takes_notification() {
         match notification {
-            Some(notification) => window.show_notification(&notification.message, &notification.level, notification.seconds),
+            Some(notification) => {
+                window.show_notification(&notification.message, &notification.level, notification.seconds);
+            }
             None => eprintln!("rsimgv: the binding for {} has no notification", chord.format()),
         }
         return glib::Propagation::Stop;
