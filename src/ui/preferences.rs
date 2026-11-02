@@ -137,6 +137,12 @@ mod imp {
         #[template_child]
         pub video_backend_row: TemplateChild<adw::ComboRow>,
         #[template_child]
+        pub mpv_group: TemplateChild<adw::PreferencesGroup>,
+        #[template_child]
+        pub gstreamer_group: TemplateChild<adw::PreferencesGroup>,
+        #[template_child]
+        pub svp_group: TemplateChild<adw::PreferencesGroup>,
+        #[template_child]
         pub mpv_args_row: TemplateChild<adw::EntryRow>,
         #[template_child]
         pub scaling_filter_row: TemplateChild<adw::ComboRow>,
@@ -227,10 +233,12 @@ glib::wrapper! {
 }
 
 impl PreferencesDialog {
-    /// Shows the extra mpv options, saved when applied, and only while mpv plays videos.
-    fn bind_mpv_args(&self, settings: &gio::Settings) {
+    /// Shows the options of the chosen video backend, and lets SVP be changed only while mpv plays videos. The extra
+    /// mpv options are saved when applied.
+    fn bind_video_backend(&self, settings: &gio::Settings) {
         use adw::prelude::EntryRowExt;
-        let row = &*self.imp().mpv_args_row;
+        let imp = self.imp();
+        let row = &*imp.mpv_args_row;
         row.set_text(&settings.string("mpv-args"));
         row.connect_apply({
             let settings = settings.clone();
@@ -238,12 +246,14 @@ impl PreferencesDialog {
                 let _ = settings.set_string("mpv-args", &row.text());
             }
         });
-        let update = {
-            let row = row.clone();
-            move |settings: &gio::Settings| row.set_sensitive(settings.string("video-backend") == "mpv")
-        };
-        update(settings);
-        settings.connect_changed(Some("video-backend"), move |settings, _| update(settings));
+        let groups = [("visible", &imp.mpv_group, "mpv"), ("visible", &imp.gstreamer_group, "gtk"), ("sensitive", &imp.svp_group, "mpv")];
+        for (property, group, backend) in groups {
+            settings
+                .bind("video-backend", &**group, property)
+                .mapping(move |variant, _| Some((variant.str()? == backend).to_value()))
+                .get_only()
+                .build();
+        }
     }
 
     /// Binds the remote control rows. Each transport's path or port row is insensitive while its toggle is off.
@@ -315,7 +325,7 @@ impl PreferencesDialog {
         bind_port(settings, &imp.zoom_step_row, "zoom-step");
         bind_port(settings, &imp.scroll_speed_row, "scroll-speed");
         bind_port(settings, &imp.thumbnail_bar_size_row, "viewer-thumbnail-bar-size");
-        dialog.bind_mpv_args(settings);
+        dialog.bind_video_backend(settings);
         dialog.bind_remote(settings);
         settings.bind("ipc-external-access", &*imp.ipc_external_row, "active").build();
 
@@ -714,6 +724,7 @@ fn bind_info_fields(settings: &gio::Settings, dialog: &PreferencesDialog) {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use adw::prelude::ComboRowExt;
 
     pub(crate) fn run_scenarios() {
         let settings = gio::Settings::new("au.topher.rimgv");
@@ -745,6 +756,31 @@ pub(crate) mod tests {
         assert!(!dialog.imp().ipc_tcp_row.is_sensitive(), "the TCP port is insensitive while TCP is off");
         settings.set_boolean("ipc-tcp-enabled", true).unwrap();
         assert!(dialog.imp().ipc_tcp_row.is_sensitive(), "the TCP port is sensitive while TCP is on");
+
+        // The chosen backend's options are shown, and SVP can be changed only with mpv.
+        let imp = dialog.imp();
+        assert!(imp.mpv_group.get_visible() && !imp.gstreamer_group.get_visible(), "mpv is the default");
+        assert!(imp.svp_group.is_sensitive());
+        imp.video_backend_row.set_selected(1);
+        assert_eq!(settings.string("video-backend"), "gtk");
+        assert!(!imp.mpv_group.get_visible() && imp.gstreamer_group.get_visible(), "GStreamer's options replace mpv's");
+        assert!(!imp.svp_group.is_sensitive(), "SVP needs mpv");
+        settings.reset("video-backend");
+        assert!(imp.mpv_group.get_visible() && imp.svp_group.is_sensitive());
+
+        // The Folder Navigation rows are bound to their settings.
+        imp.folder_end_row.set_selected(2);
+        assert_eq!(settings.string("folder-end"), "next-folder");
+        settings.reset("folder-end");
+        imp.default_sort_by_row.set_selected(1);
+        imp.default_sort_order_row.set_selected(1);
+        assert_eq!(settings.string("sort-by"), "modified");
+        assert_eq!(settings.string("sort-order"), "descending");
+        settings.reset("sort-by");
+        settings.reset("sort-order");
+        imp.remember_folder_sort_row.set_active(true);
+        assert!(settings.boolean("remember-folder-sort"));
+        settings.reset("remember-folder-sort");
     }
 }
 

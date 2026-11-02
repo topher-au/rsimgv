@@ -711,110 +711,132 @@
                       </object>
                     </child>
                     <child>
-                      <object class="AdwPreferencesPage">
-                        <property name="title">Videos</property>
-                        <property name="icon-name">video-x-generic-symbolic</property>
+                      <object class="AdwViewStack">
+                        <property name="vexpand">true</property>
                         <child>
-                          <object class="AdwPreferencesGroup">
+                          <object class="AdwPreferencesPage">
+                            <property name="title">Player</property>
+                            <property name="icon-name">video-x-generic-symbolic</property>
                             <child>
-                              <object class="AdwComboRow" id="video_backend_row">
-                                <property name="title">Player</property>
-                                <property name="subtitle">Applies to the next video opened</property>
-                                <property name="model">
-                                  <object class="GtkStringList">
-                                    <items>
-                                      <item>mpv</item>
-                                      <item>GTK</item>
-                                    </items>
+                              <object class="AdwPreferencesGroup">
+                                <child>
+                                  <object class="AdwComboRow" id="video_backend_row">
+                                    <property name="title">Player backend</property>
+                                    <property name="subtitle">Applies to the next video opened</property>
+                                    <property name="model">
+                                      <object class="GtkStringList">
+                                        <items>
+                                          <item>MPV</item>
+                                          <item>GStreamer</item>
+                                        </items>
+                                      </object>
+                                    </property>
                                   </object>
-                                </property>
+                                </child>
+                              </object>
+                            </child>
+                            <child>
+                              <object class="AdwPreferencesGroup" id="mpv_group">
+                                <property name="title">MPV</property>
+                                <property name="description">Extra options for mpv, such as --hwdec=auto-copy. Apply them with the check mark once edited.</property>
+                                <child>
+                                  <object class="AdwEntryRow" id="mpv_args_row">
+                                    <property name="title">mpv options</property>
+                                    <property name="show-apply-button">true</property>
+                                  </object>
+                                </child>
+                              </object>
+                            </child>
+                            <child>
+                              <object class="AdwPreferencesGroup" id="gstreamer_group">
+                                <property name="title">GStreamer</property>
+                                <property name="description">GStreamer has no options of its own here. Which videos it plays depends on the plugins installed on the system.</property>
                               </object>
                             </child>
                           </object>
                         </child>
                         <child>
-                          <object class="AdwPreferencesGroup">
-                            <property name="title">mpv</property>
-                            <property name="description">Extra options for mpv, such as --hwdec=auto-copy. Apply them with the check mark once edited.</property>
+                          <object class="AdwPreferencesPage">
+                            <property name="title">SVP</property>
+                            <property name="icon-name">video-display-symbolic</property>
                             <child>
-                              <object class="AdwEntryRow" id="mpv_args_row">
-                                <property name="title">mpv options</property>
-                                <property name="show-apply-button">true</property>
-                              </object>
-                            </child>
-                          </object>
-                        </child>
-                        <child>
-                          <object class="AdwPreferencesGroup">
-                            <property name="title">SVP frame interpolation</property>
-                            <child>
-                              <object class="AdwSwitchRow" id="svp_enabled_row">
-                                <property name="title">Interpolate frames with SVP</property>
-                                <property name="subtitle">Smooths the motion of videos played by libmpv, using SVP's plugins</property>
+                              <object class="AdwPreferencesGroup">
+                                <property name="description">SVP requires the MPV player backend.</property>
                               </object>
                             </child>
                             <child>
-                              <object class="AdwEntryRow" id="svp_plugin_directory_row">
-                                <property name="title">Plugin directory</property>
-                              </object>
-                            </child>
-                            <child>
-                              <object class="AdwComboRow" id="svp_fps_mode_row">
-                                <property name="title">Output frame rate</property>
-                                <property name="subtitle">Scales with the playback speed in Display and Variable</property>
-                                <property name="model">
-                                  <object class="GtkStringList">
-                                    <items>
-                                      <item>Source</item>
-                                      <item>Fixed</item>
-                                      <item>Variable</item>
-                                      <item>Display</item>
-                                    </items>
+                              <object class="AdwPreferencesGroup" id="svp_group">
+                                <property name="title">SVP frame interpolation</property>
+                                <child>
+                                  <object class="AdwSwitchRow" id="svp_enabled_row">
+                                    <property name="title">Interpolate frames with SVP</property>
+                                    <property name="subtitle">Smooths the motion of videos played by libmpv, using SVP's plugins</property>
                                   </object>
-                                </property>
-                              </object>
-                            </child>
-                            <child>
-                              <object class="AdwSpinRow" id="svp_fps_target_row">
-                                <property name="title">Target frame rate</property>
-                                <property name="subtitle">For Fixed and Variable; 0 uses the source's rate</property>
-                                <property name="adjustment">
-                                  <object class="GtkAdjustment">
-                                    <property name="lower">0</property>
-                                    <property name="upper">480</property>
-                                    <property name="step-increment">1</property>
+                                </child>
+                                <child>
+                                  <object class="AdwEntryRow" id="svp_plugin_directory_row">
+                                    <property name="title">Plugin directory</property>
                                   </object>
-                                </property>
-                              </object>
-                            </child>
-                            <child>
-                              <object class="AdwSpinRow" id="svp_fps_minimum_row">
-                                <property name="title">Minimum frame rate</property>
-                                <property name="adjustment">
-                                  <object class="GtkAdjustment">
-                                    <property name="lower">1</property>
-                                    <property name="upper">480</property>
-                                    <property name="step-increment">1</property>
+                                </child>
+                                <child>
+                                  <object class="AdwComboRow" id="svp_fps_mode_row">
+                                    <property name="title">Output frame rate</property>
+                                    <property name="subtitle">Scales with the playback speed in Display and Variable</property>
+                                    <property name="model">
+                                      <object class="GtkStringList">
+                                        <items>
+                                          <item>Source</item>
+                                          <item>Fixed</item>
+                                          <item>Variable</item>
+                                          <item>Display</item>
+                                        </items>
+                                      </object>
+                                    </property>
                                   </object>
-                                </property>
-                              </object>
-                            </child>
-                            <child>
-                              <object class="AdwSpinRow" id="svp_fps_maximum_row">
-                                <property name="title">Maximum frame rate</property>
-                                <property name="adjustment">
-                                  <object class="GtkAdjustment">
-                                    <property name="lower">1</property>
-                                    <property name="upper">480</property>
-                                    <property name="step-increment">1</property>
+                                </child>
+                                <child>
+                                  <object class="AdwSpinRow" id="svp_fps_target_row">
+                                    <property name="title">Target frame rate</property>
+                                    <property name="subtitle">For Fixed and Variable; 0 uses the source's rate</property>
+                                    <property name="adjustment">
+                                      <object class="GtkAdjustment">
+                                        <property name="lower">0</property>
+                                        <property name="upper">480</property>
+                                        <property name="step-increment">1</property>
+                                      </object>
+                                    </property>
                                   </object>
-                                </property>
-                              </object>
-                            </child>
-                            <child>
-                              <object class="AdwSwitchRow" id="svp_nvof_row">
-                                <property name="title">NVIDIA optical flow</property>
-                                <property name="subtitle">Motion analysis on the GPU, rather than the CPU</property>
+                                </child>
+                                <child>
+                                  <object class="AdwSpinRow" id="svp_fps_minimum_row">
+                                    <property name="title">Minimum frame rate</property>
+                                    <property name="adjustment">
+                                      <object class="GtkAdjustment">
+                                        <property name="lower">1</property>
+                                        <property name="upper">480</property>
+                                        <property name="step-increment">1</property>
+                                      </object>
+                                    </property>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="AdwSpinRow" id="svp_fps_maximum_row">
+                                    <property name="title">Maximum frame rate</property>
+                                    <property name="adjustment">
+                                      <object class="GtkAdjustment">
+                                        <property name="lower">1</property>
+                                        <property name="upper">480</property>
+                                        <property name="step-increment">1</property>
+                                      </object>
+                                    </property>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="AdwSwitchRow" id="svp_nvof_row">
+                                    <property name="title">NVIDIA optical flow</property>
+                                    <property name="subtitle">Motion analysis on the GPU, rather than the CPU</property>
+                                  </object>
+                                </child>
                               </object>
                             </child>
                           </object>

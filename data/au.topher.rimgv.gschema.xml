@@ -234,7 +234,7 @@
         <choice value="gtk"/>
       </choices>
       <default>'mpv'</default>
-      <summary>What plays videos: libmpv, or GTK's own media backend</summary>
+      <summary>What plays videos: libmpv, or GStreamer through GTK's own media backend</summary>
     </key>
     <key name="mpv-args" type="s">
       <default>""</default>

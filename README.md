@@ -93,6 +93,9 @@ browse:
   info-fields: [size, modified]
 tree:
   collapse-on-navigate: false
+navigation:
+  folder-end: stop
+  remember-folder-sort: false
 viewer:
   image-preloading: true
 thumbnails:
