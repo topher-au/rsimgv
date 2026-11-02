@@ -254,6 +254,9 @@ pub const ACTIONS: &[ActionInfo] = &[
         name: "browse.open", description: "Open the item under the cursor: a folder is browsed, a picture or video is shown in the viewer.", icon: "document-open-symbolic", label: "Open", contexts: &[Scope::Global, Scope::Browse], defaults: &["e", "return"],
     },
     ActionInfo {
+        name: "browse.show-tooltip", description: "Show the description of the item under the cursor, which otherwise opens only when the pointer rests over an item.", icon: "dialog-information-symbolic", label: "Show Tooltip", contexts: &[Scope::Global, Scope::Browse], defaults: &[],
+    },
+    ActionInfo {
         name: "browse.up-directory", description: "Go to the parent folder.", icon: "go-up-symbolic", label: "Up Directory", contexts: &[Scope::Global, Scope::Browse], defaults: &["q", "backspace"],
     },
     ActionInfo {

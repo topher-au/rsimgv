@@ -866,6 +866,9 @@ mod imp {
         pub(super) tooltip_timer: RefCell<Option<glib::SourceId>>,
         /// Whether the selection was last moved from the keyboard, and not since moved by the pointer.
         pub(super) keyboard_browsing: Cell<bool>,
+        /// Whether the selection was changed more recently than the pointer moved, so the selected item is the active
+        /// one even with the pointer resting over another.
+        pub(super) follow_selection: Cell<bool>,
         /// The timer that, once the pointer has been still, hides it and shows the selected item's description.
         pub(super) keyboard_timer: RefCell<Option<glib::SourceId>>,
         /// Whether this is the active tab, or the tab whose viewer is open. Only the active view watches its folder.
@@ -1019,6 +1022,7 @@ mod imp {
                 move |_, _, _| {
                     if let Some(view) = view.upgrade() {
                         view.update_status();
+                        view.imp().follow_selection.set(true);
                         // A folder being listed clears its selection; that is not the user's choice, so it is not reported.
                         if !view.imp().loading.get() {
                             view.imp().restoring_scroll.set(false);
@@ -1917,8 +1921,7 @@ impl BrowseView {
         }
     }
 
-    /// Notes that the selection was moved from the keyboard: the description of the selected item shows once
-    /// the pointer has been still for a while, and the pointer hides.
+    /// Notes that the selection was moved from the keyboard: the pointer hides once it has been still for a while.
     fn keyboard_moved(&self) {
         let imp = self.imp();
         imp.keyboard_browsing.set(true);
@@ -1929,20 +1932,21 @@ impl BrowseView {
         let view = self.downgrade();
         let timer = glib::timeout_add_local_once(KEYBOARD_IDLE_DELAY, move || {
             if let Some(view) = view.upgrade() {
-                view.show_keyboard_hint();
+                view.hide_idle_pointer();
             }
         });
         *imp.keyboard_timer.borrow_mut() = Some(timer);
     }
 
-    /// Hides the pointer and shows the description of the selected item, after the keyboard moved the selection
-    /// and the pointer has been still.
-    fn show_keyboard_hint(&self) {
-        let imp = self.imp();
-        imp.keyboard_timer.take();
+    /// Hides the pointer, after the keyboard moved the selection and the pointer has been still.
+    fn hide_idle_pointer(&self) {
+        self.imp().keyboard_timer.take();
         self.set_cursor(gtk::gdk::Cursor::from_name("none", None).as_ref());
-        let selected = imp.grid.model().map(|model| model.selected());
-        if let Some(cell) = selected.and_then(|position| imp.grid.cell_at(position)).and_downcast::<gtk::Box>() {
+    }
+
+    /// Opens the description of the active item now, as hovering it would after a moment.
+    pub fn show_tooltip_now(&self) {
+        if let Some(cell) = self.active_cell() {
             self.tooltip_show(&cell);
         }
     }
@@ -1950,6 +1954,10 @@ impl BrowseView {
     /// Shows the pointer again, and ends keyboard browsing, once the pointer moves.
     fn pointer_moved(&self) {
         let imp = self.imp();
+        // The pointer has moved since the selection did, so the item under it is the active one again.
+        if imp.follow_selection.replace(false) {
+            self.update_previews();
+        }
         if !imp.keyboard_browsing.replace(false) {
             return;
         }
@@ -2095,17 +2103,17 @@ impl BrowseView {
         }
     }
 
-    /// The cell of the item the previews belong to: the one under the pointer, or while the pointer is over none, the
-    /// one selected last.
+    /// The cell of the item the previews belong to: whichever the user last chose, the item under the pointer or the
+    /// one selected. The pointer resting over an item does not take it back from a selection made since.
     fn active_cell(&self) -> Option<gtk::Box> {
         let imp = self.imp();
         let hovered = imp.hovered_cell.borrow().as_ref().and_then(|cell| cell.upgrade());
-        hovered.or_else(|| {
-            imp.grid
-                .model()
-                .and_then(|model| imp.grid.cell_at(model.selected()))
-                .and_then(|widget| widget.downcast::<gtk::Box>().ok())
-        })
+        let selected = imp
+            .grid
+            .model()
+            .and_then(|model| imp.grid.cell_at(model.selected()))
+            .and_then(|widget| widget.downcast::<gtk::Box>().ok());
+        if imp.follow_selection.get() { selected.or(hovered) } else { hovered.or(selected) }
     }
 
     /// Brings the folder cycle and the video frames to the active item.

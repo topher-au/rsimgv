@@ -736,6 +736,7 @@ impl Window {
         bound_action(&browse, &weak, "last", |window| window.with_browse(|view| view.select_last()));
         bound_action(&browse, &weak, "select-all", |window| window.with_browse(|view| view.select_all()));
         bound_action(&browse, &weak, "open", |window| window.with_browse(|view| view.activate_selected()));
+        bound_action(&browse, &weak, "show-tooltip", |window| window.with_browse(|view| view.show_tooltip_now()));
         bound_action(&browse, &weak, "toggle-hidden", |window| window.toggle_setting("show-hidden"));
         bound_action(&browse, &weak, "toggle-media-only", |window| window.toggle_setting("media-only"));
         bound_action(&browse, &weak, "toggle-filename", Window::toggle_filename);
