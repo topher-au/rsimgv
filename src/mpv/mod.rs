@@ -225,6 +225,25 @@ pub fn parse_options(text: &str) -> Vec<(String, String)> {
     options
 }
 
+/// The label of the filter that turns a rotated video upright, so it can be replaced on its own.
+const UPRIGHT_FILTER_LABEL: &str = "@rsimgv-upright";
+
+/// The filter that turns upright a video stored `rotation` degrees clockwise of how it should be shown, if it needs
+/// one.
+fn upright_filter(rotation: i64) -> Option<String> {
+    let graph = match rotation.rem_euclid(360) {
+        0 => return None,
+        90 => "transpose=clock".to_owned(),
+        180 => "hflip,vflip".to_owned(),
+        270 => "transpose=cclock".to_owned(),
+        angle => {
+            let radians = (angle as f64).to_radians();
+            format!("rotate={radians:.6}:ow=rotw({radians:.6}):oh=roth({radians:.6})")
+        }
+    };
+    Some(format!("{UPRIGHT_FILTER_LABEL}:lavfi=[{graph}]"))
+}
+
 /// A captured frame: its size, the bytes from one row to the next, and its pixels.
 pub struct Frame {
     pub width: i32,
@@ -275,6 +294,8 @@ pub struct Player {
     /// The callbacks handed to libmpv, freed once it is gone.
     wakeup: Option<*mut Wakeup>,
     render_update: Option<*mut Wakeup>,
+    /// The rotation, in degrees, that the upright filter now undoes.
+    rotation: Cell<i64>,
 }
 
 impl Player {
@@ -290,7 +311,7 @@ impl Player {
             if handle.is_null() {
                 return Err("could not create the mpv player".to_owned());
             }
-            let mut player = Self { handle, render: std::ptr::null_mut(), wakeup: None, render_update: None };
+            let mut player = Self { handle, render: std::ptr::null_mut(), wakeup: None, render_update: None, rotation: Cell::new(0) };
             for (name, value) in [
                 ("vo", "libmpv"),
                 ("hwdec", "auto-safe"),
@@ -321,6 +342,11 @@ impl Player {
                 }
             }
             check(sys::mpv_initialize(handle))?;
+            // libmpv's output claims it can rotate, so frames reach it still marked as rotated, but its software
+            // renderer cannot: a quarter turn makes it crop past the frame, which aborts the whole process. Set
+            // after initializing, so neither the user's options nor mpv.conf can undo it. `set_rotation` turns the
+            // video upright with a filter instead.
+            player.set_option("video-rotate", "no")?;
 
             let api = CString::new("sw").expect("no nul");
             let mut params = [
@@ -344,6 +370,34 @@ impl Player {
         let mut pointers: Vec<*const c_char> = args.iter().map(|arg| arg.as_ptr()).chain(std::iter::once(std::ptr::null())).collect();
         // SAFETY: a null-terminated array of strings that outlive the call.
         check(unsafe { sys::mpv_command_async(self.handle, 0, pointers.as_mut_ptr()) })
+    }
+
+    /// Turns upright a video stored `rotation` degrees clockwise of how it should be shown.
+    pub fn set_rotation(&self, rotation: i64) {
+        if self.rotation.replace(rotation) == rotation {
+            return;
+        }
+        if let Err(err) = self.command(&["vf", "remove", UPRIGHT_FILTER_LABEL]) {
+            eprintln!("rsimgv: mpv: could not remove the rotation filter: {err}");
+        }
+        self.add_upright_filter();
+        // The frame shown already passed the filters, and a paused video would stay that way, so it is decoded again.
+        let _ = self.command(&["seek", "0", "relative+exact"]);
+    }
+
+    /// Replaces the video filters with `filter`, or removes them all when it is empty, keeping the video upright.
+    pub fn set_video_filter(&self, filter: &str) -> Result<(), String> {
+        self.command(&["vf", "set", filter])?;
+        self.add_upright_filter();
+        Ok(())
+    }
+
+    /// Puts the upright filter first, so the filters after it see the video as it is shown.
+    fn add_upright_filter(&self) {
+        let Some(filter) = upright_filter(self.rotation.get()) else { return };
+        if let Err(err) = self.command(&["vf", "pre", &filter]) {
+            eprintln!("rsimgv: mpv: could not add the rotation filter: {err}");
+        }
     }
 
     /// The video's current frame, at its own size, as mpv's `screenshot-raw` command captures it, with
@@ -483,6 +537,12 @@ impl Player {
         if width <= 0 || height <= 0 || pixels.len() < stride * height as usize {
             return Err("the frame buffer is too small".to_owned());
         }
+        // Rendering a rotated frame can abort the process (see `new`), and a client on the IPC socket or a changed
+        // mpv.conf can still ask for rotation while the player runs. So it is turned back off, and this frame skipped.
+        if self.get_i64("video-out-params/rotate").is_some_and(|rotate| rotate != 0) {
+            self.set_string("video-rotate", "no");
+            return Err("the output is rotated, which the software renderer cannot draw".to_owned());
+        }
         let mut size = [width as c_int, height as c_int];
         let format = CString::new("bgr0").expect("no nul");
         let mut stride = stride;
@@ -525,5 +585,16 @@ mod tests {
         let options = parse_options("--no-quiet --hwdec=cuda-copy --sub-ass  --msg=a b--c --x=1 --empty=");
         let pairs: Vec<(&str, &str)> = options.iter().map(|(name, value)| (name.as_str(), value.as_str())).collect();
         assert_eq!(pairs, [("quiet", "no"), ("hwdec", "cuda-copy"), ("sub-ass", "yes"), ("msg", "a b--c"), ("x", "1"), ("empty", "")]);
+    }
+
+    #[test]
+    fn upright_filter_undoes_the_rotation() {
+        assert_eq!(upright_filter(0), None);
+        assert_eq!(upright_filter(360), None);
+        assert_eq!(upright_filter(90).as_deref(), Some("@rsimgv-upright:lavfi=[transpose=clock]"));
+        assert_eq!(upright_filter(180).as_deref(), Some("@rsimgv-upright:lavfi=[hflip,vflip]"));
+        assert_eq!(upright_filter(270).as_deref(), Some("@rsimgv-upright:lavfi=[transpose=cclock]"));
+        assert_eq!(upright_filter(-90), upright_filter(270));
+        assert!(upright_filter(45).is_some_and(|filter| filter.contains("rotate=0.785398")));
     }
 }
