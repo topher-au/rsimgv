@@ -3841,7 +3841,7 @@ fn read_playlist_file(path: &Path) -> std::io::Result<format::Parsed> {
     let bytes = std::fs::read(path)?;
     let mut parsed = format::read(&bytes, path.parent().unwrap_or(Path::new("/")));
     let listed = parsed.paths.len();
-    parsed.paths.retain(|item| item.file_name().is_some_and(|name| crate::fs::walk::is_media_name(&name.to_string_lossy())));
+    parsed.paths.retain(|item| playlist::is_playable(item));
     parsed.skipped += listed - parsed.paths.len();
     Ok(parsed)
 }

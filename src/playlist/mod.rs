@@ -329,6 +329,12 @@ pub fn contains(path: &Path) -> bool {
     with(|playlist| playlist.contains(path))
 }
 
+/// Whether `path` is an item the playlist can hold: a picture or a video, judged by its name. Anything else is left out,
+/// so the viewer is never asked to show it.
+pub fn is_playable(path: &Path) -> bool {
+    path.file_name().is_some_and(|name| crate::fs::walk::is_media_name(&name.to_string_lossy()))
+}
+
 /// The playlist's own file: `playlist.m3u8` beside the settings file.
 pub fn file() -> PathBuf {
     config_path().with_file_name("playlist.m3u8")
@@ -338,7 +344,10 @@ pub fn file() -> PathBuf {
 pub fn load() {
     let file = file();
     let Ok(bytes) = std::fs::read(&file) else { return };
-    let loaded = Playlist::from_saved_bytes(&bytes, file.parent().unwrap_or(Path::new("/")));
+    let mut loaded = Playlist::from_saved_bytes(&bytes, file.parent().unwrap_or(Path::new("/")));
+    // Entries that are neither pictures nor videos are left out, as they are when they are added.
+    let other: Vec<PathBuf> = loaded.order().iter().filter(|path| !is_playable(path)).cloned().collect();
+    loaded.remove_under(&other);
     with(|playlist| *playlist = loaded);
 }
 
