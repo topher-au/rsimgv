@@ -162,6 +162,22 @@
       <default>true</default>
       <summary>Whether the sidebar's filesystem section is expanded</summary>
     </key>
+    <key name="playlist-show-position" type="b">
+      <default>true</default>
+      <summary>Whether the playlist shows the position column</summary>
+    </key>
+    <key name="playlist-show-name" type="b">
+      <default>true</default>
+      <summary>Whether the playlist shows the name column</summary>
+    </key>
+    <key name="playlist-show-length" type="b">
+      <default>true</default>
+      <summary>Whether the playlist shows the length column</summary>
+    </key>
+    <key name="playlist-show-filename" type="b">
+      <default>true</default>
+      <summary>Whether the playlist shows the filename column</summary>
+    </key>
     <key name="viewer-thumbnail-bar" type="s">
       <choices>
         <choice value="top"/>

@@ -1,5 +1,5 @@
 use std::cell::{Cell, RefCell};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 use std::path::{Path, PathBuf};
 
@@ -22,7 +22,8 @@ use super::{BrowseView, FsTree, HeaderBar, MediaViewer, MessageOverlay, Navigati
 use super::{Level, Message};
 use super::message_overlay::{MessageId, Position};
 use super::keybinds_overlay::KeybindsOverlay;
-use super::playlist_panel::PlaylistPanel;
+use super::playlist_panel::{stamp, PlaylistPanel, SortColumn};
+use crate::fs::metadata::MediaInfo;
 
 mod imp {
     use super::*;
@@ -271,7 +272,7 @@ impl Window {
         let _ = window.imp().key_handler.set(keys);
         window.connect_sources();
         window.refresh_bookmarks();
-        let panel = PlaylistPanel::new();
+        let panel = PlaylistPanel::new(settings);
         let _ = window.imp().playlist_panel.set(panel);
         window.setup_playlist_splits();
         window.imp().viewer.set_use_mpv(settings.string("video-backend") == "mpv");
@@ -980,6 +981,42 @@ impl Window {
             });
             self.add_action(&action);
         }
+        let sort = gio::SimpleAction::new("playlist-sort", Some(&<(String, bool)>::static_variant_type()));
+        let weak_sort = weak.clone();
+        sort.connect_activate(move |_, parameter| {
+            let (Some(window), Some((column, descending))) = (weak_sort.upgrade(), parameter.and_then(|p| p.get::<(String, bool)>())) else { return };
+            if let Some(column) = SortColumn::from_name(&column) {
+                window.sort_playlist(column, descending);
+            }
+        });
+        self.add_action(&sort);
+        let edit = gio::SimpleAction::new("playlist-edit-title", Some(glib::VariantTy::UINT32));
+        let weak_edit = weak.clone();
+        edit.connect_activate(move |_, parameter| {
+            let (Some(window), Some(index)) = (weak_edit.upgrade(), parameter.and_then(|p| p.get::<u32>())) else { return };
+            window.edit_playlist_title(index as usize);
+        });
+        self.add_action(&edit);
+        for name in ["playlist-delete", "playlist-reveal"] {
+            let action = gio::SimpleAction::new(name, Some(glib::VariantTy::STRING));
+            let weak = weak.clone();
+            action.connect_activate(move |_, parameter| {
+                let (Some(window), Some(path)) = (weak.upgrade(), parameter.and_then(|p| p.get::<String>())) else { return };
+                let path = PathBuf::from(path);
+                match name {
+                    "playlist-delete" => window.confirm_delete_from_disk(path),
+                    _ => window.reveal_playlist_item(&path),
+                }
+            });
+            self.add_action(&action);
+        }
+        let open_with = gio::SimpleAction::new("playlist-open-with", Some(&<(String, String)>::static_variant_type()));
+        let weak_open = weak.clone();
+        open_with.connect_activate(move |_, parameter| {
+            let (Some(window), Some((script, path))) = (weak_open.upgrade(), parameter.and_then(|p| p.get::<(String, String)>())) else { return };
+            window.run_script_on(&script, Some(PathBuf::from(path)));
+        });
+        self.add_action(&open_with);
         let moved = gio::SimpleAction::new("playlist-move", Some(&<(u32, u32)>::static_variant_type()));
         moved.connect_activate(move |_, parameter| {
             let (Some(window), Some((from, to))) = (weak.upgrade(), parameter.and_then(|p| p.get::<(u32, u32)>())) else { return };
@@ -1401,13 +1438,15 @@ impl Window {
 
     /// Makes the playlist what was loaded, or adds it to the end, and says how that went.
     fn take_loaded_playlist(&self, loaded: format::Parsed, replace: bool) {
-        let format::Parsed { paths, skipped } = loaded;
+        let format::Parsed { paths, titles, skipped } = loaded;
+        let entries = paths.into_iter().zip(titles);
         let count = playlist::with(|list| {
             if replace {
-                list.replace(paths);
+                list.clear();
+                list.add_with_titles(entries);
                 list.len()
             } else {
-                list.add(paths)
+                list.add_with_titles(entries)
             }
         });
         let mut text = format!("Loaded {count} {}", if count == 1 { "item" } else { "items" });
@@ -1444,7 +1483,10 @@ impl Window {
                 (PathBuf::from(name), Format::M3u)
             }
         };
-        let text = playlist::with(|list| format::write(file_format, list.order()));
+        let text = playlist::with(|list| {
+            let entries: Vec<(PathBuf, String)> = list.order().iter().map(|path| (path.clone(), list.title(path))).collect();
+            format::write(file_format, &entries)
+        });
         let weak = self.downgrade();
         glib::spawn_future_local(async move {
             let name = path.file_name().map_or_else(|| path.display().to_string(), |name| name.to_string_lossy().into_owned());
@@ -1456,6 +1498,131 @@ impl Window {
                 Err(_) => window.report_playlist_problem(&format!("Saving {name} panicked")),
             }
         });
+    }
+
+    /// Sorts the playlist by `column`, highest first if `descending`, and shows the change. Length is read first where it
+    /// is not known, so that sort waits for those readings.
+    fn sort_playlist(&self, column: SortColumn, descending: bool) {
+        match column {
+            SortColumn::Name => {
+                playlist::with(|list| {
+                    let keys: HashMap<PathBuf, String> = list.order().iter().map(|path| (path.clone(), list.title(path).to_lowercase())).collect();
+                    list.sort_shown_by(|path| keys[path].clone(), descending);
+                });
+                self.playlist_changed();
+            }
+            SortColumn::Filename => {
+                playlist::with(|list| list.sort_shown_by(|path| path.to_string_lossy().to_lowercase(), descending));
+                self.playlist_changed();
+            }
+            SortColumn::Length => self.sort_playlist_by_length(descending),
+        }
+    }
+
+    /// Sorts the playlist by length. The lengths are read from the files where the metadata is not known, and the sort
+    /// happens once they all are.
+    fn sort_playlist_by_length(&self, descending: bool) {
+        let info = MediaInfo::shared();
+        let paths = playlist::with(|list| list.order().to_vec());
+        let finish = {
+            let weak = self.downgrade();
+            let info = info.clone();
+            Rc::new(move || {
+                let Some(window) = weak.upgrade() else { return };
+                playlist::with(|list| {
+                    let keys: HashMap<PathBuf, i64> = list.order().iter().map(|path| (path.clone(), duration_millis(&info, path))).collect();
+                    list.sort_shown_by(|path| keys[path], descending);
+                });
+                window.playlist_changed();
+            })
+        };
+        let waiting = Rc::new(Cell::new(0usize));
+        for path in &paths {
+            let Some((mtime, size)) = stamp(path) else { continue };
+            waiting.set(waiting.get() + 1);
+            let done = {
+                let waiting = waiting.clone();
+                let finish = finish.clone();
+                move || {
+                    waiting.set(waiting.get() - 1);
+                    if waiting.get() == 0 {
+                        finish();
+                    }
+                }
+            };
+            if info.request(path, mtime, size, || true, done).is_some() {
+                waiting.set(waiting.get() - 1);
+            }
+        }
+        if waiting.get() == 0 {
+            finish();
+        }
+    }
+
+    /// Asks for the title of the item at `index` in the playlist, and gives it the one entered. An empty title takes back
+    /// the file name.
+    fn edit_playlist_title(&self, index: usize) {
+        let Some(path) = playlist::with(|list| list.order().get(index).cloned()) else { return };
+        let title = playlist::with(|list| list.title(&path));
+        let entry = gtk::Entry::new();
+        entry.set_text(&title);
+        entry.set_activates_default(true);
+        let dialog = adw::AlertDialog::new(Some("Edit Title"), Some("The title is shown in the playlist. Leave it empty to show the file name."));
+        adw::prelude::AlertDialogExt::add_response(&dialog, "cancel", "Cancel");
+        adw::prelude::AlertDialogExt::add_response(&dialog, "save", "Save");
+        adw::prelude::AlertDialogExt::set_default_response(&dialog, Some("save"));
+        adw::prelude::AlertDialogExt::set_close_response(&dialog, "cancel");
+        adw::prelude::AlertDialogExt::set_extra_child(&dialog, Some(&entry));
+        let weak = self.downgrade();
+        adw::prelude::AlertDialogExt::connect_response(&dialog, None, move |_, response| {
+            if response != "save" {
+                return;
+            }
+            playlist::with(|list| list.set_title(&path, &entry.text()));
+            if let Some(window) = weak.upgrade() {
+                window.playlist_changed();
+            }
+        });
+        adw::prelude::AdwDialogExt::present(&dialog, Some(self));
+    }
+
+    /// Asks whether the file at `path` is deleted from the disk. It is deleted for good, not moved to the trash, and then
+    /// it is taken out of the playlist.
+    fn confirm_delete_from_disk(&self, path: PathBuf) {
+        let name = path.file_name().map_or_else(|| path.display().to_string(), |name| name.to_string_lossy().into_owned());
+        let dialog = adw::AlertDialog::new(Some("Delete from Disk?"), Some(&format!("{name} will be deleted for good. This cannot be undone.")));
+        adw::prelude::AlertDialogExt::add_response(&dialog, "cancel", "Cancel");
+        adw::prelude::AlertDialogExt::add_response(&dialog, "delete", "Delete");
+        adw::prelude::AlertDialogExt::set_response_appearance(&dialog, "delete", adw::ResponseAppearance::Destructive);
+        adw::prelude::AlertDialogExt::set_default_response(&dialog, Some("cancel"));
+        adw::prelude::AlertDialogExt::set_close_response(&dialog, "cancel");
+        let weak = self.downgrade();
+        adw::prelude::AlertDialogExt::connect_response(&dialog, None, move |_, response| {
+            if response != "delete" {
+                return;
+            }
+            if let Some(window) = weak.upgrade() {
+                window.delete_from_disk(&path, &name);
+            }
+        });
+        adw::prelude::AdwDialogExt::present(&dialog, Some(self));
+    }
+
+    /// Deletes the file at `path` from the disk, and takes it out of the playlist, if it could be deleted.
+    fn delete_from_disk(&self, path: &Path, name: &str) {
+        if let Err(err) = std::fs::remove_file(path) {
+            self.notify_error(&format!("Could not delete {name}: {err}"));
+            return;
+        }
+        self.remove_from_playlist(&[path.to_path_buf()]);
+    }
+
+    /// Shows the item at `path` selected in the browse view, leaving the viewer if it is shown.
+    fn reveal_playlist_item(&self, path: &Path) {
+        if self.viewer_is_open() {
+            self.close_viewer();
+        }
+        self.navigate_with(path, Reveal::SelectOnly);
     }
 
     /// Asks whether to clear the playlist, and clears it.
@@ -1985,12 +2152,16 @@ impl Window {
     /// Runs the script called `name` on the item in front of the user. A script that waits is followed to its end,
     /// and the folder is listed again then, as the script may have changed what is in it. Problems are printed.
     pub fn run_script(&self, name: &str) {
+        self.run_script_on(name, self.script_target());
+    }
+
+    /// Runs the script called `name` on `target`, the item it runs on if it uses one. Otherwise as `run_script`.
+    pub fn run_script_on(&self, name: &str, target: Option<PathBuf>) {
         let Some(settings) = self.imp().settings.get() else { return };
         let Some(script) = crate::scripts::find_script(settings, name) else {
             self.report_script_problem(&format!("There is no script called {name}"));
             return;
         };
-        let target = self.script_target();
         if script.uses_file() && target.is_none() {
             self.report_script_problem(&format!("{name} needs an item to run on, and none is selected"));
             return;
@@ -3532,6 +3703,13 @@ fn bound_action(map: &impl IsA<gio::ActionMap>, window: &glib::WeakRef<Window>, 
 
 /// The items of a context menu for playlist changes to the item at `path`, with `targets` items being acted on: a lone
 /// file gets the one that applies to it, and a folder or several items, which may be partly in the playlist, get both.
+/// The duration of the file at `path` in milliseconds, from its metadata if that is known, or -1 if it is not. Items of
+/// unknown length sort first.
+fn duration_millis(info: &MediaInfo, path: &Path) -> i64 {
+    let metadata = stamp(path).and_then(|(mtime, size)| info.get(path, mtime, size));
+    metadata.and_then(|metadata| metadata.duration).map_or(-1, |seconds| (seconds * 1000.0).round() as i64)
+}
+
 fn playlist_menu_items(path: &Path, is_dir: bool, targets: usize) -> Vec<(&'static str, &'static str)> {
     let add = ("Add to Playlist", "win.playlist-add-paths");
     let remove = ("Remove from Playlist", "win.playlist-remove-paths");

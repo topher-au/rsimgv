@@ -31,9 +31,55 @@ pub struct Playlist {
     members: HashSet<PathBuf>,
     /// The index, in `order`, of the item last shown, which playing starts from.
     current: Option<usize>,
+    /// The titles given to items, where they differ from the item's file name. An item without one is shown by that.
+    titles: HashMap<PathBuf, String>,
 }
 
 impl Playlist {
+    /// The title the item at `path` is shown by: the one it was given, else its file name.
+    pub fn title(&self, path: &Path) -> String {
+        self.titles.get(path).cloned().unwrap_or_else(|| format::default_title(path))
+    }
+
+    /// Gives the item at `path` the title `title`, or, if `title` is empty or is its file name, takes the title back.
+    pub fn set_title(&mut self, path: &Path, title: &str) {
+        let title = title.trim();
+        if title.is_empty() || title == format::default_title(path) {
+            self.titles.remove(path);
+        } else {
+            self.titles.insert(path.to_path_buf(), title.to_owned());
+        }
+    }
+
+    /// Adds the entries not already there, each with the title it was given if it was given one, as `add` does.
+    pub fn add_with_titles(&mut self, entries: impl IntoIterator<Item = (PathBuf, Option<String>)>) -> usize {
+        let mut titled = Vec::new();
+        let added = self.add(entries.into_iter().map(|(path, title)| {
+            titled.push((path.clone(), title));
+            path
+        }));
+        for (path, title) in titled {
+            if let Some(title) = title {
+                self.set_title(&path, &title);
+            }
+        }
+        added
+    }
+
+    /// Puts the items the shown order holds in the order `key` gives, lowest first, or highest first if `descending`.
+    /// The sort is stable, so items with equal keys keep the order they were in. It changes the order shown, as moving
+    /// an item does: the made order is kept while shuffling, and changed when it is not.
+    pub fn sort_shown_by<K: Ord>(&mut self, key: impl Fn(&Path) -> K, descending: bool) {
+        let current = self.current_path().map(Path::to_path_buf);
+        let order = self.order_mut();
+        if descending {
+            order.sort_by_cached_key(|path| std::cmp::Reverse(key(path.as_path())));
+        } else {
+            order.sort_by_cached_key(|path| key(path.as_path()));
+        }
+        self.current = current.and_then(|path| self.order().iter().position(|item| *item == path));
+    }
+
     /// The items in the order they were made, whether or not they are shuffled.
     #[cfg(test)]
     pub fn items(&self) -> &[PathBuf] {
@@ -196,7 +242,8 @@ impl Playlist {
     /// The text of the playlist's own file: an M3U file of the items in the order they were made, with the item shown,
     /// and the shuffled order if there is one, noted in it.
     fn to_saved_text(&self) -> String {
-        let text = format::write(Format::M3u, &self.items);
+        let titled: Vec<(PathBuf, String)> = self.items.iter().map(|item| (item.clone(), self.title(item))).collect();
+        let text = format::write(Format::M3u, &titled);
         let positions: HashMap<&Path, usize> = self.items.iter().enumerate().map(|(index, item)| (item.as_path(), index)).collect();
         let mut notes = String::new();
         if let Some(current) = self.current_path().and_then(|path| positions.get(path)) {
@@ -212,9 +259,10 @@ impl Playlist {
     /// The playlist a saved file holds. A shuffled order that does not hold each item exactly once is not used.
     fn from_saved_bytes(bytes: &[u8], base: &Path) -> Self {
         let text = format::decode(bytes);
-        let saved = format::read(bytes, base).paths;
+        let read = format::read(bytes, base);
+        let saved = read.paths.clone();
         let mut playlist = Self::default();
-        playlist.add(saved.iter().cloned());
+        playlist.add_with_titles(read.paths.into_iter().zip(read.titles));
         let note = |tag: &str| text.lines().find_map(|line| line.strip_prefix(tag)).map(str::trim);
         if let Some(indices) = note(SHUFFLE_TAG) {
             let mut seen = HashSet::new();
@@ -528,5 +576,47 @@ mod tests {
                 assert_eq!(order[0], items[shown]);
             }
         }
+    }
+
+    #[test]
+    fn a_title_is_kept_until_it_is_cleared() {
+        let mut list = Playlist::default();
+        list.add(paths(&["a"]));
+        assert_eq!(list.title(Path::new("/a")), "a", "the file name until one is given");
+        list.set_title(Path::new("/a"), "  Sunset  ");
+        assert_eq!(list.title(Path::new("/a")), "Sunset");
+        list.set_title(Path::new("/a"), "   ");
+        assert_eq!(list.title(Path::new("/a")), "a", "an empty title takes the file name back");
+    }
+
+    #[test]
+    fn sorting_changes_the_order_shown_both_ways() {
+        let mut list = Playlist::default();
+        list.add(paths(&["c", "a", "b"]));
+        list.sort_shown_by(|path| path.to_path_buf(), false);
+        assert_eq!(list.order(), paths(&["a", "b", "c"]));
+        list.sort_shown_by(|path| path.to_path_buf(), true);
+        assert_eq!(list.order(), paths(&["c", "b", "a"]));
+    }
+
+    #[test]
+    fn sorting_while_shuffled_leaves_the_made_order() {
+        let mut list = Playlist::default();
+        list.add(paths(&["c", "a", "b"]));
+        list.set_shuffled(true);
+        let made = list.items().to_vec();
+        list.sort_shown_by(|path| path.to_path_buf(), false);
+        assert_eq!(list.order(), paths(&["a", "b", "c"]));
+        assert_eq!(list.items(), made.as_slice());
+    }
+
+    #[test]
+    fn titles_are_saved_with_the_playlist() {
+        let mut list = Playlist::default();
+        list.add(paths(&["a", "b"]));
+        list.set_title(Path::new("/b"), "Second");
+        let loaded = Playlist::from_saved_bytes(list.to_saved_text().as_bytes(), Path::new("/"));
+        assert_eq!(loaded.title(Path::new("/b")), "Second");
+        assert_eq!(loaded.title(Path::new("/a")), "a");
     }
 }
