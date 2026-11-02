@@ -110,8 +110,44 @@ struct Inner {
     failed: RefCell<HashSet<Key>>,
 }
 
+/// How many days a thumbnail may go unmade before the start-up sweep removes it. It is made again when it is needed.
+const KEEP_DAYS: u64 = 90;
+
 thread_local! {
-    static SHARED: Thumbnails = Thumbnails::with_root(glib::user_cache_dir().join("rsimgv"));
+    static SHARED: Thumbnails = start_shared();
+}
+
+/// The app's thumbnails in the user's cache, with the sweep of stale ones started in the background.
+fn start_shared() -> Thumbnails {
+    let root = glib::user_cache_dir().join("rsimgv");
+    sweep(root.clone());
+    Thumbnails::with_root(root)
+}
+
+/// Removes, in the background, the thumbnails under `root` that have not been made for `KEEP_DAYS`, and the temporary
+/// files that writes left behind.
+fn sweep(root: PathBuf) {
+    std::thread::spawn(move || {
+        let Some(oldest) = std::time::SystemTime::now().checked_sub(Duration::from_secs(KEEP_DAYS * 24 * 60 * 60)) else {
+            return;
+        };
+        let mut folders = vec![root];
+        while let Some(folder) = folders.pop() {
+            let Ok(read) = std::fs::read_dir(&folder) else { continue };
+            for entry in read.flatten() {
+                let path = entry.path();
+                if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                    folders.push(path);
+                    continue;
+                }
+                let temporary = path.extension().is_some_and(|extension| extension == "tmp");
+                let stale = entry.metadata().and_then(|metadata| metadata.modified()).is_ok_and(|modified| modified < oldest);
+                if temporary || stale {
+                    let _ = std::fs::remove_file(&path);
+                }
+            }
+        }
+    });
 }
 
 /// The thumbnails of the app: one per process, like the file store.

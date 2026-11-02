@@ -83,6 +83,9 @@ struct Known {
     metadata: MediaMetadata,
 }
 
+/// How many files' metadata is kept in memory. Past this the memory is cleared, and the files are read again when asked.
+const MAX_KNOWN: usize = 20_000;
+
 /// A file to probe: its path, modification time in seconds, and size in bytes.
 type Key = (PathBuf, i64, u64);
 
@@ -203,7 +206,12 @@ impl MediaInfo {
     fn finish(&self, key: Key, metadata: MediaMetadata) {
         self.inner.running.set(self.inner.running.get() - 1);
         let (path, mtime, size) = key.clone();
-        self.inner.known.borrow_mut().insert(path, Known { mtime, size, metadata });
+        let mut known = self.inner.known.borrow_mut();
+        if known.len() >= MAX_KNOWN {
+            known.clear();
+        }
+        known.insert(path, Known { mtime, size, metadata });
+        drop(known);
         let waiters = self.inner.waiters.borrow_mut().remove(&key).unwrap_or_default();
         for waiter in waiters {
             if (waiter.wanted)() {

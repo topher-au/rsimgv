@@ -308,7 +308,7 @@ fn request_thumbnail(
         &path,
         modified_secs(entry),
         media,
-        ThumbnailSize::for_pixels(size),
+        ThumbnailSize::for_pixels(size * cell.scale_factor()),
         wanted_at(view, cell, &path, size),
         move |texture| {
             if let Some(icon) = icon.upgrade() {
@@ -544,7 +544,7 @@ fn request_photo(view: &BrowseView, cell: &gtk::Box, icon: &gtk::Image, scattere
         path,
         *modified,
         *kind,
-        ThumbnailSize::for_pixels(size),
+        ThumbnailSize::for_pixels(size * cell.scale_factor()),
         wanted_at(view, cell, folder, size),
         move |texture| {
             scattered.set_photo(index, texture, turn);
@@ -621,7 +621,8 @@ mod imp {
         /// Whether the saved scroll position is still being restored after a folder lists.
         pub(super) restoring_scroll: Cell<bool>,
         /// What to do once the folder has listed, such as selecting its first picture or video.
-        pub(super) pending: RefCell<Option<Box<dyn FnOnce(&super::BrowseView)>>>,
+        /// What runs once the folder it is for has listed, with that folder.
+        pub(super) pending: RefCell<Option<(PathBuf, Box<dyn FnOnce(&super::BrowseView)>)>>,
         pub(super) store: OnceCell<gio::ListStore>,
         pub(super) filter: OnceCell<gtk::CustomFilter>,
         pub(super) sorter: OnceCell<gtk::CustomSorter>,
@@ -1261,7 +1262,13 @@ impl BrowseView {
             view.attach_selection();
             view.update_status();
             // A selection waiting for the folder brings its item into view, so the saved scroll position does not apply.
-            let pending = view.imp().pending.take();
+            // An arrangement for a folder other than the one that listed is dropped, so it does not run on the wrong one.
+            let pending = view
+                .imp()
+                .pending
+                .take()
+                .filter(|(folder, _)| view.path().as_deref() == Some(folder.as_path()))
+                .map(|(_, run)| run);
             let selecting = pending.is_some();
             if let Some(run) = pending {
                 run(&view);
@@ -1519,9 +1526,10 @@ impl BrowseView {
         model.item(position).and_downcast::<FileEntry>().map(|entry| entry.name())
     }
 
-    /// Arranges for `run` to happen once the folder being shown has listed. A later listing replaces it.
-    pub fn set_pending(&self, run: impl FnOnce(&BrowseView) + 'static) {
-        self.imp().pending.replace(Some(Box::new(run)));
+    /// Arranges for `run` to happen once `folder` has listed, if it is still the folder shown then. A later
+    /// arrangement replaces it.
+    pub fn set_pending(&self, folder: &Path, run: impl FnOnce(&BrowseView) + 'static) {
+        self.imp().pending.replace(Some((folder.to_path_buf(), Box::new(run))));
     }
 
     /// Drops whatever was arranged with `set_pending`.
@@ -2004,7 +2012,7 @@ impl BrowseView {
                 path,
                 *modified,
                 *kind,
-                ThumbnailSize::for_pixels(cycle.size),
+                ThumbnailSize::for_pixels(cycle.size * cell.scale_factor()),
                 wanted_for(self, cell, &cycle.folder),
                 move |texture| {
                     let mut preload = preload.borrow_mut();
@@ -2039,7 +2047,7 @@ impl BrowseView {
                 path,
                 *modified,
                 *kind,
-                ThumbnailSize::for_pixels(cycle.size),
+                ThumbnailSize::for_pixels(cycle.size * cell.scale_factor()),
                 wanted_for(self, cell, &cycle.folder),
                 move |texture| scattered.set_photo(slot, texture, turn),
             );
@@ -2084,7 +2092,7 @@ impl BrowseView {
         Thumbnails::shared().request_frames(
             &path,
             modified_secs(&entry),
-            ThumbnailSize::for_pixels(self.item_size()),
+            ThumbnailSize::for_pixels(self.item_size() * cell.scale_factor()),
             move || {
                 still_wanted()
                     && hover_view.upgrade().is_some_and(|view| is_current_hover(&view.imp().hovered.borrow(), generation))

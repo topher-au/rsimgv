@@ -461,7 +461,7 @@ fn factory(size: Rc<Cell<i32>>, images: Rc<RefCell<Vec<glib::WeakRef<gtk::Image>
             &path,
             modified_secs(&path),
             media,
-            ThumbnailSize::for_pixels(size.get()),
+            ThumbnailSize::for_pixels(size.get() * image.scale_factor()),
             wanted,
             move |texture| {
                 let (Some(image), Some(item)) = (shown.upgrade(), ready_item.upgrade()) else { return };

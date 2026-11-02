@@ -353,12 +353,13 @@ impl Window {
             return;
         }
         let file = PathBuf::from(settings.string("last-file").as_str());
-        if file.parent().is_none() || file.parent() != self.current_path().as_deref() {
+        let Some(file_folder) = file.parent().map(Path::to_path_buf) else { return };
+        if self.current_path().as_deref() != Some(file_folder.as_path()) {
             return;
         }
         if let Some(view) = self.active_browse() {
             let file = file.to_string_lossy().into_owned();
-            view.set_pending(move |view: &BrowseView| {
+            view.set_pending(&file_folder, move |view: &BrowseView| {
                 view.select_named(&file);
             });
         }
@@ -578,7 +579,7 @@ impl Window {
                 // or else, going up to a parent, the item that leads to the folder shown before.
                 let selected = imp.navigation.selected().or_else(|| previous.as_deref().and_then(|previous| child_toward(path, previous)));
                 if let Some(name) = selected {
-                    browse.set_pending(move |view| {
+                    browse.set_pending(path, move |view| {
                         view.select_named(&name);
                     });
                 }
@@ -1001,7 +1002,8 @@ impl Window {
     fn show_file_once_listed(&self, browse: &BrowseView, path: &Path, open: bool) {
         let file = path.to_path_buf();
         let weak = self.downgrade();
-        browse.set_pending(move |view| {
+        let folder = path.parent().unwrap_or(path);
+        browse.set_pending(folder, move |view| {
             if let Some(window) = weak.upgrade() {
                 window.show_file_in(view, &file, open);
             }
@@ -1176,7 +1178,7 @@ impl Window {
         let weak = self.downgrade();
         let view = self.active_browse();
         if let Some(view) = &view {
-            view.set_pending(move |view: &BrowseView| {
+            view.set_pending(&target, move |view: &BrowseView| {
                 if viewer {
                     let first = view.media_paths().into_iter().next();
                     if let (Some(window), Some(path)) = (weak.upgrade(), first) {
