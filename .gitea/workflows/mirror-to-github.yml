@@ -21,10 +21,6 @@ jobs:
           git -c http.extraHeader="Authorization: Basic $SRC_AUTH" \
             clone --quiet --single-branch --branch main "$SRC_URL" "$WORK/repo"
           cd "$WORK/repo"
-          # Commit messages link to the private Gitea server; point them at the GitHub repository instead. This
-          # rewrites the commits, so GitHub's copy is replaced rather than appended to.
-          FILTER_BRANCH_SQUELCH_WARNING=1 git filter-branch -f \
-            --msg-filter 'sed "s#git\.topher\.au/topher/#github.com/topher-au/#g"' HEAD
           echo "pushing $(git rev-parse --short HEAD) to GitHub main"
           git -c http.extraHeader="Authorization: Basic $DEST_AUTH" \
-            push --force "$DEST_URL" HEAD:refs/heads/main
+            push "$DEST_URL" HEAD:refs/heads/main
