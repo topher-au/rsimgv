@@ -1,0 +1,156 @@
+title: Features
+wide: yes
+desc: Everything rsimgv does, with screenshots: browsing, viewing, video, keybindings, scripting and remote control.
+---
+<h1>Features</h1>
+<p class="lead">A tour of rsimgv with screenshots. Each section links to the documentation that covers it in full. Click any screenshot to enlarge it.</p>
+
+<h2 id="browse">Browse</h2>
+<div class="split">
+  <div>
+    <h3>Folder tree and browse grid</h3>
+    <p>The sidebar holds a folder tree rooted at <code>/</code>. Folders expand on demand, and selecting one reveals its path. The grid shows the current folder: folders first, then files, in natural name order, so <code>img2</code> comes before <code>img10</code>.</p>
+    <p>Only pictures and videos are listed by default. Turn the media filter off to see every file.</p>
+    <p><a href="docs/browsing.html">Browsing folders →</a></p>
+  </div>
+  {{shot browse-grid "The browse grid with the folder tree beside it"}}
+</div>
+<div class="split flip">
+  <div>
+    <h3>Folder previews</h3>
+    <p>With folder previews on, each folder icon carries a cascade of its first pictures and videos. Choose how many, let them fit the pictures' proportions, or cycle through the folder's media while the pointer is over it.</p>
+  </div>
+  {{shot folder-previews "Folders showing a cascade of the media inside them"}}
+</div>
+<div class="split">
+  <div>
+    <h3>Videos preview themselves</h3>
+    <p>Video thumbnails come from a frame a tenth of the way in. Rest the pointer on one and a sequence of frames spread through the video plays, made with <code>ffmpeg</code> and cached.</p>
+  </div>
+  {{shot browse-videos "Video thumbnails in the browse grid"}}
+</div>
+
+<h2 id="navigate">Navigate</h2>
+<div class="split flip">
+  <div>
+    <h3>Path bar and manual entry</h3>
+    <p>The header's path bar has a clickable breadcrumb for each folder. It starts at home when you are inside it, and at <code>/</code> otherwise. Click the current folder, or press <kbd>Ctrl</kbd>+<kbd>L</kbd>, to type a path; a leading <code>~</code> means your home folder.</p>
+    <p>Back, forward and up buttons sit beside it. Long-press back or forward to list the history in that direction.</p>
+    <p><a href="docs/navigation.html">Navigation, tabs and bookmarks →</a></p>
+  </div>
+  {{shot location-bar "Typing a location in the path bar"}}
+</div>
+<div class="split">
+  <div>
+    <h3>Bookmarks</h3>
+    <p>Press <kbd>Ctrl</kbd>+<kbd>D</kbd> to bookmark the folder you are in, under a name you choose. Bookmarks collect in a collapsible list above the folder tree.</p>
+    <p>Middle-click a folder to open it in a background tab; Ctrl-click a path segment for a new window.</p>
+  </div>
+  {{shot bookmarks-sidebar "A bookmark in the sidebar above the folder tree"}}
+</div>
+
+<h2 id="view">View pictures</h2>
+<div class="split flip">
+  <div>
+    <h3>Fit, zoom and pan</h3>
+    <p>Pictures open fitted to the window, to its width or height, filled to cover it, or at their own size. Zoom in steps you choose, pan with the arrow keys, and focus one-to-one at the centre, the top or the point under the pointer.</p>
+    <p>Scaling can be nearest-neighbour, bilinear or bicubic, optionally sharpened. The bicubic and sharpening paths are computed by OpenCV.</p>
+    <p><a href="docs/viewer.html">The picture viewer →</a></p>
+  </div>
+  {{shot viewer-zoom "A picture zoomed to 156%, with the zoom indicator showing"}}
+</div>
+<div class="split">
+  <div>
+    <h3>Thumbnail bar and status bar</h3>
+    <p>The thumbnail bar can sit on any edge, float over the picture or sit beside it, and stay put or hide until the pointer comes near. The status bar shows the item's position, name, resolution, frame rate and file size.</p>
+  </div>
+  {{shot viewer-image "The viewer with a pinned thumbnail bar and the status bar"}}
+</div>
+
+<h2 id="video">Play video</h2>
+<div class="split flip">
+  <div>
+    <h3>libmpv playback</h3>
+    <p>Videos play through libmpv by default, rendered in software into the viewer, or through GStreamer by way of GTK's own media backend. A video's position and speed are remembered, found by the file's contents so they follow a file that is moved or renamed.</p>
+    <p>Skipping through a video shows a progress bar and the time over it. Its position, width and time format are settings.</p>
+    <p><a href="docs/video.html">Playing video →</a></p>
+  </div>
+  {{shot video-viewer "The seek overlay over a playing video"}}
+</div>
+<div class="split">
+  <div>
+    <h3>Fullscreen</h3>
+    <p>Press <kbd>F11</kbd> for fullscreen, and pin the viewer header and the video controls with <kbd>P</kbd>. The cursor hides itself while the viewer is idle.</p>
+  </div>
+  {{shot video-fullscreen "A video in fullscreen"}}
+</div>
+<div class="split flip">
+  <div>
+    <h3>SVP frame interpolation</h3>
+    <p>Videos played through libmpv can be interpolated by SmoothVideo Project. The output rate can follow the source, a fixed target, the target divided by the playback speed, or the display's rate divided by the speed, within limits you set.</p>
+    <p><a href="docs/svp.html">SVP frame interpolation →</a></p>
+  </div>
+  {{shot prefs-videos-svp "The SVP tab of the video preferences"}}
+</div>
+
+<h2 id="customise">Customise</h2>
+<div class="split">
+  <div>
+    <h3>Keybindings in contexts</h3>
+    <p>The same key can do different things depending on where you are: browsing, in the viewer, looking at a picture, or watching a video. Rebind anything in the editor, which also searches by action or shortcut. Press <kbd>F1</kbd> for a list of what is bound where you are.</p>
+    <p><a href="docs/keybindings.html">Keybindings and mouse →</a></p>
+  </div>
+  {{shot keybinds-overlay-viewer "The F1 overlay listing the keys in force in the viewer"}}
+</div>
+<div class="split flip">
+  <div>
+    <h3>A keybinding editor</h3>
+    <p>Every action, its description and its keys in one searchable list, with a context for each binding. Bind a key to run a script, to show a notification, or to seek a video by an exact amount.</p>
+  </div>
+  {{shot prefs-keybindings "The Keyboard page of the preferences"}}
+</div>
+<div class="split">
+  <div>
+    <h3>Mouse and scroll wheel</h3>
+    <p>Choose what the back and forward buttons do, and what the wheel does over a picture and over a video.</p>
+  </div>
+  {{shot prefs-mouse "Mouse and scrolling preferences"}}
+</div>
+<div class="split flip">
+  <div>
+    <h3>Settings that apply at once</h3>
+    <p>Preferences are stored as YAML in <code>~/.config/rsimgv/rsimgv.conf</code> and applied the moment they change, whether you edit them in the dialog or in the file.</p>
+    <p><a href="docs/settings.html">Settings reference →</a></p>
+  </div>
+  {{shot prefs-viewer "Viewer preferences"}}
+</div>
+
+<h2 id="automate">Automate</h2>
+<div class="split">
+  <div>
+    <h3>Scripts</h3>
+    <p>List commands on the Scripts page, with <code>%file%</code> standing for the item they run on. Bind a key to one and it runs on the item under the cursor, or the one the viewer shows. A script that waits to finish has the folder listed again when it ends, and a script that fails says so with a message.</p>
+    <p><a href="docs/scripts.html">Scripts and messages →</a></p>
+  </div>
+  {{shot prefs-scripts "The Scripts page"}}
+</div>
+<div class="split flip">
+  <div>
+    <h3>Remote control</h3>
+    <p>A JSON interface served over a Unix socket, TCP or HTTP. Run any action, open tabs, select files, read the current item, take a screenshot of the viewer, and show messages over the window.</p>
+    <p><a href="docs/remote-control.html">Remote control →</a></p>
+  </div>
+  {{shot prefs-remote-control "The Remote control tab of the general preferences"}}
+</div>
+
+<h2 id="more">More screenshots</h2>
+<div class="gallery">
+  {{shot prefs-browsing-items "Browsing: items"}}
+  {{shot prefs-browsing-thumbnails "Browsing: thumbnails"}}
+  {{shot prefs-browsing-folders "Browsing: folders"}}
+  {{shot prefs-images "Images"}}
+  {{shot prefs-advanced "Advanced"}}
+  {{shot keybinds-overlay-browse "Keys in force while browsing"}}
+  {{shot bookmark-dialog "Bookmarking a folder"}}
+  {{shot prefs-general "General preferences"}}
+</div>
