@@ -2143,18 +2143,27 @@ impl Window {
 
     /// Shows the list of the keybindings in force where the user is, or hides it.
     fn toggle_keybinds_overlay(&self) {
-        let overlay = self.imp().keybinds.get_or_init(|| KeybindsOverlay::new(&self.imp().message_layer));
+        let overlay = self.imp().keybinds.get_or_init(|| KeybindsOverlay::new(&self.keybinds_host()));
         if overlay.is_shown() {
             overlay.hide();
         } else {
+            overlay.move_to(&self.keybinds_host());
             overlay.show(&self.active_scopes());
         }
+    }
+
+    /// The overlay the keybindings list sits over: the picture of the viewer while it is open, so the list stays within
+    /// it, or the whole window otherwise.
+    fn keybinds_host(&self) -> gtk::Overlay {
+        let imp = self.imp();
+        if self.viewer_is_open() { imp.viewer.overlay() } else { (*imp.message_layer).clone() }
     }
 
     /// Makes the list of keybindings, if it is up, the ones in force now, as the viewer opened or closed or showed
     /// another kind of item.
     fn refresh_keybinds_overlay(&self) {
         if let Some(overlay) = self.imp().keybinds.get().filter(|overlay| overlay.is_shown()) {
+            overlay.move_to(&self.keybinds_host());
             overlay.rebuild(&self.active_scopes());
         }
     }

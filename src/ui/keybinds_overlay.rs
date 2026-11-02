@@ -3,7 +3,7 @@
 //! goes over it, so it never covers what the pointer is at. It is built when it is shown, and again if the context
 //! changes while it is up.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use gtk::prelude::*;
@@ -68,10 +68,13 @@ fn corner_away(corner: Corner, area: (f64, f64), size: (f64, f64), pointer: (f64
     corner.others().into_iter().find(|other| !contains(rect_at(*other, area, size), pointer)).unwrap_or(corner)
 }
 
-/// The list over the window.
+/// The list over a window, or over the picture of the viewer, whichever it is shown over.
 pub struct KeybindsOverlay {
     revealer: gtk::Revealer,
     sections: gtk::Box,
+    corner: Rc<Cell<Corner>>,
+    /// The overlay the list is over, and the controller that follows the pointer over it.
+    host: RefCell<Option<(gtk::glib::WeakRef<gtk::Overlay>, gtk::EventControllerMotion)>>,
 }
 
 impl KeybindsOverlay {
@@ -92,15 +95,32 @@ impl KeybindsOverlay {
         revealer.set_margin_bottom(MARGIN as i32);
         let corner = Rc::new(Cell::new(Corner::default()));
         place(&revealer, corner.get());
-        overlay.add_overlay(&revealer);
+        let list = Self { revealer, sections, corner, host: RefCell::new(None) };
+        list.move_to(overlay);
+        list
+    }
 
-        // The list takes no events, so the pointer is followed on the window under it.
+    /// Puts the list over `overlay`, moving it off the one it was over. Its size is then that of `overlay`, so it stays
+    /// within what `overlay` covers.
+    pub fn move_to(&self, overlay: &gtk::Overlay) {
+        if self.host.borrow().as_ref().and_then(|(weak, _)| weak.upgrade()).as_ref() == Some(overlay) {
+            return;
+        }
+        if let Some((weak, motion)) = self.host.borrow_mut().take() {
+            if let Some(old) = weak.upgrade() {
+                old.remove_controller(&motion);
+                old.remove_overlay(&self.revealer);
+            }
+        }
+        overlay.add_overlay(&self.revealer);
+
+        // The list takes no events, so the pointer is followed on the overlay under it.
         let motion = gtk::EventControllerMotion::new();
         motion.set_propagation_phase(gtk::PropagationPhase::Capture);
         motion.connect_motion({
-            let (revealer, overlay) = (revealer.clone(), overlay.downgrade());
+            let (revealer, corner, host) = (self.revealer.clone(), self.corner.clone(), overlay.downgrade());
             move |_, x, y| {
-                let Some(overlay) = overlay.upgrade().filter(|_| revealer.reveals_child()) else { return };
+                let Some(overlay) = host.upgrade().filter(|_| revealer.reveals_child()) else { return };
                 let area = (f64::from(overlay.width()), f64::from(overlay.height()));
                 let size = (f64::from(revealer.width()), f64::from(revealer.height()));
                 let moved = corner_away(corner.get(), area, size, (x, y));
@@ -110,8 +130,8 @@ impl KeybindsOverlay {
                 }
             }
         });
-        overlay.add_controller(motion);
-        Self { revealer, sections }
+        overlay.add_controller(motion.clone());
+        *self.host.borrow_mut() = Some((overlay.downgrade(), motion));
     }
 
     pub fn is_shown(&self) -> bool {

@@ -236,6 +236,9 @@ mod imp {
         pub header_dock: TemplateChild<gtk::Box>,
         #[template_child]
         pub body: TemplateChild<gtk::Box>,
+        /// The body and the status bar under it, which the playlist sidebar sits beside.
+        #[template_child]
+        pub content_column: TemplateChild<gtk::Box>,
         #[template_child]
         pub playlist_split: TemplateChild<OverlaySplitView>,
         #[template_child]
@@ -519,6 +522,11 @@ impl MediaViewer {
     /// The split view around the picture, whose sidebar holds the playlist while the viewer is shown.
     pub fn playlist_split(&self) -> OverlaySplitView {
         self.imp().playlist_split.clone()
+    }
+
+    /// The overlay over the picture, which the keybindings list sits over while the viewer is open.
+    pub fn overlay(&self) -> gtk::Overlay {
+        (*self.imp().overlay).clone()
     }
 
     /// Shows the item at `index` of `paths`, the folder's pictures and videos in display order.
@@ -1306,7 +1314,7 @@ impl MediaViewer {
             bar.set_can_target(true);
             bar.remove_css_class("status-overlay");
             imp.status_expander.set_visible(true);
-            self.append(bar);
+            imp.content_column.append(bar);
         }
     }
 
