@@ -6,7 +6,7 @@
 //! file asks to open it in the viewer.
 
 use std::cell::{Cell, OnceCell, RefCell};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
@@ -334,8 +334,13 @@ fn request_thumbnail(
 /// The most entries of a folder looked at to find its pictures, so a huge folder does not hold up the view.
 const SCATTER_SCAN: usize = 500;
 
-/// The most folders whose scans are kept, so the cache stays small when browsing many folders.
+/// The most folders whose scans are kept, so the cache stays small when browsing many folders. The least recently
+/// used goes first.
 const MAX_CACHED_SCANS: usize = 256;
+
+/// Folders scanned at the same time. The scans share GIO's few worker threads with thumbnails and folder listings, so
+/// a screen of large folders must not take them all.
+const MAX_SCANS: usize = 2;
 
 /// Every picture and video of `folder`, with their modification times and kinds, in a shuffled order. The order is
 /// random, but the same for the same folder, so scrolling does not reshuffle them. Hidden entries and folders are
@@ -378,22 +383,119 @@ fn scattered_media(folder: &Path) -> Vec<Picture> {
     media
 }
 
-/// Scans `folder` for its previews on a worker thread, keeps the result for as long as the folder has the
-/// modification time `modified`, and calls `then` with it on the main thread.
-fn scan_folder(view: &BrowseView, folder: PathBuf, modified: i64, then: impl FnOnce(Rc<Vec<Picture>>) + 'static) {
-    let view = view.downgrade();
-    glib::spawn_future_local(async move {
-        let scan = folder.clone();
-        let media = Rc::new(gio::spawn_blocking(move || scattered_media(&scan)).await.unwrap_or_default());
-        if let Some(view) = view.upgrade() {
-            let mut scans = view.imp().folder_scans.borrow_mut();
-            if scans.len() >= MAX_CACHED_SCANS {
-                scans.clear();
+/// A folder to scan: its path and its modification time.
+type ScanKey = (PathBuf, i64);
+
+/// A request for a folder's scan. `wanted` says whether it is still needed.
+struct ScanWaiter {
+    wanted: Box<dyn Fn() -> bool>,
+    on_ready: Box<dyn FnOnce(&Rc<Vec<Picture>>)>,
+}
+
+/// A folder's scan, kept with the folder's modification time then and when the scan was last used.
+struct KeptScan {
+    modified: i64,
+    media: Rc<Vec<Picture>>,
+    used: u64,
+}
+
+/// The folder scans of a view: those kept, and those asked for. Like thumbnails, only a few are made at a time, the
+/// newest first, and a scan that no item on screen wants any more is dropped before it runs.
+#[derive(Default)]
+struct FolderScans {
+    kept: HashMap<PathBuf, KeptScan>,
+    /// The last use handed out.
+    used: u64,
+    /// Requests waiting for each scan, whether it is queued or being made.
+    waiters: HashMap<ScanKey, Vec<ScanWaiter>>,
+    /// Scans waiting to be made, newest last.
+    queue: VecDeque<ScanKey>,
+    running: usize,
+}
+
+impl FolderScans {
+    /// The scan kept for `folder`, if the folder has not changed since it was made, which `modified` tells.
+    fn get(&mut self, folder: &Path, modified: i64) -> Option<Rc<Vec<Picture>>> {
+        self.used += 1;
+        let used = self.used;
+        let kept = self.kept.get_mut(folder).filter(|kept| kept.modified == modified)?;
+        kept.used = used;
+        Some(kept.media.clone())
+    }
+
+    /// Keeps the scan of `folder`, and lets the least recently used one go if there are too many.
+    fn keep(&mut self, folder: PathBuf, modified: i64, media: Rc<Vec<Picture>>) {
+        if self.kept.len() >= MAX_CACHED_SCANS && !self.kept.contains_key(&folder) {
+            let oldest = self.kept.iter().min_by_key(|(_, kept)| kept.used).map(|(folder, _)| folder.clone());
+            if let Some(oldest) = oldest {
+                self.kept.remove(&oldest);
             }
-            scans.insert(folder, (modified, media.clone()));
         }
-        then(media);
-    });
+        self.used += 1;
+        self.kept.insert(folder, KeptScan { modified, media, used: self.used });
+    }
+
+    /// Adds a request for the scan `key`. A scan already asked for is not asked for twice; if it is still queued, it
+    /// moves to the newest end.
+    fn ask(&mut self, key: ScanKey, waiter: ScanWaiter) {
+        if let Some(list) = self.waiters.get_mut(&key) {
+            // Requests that no longer want it are dropped first, so the list does not grow each time a cell asks again.
+            list.retain(|waiter| (waiter.wanted)());
+            list.push(waiter);
+            if let Some(position) = self.queue.iter().position(|queued| queued == &key) {
+                self.queue.remove(position);
+                self.queue.push_back(key);
+            }
+            return;
+        }
+        self.waiters.insert(key.clone(), vec![waiter]);
+        self.queue.push_back(key);
+    }
+
+    /// The newest queued scan that something on screen still wants, if there is room to start it. A scan nothing wants
+    /// any more is dropped.
+    fn start_next(&mut self) -> Option<ScanKey> {
+        if self.running >= MAX_SCANS {
+            return None;
+        }
+        while let Some(key) = self.queue.pop_back() {
+            if self.waiters.get(&key).is_some_and(|list| list.iter().any(|waiter| (waiter.wanted)())) {
+                self.running += 1;
+                return Some(key);
+            }
+            self.waiters.remove(&key);
+        }
+        None
+    }
+
+    /// Keeps the finished scan `key`, and gives back the requests that were waiting for it.
+    fn finish(&mut self, key: ScanKey, media: Rc<Vec<Picture>>) -> Vec<ScanWaiter> {
+        self.running -= 1;
+        let waiters = self.waiters.remove(&key).unwrap_or_default();
+        self.keep(key.0, key.1, media);
+        waiters
+    }
+}
+
+/// Starts the queued folder scans while there is room for them. Each runs on a worker thread, and calls the requests
+/// that still want it on the main thread.
+fn start_scans(view: &BrowseView) {
+    loop {
+        let Some(key) = view.imp().folder_scans.borrow_mut().start_next() else { return };
+        let view = view.downgrade();
+        glib::spawn_future_local(async move {
+            let scan = key.0.clone();
+            let media = Rc::new(gio::spawn_blocking(move || scattered_media(&scan)).await.unwrap_or_default());
+            let Some(view) = view.upgrade() else { return };
+            let waiters = view.imp().folder_scans.borrow_mut().finish(key, media.clone());
+            for waiter in waiters {
+                if (waiter.wanted)() {
+                    (waiter.on_ready)(&media);
+                }
+            }
+            start_scans(&view);
+        });
+    }
 }
 
 /// How long each set of a folder's preview pictures stays up while it cycles.
@@ -529,16 +631,19 @@ fn request_scattered(view: &BrowseView, cell: &gtk::Box, entry: &FileEntry, icon
         return;
     }
     let (weak_view, weak_cell, weak_icon) = (view.downgrade(), cell.downgrade(), icon.downgrade());
+    let wanted = wanted_at(view, cell, entry.path(), size);
+    let key = (entry.path().to_path_buf(), modified);
     let entry = entry.clone();
-    scan_folder(view, entry.path().to_path_buf(), modified, move |media| {
-        let (Some(view), Some(cell), Some(icon)) = (weak_view.upgrade(), weak_cell.upgrade(), weak_icon.upgrade()) else {
-            return;
-        };
-        // The cell may have been bound to another item while the folder was scanned.
-        if shows(&view, &cell, entry.path()) {
-            show_scattered(&view, &cell, &entry, &icon, size, &media);
-        }
-    });
+    let waiter = ScanWaiter {
+        wanted: Box::new(wanted),
+        on_ready: Box::new(move |media| {
+            if let (Some(view), Some(cell), Some(icon)) = (weak_view.upgrade(), weak_cell.upgrade(), weak_icon.upgrade()) {
+                show_scattered(&view, &cell, &entry, &icon, size, media);
+            }
+        }),
+    };
+    view.imp().folder_scans.borrow_mut().ask(key, waiter);
+    start_scans(view);
 }
 
 /// Lays out the scattered previews of folder `entry` over its `icon`, from its scanned `media`, and requests each
@@ -730,8 +835,8 @@ mod imp {
         /// The folder whose preview pictures are cycling, if any.
         pub(super) cycle: RefCell<Option<Cycle>>,
         pub(super) cycle_timer: RefCell<Option<glib::SourceId>>,
-        /// The pictures and videos scanned for each folder's previews, with the folder's modification time then.
-        pub(super) folder_scans: RefCell<HashMap<PathBuf, (i64, Rc<Vec<Picture>>)>>,
+        /// The pictures and videos scanned for each folder's previews.
+        pub(super) folder_scans: RefCell<FolderScans>,
         /// The item under the pointer, for the folder preview cycle.
         pub(super) hovered_cell: RefCell<Option<glib::WeakRef<gtk::Box>>>,
         /// The popover that shows an item's description, below the item, and the timer that opens it.
@@ -2004,9 +2109,7 @@ impl BrowseView {
     /// The pictures and videos scanned for `folder`'s previews, if the scan is kept and the folder has not changed since
     /// it was made, which its modification time `modified` tells.
     fn cached_scan(&self, folder: &Path, modified: i64) -> Option<Rc<Vec<Picture>>> {
-        let scans = self.imp().folder_scans.borrow();
-        let (scanned, media) = scans.get(folder)?;
-        (*scanned == modified).then(|| media.clone())
+        self.imp().folder_scans.borrow_mut().get(folder, modified)
     }
 
     /// Starts cycling the previews of the folder in `cell`, if they are up and there is more than one picture to cycle.
@@ -2520,6 +2623,81 @@ fn restore_scroll_after_layout(view: &BrowseView, scroller: &gtk::ScrolledWindow
             glib::ControlFlow::Break
         }
     });
+}
+
+#[cfg(test)]
+mod scan_tests {
+    use super::*;
+
+    fn waiter(wanted: bool) -> ScanWaiter {
+        ScanWaiter {
+            wanted: Box::new(move || wanted),
+            on_ready: Box::new(|_| {}),
+        }
+    }
+
+    fn folder(index: usize) -> PathBuf {
+        PathBuf::from(format!("/folder{index}"))
+    }
+
+    #[test]
+    fn only_a_few_scans_run_at_once_and_the_newest_goes_first() {
+        let mut scans = FolderScans::default();
+        for index in 0..=MAX_SCANS {
+            scans.ask((folder(index), 1), waiter(true));
+        }
+        assert_eq!(scans.start_next(), Some((folder(MAX_SCANS), 1)));
+        for _ in 1..MAX_SCANS {
+            assert!(scans.start_next().is_some());
+        }
+        assert_eq!(scans.start_next(), None, "no room");
+
+        scans.finish((folder(MAX_SCANS), 1), Rc::default());
+        assert_eq!(scans.start_next(), Some((folder(0), 1)), "room again");
+    }
+
+    #[test]
+    fn a_scan_asked_for_twice_is_made_once() {
+        let mut scans = FolderScans::default();
+        let key = (folder(0), 1);
+        scans.ask(key.clone(), waiter(true));
+        scans.ask(key.clone(), waiter(true));
+        assert_eq!(scans.start_next(), Some(key.clone()));
+        assert_eq!(scans.start_next(), None);
+        assert_eq!(scans.finish(key, Rc::default()).len(), 2);
+    }
+
+    #[test]
+    fn a_scan_nothing_wants_is_dropped() {
+        let mut scans = FolderScans::default();
+        let (wanted, scrolled_away) = ((folder(0), 1), (folder(1), 1));
+        scans.ask(wanted.clone(), waiter(true));
+        scans.ask(scrolled_away.clone(), waiter(false));
+        assert_eq!(scans.start_next(), Some(wanted));
+        assert!(!scans.waiters.contains_key(&scrolled_away));
+    }
+
+    #[test]
+    fn the_least_recently_used_scan_goes_first() {
+        let mut scans = FolderScans::default();
+        for index in 0..MAX_CACHED_SCANS {
+            scans.keep(folder(index), 1, Rc::default());
+        }
+        assert!(scans.get(&folder(0), 1).is_some());
+
+        scans.keep(folder(MAX_CACHED_SCANS), 1, Rc::default());
+
+        assert_eq!(scans.kept.len(), MAX_CACHED_SCANS);
+        assert!(scans.get(&folder(0), 1).is_some(), "used just now");
+        assert!(scans.get(&folder(1), 1).is_none(), "the oldest");
+    }
+
+    #[test]
+    fn a_kept_scan_is_for_the_folder_as_it_was() {
+        let mut scans = FolderScans::default();
+        scans.keep(folder(0), 1, Rc::default());
+        assert!(scans.get(&folder(0), 2).is_none());
+    }
 }
 
 #[cfg(test)]
