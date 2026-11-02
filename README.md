@@ -30,7 +30,7 @@ library of pictures and videos without leaving the window. The media viewer is n
 - **Settings** in a preferences dialog, saved as YAML and applied immediately.
 - **Hidden files** can be shown from the main menu.
 - **Scripts** are commands listed on the Scripts page, with `%file%` standing for the item they run on. The Run Script action in the keybinding editor binds a key to one: it runs on the item under the cursor, or on the one the viewer shows. A script that waits to finish has the folder listed again when it ends.
-- **Messages** appear over the window: notifications that go away by themselves, and persistent messages that stay until dismissed. A script that fails reports it this way, and other programs can show their own through the remote control server (`messages.show`). The Show Notification action in the keybinding editor binds a key to a notification: each binding sets its message, level and how many seconds it stays.
+- **Messages** appear over the window: notifications that go away by themselves, and persistent messages that stay until dismissed. A script that fails reports it this way, and other programs can show their own through the remote control server (`messages.show`). Skipping through a video shows a progress bar and the time over it, which the Overlay tab of the video preferences sets up. The Show Notification action in the keybinding editor binds a key to a notification: each binding sets its message, level and how many seconds it stays.
 
 ## Requirements
 

@@ -253,6 +253,54 @@
       <default>'mpv'</default>
       <summary>What plays videos: libmpv, or GStreamer through GTK's own media backend</summary>
     </key>
+    <key name="seek-overlay" type="b">
+      <default>true</default>
+      <summary>Show a progress bar and the time over a video when it is skipped through</summary>
+    </key>
+    <key name="seek-overlay-bar" type="b">
+      <default>true</default>
+      <summary>Show a progress bar in the seek overlay</summary>
+    </key>
+    <key name="seek-overlay-time" type="b">
+      <default>true</default>
+      <summary>Show the time in the seek overlay</summary>
+    </key>
+    <key name="seek-overlay-time-format" type="s">
+      <choices>
+        <choice value="elapsed-total"/>
+        <choice value="remaining-total"/>
+        <choice value="elapsed"/>
+        <choice value="remaining"/>
+      </choices>
+      <default>'elapsed-total'</default>
+      <summary>How the seek overlay writes the time: elapsed and total, remaining and total, or just one of them</summary>
+    </key>
+    <key name="seek-overlay-position" type="s">
+      <choices>
+        <choice value="top-left"/>
+        <choice value="top-middle"/>
+        <choice value="top-right"/>
+        <choice value="bottom-left"/>
+        <choice value="bottom-middle"/>
+        <choice value="bottom-right"/>
+      </choices>
+      <default>'top-middle'</default>
+      <summary>Where the seek overlay sits over the video</summary>
+    </key>
+    <key name="seek-overlay-seconds" type="d">
+      <range min="0.5" max="10.0"/>
+      <default>2.0</default>
+      <summary>How long the seek overlay stays up after a skip, in seconds</summary>
+    </key>
+    <key name="seek-overlay-width" type="i">
+      <range min="120" max="1200"/>
+      <default>360</default>
+      <summary>The width of the seek overlay's progress bar, in pixels</summary>
+    </key>
+    <key name="seek-overlay-always" type="b">
+      <default>false</default>
+      <summary>Keep the seek overlay up while a video plays, rather than only after a skip</summary>
+    </key>
     <key name="mpv-args" type="s">
       <default>""</default>
       <summary>Extra mpv command line options for the mpv player, such as --hwdec=auto-copy</summary>

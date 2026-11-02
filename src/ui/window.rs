@@ -663,6 +663,7 @@ impl Window {
         viewer.set_status_overlay_position(&settings.string("viewer-status-overlay-position"));
         viewer.set_svp(crate::svp::Config::from_settings(settings));
         viewer.set_folder_end(super::media_viewer::FolderEnd::from_name(&settings.string("folder-end")));
+        viewer.set_seek_options(super::seek_overlay::SeekOptions::from_settings(settings));
         self.update_title();
     }
 
@@ -1986,7 +1987,15 @@ const WHEEL_VOLUME_STEP: f64 = 5.0;
 const WHEEL_SEEK_STEP: f64 = 5.0;
 
 /// The settings the viewer and the window title are set from, applied again whenever one changes.
-const VIEWER_SETTINGS: [&str; 23] = [
+const VIEWER_SETTINGS: [&str; 31] = [
+    "seek-overlay",
+    "seek-overlay-bar",
+    "seek-overlay-time",
+    "seek-overlay-time-format",
+    "seek-overlay-position",
+    "seek-overlay-seconds",
+    "seek-overlay-width",
+    "seek-overlay-always",
     "folder-end",
     "original-focus",
     "unlock-minimum-zoom",

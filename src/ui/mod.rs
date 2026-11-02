@@ -14,6 +14,7 @@ mod keybind_label;
 mod media_controls;
 mod media_viewer;
 pub mod message_overlay;
+mod seek_overlay;
 mod fs_tree;
 mod header_bar;
 mod overlay_split_view;

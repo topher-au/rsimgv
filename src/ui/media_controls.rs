@@ -330,10 +330,13 @@ impl MediaControls {
         })
     }
 
-    /// Moves the playback position by `step` microseconds, within the video.
-    pub fn seek_by(&self, step: i64) {
-        let Some(media) = self.imp().media.borrow().clone() else { return };
-        media.seek(seek_target(media.timestamp(), step, media.duration()));
+    /// Moves the playback position by `step` microseconds, within the video. Returns where it moves to, or `None` when
+    /// there is no video.
+    pub fn seek_by(&self, step: i64) -> Option<i64> {
+        let media = self.imp().media.borrow().clone()?;
+        let target = seek_target(media.timestamp(), step, media.duration());
+        media.seek(target);
+        Some(target)
     }
 
     /// Seeks to `seconds` into the video, as the position slider was dragged to.
