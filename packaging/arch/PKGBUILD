@@ -9,6 +9,8 @@ pkgrel=1
 pkgdesc='Integrated file explorer and media viewer for GNOME'
 arch=('x86_64')
 license=('GPL-3.0-or-later')
+# The C code in build.rs is linked by GNU ld, which cannot read LTO objects from -flto.
+options=('!lto')
 depends=(
   'gtk4>=4.22'
   'libadwaita>=1.9'

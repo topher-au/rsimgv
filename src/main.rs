@@ -16,6 +16,7 @@ use std::cell::RefCell;
 use std::ops::ControlFlow;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -31,6 +32,20 @@ const IPC_KEYS: [&str; 7] = [
 ];
 
 const APP_ID: &str = "au.topher.rimgv";
+
+/// The terminal's interrupt signal, which Ctrl+C sends.
+const SIGINT: i32 = 2;
+
+/// Set when the interrupt signal arrives, and cleared by the main loop, which then quits the app.
+static INTERRUPTED: AtomicBool = AtomicBool::new(false);
+
+unsafe extern "C" {
+    fn signal(signum: i32, handler: extern "C" fn(i32)) -> usize;
+}
+
+extern "C" fn on_interrupt(_: i32) {
+    INTERRUPTED.store(true, Ordering::SeqCst);
+}
 
 // Path is provided by the Meson build via RSIMGV_GRESOURCE.
 static RESOURCES: &[u8] = include_bytes!(env!("RSIMGV_GRESOURCE"));
@@ -115,6 +130,21 @@ fn main() -> glib::ExitCode {
         });
         app.add_action(&quit);
         app.set_accels_for_action("app.quit", &["<Ctrl>q"]);
+        // Ctrl+C in the terminal that started the app runs the quit action, as Ctrl+Q does, so the app shuts down the
+        // same way. The handler only sets a flag, and the main loop checks it.
+        // SAFETY: the handler does nothing but store to an atomic, which is safe to do in a signal handler.
+        unsafe {
+            signal(SIGINT, on_interrupt);
+        }
+        let weak = app.downgrade();
+        glib::timeout_add_local(Duration::from_millis(100), move || {
+            if INTERRUPTED.swap(false, Ordering::SeqCst) {
+                if let Some(app) = weak.upgrade() {
+                    gio::prelude::ActionGroupExt::activate_action(&app, "quit", None);
+                }
+            }
+            glib::ControlFlow::Continue
+        });
 
         let preferences = gio::SimpleAction::new("preferences", None);
         let weak = app.downgrade();

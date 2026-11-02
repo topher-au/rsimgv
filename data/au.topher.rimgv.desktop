@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=rsimgv
+Comment=Integrated file explorer and media viewer
+Exec=rsimgv %F
+Icon=au.topher.rsimgv
+Terminal=false
+Categories=Graphics;Viewer;
+MimeType=image/*;video/*;
+StartupNotify=true
