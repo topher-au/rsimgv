@@ -458,6 +458,20 @@ fn fit_count(aspects: &[f32]) -> usize {
     count.max(1)
 }
 
+/// How many of `media` a fitted page takes, from the first.
+fn fitted_length(media: &[Picture], aspect: impl FnMut(&Picture) -> f32) -> usize {
+    let aspects: Vec<f32> = media.iter().take(MAX_PHOTOS).map(aspect).collect();
+    fit_count(&aspects).min(media.len())
+}
+
+/// The width over the height of a picture with `metadata`. One not known counts as square.
+fn aspect_ratio(metadata: Option<MediaMetadata>) -> f32 {
+    match metadata.and_then(|metadata| Some((metadata.width?, metadata.height?))) {
+        Some((width, height)) if width > 0 && height > 0 => width as f32 / height as f32,
+        _ => 1.0,
+    }
+}
+
 /// The scattered previews a cell shows, if it shows a folder with its pictures up.
 fn scattered_in(cell: &gtk::Box) -> Option<ScatteredThumbnail> {
     icon_of(cell)?.paintable()?.downcast::<ScatteredThumbnail>().ok()
@@ -577,8 +591,11 @@ fn request_photo(view: &BrowseView, cell: &gtk::Box, icon: &gtk::Image, scattere
 
 /// Lays out the scattered previews of the folder `entry` in `cell` again, once a picture's metadata is known. The
 /// folder's scan and its preview object are kept, so only the pictures that now fit are requested, and the others
-/// are taken off.
+/// are taken off. Only what is known is read: the first layout asked for every picture's metadata, and each answer
+/// lays the folder out once. Asking again here would double the layouts with every picture.
 fn relayout_scattered(view: &BrowseView, cell: &gtk::Box, entry: &FileEntry) {
+    #[cfg(test)]
+    tests::RELAYOUTS.with(|count| count.set(count.get() + 1));
     let Some(scattered) = scattered_in(cell) else { return };
     // A cycling folder's previews show its current page, which the cycle lays out itself.
     if view.imp().cycle.borrow().as_ref().is_some_and(|cycle| cycle.scattered == scattered) {
@@ -587,7 +604,11 @@ fn relayout_scattered(view: &BrowseView, cell: &gtk::Box, entry: &FileEntry) {
     let (Some(icon), Some(media)) = (icon_of(cell), view.cached_scan(entry.path(), modified_secs(entry))) else { return };
     let fitted = view.folder_preview_fit();
     let slots = if fitted { MAX_PHOTOS } else { view.preview_count() };
-    let shown = view.page_length(cell, entry.path(), &media, 0, fitted, slots);
+    let shown = if fitted {
+        fitted_length(&media, |(path, modified, size, _)| aspect_ratio(MediaInfo::shared().get(path, *modified, *size)))
+    } else {
+        slots.min(media.len())
+    };
     let size = view.item_size();
     for (index, picture) in media.iter().take(slots).enumerate() {
         if index < shown {
@@ -2062,14 +2083,9 @@ impl BrowseView {
         if !fitted {
             return slots.min(available);
         }
-        let aspects: Vec<f32> = media
-            .get(offset..)
-            .unwrap_or_default()
-            .iter()
-            .take(MAX_PHOTOS)
-            .map(|(path, modified, size, _)| self.aspect_of(cell, folder, path, *modified, *size))
-            .collect();
-        fit_count(&aspects).min(available)
+        fitted_length(media.get(offset..).unwrap_or_default(), |(path, modified, size, _)| {
+            self.aspect_of(cell, folder, path, *modified, *size)
+        })
     }
 
     /// The width over the height of the picture at `path`. Its metadata is read in the background if it is not known
@@ -2085,10 +2101,7 @@ impl BrowseView {
                 }
             })
         });
-        match metadata.and_then(|metadata| Some((metadata.width?, metadata.height?))) {
-            Some((width, height)) if width > 0 && height > 0 => width as f32 / height as f32,
-            _ => 1.0,
-        }
+        aspect_ratio(metadata)
     }
 
     /// Starts making the pictures of the page from `offset`. The cycle shows the page once they are all made.
@@ -2306,6 +2319,53 @@ pub(crate) mod tests {
         }
     }
 
+    thread_local! {
+        /// How many times a folder's previews have been laid out again.
+        pub(super) static RELAYOUTS: Cell<usize> = const { Cell::new(0) };
+    }
+
+    /// Each picture's metadata lays a fitted folder out again once, rather than each layout asking again and so
+    /// doubling the layouts with every picture.
+    fn a_fitted_folder_is_laid_out_once_per_picture() {
+        const PICTURES: usize = 12;
+        let root = std::env::temp_dir().join(format!("rsimgv-browse-fit-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let folder = root.join("album");
+        fs::create_dir_all(&folder).unwrap();
+        let pictures: Vec<PathBuf> = (0..PICTURES).map(|index| folder.join(format!("{index:02}.png"))).collect();
+        for path in &pictures {
+            let pixbuf = gtk::gdk_pixbuf::Pixbuf::new(gtk::gdk_pixbuf::Colorspace::Rgb, false, 8, 64, 32).unwrap();
+            pixbuf.fill(0x3366ccff);
+            pixbuf.savev(path, "png", &[]).unwrap();
+        }
+
+        RELAYOUTS.with(|count| count.set(0));
+        let view = BrowseView::new();
+        view.set_directory_previews(true);
+        view.set_folder_preview_fit(true);
+        let window = gtk::Window::new();
+        window.set_default_size(600, 400);
+        window.set_child(Some(&view));
+        window.present();
+        view.set_path(&root);
+        wait_for("listing", || view.item_count() == 1);
+        let info = MediaInfo::shared();
+        wait_for("every picture's metadata", || {
+            pictures.iter().all(|path| {
+                let size = fs::metadata(path).unwrap().len();
+                info.get(path, crate::fs::thumbnail::stamp(path), size).is_some()
+            })
+        });
+        pump_frames(30);
+
+        // The item may be bound more than once while the window settles, and each bind asks for each picture once.
+        let relayouts = RELAYOUTS.with(Cell::get);
+        assert!((1..=2 * PICTURES).contains(&relayouts), "laid out again {relayouts} times");
+
+        window.destroy();
+        let _ = fs::remove_dir_all(&root);
+    }
+
     /// The visual box (the icon's frame) of every rendered item.
     fn rendered_visuals(view: &BrowseView) -> Vec<gtk::Box> {
         let mut visuals = Vec::new();
@@ -2397,6 +2457,7 @@ pub(crate) mod tests {
     pub(crate) fn run_scenarios() {
         item_size_change_reaches_rendered_items();
         modified_selection_is_not_reported_as_lost();
+        a_fitted_folder_is_laid_out_once_per_picture();
         let root = std::env::temp_dir().join(format!("rsimgv-browse-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("sub")).unwrap();
