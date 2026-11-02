@@ -7,17 +7,12 @@
 Written in Rust with GTK 4 and libadwaita.
 
 <p>
-  <img src="https://img.shields.io/badge/Rust-stable-b7410e?style=for-the-badge&logo=rust&logoColor=white" alt="Rust">
-  <img src="https://img.shields.io/badge/GTK-4.22+-4a86cf?style=for-the-badge&logo=gtk&logoColor=white" alt="GTK 4.22+">
-  <img src="https://img.shields.io/badge/libadwaita-1.9+-3584e4?style=for-the-badge" alt="libadwaita 1.9+">
-  <img src="https://img.shields.io/badge/mpv-libmpv-663399?style=for-the-badge&logo=mpv&logoColor=white" alt="mpv">
-  <img src="https://img.shields.io/badge/FFmpeg-thumbnails-007808?style=for-the-badge&logo=ffmpeg&logoColor=white" alt="FFmpeg">
-  <img src="https://img.shields.io/badge/C-GObject-555555?style=for-the-badge&logo=c&logoColor=white" alt="C">
-  <img src="https://img.shields.io/badge/Meson-1.2+-0078d4?style=for-the-badge" alt="Meson 1.2+">
-  <img src="https://img.shields.io/badge/Sass-SCSS-cc6699?style=for-the-badge&logo=sass&logoColor=white" alt="Sass">
-  <img src="https://img.shields.io/badge/YAML-settings-cb171e?style=for-the-badge&logo=yaml&logoColor=white" alt="YAML">
-  <img src="https://img.shields.io/badge/Linux-platform-fcc624?style=for-the-badge&logo=linux&logoColor=black" alt="Linux">
-  <img src="https://img.shields.io/badge/License-GPL--3.0--or--later-blue?style=for-the-badge" alt="License: GPL-3.0-or-later">
+  <a href="https://www.repostatus.org/#wip"><img src="https://www.repostatus.org/badges/latest/wip.svg" alt="Project status: work in progress"></a>
+  <a href="https://www.gnu.org/licenses/gpl-3.0.html"><img src="https://img.shields.io/badge/License-GPL--3.0--or--later-blue?style=for-the-badge" alt="License: GPL-3.0-or-later"></a>
+  <a href="https://www.rust-lang.org"><img src="https://img.shields.io/badge/Rust-stable-b7410e?style=for-the-badge&logo=rust&logoColor=white" alt="Rust"></a>
+  <a href="https://www.gtk.org"><img src="https://img.shields.io/badge/GTK-4.22+-4a86cf?style=for-the-badge&logo=gtk&logoColor=white" alt="GTK 4.22+"></a>
+  <a href="https://gnome.pages.gitlab.gnome.org/libadwaita/"><img src="https://img.shields.io/badge/libadwaita-1.9+-3584e4?style=for-the-badge" alt="libadwaita 1.9+"></a>
+  <a href="https://www.kernel.org"><img src="https://img.shields.io/badge/Linux-platform-fcc624?style=for-the-badge&logo=linux&logoColor=black" alt="Linux"></a>
 </p>
 
 </div>
