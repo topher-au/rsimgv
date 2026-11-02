@@ -270,12 +270,21 @@ fn shows(view: &BrowseView, cell: &gtk::Box, path: &Path) -> bool {
 }
 
 /// Whether a request for the item at `path` is still wanted: its cell still shows it.
+/// Whether a request for the item at `path` is still wanted: its cell still shows it, from the same bind. A cell
+/// rebound to the same item, with a new size or layout, is a new bind, so an older request for it is no longer wanted.
 fn wanted_for(view: &BrowseView, cell: &gtk::Box, path: &Path) -> impl Fn() -> bool + 'static {
+    let generation = bind_generation(view, cell);
     let (view, cell, path) = (view.downgrade(), cell.downgrade(), path.to_path_buf());
     move || match (view.upgrade(), cell.upgrade()) {
-        (Some(view), Some(cell)) => shows(&view, &cell, &path),
+        (Some(view), Some(cell)) => shows(&view, &cell, &path) && bind_generation(&view, &cell) == generation,
         _ => false,
     }
+}
+
+/// How many times the cell at its position has been bound. The cell's widget name is its position.
+fn bind_generation(view: &BrowseView, cell: &gtk::Box) -> u64 {
+    let Ok(position) = cell.widget_name().parse::<u32>() else { return 0 };
+    view.imp().bind_generations.borrow().get(&position).copied().unwrap_or_default()
 }
 
 /// Whether a thumbnail requested at item size `size` for the item at `path` is still wanted: as `wanted_for`, and the
@@ -661,6 +670,8 @@ mod imp {
         pub(super) sorted: OnceCell<gtk::SortListModel>,
         /// Whether the items are being brought up to date with the folder, when a selection change is not the user's.
         pub(super) reconciling: Cell<bool>,
+        /// How many times each position's cell has been bound, to tell a request made for an earlier bind from a current one.
+        pub(super) bind_generations: RefCell<HashMap<u32, u64>>,
         pub(super) store: OnceCell<gio::ListStore>,
         pub(super) filter: OnceCell<gtk::CustomFilter>,
         pub(super) sorter: OnceCell<gtk::CustomSorter>,
@@ -969,10 +980,11 @@ mod imp {
                 },
                 {
                     let view = obj.downgrade();
-                    move |widget, entry, _| {
+                    move |widget, entry, position| {
                         let (Some(cell), Some(view)) = (widget.downcast_ref::<gtk::Box>(), view.upgrade()) else {
                             return;
                         };
+                        *view.imp().bind_generations.borrow_mut().entry(position).or_default() += 1;
                         style_item(&view, cell, entry);
                     }
                 },
