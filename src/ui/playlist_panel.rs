@@ -24,7 +24,7 @@ const PANEL_WIDTH: i32 = 400;
 const CURRENT_MARK: &str = "▶";
 /// The columns in order: the setting that shows each, the menu label that toggles it, its title, and how wide it starts,
 /// in pixels. The position column is -1 wide, which is as wide as its marker, and cannot be resized.
-const COLUMNS: [(&str, &str, &str, i32); 4] = [
+pub const COLUMNS: [(&str, &str, &str, i32); 4] = [
     ("playlist-show-position", "Show position column", "#", -1),
     ("playlist-show-name", "Show name column", "Name", 200),
     ("playlist-show-length", "Show length column", "Length", 80),
@@ -166,13 +166,6 @@ impl PlaylistPanel {
         content.append(&empty);
         content.append(&scroller);
         content.append(&toolbar);
-
-        // The menu's column toggles are actions of the panel, named by their settings.
-        let actions = gio::SimpleActionGroup::new();
-        for (key, _, _, _) in COLUMNS {
-            actions.add_action(&settings.create_action(key));
-        }
-        content.insert_action_group("playlist", Some(&actions));
 
         let drop = gtk::DropTarget::new(gdk::FileList::static_type(), gdk::DragAction::COPY);
         drop.connect_drop(|target, value, _, _| {
@@ -435,7 +428,7 @@ fn row_menu(settings: &gio::Settings, position: u32, path: &str) -> gio::Menu {
 
     let columns = gio::Menu::new();
     for (key, label, _, _) in COLUMNS {
-        columns.append(Some(label), Some(&format!("playlist.{key}")));
+        columns.append(Some(label), Some(&format!("win.{key}")));
     }
     menu.append_section(None, &columns);
     menu
@@ -447,7 +440,11 @@ fn popup_menu(parent: &gtk::Widget, menu: &gio::Menu, x: f64, y: f64) {
     popover.set_parent(parent);
     popover.set_has_arrow(false);
     popover.set_pointing_to(Some(&gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
-    popover.connect_closed(|popover| popover.unparent());
+    // The item's action runs after the menu closes, so the menu is taken away once that is done.
+    popover.connect_closed(|popover| {
+        let popover = popover.clone();
+        glib::idle_add_local_once(move || popover.unparent());
+    });
     popover.popup();
 }
 

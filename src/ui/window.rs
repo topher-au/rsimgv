@@ -267,7 +267,7 @@ impl Window {
         window.add_context_actions();
         window.add_tab_actions();
         window.add_binding_actions();
-        window.add_playlist_actions();
+        window.add_playlist_actions(settings);
         let keys = ActionKeyHandler::install(&window);
         let _ = window.imp().key_handler.set(keys);
         window.connect_sources();
@@ -970,8 +970,12 @@ impl Window {
     }
 
     /// The actions behind the playlist's menu items and its panel, which say what they work on in their parameter.
-    fn add_playlist_actions(&self) {
+    fn add_playlist_actions(&self, settings: &gio::Settings) {
         let weak = self.downgrade();
+        // The menu's column toggles are window actions named by their settings, so they work from any part of the window.
+        for (key, _, _, _) in crate::ui::playlist_panel::COLUMNS {
+            self.add_action(&settings.create_action(key));
+        }
         for name in ["playlist-add-paths", "playlist-remove-paths"] {
             let action = gio::SimpleAction::new(name, Some(&<Vec<String>>::static_variant_type()));
             let weak = weak.clone();
@@ -3350,10 +3354,10 @@ pub(crate) mod tests {
         let panel = window.imp().playlist_panel.get().unwrap();
         for (index, key) in ["playlist-show-position", "playlist-show-name", "playlist-show-length", "playlist-show-filename"].into_iter().enumerate() {
             let before = settings.boolean(key);
-            panel.content().activate_action(&format!("playlist.{key}"), None).unwrap();
+            panel.content().activate_action(&format!("win.{key}"), None).unwrap();
             assert_eq!(settings.boolean(key), !before, "the toggle changes the setting for {key}");
             assert_eq!(panel.column_shown(index as u32), !before, "the toggle changes the column for {key}");
-            panel.content().activate_action(&format!("playlist.{key}"), None).unwrap();
+            panel.content().activate_action(&format!("win.{key}"), None).unwrap();
             assert_eq!(panel.column_shown(index as u32), before, "the toggle changes the column back for {key}");
         }
 
