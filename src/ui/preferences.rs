@@ -294,6 +294,9 @@ impl PreferencesDialog {
         for column in group_columns(imp.section_stack.upcast_ref()) {
             column.set_layout_manager(Some(TightLayout::default()));
         }
+        for body in group_bodies(imp.section_stack.upcast_ref()) {
+            body.set_layout_manager(Some(TightLayout::with_first_indent(GROUP_TITLE_INDENT)));
+        }
         dialog.bind_scripts(settings);
         imp.about_version_row.set_subtitle(env!("CARGO_PKG_VERSION"));
         imp.app_version.set_label(env!("CARGO_PKG_VERSION"));
@@ -783,6 +786,10 @@ pub(crate) mod tests {
         assert!(columns.len() >= 8, "a column for each page with groups: {}", columns.len());
         assert!(columns.iter().all(|column| column.layout_manager().is_some_and(|layout| layout.is::<TightLayout>())));
 
+        let bodies = group_bodies(imp.section_stack.upcast_ref());
+        assert!(bodies.len() >= 8, "a body for each group: {}", bodies.len());
+        assert!(bodies.iter().all(|body| body.layout_manager().is_some_and(|layout| layout.is::<TightLayout>())));
+
         // The image rows are bound to their settings.
         imp.image_fit_row.set_selected(3);
         assert_eq!(settings.string("image-fit"), "fill");
@@ -935,6 +942,23 @@ fn group_columns(widget: &gtk::Widget) -> Vec<gtk::Widget> {
         child = current.next_sibling();
     }
     columns
+}
+
+/// How far a group's title is set in from its rows, in pixels.
+const GROUP_TITLE_INDENT: i32 = 6;
+
+/// The box inside each preferences group under `widget`, which holds the group's header above its rows.
+fn group_bodies(widget: &gtk::Widget) -> Vec<gtk::Widget> {
+    if widget.is::<adw::PreferencesGroup>() {
+        return widget.first_child().into_iter().collect();
+    }
+    let mut bodies = Vec::new();
+    let mut child = widget.first_child();
+    while let Some(current) = child {
+        bodies.extend(group_bodies(&current));
+        child = current.next_sibling();
+    }
+    bodies
 }
 
 /// The first widget under `widget` that has a preferences group as a child.

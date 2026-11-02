@@ -1,5 +1,8 @@
 //! A layout manager that stacks its widget's children in a column with no gap between them. A box leaves a gap of
-//! its spacing, and the one inside a preferences page leaves a wide one between its groups.
+//! its spacing, and the one inside a preferences page leaves a wide one between its groups. The first child can be
+//! indented, which sets a group's title in from its rows.
+
+use std::cell::Cell;
 
 use gtk::prelude::*;
 use gtk::subclass::prelude::*;
@@ -9,7 +12,10 @@ mod imp {
     use super::*;
 
     #[derive(Default)]
-    pub struct TightLayout;
+    pub struct TightLayout {
+        /// How far in from the left the first child starts, in pixels.
+        pub(super) first_indent: Cell<i32>,
+    }
 
     #[glib::object_subclass]
     impl ObjectSubclass for TightLayout {
@@ -27,8 +33,14 @@ mod imp {
 
         fn measure(&self, widget: &gtk::Widget, orientation: gtk::Orientation, for_size: i32) -> (i32, i32, i32, i32) {
             let (mut minimum, mut natural) = (0, 0);
-            for child in children(widget) {
-                let (child_minimum, child_natural, ..) = child.measure(orientation, for_size);
+            for (index, child) in children(widget).enumerate() {
+                let indent = self.indent(index);
+                let (child_minimum, child_natural, ..) = if orientation == gtk::Orientation::Vertical {
+                    child.measure(orientation, if for_size < 0 { for_size } else { (for_size - indent).max(0) })
+                } else {
+                    let (minimum, natural, ..) = child.measure(orientation, for_size);
+                    (minimum + indent, natural + indent, 0, 0)
+                };
                 if orientation == gtk::Orientation::Vertical {
                     minimum += child_minimum;
                     natural += child_natural;
@@ -41,21 +53,30 @@ mod imp {
         }
 
         fn allocate(&self, widget: &gtk::Widget, width: i32, height: i32, _baseline: i32) {
-            let children: Vec<(gtk::Widget, i32, i32)> = children(widget)
-                .map(|child| {
-                    let (minimum, natural, ..) = child.measure(gtk::Orientation::Vertical, width);
-                    (child, minimum, natural)
+            let children: Vec<(gtk::Widget, i32, i32, i32)> = children(widget)
+                .enumerate()
+                .map(|(index, child)| {
+                    let indent = self.indent(index);
+                    let (minimum, natural, ..) = child.measure(gtk::Orientation::Vertical, (width - indent).max(0));
+                    (child, indent, minimum, natural)
                 })
                 .collect();
             // Every child gets at least its minimum height, then what is left, up to each one's natural height in turn.
-            let mut spare = (height - children.iter().map(|(_, minimum, _)| minimum).sum::<i32>()).max(0);
+            let mut spare = (height - children.iter().map(|(_, _, minimum, _)| minimum).sum::<i32>()).max(0);
             let mut top = 0;
-            for (child, minimum, natural) in children {
+            for (child, indent, minimum, natural) in children {
                 let extra = spare.min(natural - minimum);
                 spare -= extra;
-                child.size_allocate(&gdk::Rectangle::new(0, top, width, minimum + extra), -1);
+                child.size_allocate(&gdk::Rectangle::new(indent, top, (width - indent).max(0), minimum + extra), -1);
                 top += minimum + extra;
             }
+        }
+    }
+
+    impl TightLayout {
+        /// How far in from the left the child at `index` starts.
+        fn indent(&self, index: usize) -> i32 {
+            if index == 0 { self.first_indent.get() } else { 0 }
         }
     }
 
@@ -73,6 +94,15 @@ glib::wrapper! {
 impl Default for TightLayout {
     fn default() -> Self {
         glib::Object::new()
+    }
+}
+
+impl TightLayout {
+    /// A layout whose first child starts `indent` pixels in from the left.
+    pub fn with_first_indent(indent: i32) -> Self {
+        let layout = Self::default();
+        layout.imp().first_indent.set(indent);
+        layout
     }
 }
 
@@ -99,6 +129,17 @@ pub(crate) mod tests {
         };
         let tops = tall.each_ref().map(top_and_height);
         assert_eq!(tops, [(0, 20), (20, 30), (50, 40)], "each child sits directly under the last");
+
+        // The first child can start further in, and takes the width that leaves.
+        column.set_layout_manager(Some(TightLayout::with_first_indent(10)));
+        tall[1].set_visible(true);
+        let (minimum_width, ..) = column.measure(gtk::Orientation::Horizontal, -1);
+        assert!(minimum_width >= 10, "the indent is part of the width wanted");
+        column.allocate(200, 90, -1, None);
+        let bounds = tall[0].compute_bounds(&column).expect("the child is in the column");
+        assert_eq!((bounds.x() as i32, bounds.width() as i32), (10, 190), "the first child is set in");
+        let bounds = tall[1].compute_bounds(&column).expect("the child is in the column");
+        assert_eq!((bounds.x() as i32, bounds.width() as i32), (0, 200), "the others are not");
 
         tall[1].set_visible(false);
         assert_eq!(column.measure(gtk::Orientation::Vertical, 200).1, 60, "a hidden child takes no room");
