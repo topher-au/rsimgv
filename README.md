@@ -93,6 +93,12 @@ browse:
   info-fields: [size, modified]
 tree:
   collapse-on-navigate: false
+viewer:
+  image-preloading: true
+thumbnails:
+  threads: 4
+  cache: true
+  unload-offscreen: true
 ```
 
 They are read and written through GSettings, using a backend that stores them in that file, so changes
