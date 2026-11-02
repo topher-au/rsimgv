@@ -68,7 +68,7 @@ impl BindingTable {
 
     fn add_binding(&mut self, name: &str, chord: &str, context: Scope, value: Option<f64>, script: Option<String>) -> bool {
         let (Some(index), Some(chord)) = (Self::index(name), canonical(chord)) else { return false };
-        if !ACTIONS[index].contexts.contains(&context) || self.chords[index].iter().any(|bound| bound.chord == chord) {
+        if !ACTIONS[index].contexts().contains(&context) || self.chords[index].iter().any(|bound| bound.chord == chord) {
             return false;
         }
         self.chords[index].push(Binding { chord, context, value, script });
@@ -210,7 +210,7 @@ impl BindingTable {
                     problems.push(format!("{name}: {chord} is not a valid key"));
                     continue;
                 };
-                if !action.contexts.contains(&context) {
+                if !action.contexts().contains(&context) {
                     problems.push(format!("{name}: {chord} cannot be bound in {}", context.title()));
                     continue;
                 }

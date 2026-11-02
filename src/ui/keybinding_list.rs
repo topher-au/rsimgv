@@ -429,7 +429,7 @@ mod imp {
             }
             let scope = grid.child_at(2, 0);
             if let Some(scope_label) = scope.as_ref().and_then(|scope| scope.first_child()).and_downcast::<gtk::Label>() {
-                let titles: Vec<&str> = action.contexts.iter().map(|context| context.title()).collect();
+                let titles: Vec<&str> = action.contexts().iter().map(|context| context.title()).collect();
                 scope_label.set_label(&titles.join(", "));
             }
             if let Some(scope_icon) = scope.as_ref().and_then(|scope| scope.last_child()).and_downcast::<gtk::Image>() {

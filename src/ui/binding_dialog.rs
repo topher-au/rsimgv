@@ -56,10 +56,10 @@ pub fn show(
 
     // The context the binding is active in, one of the action's contexts, starting at the binding's own or the
     // action's default. A change to it can clash the chord with another action, so it refreshes the warning.
-    let titles: Vec<&str> = action.contexts.iter().map(|context| context.title()).collect();
+    let titles: Vec<&str> = action.contexts().iter().map(|context| context.title()).collect();
     let contexts = gtk::DropDown::from_strings(&titles);
     let start = existing_context.unwrap_or(action.default_context());
-    contexts.set_selected(action.contexts.iter().position(|context| *context == start).unwrap_or(0) as u32);
+    contexts.set_selected(action.contexts().iter().position(|context| *context == start).unwrap_or(0) as u32);
     contexts.set_hexpand(true);
 
     // The scripts to pick from, for the action that runs one: those on the Scripts page, and the one the binding
@@ -201,5 +201,5 @@ pub fn show(
 
 /// The context the dropdown shows, one of the action's contexts.
 fn selected_context(action: &ActionInfo, contexts: &gtk::DropDown) -> Scope {
-    action.contexts.get(contexts.selected() as usize).copied().unwrap_or(action.default_context())
+    action.contexts().get(contexts.selected() as usize).copied().unwrap_or(action.default_context())
 }

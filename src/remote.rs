@@ -62,7 +62,7 @@ pub fn handle(window: &Window, method: &str, params: &Value) -> Result<Value, Er
                         "label": action.label,
                         "description": action.description,
                         "scope": action.default_context().id(),
-                        "contexts": action.contexts.iter().map(|scope| scope.id()).collect::<Vec<_>>(),
+                        "contexts": action.contexts().iter().map(|scope| scope.id()).collect::<Vec<_>>(),
                         "icon": action.icon,
                         "defaults": action.defaults,
                     })
