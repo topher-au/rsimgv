@@ -706,6 +706,23 @@ mod tests {
     }
 
     #[test]
+    fn a_cached_thumbnail_can_be_requested_again_from_its_callback() {
+        // The cache is not borrowed while a callback runs, so a callback may ask for another thumbnail.
+        let (root, dir) = folder("reentrant");
+        let path = picture(&dir, 16, 16);
+        let key = key(&path, 1, Size::for_pixels(128), Job::Still(Media::Picture));
+        let thumbnails = Thumbnails::with_root(root);
+        thumbnails.remember(key.clone(), vec![Pixels::from_file(&path).expect("read").texture()]);
+        let again = thumbnails.clone();
+        let seen = Rc::new(Cell::new(0));
+        let counted = seen.clone();
+        thumbnails.request(key.clone(), || true, move |_| {
+            again.request(key.clone(), || true, move |textures| counted.set(textures.len()));
+        });
+        assert_eq!(seen.get(), 1);
+    }
+
+    #[test]
     fn the_newest_wanted_job_goes_first_and_unwanted_ones_are_dropped() {
         let thumbnails = Thumbnails::with_root(PathBuf::new());
         let job = |name: &str| key(Path::new(name), 1, Size::for_pixels(128), Job::Still(Media::Picture));
