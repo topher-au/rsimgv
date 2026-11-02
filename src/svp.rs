@@ -3,10 +3,12 @@
 //! follows the playback speed in the display and variable modes, so slow motion and fast forward keep the output
 //! rate in range.
 
+use std::fs::{DirBuilder, Permissions};
+use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use gtk::gio::prelude::SettingsExt;
-use gtk::gio;
+use gtk::{gio, glib};
 use serde_json::{json, Value};
 
 /// The whole frame rates the output is rounded to.
@@ -158,17 +160,27 @@ pub fn script(plugins: &Plugins, source: f64, target: f64, nvof: bool) -> String
     )
 }
 
-/// The mpv filter that runs the script at `path`.
+/// The mpv filter that runs the script at `path`. The path has mpv's `%length%` quoting, as it can hold the `:` and `,`
+/// that otherwise end a filter option.
 pub fn filter(path: &Path) -> String {
+    let path = path.display().to_string();
     format!(
-        "@{FILTER_LABEL}:vapoursynth=file={}:buffered-frames={BUFFERED_FRAMES}:concurrent-frames={CONCURRENT_FRAMES}",
-        path.display()
+        "@{FILTER_LABEL}:vapoursynth=file=%{}%{path}:buffered-frames={BUFFERED_FRAMES}:concurrent-frames={CONCURRENT_FRAMES}",
+        path.len()
     )
 }
 
-/// Where the scripts are written.
+/// Where the scripts are written: in the user's runtime directory, as mpv runs them as Python and another user must not
+/// be able to supply them.
 pub fn script_directory() -> PathBuf {
-    PathBuf::from("/tmp").join("rsimgv").join("svp")
+    glib::user_runtime_dir().join("rsimgv").join("svp")
+}
+
+/// Creates `directory` for only the user to reach, along with any parents it lacks. One that already exists is closed
+/// to others as well.
+pub fn create_private_directory(directory: &Path) -> std::io::Result<()> {
+    DirBuilder::new().recursive(true).mode(0o700).create(directory)?;
+    std::fs::set_permissions(directory, Permissions::from_mode(0o700))
 }
 
 /// The SVP settings: whether it is on, where the plugins are, and how the output rate is chosen.
@@ -235,6 +247,35 @@ mod tests {
         assert!(text.contains("core.svp1.Analyse"));
         let nvof = script(&plugins, 30.0, 60.0, true);
         assert!(nvof.contains("SmoothFps_NVOF"));
+    }
+
+    #[test]
+    fn the_filter_quotes_the_script_path_by_its_length_in_bytes() {
+        let text = filter(Path::new("/home/é,a:b/video.py"));
+        assert!(text.contains(":vapoursynth=file=%21%/home/é,a:b/video.py:buffered-frames="), "{text}");
+    }
+
+    #[test]
+    fn scripts_are_kept_in_the_runtime_directory() {
+        assert!(script_directory().starts_with(glib::user_runtime_dir()));
+    }
+
+    #[test]
+    fn the_private_directory_is_only_open_to_the_user() {
+        let root = std::env::temp_dir().join(format!("rsimgv-svp-private-{}", std::process::id()));
+        let directory = root.join("a/b");
+        let mode = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+
+        create_private_directory(&directory).unwrap();
+        assert_eq!(mode(&root), 0o700);
+        assert_eq!(mode(&directory), 0o700);
+
+        // One that was left open is closed.
+        std::fs::set_permissions(&directory, Permissions::from_mode(0o755)).unwrap();
+        create_private_directory(&directory).unwrap();
+        assert_eq!(mode(&directory), 0o700);
+
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

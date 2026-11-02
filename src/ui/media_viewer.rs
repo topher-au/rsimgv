@@ -1016,7 +1016,7 @@ impl MediaViewer {
         let target = crate::svp::target_fps(&config.rate, source, speed, stream.display_fps());
         let directory = crate::svp::script_directory();
         let path = directory.join("video.py");
-        let written = std::fs::create_dir_all(&directory)
+        let written = crate::svp::create_private_directory(&directory)
             .and_then(|()| std::fs::write(&path, crate::svp::script(&plugins, source, target, config.nvof)));
         if let Err(err) = written {
             eprintln!("rsimgv: could not write the SVP script: {err}");
