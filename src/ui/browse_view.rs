@@ -2376,14 +2376,14 @@ pub(crate) mod tests {
         view.set_path(&root);
         wait_for("listing", || view.item_count() == 3);
         view.select_named("b.png");
+        // Watching the folder is what brings the change in; a view that is not active does not watch it.
+        view.set_active(true);
         pump_frames(30);
 
         let reported = Rc::new(RefCell::new(Vec::new()));
         let reported_clone = reported.clone();
         view.connect_selection_changed(move |_, name| reported_clone.borrow_mut().push(name.to_owned()));
         fs::write(root.join("b.png"), "changed contents").unwrap();
-        // Asked directly rather than through the folder's monitor, which this headless session does not reliably deliver.
-        view.refresh();
         let listed_size = || {
             let store = view.imp().store.get()?;
             store.iter::<FileEntry>().filter_map(Result::ok).find(|entry| entry.name() == "b.png").map(|entry| entry.size())
