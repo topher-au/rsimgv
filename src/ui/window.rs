@@ -17,7 +17,8 @@ use super::media_viewer::{side_from_name, ZoomIndicator, VOLUME_STEP};
 use super::key_handler::ActionKeyHandler;
 use super::fs_tree::TreeSnapshot;
 use super::path_bar::OpenTarget;
-use super::{BrowseView, FsTree, HeaderBar, MediaViewer, NavigationBar, OverlaySplitView, PathBar, PreferencesDialog, ShownItem};
+use super::{BrowseView, FsTree, HeaderBar, MediaViewer, MessageOverlay, NavigationBar, OverlaySplitView, PathBar, PreferencesDialog, ShownItem};
+use super::{Level, Message};
 
 mod imp {
     use super::*;
@@ -32,6 +33,10 @@ mod imp {
         /// The window's content: the browse split view, or the viewer, which fills the window.
         #[template_child]
         pub pages: TemplateChild<gtk::Stack>,
+        #[template_child]
+        pub message_layer: TemplateChild<gtk::Overlay>,
+        /// The messages over the window, made once the template is built.
+        pub messages: std::cell::OnceCell<MessageOverlay>,
         #[template_child]
         pub viewer: TemplateChild<MediaViewer>,
         #[template_child]
@@ -1132,6 +1137,21 @@ impl Window {
         self.imp().viewer.shown_item()
     }
 
+    /// The overlay that shows messages over the window.
+    pub fn messages(&self) -> &MessageOverlay {
+        self.imp().messages.get_or_init(|| MessageOverlay::new(&self.imp().message_layer))
+    }
+
+    /// Shows `text` over the window for a few seconds.
+    pub fn notify(&self, text: &str) {
+        self.messages().show(Message::notification(text));
+    }
+
+    /// Shows `text` over the window for a few seconds, as something that went wrong.
+    pub fn notify_error(&self, text: &str) {
+        self.messages().show(Message::notification(text).level(Level::Error));
+    }
+
     /// The item a script is run on: the one the viewer shows, or while browsing, the one under the cursor.
     fn script_target(&self) -> Option<PathBuf> {
         if let Some(item) = self.viewer_item() {
@@ -1146,18 +1166,18 @@ impl Window {
     pub fn run_script(&self, name: &str) {
         let Some(settings) = self.imp().settings.get() else { return };
         let Some(script) = crate::scripts::find_script(settings, name) else {
-            eprintln!("rsimgv: there is no script called {name}");
+            self.report_script_problem(&format!("There is no script called {name}"));
             return;
         };
         let target = self.script_target();
         if script.uses_file() && target.is_none() {
-            eprintln!("rsimgv: {name} needs an item to run on, and none is selected");
+            self.report_script_problem(&format!("{name} needs an item to run on, and none is selected"));
             return;
         }
         let mut child = match script.spawn(target.as_deref().filter(|_| script.uses_file())) {
             Ok(child) => child,
             Err(err) => {
-                eprintln!("rsimgv: could not run {name}: {err}");
+                self.report_script_problem(&format!("Could not run {name}: {err}"));
                 return;
             }
         };
@@ -1166,16 +1186,26 @@ impl Window {
         glib::spawn_future_local(async move {
             // Waiting reaps the script either way, so a script that is not followed leaves no process behind.
             let status = gio::spawn_blocking(move || child.wait()).await;
-            match status {
-                Ok(Ok(status)) if !status.success() => eprintln!("rsimgv: {} ended with {status}", script.name),
-                Ok(Err(err)) => eprintln!("rsimgv: could not wait for {}: {err}", script.name),
-                Err(_) => eprintln!("rsimgv: waiting for {} panicked", script.name),
-                Ok(Ok(_)) => {}
+            let problem = match status {
+                Ok(Ok(status)) if !status.success() => Some(format!("{} ended with {status}", script.name)),
+                Ok(Err(err)) => Some(format!("Could not wait for {}: {err}", script.name)),
+                Err(_) => Some(format!("Waiting for {} panicked", script.name)),
+                Ok(Ok(_)) => None,
+            };
+            let Some(window) = weak.upgrade() else { return };
+            if let Some(problem) = problem {
+                window.report_script_problem(&problem);
             }
-            if let (true, Some(window)) = (wait, weak.upgrade()) {
+            if wait {
                 window.reload_folder();
             }
         });
+    }
+
+    /// Tells the user, and the terminal, what went wrong with a script.
+    fn report_script_problem(&self, problem: &str) {
+        eprintln!("rsimgv: {problem}");
+        self.notify_error(problem);
     }
 
     /// Lists the folder shown again, keeping the item selected.

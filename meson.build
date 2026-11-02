@@ -29,6 +29,7 @@ style_partials = files(
   'data/style/_content_pane.scss',
   'data/style/_file_tree.scss',
   'data/style/_media_viewer.scss',
+  'data/style/_messages.scss',
   'data/style/_path_bar.scss',
   'data/style/_resizable_split_view.scss',
   'data/style/_variables.scss',

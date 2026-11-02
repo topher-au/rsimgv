@@ -1,0 +1,40 @@
+// Messages over the window: a dark, translucent card with a coloured edge for its level. A plain message is bare text
+// with a shadow, so it reads over a picture or a folder alike.
+.message {
+  background-color: rgba(30, 30, 30, 0.88);
+  color: white;
+  border-radius: 10px;
+  border-left: 4px solid transparent;
+  padding: 8px 12px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+
+  button {
+    color: white;
+    min-width: 24px;
+    min-height: 24px;
+  }
+}
+
+.message-info {
+  border-left-color: #{"var(--accent-bg-color)"};
+}
+
+.message-success {
+  border-left-color: #57e389;
+}
+
+.message-warning {
+  border-left-color: #f6d32d;
+}
+
+.message-error {
+  border-left-color: #ff7b63;
+}
+
+.message-plain {
+  background: none;
+  border: none;
+  box-shadow: none;
+  padding: 0;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9);
+}

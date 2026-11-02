@@ -5,6 +5,8 @@
     <property name="default-height">640</property>
     <property name="title">rsimgv</property>
     <property name="content">
+      <object class="GtkOverlay" id="message_layer">
+        <property name="child">
       <object class="GtkStack" id="pages">
         <child>
           <object class="RsimgvOverlaySplitView" id="split">
@@ -211,6 +213,8 @@
         <child>
           <object class="RsimgvMediaViewer" id="viewer"/>
         </child>
+      </object>
+        </property>
       </object>
     </property>
   </template>
