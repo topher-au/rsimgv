@@ -2358,8 +2358,49 @@ pub(crate) mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
+    /// Changing the selected file on disk brings the listing up to date without the selection being reported as
+    /// lost: the file is replaced in the listing and selected again, and no empty selection is reported on the way.
+    fn modified_selection_is_not_reported_as_lost() {
+        let root = std::env::temp_dir().join(format!("rsimgv-browse-reconcile-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        for name in ["a.png", "b.png", "c.png"] {
+            fs::write(root.join(name), "x").unwrap();
+        }
+
+        let view = BrowseView::new();
+        let window = gtk::Window::new();
+        window.set_default_size(600, 400);
+        window.set_child(Some(&view));
+        window.present();
+        view.set_path(&root);
+        wait_for("listing", || view.item_count() == 3);
+        view.select_named("b.png");
+        pump_frames(30);
+
+        let reported = Rc::new(RefCell::new(Vec::new()));
+        let reported_clone = reported.clone();
+        view.connect_selection_changed(move |_, name| reported_clone.borrow_mut().push(name.to_owned()));
+        fs::write(root.join("b.png"), "changed contents").unwrap();
+        // Asked directly rather than through the folder's monitor, which this headless session does not reliably deliver.
+        view.refresh();
+        let listed_size = || {
+            let store = view.imp().store.get()?;
+            store.iter::<FileEntry>().filter_map(Result::ok).find(|entry| entry.name() == "b.png").map(|entry| entry.size())
+        };
+        wait_for("the change is listed", || listed_size() == Some(16));
+        pump_frames(30);
+
+        assert!(!reported.borrow().iter().any(String::is_empty), "no empty selection is reported: {:?}", reported.borrow());
+        assert_eq!(view.selected_name().as_deref(), Some("b.png"), "the modified file is selected again");
+
+        window.destroy();
+        let _ = fs::remove_dir_all(&root);
+    }
+
     pub(crate) fn run_scenarios() {
         item_size_change_reaches_rendered_items();
+        modified_selection_is_not_reported_as_lost();
         let root = std::env::temp_dir().join(format!("rsimgv-browse-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("sub")).unwrap();
