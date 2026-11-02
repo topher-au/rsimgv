@@ -5,6 +5,7 @@ mod remote;
 mod resample;
 mod scripts;
 mod svp;
+mod svp_manager;
 mod bookmarks;
 mod file_settings;
 mod folder_sort;
