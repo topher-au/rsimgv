@@ -125,8 +125,15 @@ impl FsNode {
             .find(|node| node.path() == path)
     }
 
-    /// Starts loading children in the background, if not already started.
+    /// Starts loading children in the background, if not already started. A folder already loaded is listed again,
+    /// since it may have changed: the tree is shown again each time the folder is revealed.
     pub fn start_loading(&self) {
+        if matches!(*self.imp().state.borrow(), LoadState::Loaded) {
+            *self.imp().state.borrow_mut() = LoadState::Loading(Vec::new());
+            FileStore::shared().discard_idle(self.path());
+            load(self.clone());
+            return;
+        }
         let (tx, _rx) = oneshot::channel();
         self.request_load(tx);
     }
@@ -187,11 +194,11 @@ fn load(node: FsNode) {
             // The tree shows directories only; files are dropped here.
             let mut entries = std::mem::take(&mut *found.borrow_mut());
             entries.sort_by(|a, b| natural_cmp(&a.name(), &b.name()));
-            let children: Vec<FsNode> = entries
+            let listed: Vec<FsNode> = entries
                 .iter()
-                .map(|entry| FsNode::new(entry.path().to_path_buf(), true))
+                .map(|entry| node.child_with_path(entry.path()).unwrap_or_else(|| FsNode::new(entry.path().to_path_buf(), true)))
                 .collect();
-            node.children().splice(0, 0, &children);
+            sync_children(&node.children(), &listed);
             node.finish_loading();
         }
     };
@@ -237,4 +244,45 @@ async fn check_subdirs(dir: PathBuf) -> Subdirs {
     // Stop reading as soon as the answer is known, unless another reader still wants the listing.
     reading.cancel();
     found.get()
+}
+
+/// Makes `store` hold `listed`, in its order, by removing the nodes no longer listed and inserting the new ones. The
+/// nodes that remain are the same objects, so their own state (what is expanded, what is loaded) is kept.
+fn sync_children(store: &gio::ListStore, listed: &[FsNode]) {
+    let mut position = store.n_items();
+    while position > 0 {
+        position -= 1;
+        let Some(stored) = store.item(position).and_downcast::<FsNode>() else { continue };
+        if !listed.iter().any(|node| *node == stored) {
+            store.remove(position);
+        }
+    }
+    for (position, node) in listed.iter().enumerate() {
+        if store.item(position as u32).as_ref() != Some(node.upcast_ref::<glib::Object>()) {
+            store.insert(position as u32, node);
+        }
+    }
+}
+
+#[cfg(test)]
+mod sync_tests {
+    use super::*;
+
+    #[test]
+    fn a_listing_keeps_the_nodes_that_remain_and_takes_the_new_ones_in_order() {
+        let node = |name: &str| FsNode::new(PathBuf::from(format!("/root/{name}")), true);
+        let (a, b, c) = (node("a"), node("b"), node("c"));
+        let store = gio::ListStore::new::<FsNode>();
+        store.splice(0, 0, &[a.clone(), b.clone(), c.clone()]);
+
+        let d = node("d");
+        sync_children(&store, &[a.clone(), d.clone(), c.clone()]);
+
+        let names: Vec<String> = (0..store.n_items())
+            .map(|position| store.item(position).and_downcast::<FsNode>().unwrap().path().display().to_string())
+            .collect();
+        assert_eq!(names, ["/root/a", "/root/d", "/root/c"]);
+        assert!(store.item(0).as_ref() == Some(a.upcast_ref::<glib::Object>()), "a is the same node");
+        assert!(store.item(2).as_ref() == Some(c.upcast_ref::<glib::Object>()), "c is the same node");
+    }
 }
