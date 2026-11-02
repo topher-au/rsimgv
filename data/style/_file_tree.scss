@@ -5,7 +5,7 @@ expander-widget.rsimgv-sidebar-section > box > title {
 }
 
 expander-widget.rsimgv-sidebar-section > box > title:hover {
-  background: alpha(currentColor, 0.05);
+  background-color: color-mix(in srgb, currentColor 5%, transparent);
 }
 
 button.rsimgv-sidebar-section-button {
@@ -36,7 +36,7 @@ button.rsimgv-sidebar-section-button {
 
 // The row a dragged bookmark would take the place of.
 .rsimgv-bookmarks > row:drop(active) {
-  background: alpha(currentColor, 0.15);
+  background-color: color-mix(in srgb, currentColor 15%, transparent);
 }
 
 // Hidden (dot-prefixed) directories, shown when the toggle is on.
