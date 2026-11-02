@@ -542,25 +542,20 @@ impl Window {
 
     /// Shows a folder's or file's name, type, size, and when it was modified.
     fn show_properties(&self, path: &Path) {
-        let file = gio::File::for_path(path);
-        let attributes = "standard::display-name,standard::size,standard::content-type,time::modified";
-        let (heading, body) = match file.query_info(attributes, gio::FileQueryInfoFlags::NONE, gio::Cancellable::NONE) {
-            Ok(info) => {
-                let mut lines = vec![format!("Location: {}", path.parent().map_or_else(String::new, |p| p.display().to_string()))];
-                if let Some(kind) = info.content_type() {
-                    lines.push(format!("Type: {}", gio::content_type_get_description(&kind)));
-                }
-                if info.file_type() != gio::FileType::Directory {
-                    lines.push(format!("Size: {}", glib::format_size(info.size() as u64)));
-                }
-                if let Some(time) = info.modification_date_time().and_then(|t| t.format("%Y-%m-%d %H:%M").ok()) {
-                    lines.push(format!("Modified: {time}"));
-                }
-                (info.display_name().to_string(), lines.join("\n"))
-            }
-            Err(err) => (path.display().to_string(), err.to_string()),
-        };
-        let dialog = adw::AlertDialog::new(Some(&heading), Some(&body));
+        // The file is queried on a worker, so a slow or remote file does not hold up the window.
+        let path = path.to_path_buf();
+        let weak = self.downgrade();
+        glib::spawn_future_local(async move {
+            let query = path.clone();
+            let Ok((heading, body)) = gio::spawn_blocking(move || properties_text(&query)).await else { return };
+            let Some(window) = weak.upgrade() else { return };
+            window.present_properties(&heading, &body);
+        });
+    }
+
+    /// Presents a properties dialog with `heading` and `body`.
+    fn present_properties(&self, heading: &str, body: &str) {
+        let dialog = adw::AlertDialog::new(Some(heading), Some(body));
         adw::prelude::AlertDialogExt::add_response(&dialog, "close", "Close");
         adw::prelude::AdwDialogExt::present(&dialog, Some(self));
     }
@@ -2195,6 +2190,28 @@ fn bound_action(map: &impl IsA<gio::ActionMap>, window: &glib::WeakRef<Window>, 
         }
     });
     map.add_action(&action);
+}
+
+/// The heading and body of the properties dialog for the file at `path`, read from the file.
+fn properties_text(path: &Path) -> (String, String) {
+    let attributes = "standard::display-name,standard::size,standard::content-type,time::modified";
+    let file = gio::File::for_path(path);
+    match file.query_info(attributes, gio::FileQueryInfoFlags::NONE, gio::Cancellable::NONE) {
+        Ok(info) => {
+            let mut lines = vec![format!("Location: {}", path.parent().map_or_else(String::new, |p| p.display().to_string()))];
+            if let Some(kind) = info.content_type() {
+                lines.push(format!("Type: {}", gio::content_type_get_description(&kind)));
+            }
+            if info.file_type() != gio::FileType::Directory {
+                lines.push(format!("Size: {}", glib::format_size(info.size() as u64)));
+            }
+            if let Some(time) = info.modification_date_time().and_then(|t| t.format("%Y-%m-%d %H:%M").ok()) {
+                lines.push(format!("Modified: {time}"));
+            }
+            (info.display_name().to_string(), lines.join("\n"))
+        }
+        Err(err) => (path.display().to_string(), err.to_string()),
+    }
 }
 
 /// The folder a step moves to from `current`, in depth-first order of the folder tree: the next or previous folder,
