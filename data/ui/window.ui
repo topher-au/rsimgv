@@ -50,6 +50,13 @@
                   </object>
                 </child>
                 <child>
+                  <object class="GtkExpander" id="playlist_expander">
+                    <property name="margin-start">6</property>
+                    <property name="margin-end">6</property>
+                    <property name="margin-top">6</property>
+                  </object>
+                </child>
+                <child>
                   <object class="RsimgvFsTree" id="tree">
                     <property name="vexpand">true</property>
                   </object>

@@ -702,6 +702,11 @@ impl MediaViewer {
         })
     }
 
+    /// Shows the item at `index` of the items it has, if there is one.
+    pub fn go_to(&self, index: usize) {
+        self.load(index);
+    }
+
     /// Shows the first item, or the last if `last` is set.
     pub fn jump(&self, last: bool) {
         let imp = self.imp();

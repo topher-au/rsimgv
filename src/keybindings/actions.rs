@@ -255,6 +255,36 @@ pub const ACTIONS: &[ActionInfo] = &[
         name: "win.toggle-bookmarks", description: "Expand or collapse the bookmarks list in the sidebar.", icon: "user-bookmarks-symbolic", label: "Toggle Bookmarks", defaults: &[],
     },
     ActionInfo {
+        name: "win.playlist-toggle", description: "Add the item the viewer shows to the playlist, or the item under the cursor or the marked items while browsing, or remove them if they are already in it. A folder stands for the pictures and videos in and under it.", icon: "list-add-symbolic", label: "Add to or Remove from Playlist", defaults: &["i"],
+    },
+    ActionInfo {
+        name: "win.playlist-play", description: "Show the playlist in the viewer, from the item it was left on. The folder being browsed stays as it is.", icon: "media-playback-start-symbolic", label: "Play Playlist", defaults: &["ctrl+p"],
+    },
+    ActionInfo {
+        name: "win.playlist-next", description: "Show the next item in the playlist, going round to the first after the last. If the viewer is not showing the playlist, show the playlist from the item it was left on.", icon: "media-skip-forward-symbolic", label: "Next Playlist Item", defaults: &["bracketright"],
+    },
+    ActionInfo {
+        name: "win.playlist-previous", description: "Show the item before this one in the playlist, going round to the last before the first. If the viewer is not showing the playlist, show the playlist from the item it was left on.", icon: "media-skip-backward-symbolic", label: "Previous Playlist Item", defaults: &["bracketleft"],
+    },
+    ActionInfo {
+        name: "win.playlist-first", description: "Show the first item in the playlist.", icon: "go-first-symbolic", label: "First Playlist Item", defaults: &[],
+    },
+    ActionInfo {
+        name: "win.playlist-last", description: "Show the last item in the playlist.", icon: "go-last-symbolic", label: "Last Playlist Item", defaults: &[],
+    },
+    ActionInfo {
+        name: "win.playlist-load", description: "Choose an M3U, PLS or XSPF file to load into the playlist.", icon: "document-open-symbolic", label: "Load Playlist", defaults: &[],
+    },
+    ActionInfo {
+        name: "win.playlist-save", description: "Save the playlist as an M3U, PLS or XSPF file.", icon: "document-save-as-symbolic", label: "Save Playlist", defaults: &[],
+    },
+    ActionInfo {
+        name: "win.playlist-clear", description: "Remove everything from the playlist, after asking.", icon: "edit-clear-all-symbolic", label: "Clear Playlist", defaults: &[],
+    },
+    ActionInfo {
+        name: "win.toggle-playlist", description: "Show the playlist in the sidebar, or hide it.", icon: "view-list-symbolic", label: "Toggle Playlist Panel", defaults: &["ctrl+shift+p"],
+    },
+    ActionInfo {
         name: "win.toggle-sidebar", description: "Show or hide the sidebar.", icon: "sidebar-show-symbolic", label: "Toggle Sidebar", defaults: &["f9"],
     },
     ActionInfo {
@@ -324,16 +354,16 @@ pub const ACTIONS: &[ActionInfo] = &[
         name: "browse.toggle-item-info", description: "Show or hide each item's information under its name.", icon: "dialog-information-symbolic", label: "Toggle Item Info", defaults: &[],
     },
     ActionInfo {
-        name: "view.previous", description: "Show the picture or video before this one in the folder.", icon: "go-previous-symbolic", label: "Previous Item", defaults: &["comma"],
+        name: "view.previous", description: "Show the picture or video before this one in the folder, or in the playlist while the viewer shows that.", icon: "go-previous-symbolic", label: "Previous Item", defaults: &["comma"],
     },
     ActionInfo {
-        name: "view.next", description: "Show the picture or video after this one in the folder.", icon: "go-next-symbolic", label: "Next Item", defaults: &["period"],
+        name: "view.next", description: "Show the picture or video after this one in the folder, or in the playlist while the viewer shows that.", icon: "go-next-symbolic", label: "Next Item", defaults: &["period"],
     },
     ActionInfo {
-        name: "view.first", description: "Show the first picture or video in the folder.", icon: "go-first-symbolic", label: "First Item", defaults: &["shift+comma"],
+        name: "view.first", description: "Show the first picture or video in the folder, or in the playlist while the viewer shows that.", icon: "go-first-symbolic", label: "First Item", defaults: &["shift+comma"],
     },
     ActionInfo {
-        name: "view.last", description: "Show the last picture or video in the folder.", icon: "go-last-symbolic", label: "Last Item", defaults: &["shift+period"],
+        name: "view.last", description: "Show the last picture or video in the folder, or in the playlist while the viewer shows that.", icon: "go-last-symbolic", label: "Last Item", defaults: &["shift+period"],
     },
     ActionInfo {
         name: "view.close", description: "Close the viewer and return to the browse view.", icon: "window-close-symbolic", label: "Close Viewer", defaults: &["q", "escape"],
@@ -429,7 +459,7 @@ pub const ACTIONS: &[ActionInfo] = &[
         name: "video.repeat", description: "Play the video again from the start when it ends, or stop repeating it.", icon: "media-playlist-repeat-symbolic", label: "Toggle Repeat", defaults: &["r"],
     },
     ActionInfo {
-        name: "video.auto-advance", description: "When a video ends, show the next item in the folder, or stop doing so.", icon: "media-skip-forward-symbolic", label: "Toggle Auto-Advance", defaults: &["n"],
+        name: "video.auto-advance", description: "When a video ends, show the next item in the folder or the playlist, or stop doing so.", icon: "media-skip-forward-symbolic", label: "Toggle Auto-Advance", defaults: &["n"],
     },
 ];
 
@@ -456,7 +486,7 @@ mod tests {
 
     #[test]
     fn window_actions_can_be_bound_anywhere() {
-        for name in ["win.toggle-fullscreen", "win.next-folder", "app.quit", "script", "browse.toggle-hidden"] {
+        for name in ["win.toggle-fullscreen", "win.next-folder", "win.playlist-next", "win.playlist-toggle", "app.quit", "script", "browse.toggle-hidden"] {
             assert_eq!(contexts(name), Scope::ALL, "{name}");
         }
         assert_eq!(find("script").unwrap().default_context(), Scope::Global);

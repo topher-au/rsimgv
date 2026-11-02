@@ -869,19 +869,20 @@ impl ItemGrid {
         changed
     }
 
-    /// Redraws the selection and the marks on the shown items.
-    fn update_selected_classes(&self) {
+    /// Redraws the selection, the marks and what is in the playlist on the shown items.
+    pub fn update_selected_classes(&self) {
         for (position, widget) in self.imp().shown.borrow().iter() {
             self.set_item_classes(widget, *position);
         }
     }
 
-    /// Sets the `selected` and `marked` classes of a widget showing the item at `position`. A reused widget may
-    /// still have the classes of the item it showed before, so both are set either way.
+    /// Sets the `selected`, `marked` and `in-playlist` classes of a widget showing the item at `position`. A reused
+    /// widget may still have the classes of the item it showed before, so all are set either way.
     fn set_item_classes(&self, widget: &gtk::Widget, position: u32) {
         let selected = self.imp().model.borrow().as_ref().map(|model| model.selected());
         set_class(widget, "selected", Some(position) == selected);
         set_class(widget, "marked", self.is_marked_at(position));
+        set_class(widget, "in-playlist", self.path_at(position).is_some_and(|path| crate::playlist::contains(&path)));
     }
 
     /// Removes every shown widget, keeping them to reuse.
