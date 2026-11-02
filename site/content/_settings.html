@@ -1,0 +1,132 @@
+<h2 id="window-and-start-up">Window and start-up</h2>
+<div class="table-wrap"><table>
+<thead><tr><th>Setting</th><th>Default</th><th>Values</th><th>What it does</th></tr></thead>
+<tbody>
+<tr><td><code>window.width</code><br><span class="muted">window-width</span></td><td><code>960</code></td><td>320 to 10000</td><td>Width of the window when it is not maximized</td></tr>
+<tr><td><code>window.height</code><br><span class="muted">window-height</span></td><td><code>640</code></td><td>240 to 10000</td><td>Height of the window when it is not maximized</td></tr>
+<tr><td><code>window.maximized</code><br><span class="muted">window-maximized</span></td><td>off</td><td>on or off</td><td>Whether the window was maximized when it was last closed</td></tr>
+<tr><td><code>start.location</code><br><span class="muted">start-location</span></td><td><code>last</code></td><td><code>last</code>, <code>root</code>, <code>home</code>, <code>specific</code></td><td>Where a new window starts: the last open folder, the root folder, the home folder, or start-directory</td></tr>
+<tr><td><code>start.directory</code><br><span class="muted">start-directory</span></td><td><span class="muted">empty</span></td><td>text</td><td>The folder a new window starts in when start-location is specific</td></tr>
+<tr><td><code>start.last-directory</code><br><span class="muted">last-directory</span></td><td><span class="muted">empty</span></td><td>text</td><td>The folder open when the last window closed, used when start-location is last</td></tr>
+<tr><td><code>start.last-file</code><br><span class="muted">last-file</span></td><td><span class="muted">empty</span></td><td>text</td><td>The item selected in last-directory when the last window closed, reselected on start</td></tr>
+<tr><td><code>window.sidebar-width</code><br><span class="muted">sidebar-width</span></td><td><code>-1</code></td><td>whole number</td><td>Sidebar width chosen by dragging, in pixels; -1 uses the default width</td></tr>
+<tr><td><code>settings.kde-effects</code><br><span class="muted">kde-effects</span></td><td>off</td><td>on or off</td><td>Use KDE Plasma&#x27;s effects, such as blur behind floating overlays, where the compositor offers them</td></tr>
+</tbody></table></div>
+<h2 id="browsing">Browsing</h2>
+<div class="table-wrap"><table>
+<thead><tr><th>Setting</th><th>Default</th><th>Values</th><th>What it does</th></tr></thead>
+<tbody>
+<tr><td><code>browse.show-hidden</code><br><span class="muted">show-hidden</span></td><td>off</td><td>on or off</td><td>Show hidden files and folders</td></tr>
+<tr><td><code>browse.media-only</code><br><span class="muted">media-only</span></td><td>on</td><td>on or off</td><td>Only show pictures and videos in the browse view</td></tr>
+<tr><td><code>browse.item-size</code><br><span class="muted">item-size</span></td><td><code>128</code></td><td>32 to 2048</td><td>Size in pixels of the visual part of each browse item</td></tr>
+<tr><td><code>browse.filename-display</code><br><span class="muted">filename-display</span></td><td><code>ellipsized</code></td><td><code>off</code>, <code>wrapped</code>, <code>ellipsized</code></td><td>How item names are shown: off, wrapped to two lines, or ellipsized</td></tr>
+<tr><td><code>browse.show-directories</code><br><span class="muted">show-directories</span></td><td><code>first-last</code></td><td><code>none</code>, <code>first-last</code>, <code>inline</code></td><td>Where folders are listed: not at all, before and after the files as the sort order says, or among the files</td></tr>
+<tr><td><code>browse.info-layout</code><br><span class="muted">info-layout</span></td><td><code>inline</code></td><td><code>disabled</code>, <code>stacked</code>, <code>inline</code></td><td>How item info is laid out: disabled, one field per line, or fields separated by bullets</td></tr>
+<tr><td><code>browse.info-fields</code><br><span class="muted">info-fields</span></td><td><code>[&#x27;size&#x27;, &#x27;modified&#x27;]</code></td><td>list</td><td>Details shown under each item&#x27;s name</td></tr>
+<tr><td><code>settings.thumbnail-crop</code><br><span class="muted">thumbnail-crop</span></td><td>off</td><td>on or off</td><td>Crop thumbnails to a square that fills the item&#x27;s visual part</td></tr>
+<tr><td><code>browse.collapse-on-navigate</code><br><span class="muted">collapse-on-navigate</span></td><td>off</td><td>on or off</td><td>Collapse folders outside the current path when navigating</td></tr>
+<tr><td><code>settings.sort-by</code><br><span class="muted">sort-by</span></td><td><code>name</code></td><td><code>name</code>, <code>modified</code>, <code>size</code>, <code>type</code></td><td>What the browse view sorts files and folders by, in a folder with no remembered sort: name, modification time, size or type</td></tr>
+<tr><td><code>settings.sort-order</code><br><span class="muted">sort-order</span></td><td><code>ascending</code></td><td><code>ascending</code>, <code>descending</code></td><td>Whether the browse view sorts ascending or descending, in a folder with no remembered sort</td></tr>
+<tr><td><code>navigation.remember-folder-sort</code><br><span class="muted">remember-folder-sort</span></td><td>off</td><td>on or off</td><td>Keep the sort chosen in the sort menu for that folder alone, rather than changing the default</td></tr>
+<tr><td><code>navigation.folder-end</code><br><span class="muted">folder-end</span></td><td><code>stop</code></td><td><code>stop</code>, <code>loop</code>, <code>next-folder</code></td><td>What stepping past either end of a folder in the viewer does: stop, loop around the folder, or go on to the next folder with media</td></tr>
+<tr><td><code>settings.directory-previews</code><br><span class="muted">directory-previews</span></td><td>off</td><td>on or off</td><td>Show a cascade of the first pictures and videos over a folder&#x27;s icon</td></tr>
+<tr><td><code>settings.folder-preview-count</code><br><span class="muted">folder-preview-count</span></td><td><code>4</code></td><td>1 to 12</td><td>The most pictures and videos scattered over a folder&#x27;s icon</td></tr>
+<tr><td><code>settings.folder-preview-fit</code><br><span class="muted">folder-preview-fit</span></td><td>off</td><td>on or off</td><td>Fit as many previews to a folder&#x27;s icon as their pictures&#x27; dimensions allow, instead of a set number</td></tr>
+<tr><td><code>settings.folder-preview-cycle</code><br><span class="muted">folder-preview-cycle</span></td><td>off</td><td>on or off</td><td>Cycle a folder&#x27;s preview pictures through its media while it is under the pointer, or is the item last selected and the pointer is over none</td></tr>
+<tr><td><code>settings.video-frame-previews</code><br><span class="muted">video-frame-previews</span></td><td>on</td><td>on or off</td><td>Generate the frames a video plays while it is under the pointer, or is the item last selected and the pointer is over none</td></tr>
+</tbody></table></div>
+<h2 id="viewer">Viewer</h2>
+<div class="table-wrap"><table>
+<thead><tr><th>Setting</th><th>Default</th><th>Values</th><th>What it does</th></tr></thead>
+<tbody>
+<tr><td><code>viewer.open-fullscreen</code><br><span class="muted">open-fullscreen</span></td><td>off</td><td>on or off</td><td>Open the viewer in fullscreen</td></tr>
+<tr><td><code>viewer.auto-hide-cursor</code><br><span class="muted">auto-hide-cursor</span></td><td>on</td><td>on or off</td><td>Hide the mouse cursor while the viewer is idle</td></tr>
+<tr><td><code>image.smooth-scrolling</code><br><span class="muted">smooth-scrolling</span></td><td>on</td><td>on or off</td><td>Animate zooming and panning of images, rather than jumping to the new view</td></tr>
+<tr><td><code>viewer.image-info-in-title</code><br><span class="muted">image-info-in-title</span></td><td>off</td><td>on or off</td><td>Show the image&#x27;s file name and details in the window title</td></tr>
+<tr><td><code>image.zoom-indicator</code><br><span class="muted">zoom-indicator</span></td><td><code>auto</code></td><td><code>on</code>, <code>off</code>, <code>auto</code></td><td>Show the zoom level: on, off, or only when the image is zoomed</td></tr>
+<tr><td><code>settings.viewer-status-bar</code><br><span class="muted">viewer-status-bar</span></td><td>off</td><td>on or off</td><td>Show a status bar under the viewer&#x27;s item: its position, name, resolution, frame rate and file size</td></tr>
+<tr><td><code>settings.viewer-status-overlay-position</code><br><span class="muted">viewer-status-overlay-position</span></td><td><code>bottom-middle</code></td><td><code>top-left</code>, <code>top-middle</code>, <code>top-right</code>, <code>bottom-left</code>, <code>bottom-middle</code>, <code>bottom-right</code></td><td>Where the status bar floats over the viewer&#x27;s item in fullscreen</td></tr>
+<tr><td><code>viewer.blurred-background</code><br><span class="muted">viewer-blurred-background</span></td><td>off</td><td>on or off</td><td>Show a blurred, dimmed, cropped copy of the picture behind it in the viewer</td></tr>
+<tr><td><code>viewer.thumbnail-bar.side</code><br><span class="muted">viewer-thumbnail-bar</span></td><td><code>bottom</code></td><td><code>top</code>, <code>left</code>, <code>bottom</code>, <code>right</code></td><td>The side of the viewer the thumbnail bar is on</td></tr>
+<tr><td><code>viewer.thumbnail-bar.shown</code><br><span class="muted">viewer-thumbnail-bar-shown</span></td><td>on</td><td>on or off</td><td>Show the thumbnail bar in the viewer</td></tr>
+<tr><td><code>viewer.thumbnail-bar.overlay</code><br><span class="muted">viewer-thumbnail-bar-overlay</span></td><td>on</td><td>on or off</td><td>Float the thumbnail bar over the picture, rather than beside it</td></tr>
+<tr><td><code>viewer.thumbnail-bar.pinned</code><br><span class="muted">viewer-thumbnail-bar-pinned</span></td><td>off</td><td>on or off</td><td>Keep the floating thumbnail bar shown, rather than only while the pointer is near it</td></tr>
+<tr><td><code>viewer.thumbnail-bar.size</code><br><span class="muted">viewer-thumbnail-bar-size</span></td><td><code>80</code></td><td>48 to 256</td><td>The size of the thumbnails in the viewer&#x27;s thumbnail bar, in pixels</td></tr>
+</tbody></table></div>
+<h2 id="pictures">Pictures</h2>
+<div class="table-wrap"><table>
+<thead><tr><th>Setting</th><th>Default</th><th>Values</th><th>What it does</th></tr></thead>
+<tbody>
+<tr><td><code>image.fit</code><br><span class="muted">image-fit</span></td><td><code>window</code></td><td><code>window</code>, <code>width</code>, <code>height</code>, <code>fill</code>, <code>original</code></td><td>How an image is sized when it is opened: to fit the window, its width or its height, to cover the window, or at its own size</td></tr>
+<tr><td><code>image.keep-fit</code><br><span class="muted">keep-fit-mode</span></td><td>on</td><td>on or off</td><td>Keep the fit mode when switching images</td></tr>
+<tr><td><code>image.original-focus</code><br><span class="muted">original-focus</span></td><td><code>center</code></td><td><code>top</code>, <code>center</code>, <code>cursor</code></td><td>Where an image shown at its own size sits: its top at the top of the window, its centre in the middle, or the point under the pointer kept in place</td></tr>
+<tr><td><code>image.unlock-minimum-zoom</code><br><span class="muted">unlock-minimum-zoom</span></td><td>off</td><td>on or off</td><td>Let zooming out go below the image&#x27;s own size; locked, zooming out stops at 100%</td></tr>
+<tr><td><code>image.zoom-step</code><br><span class="muted">zoom-step</span></td><td><code>25</code></td><td>5 to 100</td><td>How much one zoom step enlarges or shrinks the picture, in percent</td></tr>
+<tr><td><code>image.expand-up-to-factor</code><br><span class="muted">expand-up-to-factor</span></td><td><code>0</code></td><td>0 to 4</td><td>Largest zoom, as a multiple of their own size, that small images are enlarged to when fitted; 0 has no limit</td></tr>
+<tr><td><code>image.smooth-upscaling</code><br><span class="muted">smooth-upscaling</span></td><td>on</td><td>on or off</td><td>Smooth pixels when images are enlarged, rather than drawing them as blocks; off uses nearest for enlarged images</td></tr>
+<tr><td><code>image.scaling-filter</code><br><span class="muted">scaling-filter</span></td><td><code>linear</code></td><td><code>nearest</code>, <code>linear</code>, <code>linear-sharp</code>, <code>cubic</code>, <code>cubic-sharp</code></td><td>How images are resampled when drawn: nearest keeps pixels sharp, linear smooths them, cubic smooths them with more detail, and the sharp ones sharpen the result</td></tr>
+<tr><td><code>viewer.image-preloading</code><br><span class="muted">image-preloading</span></td><td>on</td><td>on or off</td><td>When viewing an image, preload the adjacent images in the background</td></tr>
+</tbody></table></div>
+<h2 id="videos">Videos</h2>
+<div class="table-wrap"><table>
+<thead><tr><th>Setting</th><th>Default</th><th>Values</th><th>What it does</th></tr></thead>
+<tbody>
+<tr><td><code>video.backend</code><br><span class="muted">video-backend</span></td><td><code>mpv</code></td><td><code>mpv</code>, <code>gtk</code></td><td>What plays videos: libmpv, or GStreamer through GTK&#x27;s own media backend</td></tr>
+<tr><td><code>video.mpv-args</code><br><span class="muted">mpv-args</span></td><td><code>&quot;&quot;</code></td><td>text</td><td>Extra mpv command line options for the mpv player, such as --hwdec=auto-copy</td></tr>
+<tr><td><code>video.seek-overlay</code><br><span class="muted">seek-overlay</span></td><td>on</td><td>on or off</td><td>Show a progress bar and the time over a video when it is skipped through</td></tr>
+<tr><td><code>video.seek-overlay-bar</code><br><span class="muted">seek-overlay-bar</span></td><td>on</td><td>on or off</td><td>Show a progress bar in the seek overlay</td></tr>
+<tr><td><code>video.seek-overlay-time</code><br><span class="muted">seek-overlay-time</span></td><td>on</td><td>on or off</td><td>Show the time in the seek overlay</td></tr>
+<tr><td><code>video.seek-overlay-time-format</code><br><span class="muted">seek-overlay-time-format</span></td><td><code>elapsed-total</code></td><td><code>elapsed-total</code>, <code>remaining-total</code>, <code>elapsed</code>, <code>remaining</code></td><td>How the seek overlay writes the time: elapsed and total, remaining and total, or just one of them</td></tr>
+<tr><td><code>video.seek-overlay-position</code><br><span class="muted">seek-overlay-position</span></td><td><code>top-middle</code></td><td><code>top-left</code>, <code>top-middle</code>, <code>top-right</code>, <code>bottom-left</code>, <code>bottom-middle</code>, <code>bottom-right</code></td><td>Where the seek overlay sits over the video</td></tr>
+<tr><td><code>video.seek-overlay-seconds</code><br><span class="muted">seek-overlay-seconds</span></td><td><code>2.0</code></td><td>0.5 to 10.0</td><td>How long the seek overlay stays up after a skip, in seconds</td></tr>
+<tr><td><code>video.seek-overlay-width</code><br><span class="muted">seek-overlay-width</span></td><td><code>360</code></td><td>120 to 1200</td><td>The width of the seek overlay&#x27;s progress bar, in pixels</td></tr>
+<tr><td><code>video.seek-overlay-always</code><br><span class="muted">seek-overlay-always</span></td><td>off</td><td>on or off</td><td>Keep the seek overlay up while a video plays, rather than only after a skip</td></tr>
+</tbody></table></div>
+<h2 id="svp">SVP</h2>
+<div class="table-wrap"><table>
+<thead><tr><th>Setting</th><th>Default</th><th>Values</th><th>What it does</th></tr></thead>
+<tbody>
+<tr><td><code>settings.svp-enabled</code><br><span class="muted">svp-enabled</span></td><td>off</td><td>on or off</td><td>Interpolate the frames of videos played by libmpv with SVP (SmoothVideo Project)</td></tr>
+<tr><td><code>settings.svp-plugin-directory</code><br><span class="muted">svp-plugin-directory</span></td><td><code>/opt/svp/plugins</code></td><td>text</td><td>The directory of SVP&#x27;s VapourSynth plugin libraries</td></tr>
+<tr><td><code>settings.svp-fps-mode</code><br><span class="muted">svp-fps-mode</span></td><td><code>display</code></td><td><code>default</code>, <code>fixed</code>, <code>variable</code>, <code>display</code></td><td>The output frame rate: the source&#x27;s, a fixed target, the target divided by the speed, or the display&#x27;s rate divided by the speed</td></tr>
+<tr><td><code>settings.svp-fps-target</code><br><span class="muted">svp-fps-target</span></td><td><code>0.0</code></td><td>number</td><td>The target output frame rate for the fixed and variable modes, or 0 for the source&#x27;s</td></tr>
+<tr><td><code>settings.svp-fps-minimum</code><br><span class="muted">svp-fps-minimum</span></td><td><code>60</code></td><td>whole number</td><td>The lowest output frame rate SVP is given</td></tr>
+<tr><td><code>settings.svp-fps-maximum</code><br><span class="muted">svp-fps-maximum</span></td><td><code>240</code></td><td>whole number</td><td>The highest output frame rate SVP is given</td></tr>
+<tr><td><code>settings.svp-nvof</code><br><span class="muted">svp-nvof</span></td><td>on</td><td>on or off</td><td>Use NVIDIA optical flow for SVP&#x27;s motion analysis, rather than the CPU</td></tr>
+</tbody></table></div>
+<h2 id="mouse-and-scrolling">Mouse and scrolling</h2>
+<div class="table-wrap"><table>
+<thead><tr><th>Setting</th><th>Default</th><th>Values</th><th>What it does</th></tr></thead>
+<tbody>
+<tr><td><code>mouse.back</code><br><span class="muted">mouse-back</span></td><td><code>back</code></td><td><code>back</code>, <code>up</code>, <code>previous</code>, <code>next</code>, <code>forward</code>, <code>none</code></td><td>What the mouse&#x27;s back button does: back, up, previous, next, forward, or none</td></tr>
+<tr><td><code>mouse.forward</code><br><span class="muted">mouse-forward</span></td><td><code>forward</code></td><td><code>back</code>, <code>up</code>, <code>previous</code>, <code>next</code>, <code>forward</code>, <code>none</code></td><td>What the mouse&#x27;s forward button does: back, up, previous, next, forward, or none</td></tr>
+<tr><td><code>mouse.scroll-image</code><br><span class="muted">scroll-image</span></td><td><code>ctrl-zoom</code></td><td><code>ctrl-zoom</code>, <code>zoom</code>, <code>step</code>, <code>none</code></td><td>What the scroll wheel does over a picture: zoom with Ctrl, zoom, step between items, or nothing</td></tr>
+<tr><td><code>mouse.scroll-video</code><br><span class="muted">scroll-video</span></td><td><code>none</code></td><td><code>volume</code>, <code>seek</code>, <code>step</code>, <code>none</code></td><td>What the scroll wheel does over a video: volume, seek, step between items, or nothing</td></tr>
+<tr><td><code>mouse.scroll-speed</code><br><span class="muted">scroll-speed</span></td><td><code>100</code></td><td>10 to 400</td><td>How far each notch of the scroll wheel moves, in percent of the normal amount</td></tr>
+</tbody></table></div>
+<h2 id="thumbnail-generator">Thumbnail generator</h2>
+<div class="table-wrap"><table>
+<thead><tr><th>Setting</th><th>Default</th><th>Values</th><th>What it does</th></tr></thead>
+<tbody>
+<tr><td><code>thumbnails.threads</code><br><span class="muted">thumbnail-threads</span></td><td><code>4</code></td><td>1 to 4096</td><td>How many thumbnails are made at the same time, at most the number of threads on the system</td></tr>
+<tr><td><code>thumbnails.cache</code><br><span class="muted">thumbnail-cache</span></td><td>on</td><td>on or off</td><td>Keep thumbnails on disk, so they are not made again the next time they are shown</td></tr>
+<tr><td><code>thumbnails.unload-offscreen</code><br><span class="muted">thumbnail-unload-offscreen</span></td><td>on</td><td>on or off</td><td>Free the memory of thumbnails scrolled out of view, and load them again when they come back</td></tr>
+</tbody></table></div>
+<h2 id="remote-control">Remote control</h2>
+<div class="table-wrap"><table>
+<thead><tr><th>Setting</th><th>Default</th><th>Values</th><th>What it does</th></tr></thead>
+<tbody>
+<tr><td><code>remote.socket</code><br><span class="muted">ipc-socket</span></td><td>off</td><td>on or off</td><td>Serve the JSON IPC on a Unix socket in the runtime directory</td></tr>
+<tr><td><code>remote.socket-path</code><br><span class="muted">ipc-socket-path</span></td><td><span class="muted">empty</span></td><td>text</td><td>Where the Unix socket is; empty for rsimgv.sock in the runtime directory</td></tr>
+<tr><td><code>remote.tcp-enabled</code><br><span class="muted">ipc-tcp-enabled</span></td><td>off</td><td>on or off</td><td>Serve the JSON IPC on a TCP port</td></tr>
+<tr><td><code>remote.tcp-port</code><br><span class="muted">ipc-tcp-port</span></td><td><code>9700</code></td><td>1 to 65535</td><td>The TCP port the JSON IPC is served on, when TCP is enabled</td></tr>
+<tr><td><code>remote.http-enabled</code><br><span class="muted">ipc-http-enabled</span></td><td>off</td><td>on or off</td><td>Serve the JSON IPC over HTTP</td></tr>
+<tr><td><code>remote.http-port</code><br><span class="muted">ipc-http-port</span></td><td><code>9780</code></td><td>1 to 65535</td><td>The HTTP port the JSON IPC is served on, when HTTP is enabled</td></tr>
+<tr><td><code>remote.external-access</code><br><span class="muted">ipc-external-access</span></td><td>off</td><td>on or off</td><td>Let other machines reach the TCP and HTTP IPC ports, rather than only localhost</td></tr>
+</tbody></table></div>
+<h2 id="scripts">Scripts</h2>
+<div class="table-wrap"><table>
+<thead><tr><th>Setting</th><th>Default</th><th>Values</th><th>What it does</th></tr></thead>
+<tbody>
+<tr><td><code>settings.scripts</code><br><span class="muted">scripts</span></td><td><code>[]</code></td><td>list</td><td>Scripts listed in the preferences, each a JSON object with its name, command and wait flag</td></tr>
+</tbody></table></div>

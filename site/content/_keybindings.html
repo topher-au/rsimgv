@@ -1,0 +1,103 @@
+<h3 id="keys-global">Global</h3>
+<p>Work in every context unless a more specific one binds the same key.</p>
+<div class="table-wrap"><table>
+<thead><tr><th>Action</th><th>Default keys</th><th>What it does</th><th>Can be bound in</th></tr></thead>
+<tbody>
+<tr><td><strong>Quit</strong><br><code>app.quit</code></td><td class="keys"><kbd>Ctrl</kbd>+<kbd>Q</kbd></td><td>Close the application.</td><td>any context</td></tr>
+<tr><td><strong>Settings</strong><br><code>win.settings</code></td><td class="keys"><kbd>Ctrl</kbd>+<kbd>,</kbd></td><td>Open the settings window.</td><td>any context</td></tr>
+<tr><td><strong>Edit Keybindings</strong><br><code>win.settings-keybindings</code></td><td class="keys"><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>,</kbd></td><td>Open the settings on the Keybindings page.</td><td>any context</td></tr>
+<tr><td><strong>Open Folder</strong><br><code>win.open-folder</code></td><td class="keys"><kbd>Ctrl</kbd>+<kbd>O</kbd></td><td>Choose a folder to browse in this window.</td><td>any context</td></tr>
+<tr><td><strong>Edit Location</strong><br><code>win.edit-location</code></td><td class="keys"><kbd>Ctrl</kbd>+<kbd>L</kbd></td><td>Type a path to open, in the path bar.</td><td>any context</td></tr>
+<tr><td><strong>Back</strong><br><code>win.navigate-back</code></td><td class="keys"><kbd>Alt</kbd>+<kbd>Left</kbd></td><td>Go back to the folder shown before this one.</td><td>any context</td></tr>
+<tr><td><strong>Forward</strong><br><code>win.navigate-forward</code></td><td class="keys"><kbd>Alt</kbd>+<kbd>Right</kbd></td><td>Go forward to the folder after this one in the history.</td><td>any context</td></tr>
+<tr><td><strong>Go Up</strong><br><code>win.navigate-up</code></td><td class="keys"><kbd>Alt</kbd>+<kbd>UP</kbd></td><td>Go to the parent folder.</td><td>any context</td></tr>
+<tr><td><strong>Next Folder</strong><br><code>win.next-folder</code></td><td class="keys"><span class="muted">unbound</span></td><td>Go to the next folder in depth-first order of the folder tree. In the viewer, go to the next folder with a picture or video and show its first one.</td><td>any context</td></tr>
+<tr><td><strong>Previous Folder</strong><br><code>win.previous-folder</code></td><td class="keys"><span class="muted">unbound</span></td><td>Go to the previous folder in depth-first order of the folder tree. In the viewer, go to the previous folder with a picture or video and show its first one.</td><td>any context</td></tr>
+<tr><td><strong>Next Media Folder</strong><br><code>win.next-media-folder</code></td><td class="keys"><span class="muted">unbound</span></td><td>Go to the next folder with a picture or video, and select its first one.</td><td>any context</td></tr>
+<tr><td><strong>Previous Media Folder</strong><br><code>win.previous-media-folder</code></td><td class="keys"><span class="muted">unbound</span></td><td>Go to the previous folder with a picture or video, and select its last one.</td><td>any context</td></tr>
+<tr><td><strong>Bookmark Folder</strong><br><code>win.bookmark-folder</code></td><td class="keys"><kbd>Ctrl</kbd>+<kbd>D</kbd></td><td>Bookmark the folder shown, under a name you choose.</td><td>any context</td></tr>
+<tr><td><strong>Toggle Bookmarks</strong><br><code>win.toggle-bookmarks</code></td><td class="keys"><span class="muted">unbound</span></td><td>Expand or collapse the bookmarks list in the sidebar.</td><td>any context</td></tr>
+<tr><td><strong>Toggle Sidebar</strong><br><code>win.toggle-sidebar</code></td><td class="keys"><kbd>F9</kbd></td><td>Show or hide the sidebar.</td><td>any context</td></tr>
+<tr><td><strong>Toggle Keybinds Overlay</strong><br><code>win.toggle-keybinds</code></td><td class="keys"><kbd>F1</kbd></td><td>Show or hide a list of the keybindings in force where you are: the ones for browsing, or for the viewer, a picture or a video, and the global ones.</td><td>any context</td></tr>
+<tr><td><strong>Fullscreen</strong><br><code>win.toggle-fullscreen</code></td><td class="keys"><kbd>F11</kbd></td><td>Switch the window between fullscreen and windowed.</td><td>any context</td></tr>
+<tr><td><strong>Show Notification</strong><br><code>win.notify</code></td><td class="keys"><span class="muted">unbound</span></td><td>Show a message over the window. Each binding sets the message, its level and how many seconds it stays.</td><td>any context</td></tr>
+<tr><td><strong>Run Script</strong><br><code>script</code></td><td class="keys"><span class="muted">unbound</span></td><td>Run one of the scripts from the Scripts page on the item under the cursor while browsing, or on the item the viewer shows. Each binding picks its script.</td><td>any context</td></tr>
+</tbody></table></div>
+<h3 id="keys-browsing">Browsing</h3>
+<p>Active while you browse a folder.</p>
+<div class="table-wrap"><table>
+<thead><tr><th>Action</th><th>Default keys</th><th>What it does</th><th>Can be bound in</th></tr></thead>
+<tbody>
+<tr><td><strong>Move Up</strong><br><code>browse.cursor-up</code></td><td class="keys"><kbd>UP</kbd> <kbd>W</kbd></td><td>Move the cursor up one row.</td><td>Browsing, Global</td></tr>
+<tr><td><strong>Move Down</strong><br><code>browse.cursor-down</code></td><td class="keys"><kbd>Down</kbd> <kbd>S</kbd></td><td>Move the cursor down one row.</td><td>Browsing, Global</td></tr>
+<tr><td><strong>Move Left</strong><br><code>browse.cursor-previous</code></td><td class="keys"><kbd>Left</kbd> <kbd>A</kbd></td><td>Move the cursor to the item before it.</td><td>Browsing, Global</td></tr>
+<tr><td><strong>Move Right</strong><br><code>browse.cursor-next</code></td><td class="keys"><kbd>Right</kbd> <kbd>D</kbd></td><td>Move the cursor to the item after it.</td><td>Browsing, Global</td></tr>
+<tr><td><strong>Page Up</strong><br><code>browse.cursor-page-up</code></td><td class="keys"><kbd>Page Up</kbd></td><td>Move the cursor up one page.</td><td>Browsing, Global</td></tr>
+<tr><td><strong>Page Down</strong><br><code>browse.cursor-page-down</code></td><td class="keys"><kbd>Page Down</kbd></td><td>Move the cursor down one page.</td><td>Browsing, Global</td></tr>
+<tr><td><strong>First Item</strong><br><code>browse.first</code></td><td class="keys"><kbd>Home</kbd></td><td>Move the cursor to the first item.</td><td>Browsing, Global</td></tr>
+<tr><td><strong>Last Item</strong><br><code>browse.last</code></td><td class="keys"><kbd>End</kbd></td><td>Move the cursor to the last item.</td><td>Browsing, Global</td></tr>
+<tr><td><strong>Select All</strong><br><code>browse.select-all</code></td><td class="keys"><kbd>Ctrl</kbd>+<kbd>A</kbd></td><td>Mark every item in the folder, to act on them together.</td><td>Browsing, Global</td></tr>
+<tr><td><strong>Open</strong><br><code>browse.open</code></td><td class="keys"><kbd>E</kbd> <kbd>Enter</kbd></td><td>Open the item under the cursor: a folder is browsed, a picture or video is shown in the viewer.</td><td>Browsing, Global</td></tr>
+<tr><td><strong>Show Tooltip</strong><br><code>browse.show-tooltip</code></td><td class="keys"><span class="muted">unbound</span></td><td>Show the description of the item under the cursor, which otherwise opens only when the pointer rests over an item.</td><td>Browsing, Global</td></tr>
+<tr><td><strong>Up Directory</strong><br><code>browse.up-directory</code></td><td class="keys"><kbd>Q</kbd> <kbd>Backspace</kbd></td><td>Go to the parent folder.</td><td>Browsing, Global</td></tr>
+<tr><td><strong>Larger Thumbnails</strong><br><code>browse.thumbnail-larger</code></td><td class="keys"><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>=</kbd> <kbd>Ctrl</kbd>+<kbd>=</kbd></td><td>Make the items in the browse view larger.</td><td>Browsing, Global</td></tr>
+<tr><td><strong>Smaller Thumbnails</strong><br><code>browse.thumbnail-smaller</code></td><td class="keys"><kbd>Ctrl</kbd>+<kbd>-</kbd></td><td>Make the items in the browse view smaller.</td><td>Browsing, Global</td></tr>
+<tr><td><strong>Toggle Hidden Files</strong><br><code>browse.toggle-hidden</code></td><td class="keys"><kbd>Ctrl</kbd>+<kbd>H</kbd></td><td>Show or hide hidden files and folders.</td><td>any context</td></tr>
+<tr><td><strong>Toggle Media Only</strong><br><code>browse.toggle-media-only</code></td><td class="keys"><kbd>Ctrl</kbd>+<kbd>M</kbd></td><td>Show only pictures and videos, or every file.</td><td>any context</td></tr>
+<tr><td><strong>Toggle Filename</strong><br><code>browse.toggle-filename</code></td><td class="keys"><span class="muted">unbound</span></td><td>Show or hide each item&#x27;s filename.</td><td>Browsing, Global</td></tr>
+<tr><td><strong>Toggle Item Info</strong><br><code>browse.toggle-item-info</code></td><td class="keys"><span class="muted">unbound</span></td><td>Show or hide each item&#x27;s information under its name.</td><td>Browsing, Global</td></tr>
+</tbody></table></div>
+<h3 id="keys-viewer">Viewer</h3>
+<p>Active in the viewer, for pictures and videos alike.</p>
+<div class="table-wrap"><table>
+<thead><tr><th>Action</th><th>Default keys</th><th>What it does</th><th>Can be bound in</th></tr></thead>
+<tbody>
+<tr><td><strong>Previous Item</strong><br><code>view.previous</code></td><td class="keys"><kbd>,</kbd></td><td>Show the picture or video before this one in the folder.</td><td>Viewer, Picture, Video, Global</td></tr>
+<tr><td><strong>Next Item</strong><br><code>view.next</code></td><td class="keys"><kbd>.</kbd></td><td>Show the picture or video after this one in the folder.</td><td>Viewer, Picture, Video, Global</td></tr>
+<tr><td><strong>First Item</strong><br><code>view.first</code></td><td class="keys"><kbd>Shift</kbd>+<kbd>,</kbd></td><td>Show the first picture or video in the folder.</td><td>Viewer, Picture, Video, Global</td></tr>
+<tr><td><strong>Last Item</strong><br><code>view.last</code></td><td class="keys"><kbd>Shift</kbd>+<kbd>.</kbd></td><td>Show the last picture or video in the folder.</td><td>Viewer, Picture, Video, Global</td></tr>
+<tr><td><strong>Close Viewer</strong><br><code>view.close</code></td><td class="keys"><kbd>Q</kbd> <kbd>Esc</kbd></td><td>Close the viewer and return to the browse view.</td><td>Viewer, Picture, Video, Global</td></tr>
+<tr><td><strong>Pin Viewer Header</strong><br><code>view.pin</code></td><td class="keys"><kbd>P</kbd></td><td>Keep the viewer&#x27;s header above the picture in fullscreen, and a video&#x27;s controls shown.</td><td>Viewer, Picture, Video, Global</td></tr>
+<tr><td><strong>Toggle Thumbnail Bar</strong><br><code>view.toggle-thumbnail-bar</code></td><td class="keys"><kbd>T</kbd></td><td>Show or hide the viewer&#x27;s thumbnail bar.</td><td>Viewer, Picture, Video, Global</td></tr>
+<tr><td><strong>Pin Thumbnail Bar</strong><br><code>view.toggle-thumbnail-bar-pin</code></td><td class="keys"><span class="muted">unbound</span></td><td>Keep the floating thumbnail bar shown, or let it hide until the pointer comes near.</td><td>Viewer, Picture, Video, Global</td></tr>
+<tr><td><strong>Toggle Thumbnail Bar Overlay</strong><br><code>view.toggle-thumbnail-bar-overlay</code></td><td class="keys"><span class="muted">unbound</span></td><td>Float the thumbnail bar over the picture, or put it beside the picture.</td><td>Viewer, Picture, Video, Global</td></tr>
+<tr><td><strong>Toggle Status Bar</strong><br><code>view.toggle-status-bar</code></td><td class="keys"><span class="muted">unbound</span></td><td>Show or hide the status bar under the viewer&#x27;s item.</td><td>Viewer, Picture, Video, Global</td></tr>
+</tbody></table></div>
+<h3 id="keys-picture">Picture</h3>
+<p>Active while the viewer shows a picture.</p>
+<div class="table-wrap"><table>
+<thead><tr><th>Action</th><th>Default keys</th><th>What it does</th><th>Can be bound in</th></tr></thead>
+<tbody>
+<tr><td><strong>Zoom In</strong><br><code>image.zoom-in</code></td><td class="keys"><kbd>Shift</kbd>+<kbd>=</kbd> <kbd>=</kbd></td><td>Enlarge the picture.</td><td>Picture, Global</td></tr>
+<tr><td><strong>Zoom Out</strong><br><code>image.zoom-out</code></td><td class="keys"><kbd>-</kbd></td><td>Shrink the picture.</td><td>Picture, Global</td></tr>
+<tr><td><strong>Zoom In at Pointer</strong><br><code>image.zoom-in-at-pointer</code></td><td class="keys"><span class="muted">unbound</span></td><td>Enlarge the picture, keeping the point under the pointer in place.</td><td>Picture, Global</td></tr>
+<tr><td><strong>Zoom Out at Pointer</strong><br><code>image.zoom-out-at-pointer</code></td><td class="keys"><span class="muted">unbound</span></td><td>Shrink the picture, keeping the point under the pointer in place.</td><td>Picture, Global</td></tr>
+<tr><td><strong>Cycle Fit Mode</strong><br><code>image.fit-cycle</code></td><td class="keys"><kbd>F</kbd></td><td>Switch to the next fit mode: window, width, height, fill, then original size.</td><td>Picture, Global</td></tr>
+<tr><td><strong>Fit Window</strong><br><code>image.fit-window</code></td><td class="keys"><kbd>1</kbd></td><td>Scale the picture to fit the window.</td><td>Picture, Global</td></tr>
+<tr><td><strong>Fit Width</strong><br><code>image.fit-width</code></td><td class="keys"><kbd>2</kbd></td><td>Scale the picture to the width of the window.</td><td>Picture, Global</td></tr>
+<tr><td><strong>Fit Height</strong><br><code>image.fit-height</code></td><td class="keys"><kbd>3</kbd></td><td>Scale the picture to the height of the window.</td><td>Picture, Global</td></tr>
+<tr><td><strong>Fill Window</strong><br><code>image.fit-fill</code></td><td class="keys"><kbd>5</kbd></td><td>Scale the picture to cover the window, cropping what overhangs.</td><td>Picture, Global</td></tr>
+<tr><td><strong>Original Size</strong><br><code>image.fit-original</code></td><td class="keys"><kbd>4</kbd></td><td>Show the picture at its own size.</td><td>Picture, Global</td></tr>
+<tr><td><strong>Pan Up</strong><br><code>image.pan-up</code></td><td class="keys"><kbd>UP</kbd></td><td>Move the picture up within the window.</td><td>Picture, Global</td></tr>
+<tr><td><strong>Pan Down</strong><br><code>image.pan-down</code></td><td class="keys"><kbd>Down</kbd></td><td>Move the picture down within the window.</td><td>Picture, Global</td></tr>
+<tr><td><strong>Pan Left</strong><br><code>image.pan-left</code></td><td class="keys"><kbd>Left</kbd></td><td>Move the picture left within the window.</td><td>Picture, Global</td></tr>
+<tr><td><strong>Pan Right</strong><br><code>image.pan-right</code></td><td class="keys"><kbd>Right</kbd></td><td>Move the picture right within the window.</td><td>Picture, Global</td></tr>
+</tbody></table></div>
+<h3 id="keys-video">Video</h3>
+<p>Active while the viewer shows a video.</p>
+<div class="table-wrap"><table>
+<thead><tr><th>Action</th><th>Default keys</th><th>What it does</th><th>Can be bound in</th></tr></thead>
+<tbody>
+<tr><td><strong>Play / Pause</strong><br><code>video.play-pause</code></td><td class="keys"><kbd>Space</kbd></td><td>Play the video, or pause it while it plays.</td><td>Video, Global</td></tr>
+<tr><td><strong>Seek Forward</strong><br><code>video.seek-forward</code></td><td class="keys"><kbd>Right</kbd></td><td>Skip forward 5 seconds.</td><td>Video, Global</td></tr>
+<tr><td><strong>Seek Backward</strong><br><code>video.seek-backward</code></td><td class="keys"><kbd>Left</kbd></td><td>Skip back 5 seconds.</td><td>Video, Global</td></tr>
+<tr><td><strong>Seek</strong><br><code>video.seek</code></td><td class="keys"><span class="muted">unbound</span></td><td>Move the playback position by the number of seconds bound; a negative number goes back.</td><td>Video, Global</td></tr>
+<tr><td><strong>Set Speed</strong><br><code>video.set-speed</code></td><td class="keys"><span class="muted">unbound</span></td><td>Play at the speed bound, such as 2 for double speed or 0.5 for half; 1 is normal.</td><td>Video, Global</td></tr>
+<tr><td><strong>Adjust Speed</strong><br><code>video.adjust-speed</code></td><td class="keys"><span class="muted">unbound</span></td><td>Change the playback speed by the amount bound, such as 0.25 faster; a negative amount slows it.</td><td>Video, Global</td></tr>
+<tr><td><strong>Volume Up</strong><br><code>video.volume-up</code></td><td class="keys"><kbd>UP</kbd></td><td>Raise the volume.</td><td>Video, Global</td></tr>
+<tr><td><strong>Volume Down</strong><br><code>video.volume-down</code></td><td class="keys"><kbd>Down</kbd></td><td>Lower the volume.</td><td>Video, Global</td></tr>
+<tr><td><strong>Adjust Volume</strong><br><code>video.volume</code></td><td class="keys"><span class="muted">unbound</span></td><td>Change the volume by the percentage bound; a negative number turns it down.</td><td>Video, Global</td></tr>
+<tr><td><strong>Mute</strong><br><code>video.mute</code></td><td class="keys"><kbd>M</kbd></td><td>Mute the sound, or unmute it.</td><td>Video, Global</td></tr>
+<tr><td><strong>Toggle Repeat</strong><br><code>video.repeat</code></td><td class="keys"><kbd>R</kbd></td><td>Play the video again from the start when it ends, or stop repeating it.</td><td>Video, Global</td></tr>
+<tr><td><strong>Toggle Auto-Advance</strong><br><code>video.auto-advance</code></td><td class="keys"><kbd>N</kbd></td><td>When a video ends, show the next item in the folder, or stop doing so.</td><td>Video, Global</td></tr>
+</tbody></table></div>
