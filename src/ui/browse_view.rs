@@ -306,7 +306,7 @@ fn request_thumbnail(
     let crop = view.thumbnail_crop();
     Thumbnails::shared().request_still(
         &path,
-        modified_secs(entry),
+        crate::fs::thumbnail::stamp(&path),
         media,
         ThumbnailSize::for_pixels(size * cell.scale_factor()),
         wanted_at(view, cell, &path, size),
@@ -349,7 +349,7 @@ fn scattered_media(folder: &Path) -> Vec<Picture> {
             if metadata.is_dir() {
                 return None;
             }
-            let modified = metadata.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs() as i64;
+            let modified = crate::fs::thumbnail::stamp(&path);
             let size = metadata.len();
             let kind = gio::content_type_guess(Some(&path), None::<&[u8]>).0;
             let media = if kind.starts_with("image/") && !kind.starts_with("image/svg") {
@@ -2179,7 +2179,7 @@ impl BrowseView {
         let hover_view = self.downgrade();
         Thumbnails::shared().request_frames(
             &path,
-            modified_secs(&entry),
+            crate::fs::thumbnail::stamp(&path),
             ThumbnailSize::for_pixels(self.item_size() * cell.scale_factor()),
             move || {
                 still_wanted()
