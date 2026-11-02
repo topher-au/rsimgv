@@ -334,8 +334,10 @@ const MAX_CACHED_SCANS: usize = 256;
 fn scattered_media(folder: &Path) -> Vec<Picture> {
     let mut random = Seeded::for_folder(folder);
     let Ok(read) = std::fs::read_dir(folder) else { return Vec::new() };
-    let mut paths: Vec<PathBuf> = read.filter_map(|entry| entry.ok().map(|entry| entry.path())).take(SCATTER_SCAN).collect();
+    // The same names are taken whatever order the folder lists them in: the first ones by name.
+    let mut paths: Vec<PathBuf> = read.filter_map(|entry| entry.ok().map(|entry| entry.path())).collect();
     paths.sort();
+    paths.truncate(SCATTER_SCAN);
     let mut media: Vec<Picture> = paths
         .into_iter()
         .filter_map(|path| {
@@ -547,6 +549,11 @@ fn request_photo(view: &BrowseView, cell: &gtk::Box, icon: &gtk::Image, scattere
         ThumbnailSize::for_pixels(size * cell.scale_factor()),
         wanted_at(view, cell, folder, size),
         move |texture| {
+            // A newer layout of the folder may already be up on the icon; this picture belongs to the old one.
+            let shown = icon.upgrade().and_then(|icon| icon.paintable()).and_then(|paintable| paintable.downcast::<ScatteredThumbnail>().ok());
+            if shown.is_some_and(|shown| shown != scattered) {
+                return;
+            }
             scattered.set_photo(index, texture, turn);
             if let Some(icon) = icon.upgrade() {
                 icon.set_pixel_size(size);
