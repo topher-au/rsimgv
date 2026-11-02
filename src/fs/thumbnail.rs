@@ -241,6 +241,8 @@ impl Thumbnails {
         };
         let mut waiters = self.inner.waiters.borrow_mut();
         if let Some(list) = waiters.get_mut(&key) {
+            // Requests that no longer want it are dropped first, so the list does not grow each time a cell asks again.
+            list.retain(|waiter| (waiter.wanted)());
             list.push(waiter);
             drop(waiters);
             // Asked for again while queued, so it is wanted now: it moves to the front of the queue.
@@ -745,6 +747,21 @@ mod tests {
         assert!(thumbnails.next_wanted() == Some(old));
         assert!(thumbnails.next_wanted().is_none());
         assert!(!thumbnails.inner.waiters.borrow().contains_key(&scrolled_away));
+    }
+
+    #[test]
+    fn asking_again_drops_the_requests_that_no_longer_want_it() {
+        let thumbnails = Thumbnails::with_root(PathBuf::new());
+        let job = key(Path::new("picture.png"), 1, Size::for_pixels(128), Job::Still(Media::Picture));
+        let waiter = |wanted: bool| Waiter {
+            wanted: Rc::new(move || wanted),
+            on_ready: Box::new(|_| {}),
+        };
+        thumbnails.inner.waiters.borrow_mut().insert(job.clone(), vec![waiter(false), waiter(true), waiter(false)]);
+
+        thumbnails.request(job.clone(), || true, |_| {});
+
+        assert_eq!(thumbnails.inner.waiters.borrow()[&job].len(), 2);
     }
 
     #[test]
