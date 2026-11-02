@@ -6,6 +6,7 @@
 //! pin the bar shown and to float it over the picture.
 
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
@@ -16,7 +17,7 @@ use gtk::glib;
 
 use super::film_strip::FilmStrip;
 use super::media_viewer::is_video;
-use crate::fs::thumbnail::{Media as ThumbnailMedia, Size as ThumbnailSize, Thumbnails};
+use crate::fs::thumbnail::{self, Media as ThumbnailMedia, Size as ThumbnailSize, Thumbnails};
 
 /// The size of a thumbnail in the bar to start with, and the range it is kept within, in pixels.
 const THUMBNAIL_PIXELS: i32 = 80;
@@ -29,13 +30,15 @@ const RESIZE_EDGE: f64 = 8.0;
 /// How far, in pixels, the pointer must move before a press on the bar becomes a drag rather than a click.
 const DRAG_THRESHOLD: f64 = 24.0;
 
-/// The modification time of `path` in seconds, or 0 if it cannot be read.
-fn modified_secs(path: &Path) -> i64 {
-    std::fs::metadata(path)
-        .and_then(|metadata| metadata.modified())
-        .ok()
-        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
-        .map_or(0, |duration| duration.as_secs() as i64)
+/// The URI of `path`, which unlike its UTF-8 text keeps every byte of a file name. Paths shown here are absolute,
+/// so the conversion does not fail.
+fn uri_of(path: &Path) -> String {
+    glib::filename_to_uri(path, None).map(|uri| uri.to_string()).unwrap_or_default()
+}
+
+/// The path of the item `object` holds, from the URI it was made with.
+fn path_of(object: &gtk::StringObject) -> Option<PathBuf> {
+    glib::filename_from_uri(object.string().as_str()).ok().map(|(path, _)| path)
 }
 
 mod imp {
@@ -61,6 +64,8 @@ mod imp {
         /// The thumbnail size, shared with the factory, and the images it made, to resize them.
         pub(super) size: Rc<Cell<i32>>,
         pub(super) images: Rc<RefCell<Vec<glib::WeakRef<gtk::Image>>>>,
+        /// The stamp of each path shown, taken when the paths were set, so binding a row does not read the file.
+        pub(super) stamps: Rc<RefCell<HashMap<PathBuf, i64>>>,
     }
 
     impl Default for ThumbnailBar {
@@ -71,7 +76,8 @@ mod imp {
             selection.set_can_unselect(true);
             let size = Rc::new(Cell::new(THUMBNAIL_PIXELS));
             let images = Rc::new(RefCell::new(Vec::new()));
-            let list = gtk::ListView::new(Some(selection.clone()), Some(factory(size.clone(), images.clone())));
+            let stamps = Rc::new(RefCell::new(HashMap::new()));
+            let list = gtk::ListView::new(Some(selection.clone()), Some(factory(size.clone(), images.clone(), stamps.clone())));
             list.set_single_click_activate(true);
             list.add_css_class("thumbnail-bar-list");
             let scroller = gtk::ScrolledWindow::builder().child(&list).hexpand(true).vexpand(true).build();
@@ -108,6 +114,7 @@ mod imp {
                 side: Cell::new(gtk::PositionType::Bottom),
                 size,
                 images,
+                stamps,
             }
         }
     }
@@ -293,7 +300,7 @@ impl ThumbnailBar {
     fn refresh_thumbnails(&self) {
         let imp = self.imp();
         imp.images.borrow_mut().clear();
-        imp.list.set_factory(Some(&factory(imp.size.clone(), imp.images.clone())));
+        imp.list.set_factory(Some(&factory(imp.size.clone(), imp.images.clone(), imp.stamps.clone())));
         if let Some(position) = (imp.selection.selected() != gtk::INVALID_LIST_POSITION).then(|| imp.selection.selected()) {
             imp.list.scroll_to(position, gtk::ListScrollFlags::NONE, None);
         }
@@ -336,9 +343,10 @@ impl ThumbnailBar {
     /// Shows the thumbnails of `paths`, replacing those shown.
     pub fn set_paths(&self, paths: &[PathBuf]) {
         let imp = self.imp();
-        let names: Vec<String> = paths.iter().map(|path| path.to_string_lossy().into_owned()).collect();
-        let names: Vec<&str> = names.iter().map(String::as_str).collect();
-        imp.paths.splice(0, imp.paths.n_items(), &names);
+        *imp.stamps.borrow_mut() = paths.iter().map(|path| (path.clone(), thumbnail::stamp(path))).collect();
+        let uris: Vec<String> = paths.iter().map(|path| uri_of(path)).collect();
+        let uris: Vec<&str> = uris.iter().map(String::as_str).collect();
+        imp.paths.splice(0, imp.paths.n_items(), &uris);
     }
 
     /// Selects the thumbnail at `index` and scrolls it into view.
@@ -417,7 +425,11 @@ impl ThumbnailBar {
 
 /// Makes each row an image of `size`, which asks for its item's thumbnail when bound, and keeps the
 /// images in `images`.
-fn factory(size: Rc<Cell<i32>>, images: Rc<RefCell<Vec<glib::WeakRef<gtk::Image>>>>) -> gtk::SignalListItemFactory {
+fn factory(
+    size: Rc<Cell<i32>>,
+    images: Rc<RefCell<Vec<glib::WeakRef<gtk::Image>>>>,
+    stamps: Rc<RefCell<HashMap<PathBuf, i64>>>,
+) -> gtk::SignalListItemFactory {
     let factory = gtk::SignalListItemFactory::new();
     let setup_size = size.clone();
     factory.connect_setup(move |_, item| {
@@ -437,7 +449,7 @@ fn factory(size: Rc<Cell<i32>>, images: Rc<RefCell<Vec<glib::WeakRef<gtk::Image>
         let Some(item) = item.downcast_ref::<gtk::ListItem>() else { return };
         let (Some(image), Some(path)) = (
             item.child().and_downcast::<gtk::Image>(),
-            item.item().and_downcast::<gtk::StringObject>().map(|object| PathBuf::from(object.string().as_str())),
+            item.item().and_downcast::<gtk::StringObject>().and_then(|object| path_of(&object)),
         ) else {
             return;
         };
@@ -450,8 +462,8 @@ fn factory(size: Rc<Cell<i32>>, images: Rc<RefCell<Vec<glib::WeakRef<gtk::Image>
         let wanted_item = item.downgrade();
         let wanted_path = path.clone();
         let wanted = move || {
-            wanted_item.upgrade().and_then(|item| item.item().and_downcast::<gtk::StringObject>()).is_some_and(
-                |object| Path::new(object.string().as_str()) == wanted_path,
+            wanted_item.upgrade().and_then(|item| item.item().and_downcast::<gtk::StringObject>()).and_then(|object| path_of(&object)).is_some_and(
+                |shown| shown == wanted_path,
             )
         };
         let shown = image.downgrade();
@@ -459,7 +471,7 @@ fn factory(size: Rc<Cell<i32>>, images: Rc<RefCell<Vec<glib::WeakRef<gtk::Image>
         let ready_path = path.clone();
         Thumbnails::shared().request_still(
             &path,
-            modified_secs(&path),
+            stamps.borrow().get(&path).copied().unwrap_or_default(),
             media,
             ThumbnailSize::for_pixels(size.get() * image.scale_factor()),
             wanted,
@@ -468,7 +480,8 @@ fn factory(size: Rc<Cell<i32>>, images: Rc<RefCell<Vec<glib::WeakRef<gtk::Image>
                 let same = item
                     .item()
                     .and_downcast::<gtk::StringObject>()
-                    .is_some_and(|object| Path::new(object.string().as_str()) == ready_path);
+                    .and_then(|object| path_of(&object))
+                    .is_some_and(|shown| shown == ready_path);
                 if !same {
                     return;
                 }

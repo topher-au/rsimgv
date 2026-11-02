@@ -579,6 +579,16 @@ fn run_tool(command: &mut Command) -> Option<Vec<u8>> {
     status.success().then_some(data)
 }
 
+/// A stamp of when the file at `path` was last modified: its time in nanoseconds since the epoch, or 0 if it cannot
+/// be read. Thumbnails are kept for the stamp they were made at, so a rewrite within the same second is not missed.
+pub fn stamp(path: &Path) -> i64 {
+    std::fs::metadata(path)
+        .and_then(|metadata| metadata.modified())
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |duration| duration.as_nanos() as i64)
+}
+
 /// The pixels at `file` if they were made from the file at `mtime`. Otherwise the pixbuf from `produce`, saved
 /// as a thumbnail with its metadata, and cached at `file`.
 fn cached_or_made(file: &Path, uri: &str, mtime: i64, produce: impl FnOnce() -> Option<gdk_pixbuf::Pixbuf>) -> Option<Pixels> {
