@@ -84,6 +84,11 @@
       <default>true</default>
       <summary>When viewing an image, preload the adjacent images in the background</summary>
     </key>
+    <key name="thumbnail-threads" type="i">
+      <default>4</default>
+      <range min="1" max="4096"/>
+      <summary>How many thumbnails are made at the same time, at most the number of threads on the system</summary>
+    </key>
     <key name="folder-preview-fit" type="b">
       <default>false</default>
       <summary>Fit as many previews to a folder's icon as their pictures' dimensions allow, instead of a set number</summary>

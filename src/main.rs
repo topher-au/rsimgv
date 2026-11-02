@@ -21,6 +21,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::time::Duration;
 
+/// Gives the thumbnails what the settings say about making them.
+fn apply_thumbnail_settings(settings: &gio::Settings) {
+    let thumbnails = fs::thumbnail::Thumbnails::shared();
+    thumbnails.set_thread_count(settings.int("thumbnail-threads").max(1) as usize);
+}
+
 /// The settings that decide which IPC transports run, and on which ports.
 const IPC_KEYS: [&str; 7] = [
     "ipc-socket",
@@ -113,6 +119,7 @@ fn main() -> glib::ExitCode {
             move |_, _| ipc_server.borrow_mut().apply(&ipc_config(&settings))
         });
     }
+    settings.connect_changed(Some("thumbnail-threads"), |settings, _| apply_thumbnail_settings(settings));
     let shutdown_server = ipc_server.clone();
     let startup_settings = settings.clone();
     app.connect_startup(move |app| {
@@ -121,6 +128,7 @@ fn main() -> glib::ExitCode {
         keybindings::load();
         bookmarks::load();
         ipc_server.borrow_mut().apply(&ipc_config(&startup_settings));
+        apply_thumbnail_settings(&startup_settings);
 
         let quit = gio::SimpleAction::new("quit", None);
         let weak = app.downgrade();

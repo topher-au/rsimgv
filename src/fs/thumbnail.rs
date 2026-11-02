@@ -7,7 +7,8 @@
 //! and `ffprobe` programs; without them, videos keep their icon.
 //!
 //! Like Nautilus's thumbnailer, only a few are made at a time, and a request that no item on screen
-//! wants any more is dropped before it runs.
+//! wants any more is dropped before it runs. They are made on a thread pool of their own, so however many
+//! run, they leave GIO's few worker threads to folder listings.
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -24,8 +25,8 @@ use gtk::glib::object::Cast;
 use gtk::prelude::PaintableExt;
 use gtk::{gdk, gdk_pixbuf, gio, glib};
 
-/// Thumbnails made at the same time.
-const MAX_JOBS: usize = 4;
+/// Thumbnails made at the same time, unless the settings say otherwise.
+const DEFAULT_THREADS: usize = 4;
 /// Bytes of thumbnails kept in memory; the oldest go first. A 2048-pixel thumbnail alone is 16 MB.
 const MAX_BYTES: usize = 256 * 1024 * 1024;
 /// The sizes thumbnails are made at, in pixels. An item is shown from the smallest one that covers it.
@@ -112,6 +113,10 @@ struct Inner {
     queue: RefCell<VecDeque<(Key, u64)>>,
     queued: RefCell<HashMap<Key, u64>>,
     running: Cell<usize>,
+    /// How many jobs may run at the same time.
+    max_jobs: Cell<usize>,
+    /// The threads that make the jobs.
+    pool: Option<glib::ThreadPool>,
     /// How many of the running jobs are frame jobs.
     running_frames: Cell<usize>,
     /// The things that could not be made, so they are not tried again.
@@ -174,9 +179,18 @@ impl Thumbnails {
         Self {
             inner: Rc::new(Inner {
                 root,
+                max_jobs: Cell::new(DEFAULT_THREADS.min(thread_limit())),
+                pool: Some(glib::ThreadPool::shared(None).expect("a shared thread pool does not start any threads yet")),
                 ..Inner::default()
             }),
         }
+    }
+
+    /// Makes up to `threads` thumbnails at the same time, at most the number of threads on the system. Jobs already
+    /// running over a lower count finish; a higher count starts the queued ones now.
+    pub fn set_thread_count(&self, threads: usize) {
+        self.inner.max_jobs.set(threads.clamp(1, thread_limit()));
+        self.start_jobs();
     }
 
     /// Calls `on_ready` with the still thumbnail of the file at `path`, modified at `mtime`, once it is made.
@@ -300,7 +314,7 @@ impl Thumbnails {
 
     /// Starts queued jobs while there is room for them.
     fn start_jobs(&self) {
-        while self.inner.running.get() < MAX_JOBS {
+        while self.inner.running.get() < self.inner.max_jobs.get() {
             let Some(key) = self.next_wanted() else { return };
             self.inner.running.set(self.inner.running.get() + 1);
             if key.job == Job::Frames {
@@ -393,6 +407,11 @@ impl Thumbnails {
     }
 }
 
+/// The number of threads on the system, the most that thumbnails are made on.
+pub fn thread_limit() -> usize {
+    std::thread::available_parallelism().map_or(1, |count| count.get())
+}
+
 /// The memory the pixels of `textures` take up, at four bytes a pixel.
 fn bytes_of(textures: &[gdk::Texture]) -> usize {
     textures
@@ -454,7 +473,14 @@ impl Pixels {
 async fn run(thumbnails: Thumbnails, key: Key) {
     let root = thumbnails.inner.root.clone();
     let work = key.clone();
-    let made = gio::spawn_blocking(move || make(&root, &work)).await.ok().flatten();
+    let made = match thumbnails.inner.pool.as_ref().map(|pool| pool.push_future(move || make(&root, &work))) {
+        Some(Ok(made)) => made.await.ok().flatten(),
+        Some(Err(error)) => {
+            eprintln!("rsimgv: cannot start a thumbnail thread: {error}");
+            None
+        }
+        None => None,
+    };
     thumbnails.finish(key, made);
 }
 
@@ -785,6 +811,41 @@ mod tests {
         assert_eq!(output.as_deref(), Some(&b"done"[..]));
         assert_eq!(run_program(&mut Command::new("false")).unwrap(), None);
         assert!(run_program(&mut Command::new("rsimgv-no-such-program")).is_err());
+    }
+
+    #[test]
+    fn the_thread_count_is_held_to_what_the_system_has() {
+        let thumbnails = Thumbnails::with_root(PathBuf::new());
+        thumbnails.set_thread_count(0);
+        assert_eq!(thumbnails.inner.max_jobs.get(), 1);
+        thumbnails.set_thread_count(usize::MAX);
+        assert_eq!(thumbnails.inner.max_jobs.get(), thread_limit());
+    }
+
+    #[test]
+    fn no_more_jobs_run_than_the_thread_count() {
+        let (root, dir) = folder("thread-count");
+        let context = glib::MainContext::new();
+        context
+            .with_thread_default(|| {
+                let thumbnails = Thumbnails::with_root(root);
+                thumbnails.set_thread_count(1);
+                for index in 0..3 {
+                    thumbnails.request(
+                        key(&dir.join(format!("missing-{index}.png")), 1, Size::for_pixels(128), Job::Still(Media::Picture)),
+                        || true,
+                        |_| {},
+                    );
+                    assert_eq!(thumbnails.inner.running.get(), 1);
+                }
+                let deadline = Instant::now() + Duration::from_secs(5);
+                while !thumbnails.inner.waiters.borrow().is_empty() {
+                    assert!(Instant::now() < deadline, "the jobs finish");
+                    assert!(thumbnails.inner.running.get() <= 1);
+                    context.iteration(false);
+                }
+            })
+            .unwrap();
     }
 
     #[test]

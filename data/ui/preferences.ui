@@ -930,6 +930,25 @@
                             </child>
                           </object>
                         </child>
+                        <child>
+                          <object class="AdwPreferencesGroup">
+                            <property name="title">Thumbnail generator</property>
+                            <child>
+                              <object class="AdwSpinRow" id="thumbnail_threads_row">
+                                <property name="title">Thread count</property>
+                                <property name="subtitle">How many thumbnails are made at the same time</property>
+                                <property name="adjustment">
+                                  <object class="GtkAdjustment">
+                                    <property name="lower">1</property>
+                                    <property name="upper">4096</property>
+                                    <property name="step-increment">1</property>
+                                    <property name="value">4</property>
+                                  </object>
+                                </property>
+                              </object>
+                            </child>
+                          </object>
+                        </child>
                       </object>
                     </child>
                     <child>
