@@ -1,0 +1,41 @@
+# Maintainer: Topher Sheridan <topher@topher.au>
+#
+# Build from the source archive that scripts/dist.sh writes beside this file:
+#   scripts/dist.sh && cd packaging/arch && makepkg -si
+
+pkgname=rsimgv
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='Integrated file explorer and media viewer for GNOME'
+arch=('x86_64')
+license=('GPL-3.0-or-later')
+depends=(
+  'gtk4>=4.22'
+  'libadwaita>=1.9'
+  'mpv'
+  'glib2'
+)
+makedepends=(
+  'cargo'
+  'meson'
+  'ninja'
+  'pkgconf'
+  'sassc'
+)
+source=("$pkgname-$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+prepare() {
+  cd "$pkgname-$pkgver"
+  cargo fetch --locked --target "$CARCH-unknown-linux-gnu"
+}
+
+build() {
+  export CARGO_NET_OFFLINE=true
+  arch-meson "$pkgname-$pkgver" build
+  meson compile -C build
+}
+
+package() {
+  meson install -C build --destdir "$pkgdir"
+}

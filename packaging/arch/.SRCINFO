@@ -1,0 +1,19 @@
+pkgbase = rsimgv
+	pkgdesc = Integrated file explorer and media viewer for GNOME
+	pkgver = 0.1.0
+	pkgrel = 1
+	arch = x86_64
+	license = GPL-3.0-or-later
+	makedepends = cargo
+	makedepends = meson
+	makedepends = ninja
+	makedepends = pkgconf
+	makedepends = sassc
+	depends = gtk4>=4.22
+	depends = libadwaita>=1.9
+	depends = mpv
+	depends = glib2
+	source = rsimgv-0.1.0.tar.gz
+	sha256sums = SKIP
+
+pkgname = rsimgv
