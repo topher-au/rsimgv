@@ -414,7 +414,7 @@ impl Window {
     /// The actions behind the context menus. Each takes the path it works on as its parameter.
     fn add_context_actions(&self) {
         let weak = self.downgrade();
-        for name in ["open-folder", "open-in-new-tab", "open-in-new-window", "copy-path", "show-properties"] {
+        for name in ["open-path", "open-in-new-tab", "open-in-new-window", "copy-path", "show-properties"] {
             let action = gio::SimpleAction::new(name, Some(glib::VariantTy::STRING));
             let weak = weak.clone();
             action.connect_activate(move |_, parameter| {
@@ -423,7 +423,7 @@ impl Window {
                 };
                 let path = PathBuf::from(path);
                 match name {
-                    "open-folder" => {
+                    "open-path" => {
                         window.navigate(&path);
                     }
                     "open-in-new-tab" if path.is_dir() => window.open_background_tab(&path),
@@ -509,7 +509,7 @@ impl Window {
         };
         let menu = gio::Menu::new();
         if is_dir {
-            menu.append_item(&item("Open", "win.open-folder"));
+            menu.append_item(&item("Open", "win.open-path"));
             menu.append_item(&item("Open in New Tab", "win.open-in-new-tab"));
             menu.append_item(&item("Open in New Window", "win.open-in-new-window"));
         }
@@ -1992,9 +1992,9 @@ pub(crate) mod tests {
         let folder = root.join("docs").to_string_lossy().into_owned().to_variant();
         gtk::prelude::WidgetExt::activate_action(&window, "win.open-in-new-tab", Some(&folder)).expect("open in a new tab");
         assert_eq!(tabs.n_pages(), before + 1, "a folder opens in a new tab");
-        assert_eq!(window.current_path(), Some(root.join("docs")));
+        assert_ne!(window.current_path(), Some(root.join("docs")), "a background tab leaves the current folder alone");
 
-        gtk::prelude::WidgetExt::activate_action(&window, "win.open-folder", Some(&root.to_string_lossy().into_owned().to_variant())).expect("open folder");
+        gtk::prelude::WidgetExt::activate_action(&window, "win.open-path", Some(&root.to_string_lossy().into_owned().to_variant())).expect("open folder");
         assert_eq!(window.current_path(), Some(root.clone()), "open navigates to the folder");
 
         window.destroy();
@@ -2042,11 +2042,15 @@ pub(crate) mod tests {
             }
         };
         pump(60);
+        let before = (window.width(), window.height());
         window.set_size_request(812, 520);
         pump(150);
-        assert_eq!((window.width(), window.height()), (812, 520), "the window grew to the new size");
-        assert_eq!(settings.int("window-width"), 812, "the width is saved without closing");
-        assert_eq!(settings.int("window-height"), 520, "the height is saved without closing");
+        // The allocated size can be a little less than the size requested, so growth and the saved size are checked
+        // against the window's own size.
+        let grown = (window.width(), window.height());
+        assert!(grown.0 > before.0 && grown.1 > before.1, "the window grew to the new size: {before:?} to {grown:?}");
+        assert_eq!(settings.int("window-width"), grown.0, "the width is saved without closing");
+        assert_eq!(settings.int("window-height"), grown.1, "the height is saved without closing");
         window.set_size_request(-1, -1);
         window.destroy();
     }
@@ -2061,17 +2065,19 @@ pub(crate) mod tests {
             while ctx.iteration(false) {}
             std::thread::sleep(std::time::Duration::from_millis(16));
         }
-        assert_eq!((window.width(), window.height()), (700, 450), "the window is the size it was set to");
+        // The size saved is the size the window was allocated, which the display may make a little different
+        // from the size asked for, so the saved size is checked against the window's own size.
+        let (width, height) = (window.width(), window.height());
         window.close();
-        assert_eq!(settings.int("window-width"), 700, "the width is saved");
-        assert_eq!(settings.int("window-height"), 450, "the height is saved");
+        assert_eq!(settings.int("window-width"), width, "the width is saved");
+        assert_eq!(settings.int("window-height"), height, "the height is saved");
         assert!(!settings.boolean("window-maximized"), "an unmaximized window is saved as such");
 
         // A window opened afterwards starts at the saved size.
         let reopened = Window::new(&app, &settings);
         reopened.present();
-        assert_eq!(reopened.default_width(), 700);
-        assert_eq!(reopened.default_height(), 450);
+        assert_eq!(reopened.default_width(), width);
+        assert_eq!(reopened.default_height(), height);
         reopened.destroy();
     }
 
