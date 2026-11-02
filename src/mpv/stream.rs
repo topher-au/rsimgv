@@ -289,7 +289,15 @@ impl MpvStream {
     pub fn set_video_filter(&self, filter: &str) -> Result<(), String> {
         let player = self.imp().player.borrow();
         let player = player.as_ref().ok_or("no player")?;
-        player.command(&["vf", "set", filter])
+        player.set_video_filter(filter)
+    }
+
+    /// Turns the video upright, by the rotation its decoder reports, or its container before there is a decoded frame.
+    fn apply_rotation(&self) {
+        if let Some(player) = self.imp().player.borrow().as_ref() {
+            let rotation = player.get_i64("video-dec-params/rotate").or_else(|| player.get_i64("current-tracks/video/demux-rotation"));
+            player.set_rotation(rotation.unwrap_or(0));
+        }
     }
 
     /// The frame rate the video's container declares, or the one mpv measures when it declares none.
@@ -324,6 +332,7 @@ impl MpvStream {
                     None => return,
                 };
                 imp.duration.set(duration);
+                self.apply_rotation();
                 self.update_frame_size();
                 if !self.is_prepared() {
                     self.stream_prepared(has_audio, true, true, duration);
@@ -337,7 +346,10 @@ impl MpvStream {
             }
             // Until its own file has loaded, what the player reports is about the file before.
             _ if !imp.loaded.get() => {}
-            Event::VideoReconfig => self.update_frame_size(),
+            Event::VideoReconfig => {
+                self.apply_rotation();
+                self.update_frame_size();
+            }
             Event::PlaybackRestart => {
                 if imp.seeking.replace(false) {
                     self.seek_success();
