@@ -171,12 +171,13 @@ fn schema_key(group: &str, name: &str) -> Option<String> {
         .or_else(|| (group == FALLBACK_GROUP).then(|| name.to_owned()))
 }
 
-/// Reads the settings from `file`. A missing or empty file has no settings.
-fn load(file: &Path) -> BTreeMap<String, Value> {
+/// Reads the settings from `file`. A missing file has no settings; `None` means the file does not parse, so the
+/// caller keeps the settings it has instead of taking the file as empty.
+fn load(file: &Path) -> Option<BTreeMap<String, Value>> {
     let Ok(text) = std::fs::read_to_string(file) else {
-        return BTreeMap::new();
+        return Some(BTreeMap::new());
     };
-    let root: Value = serde_yaml_ng::from_str(&text).unwrap_or(Value::Null);
+    let root: Value = serde_yaml_ng::from_str(&text).ok()?;
     let mut stored: BTreeMap<(String, String), Value> = BTreeMap::new();
     if let Some(groups) = root.as_mapping() {
         for (group, group_value) in groups {
@@ -210,7 +211,7 @@ fn load(file: &Path) -> BTreeMap<String, Value> {
             values.insert(enabled.to_owned(), Value::Bool(true));
         }
     }
-    values
+    Some(values)
 }
 
 /// The settings in a group's mapping, with the names of those in nested mappings joined by dots.
@@ -323,7 +324,10 @@ fn notify_changed(backend: *mut gio::ffi::GSettingsBackend, key: &str) {
 
 /// Re-reads the file and reports every key whose value changed.
 fn reload(file: &Path) {
-    let fresh = load(file);
+    let Some(fresh) = load(file) else {
+        eprintln!("rsimgv: keeping the current settings, {} does not parse", file.display());
+        return;
+    };
     let changed: Vec<(String, *mut gio::ffi::GSettingsBackend)> = with_store(|store| {
         let keys: Vec<String> = store.values.keys().chain(fresh.keys()).cloned().collect();
         let mut changed = Vec::new();
@@ -345,21 +349,19 @@ fn reload(file: &Path) {
 #[no_mangle]
 pub extern "C" fn rsimgv_store_init(backend: *mut gio::ffi::GSettingsBackend) {
     let file = config_path();
-    let values = load(&file);
+    let values = load(&file).unwrap_or_else(|| {
+        eprintln!("rsimgv: {} does not parse; using the default settings", file.display());
+        BTreeMap::new()
+    });
 
     let monitor = gio::File::for_path(&file)
         .monitor_file(gio::FileMonitorFlags::NONE, gio::Cancellable::NONE)
         .ok();
     if let Some(monitor) = &monitor {
         let watched = file.clone();
+        // Only a finished write is read: a write in progress, or a file that is removed, leaves the settings as they are.
         monitor.connect_changed(move |_, _, _, event| {
-            if matches!(
-                event,
-                gio::FileMonitorEvent::Changed
-                    | gio::FileMonitorEvent::Created
-                    | gio::FileMonitorEvent::Deleted
-                    | gio::FileMonitorEvent::MovedIn
-            ) {
+            if matches!(event, gio::FileMonitorEvent::ChangesDoneHint | gio::FileMonitorEvent::MovedIn) {
                 reload(&watched);
             }
         });
@@ -450,17 +452,20 @@ pub(crate) mod tests {
         assert_eq!(root["browse"]["show-hidden"], Value::Bool(false), "browse.show-hidden");
         assert_eq!(root["settings"]["unlisted"], Value::Bool(true), "unlisted keys fall back to settings");
 
-        assert_eq!(load(&file), values, "the file reads back to the same values");
+        assert_eq!(load(&file), Some(values), "the file reads back to the same values");
+
+        std::fs::write(&file, "window: [").unwrap();
+        assert_eq!(load(&file), None, "a file that does not parse is not taken as empty");
 
         // A file in the layout before the regrouping still loads, and a setting in the new layout wins over it.
         std::fs::write(&file, "general:\n  start-location: specific\nview:\n  image-fit: original\n  thumbnail-bar:\n    size: 96\ntree:\n  collapse-on-navigate: true\n").unwrap();
-        let old = load(&file);
+        let old = load(&file).unwrap();
         assert_eq!(old.get("start-location"), Some(&Value::String("specific".into())), "a moved setting loads from its old group");
         assert_eq!(old.get("image-fit"), Some(&Value::String("original".into())), "a setting in the old view group loads");
         assert_eq!(old.get("viewer-thumbnail-bar-size"), Some(&Value::Number(Number::from(96))), "a nested old setting loads");
         assert_eq!(old.get("collapse-on-navigate"), Some(&Value::Bool(true)), "a setting in the old tree group loads");
         std::fs::write(&file, "general:\n  start-location: root\nstart:\n  location: home\n").unwrap();
-        assert_eq!(load(&file).get("start-location"), Some(&Value::String("home".into())), "the new layout wins");
+        assert_eq!(load(&file).unwrap().get("start-location"), Some(&Value::String("home".into())), "the new layout wins");
         let _ = std::fs::remove_file(&file);
     }
 }
