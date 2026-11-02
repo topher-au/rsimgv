@@ -78,11 +78,7 @@ mod imp {
         }
 
         fn dispose(&self) {
-            // The current stream stops the player as it goes, so it is idle until the next video loads.
-            if let Some(player) = self.player.take() {
-                let _ = player.command(&["stop"]);
-                CURRENT.with(|current| current.replace(glib::WeakRef::new()));
-            }
+            self.obj().stop();
         }
     }
 
@@ -213,6 +209,18 @@ fn shared_player(options: &str) -> Option<Rc<Player>> {
 }
 
 impl MpvStream {
+    /// Stops the video and lets go of the player, which stays alive for the next video. Nothing plays after this.
+    pub fn stop(&self) {
+        let Some(player) = self.imp().player.take() else { return };
+        let _ = player.command(&["stop"]);
+        // The player now plays for no stream, unless a later stream has already taken it over.
+        CURRENT.with(|current| {
+            if current.borrow().upgrade().as_ref() == Some(self) {
+                current.replace(glib::WeakRef::new());
+            }
+        });
+    }
+
     /// A stream of the video in `path`, paused until it is played, loaded into the shared player made with the mpv
     /// command line options in `options`. It becomes the current stream. `None` if libmpv could not start.
     pub fn for_path(path: &Path, options: &str) -> Option<Self> {
