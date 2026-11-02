@@ -19,6 +19,7 @@ mod overlay_split_view;
 mod path_bar;
 mod navigation_bar;
 mod preferences;
+mod tight_layout;
 mod window;
 
 pub use browse_view::BrowseView;
@@ -53,6 +54,7 @@ mod tests {
         super::overlay_split_view::tests::run_scenarios();
         super::path_bar::tests::run_scenarios();
         super::image_canvas::tests::run_scenarios();
+        super::tight_layout::tests::run_scenarios();
         super::navigation_bar::tests::run_scenarios();
         super::preferences::tests::run_scenarios();
         super::browse_view::tests::run_scenarios();

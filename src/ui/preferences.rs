@@ -8,6 +8,7 @@ use adw::prelude::{ActionRowExt, AdwDialogExt, PreferencesGroupExt, PreferencesP
 use adw::subclass::prelude::*;
 
 use super::keybinding_list::KeybindingList;
+use super::tight_layout::TightLayout;
 use super::browse_view::InfoField;
 use gtk::prelude::*;
 use gtk::{gio, glib};
@@ -290,6 +291,9 @@ impl PreferencesDialog {
 
         dialog.build_keybindings_page();
         dialog.bind_sections();
+        for column in group_columns(imp.section_stack.upcast_ref()) {
+            column.set_layout_manager(Some(TightLayout::default()));
+        }
         dialog.bind_scripts(settings);
         imp.about_version_row.set_subtitle(env!("CARGO_PKG_VERSION"));
         imp.app_version.set_label(env!("CARGO_PKG_VERSION"));
@@ -774,6 +778,11 @@ pub(crate) mod tests {
         settings.reset("video-backend");
         assert!(imp.mpv_group.get_visible() && imp.svp_group.is_sensitive());
 
+        // Every page with groups stacks them with no gap.
+        let columns = group_columns(imp.section_stack.upcast_ref());
+        assert!(columns.len() >= 8, "a column for each page with groups: {}", columns.len());
+        assert!(columns.iter().all(|column| column.layout_manager().is_some_and(|layout| layout.is::<TightLayout>())));
+
         // The image rows are bound to their settings.
         imp.image_fit_row.set_selected(3);
         assert_eq!(settings.string("image-fit"), "fill");
@@ -911,6 +920,30 @@ impl PreferencesDialog {
         let row = imp.section_list.row_at_index(index as i32);
         imp.section_list.select_row(row.as_ref());
     }
+}
+
+/// The box inside each preferences page under `widget` that holds the page's groups.
+fn group_columns(widget: &gtk::Widget) -> Vec<gtk::Widget> {
+    let mut columns = Vec::new();
+    if widget.is::<adw::PreferencesPage>() {
+        columns.extend(find_group_column(widget));
+        return columns;
+    }
+    let mut child = widget.first_child();
+    while let Some(current) = child {
+        columns.extend(group_columns(&current));
+        child = current.next_sibling();
+    }
+    columns
+}
+
+/// The first widget under `widget` that has a preferences group as a child.
+fn find_group_column(widget: &gtk::Widget) -> Option<gtk::Widget> {
+    let children = || std::iter::successors(widget.first_child(), |child| child.next_sibling());
+    if children().any(|child| child.is::<adw::PreferencesGroup>()) {
+        return Some(widget.clone());
+    }
+    children().find_map(|child| find_group_column(&child))
 }
 
 /// Collects the preference rows under `widget`, including itself.
