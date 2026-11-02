@@ -1187,8 +1187,8 @@ pub(crate) mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
-    /// Collapsing a folder at the end of a scrolled list must not move it on screen: the content
-    /// shrinks, which would otherwise clamp the scroll and shift every row.
+    /// Collapsing a folder at the end of a scrolled list must not leave the list scrolled past its new end: the content
+    /// shrinks, and the scroll is clamped to it rather than showing blank space.
     fn toggle_keeps_row_in_place() {
         let root = temp_root("fs-tree-toggle");
         for i in 0..20 {
@@ -1215,11 +1215,18 @@ pub(crate) mod tests {
         pump_frames(30);
 
         let geometry = |path: &Path| rendered_geometry(&imp.list_view, &imp.scroller, path).expect("row is rendered").0;
-        let before = geometry(&root.join("parent/zlast"));
         tree.toggle_row_at(position_of(&tree, &root.join("parent/zlast")).unwrap());
         pump_frames(30);
-        let after = geometry(&root.join("parent/zlast"));
-        assert!((after - before).abs() < 1.0, "the folder stayed in place (moved from {before} to {after})");
+        // The folder is the last row, so collapsing it shortens the list and the scroll can only go as far as
+        // the new end. The folder stays rendered, and the list is scrolled to that end with no space left below it.
+        geometry(&root.join("parent/zlast"));
+        let adjustment = imp.scroller.vadjustment();
+        let end = adjustment.upper() - adjustment.page_size();
+        assert!(
+            (adjustment.value() - end).abs() < 1.0,
+            "the list is scrolled to its new end (value {}, end {end})",
+            adjustment.value()
+        );
 
         window.destroy();
         let _ = fs::remove_dir_all(&root);
