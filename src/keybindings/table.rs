@@ -415,13 +415,16 @@ mod tests {
         assert!(table.add_script("ctrl+g", Scope::Global, "Open in GIMP"));
         assert!(table.add_script("ctrl+shift+g", Scope::Browse, "Resize"));
         assert!(!table.add_script("ctrl+g", Scope::Browse, "Other"), "a chord is bound to an action once");
-        assert!(!table.add_script("ctrl+t", Scope::Video, "Too deep"), "the action is not bound in the video scope");
+        assert!(table.add_script("ctrl+t", Scope::Video, "Transcode"), "a script can be bound in any context");
 
         let (action, binding) = table.resolve_binding("ctrl+g", &[Scope::Browse]).unwrap();
         assert_eq!((action.name, binding.script.as_deref()), ("script", Some("Open in GIMP")));
         let (_, binding) = table.resolve_binding("ctrl+shift+g", &[Scope::Browse]).unwrap();
         assert_eq!(binding.script.as_deref(), Some("Resize"));
         assert!(table.resolve_binding("ctrl+shift+g", &[Scope::View]).is_none(), "a browsing script is not run in the viewer");
+        let (_, binding) = table.resolve_binding("ctrl+t", &[Scope::View, Scope::Video]).unwrap();
+        assert_eq!(binding.script.as_deref(), Some("Transcode"));
+        assert!(table.resolve_binding("ctrl+t", &[Scope::Browse]).is_none(), "a video script is not run while browsing");
 
         let text = table.to_yaml();
         assert!(text.contains("script: Open in GIMP"));
