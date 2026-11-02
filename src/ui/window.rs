@@ -888,7 +888,6 @@ impl Window {
         bound_action(self, &weak, "playlist-load", Window::choose_playlist_to_load);
         bound_action(self, &weak, "playlist-save", Window::choose_playlist_to_save);
         bound_action(self, &weak, "playlist-clear", Window::confirm_clear_playlist);
-        bound_action(self, &weak, "playlist-shuffle", Window::toggle_playlist_shuffle);
         bound_action(self, &weak, "playlist-detach", Window::toggle_detached_playlist);
         bound_action(self, &weak, "toggle-playlist", Window::toggle_playlist_panel);
         bound_action(self, &weak, "toggle-sidebar", |window| {
@@ -1002,15 +1001,26 @@ impl Window {
             });
             self.add_action(&action);
         }
-        let sort = gio::SimpleAction::new("playlist-sort", Some(&<(String, bool)>::static_variant_type()));
+        // The state is the column the playlist was last sorted by, and whether it was sorted descending. An empty name is no sort.
+        let sort_type = <(String, bool)>::static_variant_type();
+        let sort = gio::SimpleAction::new_stateful("playlist-sort", Some(&sort_type), &(String::new(), false).to_variant());
         let weak_sort = weak.clone();
-        sort.connect_activate(move |_, parameter| {
+        sort.connect_activate(move |action, parameter| {
             let (Some(window), Some((column, descending))) = (weak_sort.upgrade(), parameter.and_then(|p| p.get::<(String, bool)>())) else { return };
-            if let Some(column) = SortColumn::from_name(&column) {
-                window.sort_playlist(column, descending);
+            if let Some(sort) = SortColumn::from_name(&column) {
+                window.sort_playlist(sort, descending);
+                action.set_state(&(column, descending).to_variant());
             }
         });
         self.add_action(&sort);
+        let shuffle = gio::SimpleAction::new_stateful("playlist-shuffle", None, &playlist::with(|list| list.is_shuffled()).to_variant());
+        let weak_shuffle = weak.clone();
+        shuffle.connect_activate(move |_, _| {
+            if let Some(window) = weak_shuffle.upgrade() {
+                window.toggle_playlist_shuffle();
+            }
+        });
+        self.add_action(&shuffle);
         let edit = gio::SimpleAction::new("playlist-edit-title", Some(glib::VariantTy::UINT32));
         let weak_edit = weak.clone();
         edit.connect_activate(move |_, parameter| {
@@ -1018,19 +1028,20 @@ impl Window {
             window.edit_playlist_title(index as usize);
         });
         self.add_action(&edit);
-        for name in ["playlist-delete", "playlist-reveal"] {
-            let action = gio::SimpleAction::new(name, Some(glib::VariantTy::STRING));
-            let weak = weak.clone();
-            action.connect_activate(move |_, parameter| {
-                let (Some(window), Some(path)) = (weak.upgrade(), parameter.and_then(|p| p.get::<String>())) else { return };
-                let path = PathBuf::from(path);
-                match name {
-                    "playlist-delete" => window.confirm_delete_from_disk(path),
-                    _ => window.reveal_playlist_item(&path),
-                }
-            });
-            self.add_action(&action);
-        }
+        let delete = gio::SimpleAction::new("playlist-delete", Some(glib::VariantTy::STRING));
+        let weak_delete = weak.clone();
+        delete.connect_activate(move |_, parameter| {
+            let (Some(window), Some(path)) = (weak_delete.upgrade(), parameter.and_then(|p| p.get::<String>())) else { return };
+            window.confirm_delete_from_disk(PathBuf::from(path));
+        });
+        self.add_action(&delete);
+        let reveal = gio::SimpleAction::new("reveal-path", Some(glib::VariantTy::STRING));
+        let weak_reveal = weak.clone();
+        reveal.connect_activate(move |_, parameter| {
+            let (Some(window), Some(path)) = (weak_reveal.upgrade(), parameter.and_then(|p| p.get::<String>())) else { return };
+            window.reveal_path(Path::new(&path));
+        });
+        self.add_action(&reveal);
         let open_with = gio::SimpleAction::new("playlist-open-with", Some(&<(String, String)>::static_variant_type()));
         let weak_open = weak.clone();
         open_with.connect_activate(move |_, parameter| {
@@ -1149,6 +1160,7 @@ impl Window {
     /// playlist. The viewer goes back to browsing if nothing is left to show.
     fn show_playlist_change(&self) {
         let imp = self.imp();
+        self.set_action_state("playlist-shuffle", playlist::with(|list| list.is_shuffled()).to_variant());
         if let Some(panel) = imp.playlist_panel.get() {
             panel.refresh();
         }
@@ -1638,12 +1650,19 @@ impl Window {
         self.remove_from_playlist(&[path.to_path_buf()]);
     }
 
-    /// Shows the item at `path` selected in the browse view, leaving the viewer if it is shown.
-    fn reveal_playlist_item(&self, path: &Path) {
+    /// Shows the file or folder at `path` in the browse view, with it selected in its folder, leaving the viewer if it is shown.
+    fn reveal_path(&self, path: &Path) {
         if self.viewer_is_open() {
             self.close_viewer();
         }
-        self.navigate_with(path, Reveal::SelectOnly);
+        self.open_path(path, Destination::CurrentTab, true);
+    }
+
+    /// Sets the state of this window's action `name`, which shows the playlist's state.
+    fn set_action_state(&self, name: &str, state: glib::Variant) {
+        if let Some(action) = self.lookup_action(name).and_downcast::<gio::SimpleAction>() {
+            action.set_state(&state);
+        }
     }
 
     /// Asks whether to clear the playlist, and clears it.
@@ -3316,6 +3335,40 @@ pub(crate) mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
+    /// The menu's column toggles show and hide the columns, and "Reveal in browser" shows the item's folder.
+    fn playlist_menu_actions(app: &adw::Application, settings: &gio::Settings) {
+        let root = std::env::temp_dir().join(format!("rsimgv-reveal-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let (alpha, gamma) = (root.join("alpha"), root.join("gamma"));
+        let pixbuf = gtk::gdk_pixbuf::Pixbuf::new(gtk::gdk_pixbuf::Colorspace::Rgb, false, 8, 8, 8).unwrap();
+        for folder in [&alpha, &gamma] {
+            fs::create_dir_all(folder).unwrap();
+            pixbuf.savev(folder.join("one.png"), "png", &[]).unwrap();
+        }
+
+        let window = Window::new(app, settings);
+        let panel = window.imp().playlist_panel.get().unwrap();
+        for (index, key) in ["playlist-show-position", "playlist-show-name", "playlist-show-length", "playlist-show-filename"].into_iter().enumerate() {
+            let before = settings.boolean(key);
+            panel.content().activate_action(&format!("playlist.{key}"), None).unwrap();
+            assert_eq!(settings.boolean(key), !before, "the toggle changes the setting for {key}");
+            assert_eq!(panel.column_shown(index as u32), !before, "the toggle changes the column for {key}");
+            panel.content().activate_action(&format!("playlist.{key}"), None).unwrap();
+            assert_eq!(panel.column_shown(index as u32), before, "the toggle changes the column back for {key}");
+        }
+
+        window.navigate(&gamma);
+        let browse = window.active_browse().unwrap();
+        wait_for("the folder to list", || browse.media_paths().len() == 1);
+        window.open_viewer(&browse, &gamma.join("one.png"));
+        assert!(window.viewer_is_open(), "the viewer is open before revealing");
+        gio::prelude::ActionGroupExt::activate_action(&window, "reveal-path", Some(&alpha.join("one.png").to_string_lossy().to_variant()));
+        assert!(!window.viewer_is_open(), "revealing leaves the viewer");
+        assert_eq!(window.current_path().as_ref(), Some(&alpha), "revealing shows the item's folder");
+        window.destroy();
+        let _ = fs::remove_dir_all(&root);
+    }
+
     /// The viewer goes through the playlist without the folder shown, or the item selected in it, having any part in it.
     fn playlist_plays_apart_from_browsing(app: &adw::Application, settings: &gio::Settings) {
         let root = std::env::temp_dir().join(format!("rsimgv-playlist-{}", std::process::id()));
@@ -3571,6 +3624,7 @@ pub(crate) mod tests {
         folders_remember_their_sorts(&app, &settings);
         viewer_steps_between_folders(&app, &settings);
         playlist_plays_apart_from_browsing(&app, &settings);
+        playlist_menu_actions(&app, &settings);
         context_actions_work(&app, &settings);
         window_size_is_saved(&app, &settings);
         size_change_is_saved_without_closing(&app, &settings);

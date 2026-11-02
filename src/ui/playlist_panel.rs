@@ -65,7 +65,6 @@ pub struct PlaylistPanel {
     /// The heading, which says how many items there are.
     title: gtk::Label,
     detach: gtk::Button,
-    shuffle: gtk::Button,
     view: gtk::ColumnView,
     empty: gtk::Label,
     scroller: gtk::ScrolledWindow,
@@ -159,7 +158,7 @@ impl PlaylistPanel {
         heading.append(&title);
         heading.append(&detach);
 
-        let (toolbar, shuffle) = toolbar(&selection);
+        let toolbar = toolbar(&selection);
 
         let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
         content.set_width_request(PANEL_WIDTH);
@@ -187,7 +186,6 @@ impl PlaylistPanel {
             content,
             title,
             detach,
-            shuffle,
             view,
             empty,
             scroller,
@@ -214,10 +212,7 @@ impl PlaylistPanel {
     /// items that changed are added and removed, so the list keeps its place. Every row is bound again, as titles and
     /// lengths may have changed.
     pub fn refresh(&self) {
-        let (items, shuffled) = playlist::with(|list| {
-            let items: Vec<String> = list.order().iter().map(|path| path.to_string_lossy().into_owned()).collect();
-            (items, list.is_shuffled())
-        });
+        let items: Vec<String> = playlist::with(|list| list.order().iter().map(|path| path.to_string_lossy().into_owned()).collect());
         let mut shown = self.shown.borrow_mut();
         let start = items.iter().zip(shown.iter()).take_while(|(item, row)| item == row).count();
         let most = items.len().min(shown.len()) - start;
@@ -229,11 +224,6 @@ impl PlaylistPanel {
         self.title.set_label(&if items.is_empty() { "Playlist".to_owned() } else { format!("Playlist ({})", items.len()) });
         self.empty.set_visible(items.is_empty());
         self.scroller.set_visible(!items.is_empty());
-        if shuffled {
-            self.shuffle.add_css_class("suggested-action");
-        } else {
-            self.shuffle.remove_css_class("suggested-action");
-        }
         *shown = items;
         drop(shown);
         self.refresh_current();
@@ -257,6 +247,12 @@ impl PlaylistPanel {
     #[cfg(test)]
     pub fn row_count(&self) -> u32 {
         self.paths.n_items()
+    }
+
+    /// Whether the column at `index`, in the order of `COLUMNS`, is shown.
+    #[cfg(test)]
+    pub fn column_shown(&self, index: u32) -> bool {
+        self.view.columns().item(index).and_downcast::<gtk::ColumnViewColumn>().is_some_and(|column| column.is_visible())
     }
 }
 
@@ -429,7 +425,7 @@ fn row_menu(settings: &gio::Settings, position: u32, path: &str) -> gio::Menu {
     let file = gio::Menu::new();
     file.append_item(&item("Delete from disk…", "win.playlist-delete", path.to_variant()));
     file.append_item(&item("Copy path to clipboard", "win.copy-path", path.to_variant()));
-    file.append_item(&item("Reveal in browser", "win.playlist-reveal", path.to_variant()));
+    file.append_item(&item("Reveal in browser", "win.reveal-path", path.to_variant()));
     let open_with = gio::Menu::new();
     for script in scripts::read_scripts(settings) {
         open_with.append_item(&item(&script.name, "win.playlist-open-with", (script.name.clone(), path.to_owned()).to_variant()));
@@ -457,7 +453,7 @@ fn popup_menu(parent: &gtk::Widget, menu: &gio::Menu, x: f64, y: f64) {
 
 /// The toolbar under the list: the buttons that act on the selected item, move through the playlist, and load, save
 /// and clear its file. The shuffle button is returned, so it can be marked while the playlist is shuffled.
-fn toolbar(selection: &gtk::SingleSelection) -> (gtk::Box, gtk::Button) {
+fn toolbar(selection: &gtk::SingleSelection) -> gtk::Box {
     let bar = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     bar.set_margin_start(4);
     bar.set_margin_end(4);
@@ -494,7 +490,13 @@ fn toolbar(selection: &gtk::SingleSelection) -> (gtk::Box, gtk::Button) {
     });
     action("media-skip-backward-symbolic", "Previous item", "win.playlist-previous");
     action("media-skip-forward-symbolic", "Next item", "win.playlist-next");
-    let shuffle = action("media-playlist-shuffle-symbolic", "Shuffle the playlist, keeping the order it was made in", "win.playlist-shuffle");
+    // A toggle, shown pressed while the playlist is shuffled, as the action's state says.
+    let shuffle = gtk::ToggleButton::new();
+    shuffle.set_icon_name("media-playlist-shuffle-symbolic");
+    shuffle.set_tooltip_text(Some("Shuffle the playlist, keeping the order it was made in"));
+    shuffle.add_css_class("flat");
+    shuffle.set_action_name(Some("win.playlist-shuffle"));
+    bar.append(&shuffle);
     let up = button("go-up-symbolic", "Move the selected item up");
     let selection_for_up = selection.clone();
     up.connect_clicked(move |button| {
@@ -511,7 +513,7 @@ fn toolbar(selection: &gtk::SingleSelection) -> (gtk::Box, gtk::Button) {
     });
     action("document-save-as-symbolic", "Save as a playlist file", "win.playlist-save");
     action("edit-clear-all-symbolic", "Clear the playlist", "win.playlist-clear");
-    (bar, shuffle)
+    bar
 }
 
 /// The position of the selected item, if one is selected.
