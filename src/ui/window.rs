@@ -11,7 +11,7 @@ use gtk::{gdk, gio, glib};
 use crate::keybindings::actions::Scope;
 use super::browse_view::{InfoField, ListedFile};
 use crate::bookmarks::{self, Bookmark};
-use super::image_canvas::{Fit, OriginalFocus, PAN_STEP};
+use super::image_canvas::{Fit, OriginalFocus, Scaling, PAN_STEP};
 use super::media_controls::SEEK_STEP;
 use super::media_viewer::{side_from_name, ZoomIndicator, VOLUME_STEP};
 use super::key_handler::ActionKeyHandler;
@@ -644,7 +644,7 @@ impl Window {
         viewer.set_minimum_zoom_unlocked(settings.boolean("unlock-minimum-zoom"));
         viewer.set_default_fit(Fit::from_name(&settings.string("image-fit")).unwrap_or_default());
         viewer.set_smooth_scrolling(settings.boolean("smooth-scrolling"));
-        viewer.set_scaling(settings.string("scaling-filter") == "nearest", settings.boolean("smooth-upscaling"));
+        viewer.set_scaling(Scaling::from_name(&settings.string("scaling-filter")), settings.boolean("smooth-upscaling"));
         viewer.set_zoom_indicator(ZoomIndicator::from_name(&settings.string("zoom-indicator")).unwrap_or_default());
         viewer.set_auto_hide_cursor(settings.boolean("auto-hide-cursor"));
         viewer.set_blurred_background(settings.boolean("viewer-blurred-background"));

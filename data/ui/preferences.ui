@@ -710,13 +710,16 @@
                             <property name="title">Scaling</property>
                             <child>
                               <object class="AdwComboRow" id="scaling_filter_row">
-                                <property name="title">Filter</property>
-                                <property name="subtitle">Nearest keeps pixels sharp; bilinear smooths them</property>
+                                <property name="title">Scaling quality</property>
+                                <property name="subtitle">The filter pictures are drawn with. Nearest neighbor keeps pixels sharp; the others smooth them, bicubic with more detail. Sharpening and bicubic are made once the picture has stopped moving, and shrinking uses area averaging.</property>
                                 <property name="model">
                                   <object class="GtkStringList">
                                     <items>
+                                      <item>Nearest neighbor</item>
                                       <item>Bilinear</item>
-                                      <item>Nearest</item>
+                                      <item>Bilinear with sharpening</item>
+                                      <item>Bicubic</item>
+                                      <item>Bicubic with sharpening</item>
                                     </items>
                                   </object>
                                 </property>

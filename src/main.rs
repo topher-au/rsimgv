@@ -2,6 +2,7 @@ mod atomic_file;
 mod fs;
 mod ipc;
 mod remote;
+mod resample;
 mod svp;
 mod bookmarks;
 mod file_settings;

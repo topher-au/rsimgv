@@ -39,6 +39,7 @@ Build-time:
 - Meson 1.2 or newer, and Ninja
 - GTK 4.22 or newer, with development headers (`gtk4`)
 - libadwaita 1.9 or newer (`libadwaita-1`)
+- OpenCV 4.5 or newer (`opencv`), with Clang (`clang`) for the Rust bindings to generate against it
 - `sassc`, to compile the stylesheets
 - `glib-compile-resources` and `glib-compile-schemas` (part of GLib)
 

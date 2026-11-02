@@ -607,7 +607,7 @@ fn bind_choices(settings: &gio::Settings, imp: &imp::PreferencesDialog) {
         ("zoom-indicator", imp.zoom_indicator_row.upcast_ref(), &["on", "off", "auto"]),
         ("image-fit", imp.image_fit_row.upcast_ref(), &["window", "width", "height", "fill", "original"]),
         ("original-focus", imp.original_focus_row.upcast_ref(), &["top", "center", "cursor"]),
-        ("scaling-filter", imp.scaling_filter_row.upcast_ref(), &["linear", "nearest"]),
+        ("scaling-filter", imp.scaling_filter_row.upcast_ref(), &["nearest", "linear", "linear-sharp", "cubic", "cubic-sharp"]),
         ("info-layout", imp.info_layout_dropdown.upcast_ref(), &["disabled", "stacked", "inline"]),
         ("svp-fps-mode", imp.svp_fps_mode_row.upcast_ref(), &["default", "fixed", "variable", "display"]),
         (

@@ -15,7 +15,7 @@ use gtk::subclass::prelude::*;
 use gtk::{gdk, gio, glib};
 
 use super::drag;
-use super::image_canvas::{Fit, ImageCanvas, OriginalFocus, Placement};
+use super::image_canvas::{Fit, ImageCanvas, OriginalFocus, Placement, Scaling};
 use crate::file_settings::FileSettings;
 use crate::fs::metadata::MediaInfo;
 use crate::fs::thumbnail::Pixels;
@@ -885,8 +885,8 @@ impl MediaViewer {
     }
 
     /// Sets how pictures are resampled, nearest or linear, and whether enlarged ones are smoothed too.
-    pub fn set_scaling(&self, nearest: bool, smooth_upscaling: bool) {
-        self.imp().canvas.set_scaling(nearest, smooth_upscaling);
+    pub fn set_scaling(&self, scaling: Scaling, smooth_upscaling: bool) {
+        self.imp().canvas.set_scaling(scaling, smooth_upscaling);
     }
 
     /// Shows a blurred, dimmed copy of the picture behind it, or not.

@@ -234,9 +234,12 @@
       <choices>
         <choice value="nearest"/>
         <choice value="linear"/>
+        <choice value="linear-sharp"/>
+        <choice value="cubic"/>
+        <choice value="cubic-sharp"/>
       </choices>
       <default>'linear'</default>
-      <summary>How images are resampled when drawn: nearest keeps pixels sharp, linear smooths them</summary>
+      <summary>How images are resampled when drawn: nearest keeps pixels sharp, linear smooths them, cubic smooths them with more detail, and the sharp ones sharpen the result</summary>
     </key>
     <key name="keep-fit-mode" type="b">
       <default>true</default>

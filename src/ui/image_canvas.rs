@@ -3,10 +3,13 @@
 //! blurred, dimmed copy of the picture can fill the view behind it.
 
 use std::cell::{Cell, RefCell};
+use std::sync::Arc;
 
 use gtk::prelude::*;
 use gtk::subclass::prelude::*;
-use gtk::{gdk, glib, graphene, gsk};
+use gtk::{gdk, gio, glib, graphene, gsk};
+
+use crate::resample::{self, Picture, Quality};
 
 /// How much one zoom step changes the scale.
 const DEFAULT_ZOOM_STEP: f64 = 1.25;
@@ -33,6 +36,59 @@ pub enum Fit {
     /// Scaled up or down until it covers the whole view, so what overhangs is cropped.
     Fill,
     Original,
+}
+
+/// How the picture is resampled when it is drawn at another size than its own. Nearest and bilinear are GTK's own
+/// filters; the others are made by OpenCV, from the part of the picture in view.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Scaling {
+    Nearest,
+    #[default]
+    Linear,
+    LinearSharp,
+    Cubic,
+    CubicSharp,
+}
+
+impl Scaling {
+    /// The behaviour a setting value names, or the default for any other.
+    pub fn from_name(name: &str) -> Self {
+        match name {
+            "nearest" => Self::Nearest,
+            "linear-sharp" => Self::LinearSharp,
+            "cubic" => Self::Cubic,
+            "cubic-sharp" => Self::CubicSharp,
+            _ => Self::Linear,
+        }
+    }
+
+    /// How OpenCV resamples, for the scalings it does.
+    fn quality(self) -> Option<Quality> {
+        match self {
+            Self::Nearest | Self::Linear => None,
+            Self::LinearSharp => Some(Quality { cubic: false, sharpen: true }),
+            Self::Cubic => Some(Quality { cubic: true, sharpen: false }),
+            Self::CubicSharp => Some(Quality { cubic: true, sharpen: true }),
+        }
+    }
+}
+
+/// What a resampled copy of the picture was made from: the picture, the part of it in view, and the size and quality
+/// it was made at. A copy is drawn only while it matches what the view asks for.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Request {
+    serial: u64,
+    /// The part of the picture, in its own pixels: x, y, width and height.
+    area: (i32, i32, i32, i32),
+    /// The size the part is resampled to, in device pixels.
+    size: (i32, i32),
+    quality: Quality,
+}
+
+/// A part of the picture resampled for `request`.
+struct Resampled {
+    request: Request,
+    texture: gdk::Texture,
 }
 
 /// Where the picture sits when it is shown at its own size.
@@ -165,8 +221,19 @@ mod imp {
         pub(super) last_frame: Cell<i64>,
         /// Whether a blurred, dimmed, cropped copy of the picture fills the view behind it.
         pub(super) underlay: Cell<bool>,
-        /// Whether pictures are drawn with nearest-neighbour sampling, rather than linear.
-        pub(super) nearest_scaling: Cell<bool>,
+        /// How pictures are resampled when drawn at another size than their own.
+        pub(super) scaling: Cell<Scaling>,
+        /// Counts the pictures shown, so a copy made for an earlier one is not drawn over a later.
+        pub(super) serial: Cell<u64>,
+        /// The picture's pixels, read back from the texture when a resampled copy is first wanted.
+        pub(super) source: RefCell<Option<Arc<Picture>>>,
+        /// The latest resampled copy, and whether one is being made.
+        pub(super) resampled: RefCell<Option<Resampled>>,
+        pub(super) resampling: Cell<bool>,
+        /// Set once OpenCV fails, after which pictures are drawn with GTK's own filters.
+        pub(super) resample_failed: Cell<bool>,
+        /// Whether the picture is being dragged, when it is drawn as it is rather than resampled.
+        pub(super) dragging: Cell<bool>,
         /// Whether enlarged pictures are drawn with linear sampling too, rather than nearest.
         pub(super) smooth_upscaling: Cell<bool>,
         /// Whether zooming and panning ease to their new place, rather than jumping there.
@@ -206,6 +273,7 @@ mod imp {
                 move |_, _, _| {
                     if let Some(canvas) = weak.upgrade() {
                         canvas.imp().drag_start.set(canvas.imp().offset.get());
+                        canvas.imp().dragging.set(true);
                     }
                 }
             });
@@ -217,6 +285,15 @@ mod imp {
                         // A drag follows the pointer exactly, so it is not eased.
                         canvas.imp().offset.set((x + dx, y + dy));
                         canvas.snap();
+                    }
+                }
+            });
+            drag.connect_drag_end({
+                let weak = obj.downgrade();
+                move |_, _, _| {
+                    if let Some(canvas) = weak.upgrade() {
+                        canvas.imp().dragging.set(false);
+                        canvas.queue_draw();
                     }
                 }
             });
@@ -280,6 +357,9 @@ mod imp {
                 canvas.ease();
             }
             let Some((x, y, width, height)) = canvas.placed(view) else { return };
+            if canvas.draw_resampled(snapshot, view, view == target) {
+                return;
+            }
             let filter = canvas.scaling_filter(view.scale);
             snapshot.append_scaled_texture(&texture, filter, &graphene::Rect::new(x as f32, y as f32, width as f32, height as f32));
         }
@@ -308,6 +388,9 @@ impl ImageCanvas {
         let fit = if imp.keep_fit.get() { imp.last_fit.get().unwrap_or(default) } else { default };
         imp.fit.set(Some(fit));
         imp.texture.replace(texture);
+        imp.serial.set(imp.serial.get() + 1);
+        imp.source.take();
+        imp.resampled.take();
         imp.offset.set(self.fit_offset(fit, None));
         self.snap();
     }
@@ -445,8 +528,8 @@ impl ImageCanvas {
 
     /// Sets how pictures are resampled: nearest keeps their pixels sharp. Enlarged pictures are drawn nearest too
     /// when `smooth_upscaling` is off.
-    pub fn set_scaling(&self, nearest: bool, smooth_upscaling: bool) {
-        self.imp().nearest_scaling.set(nearest);
+    pub fn set_scaling(&self, scaling: Scaling, smooth_upscaling: bool) {
+        self.imp().scaling.set(scaling);
         self.imp().smooth_upscaling.set(smooth_upscaling);
         self.queue_draw();
     }
@@ -622,11 +705,128 @@ impl ImageCanvas {
     /// The filter a picture drawn at `scale` is resampled with.
     fn scaling_filter(&self, scale: f64) -> gsk::ScalingFilter {
         let enlarged = scale > 1.0;
-        if self.imp().nearest_scaling.get() || (enlarged && !self.imp().smooth_upscaling.get()) {
+        if self.imp().scaling.get() == Scaling::Nearest || (enlarged && !self.imp().smooth_upscaling.get()) {
             gsk::ScalingFilter::Nearest
         } else {
             gsk::ScalingFilter::Linear
         }
+    }
+
+    /// The copy of the picture that OpenCV resamples for `view`: the part of the picture in view, at the size it is
+    /// drawn in device pixels. `None` where the scaling is one of GTK's own, or nothing of the picture is in view.
+    fn resample_request(&self, view: View) -> Option<Request> {
+        let imp = self.imp();
+        let quality = imp.scaling.get().quality()?;
+        if view.scale > 1.0 && !imp.smooth_upscaling.get() {
+            return None;
+        }
+        let (texture_width, texture_height) = self.texture_size()?;
+        let (x, y, ..) = self.placed(view)?;
+        let (view_width, view_height) = self.view_size();
+        // What is in view, in the picture's own pixels, widened to whole pixels.
+        let left = ((0.0 - x) / view.scale).floor().clamp(0.0, texture_width);
+        let top = ((0.0 - y) / view.scale).floor().clamp(0.0, texture_height);
+        let right = ((view_width - x) / view.scale).ceil().clamp(0.0, texture_width);
+        let bottom = ((view_height - y) / view.scale).ceil().clamp(0.0, texture_height);
+        let (width, height) = (right - left, bottom - top);
+        if width < 1.0 || height < 1.0 {
+            return None;
+        }
+        let device = view.scale * f64::from(self.scale_factor().max(1));
+        let size = ((width * device).round().max(1.0) as i32, (height * device).round().max(1.0) as i32);
+        Some(Request {
+            serial: imp.serial.get(),
+            area: (left as i32, top as i32, width as i32, height as i32),
+            size,
+            quality,
+        })
+    }
+
+    /// Draws the picture resampled by OpenCV, where the scaling asks for it and a copy for the view is ready. Once the
+    /// view has settled and no drag is under way, a copy that is not ready is started, and the picture is drawn as GTK
+    /// scales it until then. Returns whether the picture was drawn.
+    fn draw_resampled(&self, snapshot: &gtk::Snapshot, view: View, settled: bool) -> bool {
+        let imp = self.imp();
+        if imp.resample_failed.get() {
+            return false;
+        }
+        let Some(request) = self.resample_request(view) else { return false };
+        if let Some(resampled) = imp.resampled.borrow().as_ref().filter(|resampled| resampled.request == request) {
+            let Some((x, y, ..)) = self.placed(view) else { return false };
+            let (left, top, width, height) = request.area;
+            let rect = graphene::Rect::new(
+                (x + f64::from(left) * view.scale) as f32,
+                (y + f64::from(top) * view.scale) as f32,
+                (f64::from(width) * view.scale) as f32,
+                (f64::from(height) * view.scale) as f32,
+            );
+            // The copy is at the size it is drawn, so it is not resampled again.
+            snapshot.append_scaled_texture(&resampled.texture, gsk::ScalingFilter::Nearest, &rect);
+            return true;
+        }
+        if settled && !imp.dragging.get() && !imp.resampling.get() {
+            self.start_resample(request);
+        }
+        false
+    }
+
+    /// The picture's pixels, read back from its texture the first time they are wanted.
+    fn source_picture(&self) -> Option<Arc<Picture>> {
+        let imp = self.imp();
+        if let Some(source) = imp.source.borrow().as_ref() {
+            return Some(source.clone());
+        }
+        let texture = imp.texture.borrow().clone()?;
+        let mut downloader = gdk::TextureDownloader::new(&texture);
+        downloader.set_format(gdk::MemoryFormat::R8g8b8a8Premultiplied);
+        let (bytes, stride) = downloader.download_bytes();
+        let (width, height) = (texture.width(), texture.height());
+        let row = width as usize * 4;
+        let pixels = if stride == row {
+            bytes.to_vec()
+        } else {
+            bytes.chunks(stride).take(height as usize).flat_map(|line| line[..row].iter().copied()).collect()
+        };
+        let source = Arc::new(Picture { width, height, pixels });
+        imp.source.replace(Some(source.clone()));
+        Some(source)
+    }
+
+    /// Resamples the part of the picture `request` asks for on a worker thread, then draws again with the result. If
+    /// OpenCV fails, the picture is drawn with GTK's own filters from then on.
+    fn start_resample(&self, request: Request) {
+        let imp = self.imp();
+        let Some(source) = self.source_picture() else { return };
+        imp.resampling.set(true);
+        let weak = self.downgrade();
+        glib::spawn_future_local(async move {
+            let (left, top, width, height) = request.area;
+            let (out_width, out_height) = request.size;
+            let made = gio::spawn_blocking(move || {
+                let area = opencv::core::Rect::new(left, top, width, height);
+                resample::resample(&source, area, out_width, out_height, request.quality)
+            })
+            .await;
+            let Some(canvas) = weak.upgrade() else { return };
+            let imp = canvas.imp();
+            imp.resampling.set(false);
+            match made {
+                Ok(Ok(pixels)) => {
+                    let bytes = glib::Bytes::from_owned(pixels);
+                    let texture = gdk::MemoryTexture::new(out_width, out_height, gdk::MemoryFormat::R8g8b8a8Premultiplied, &bytes, out_width as usize * 4);
+                    imp.resampled.replace(Some(Resampled { request, texture: texture.upcast() }));
+                }
+                Ok(Err(err)) => {
+                    eprintln!("rsimgv: could not resample the picture, drawing it without: {err}");
+                    imp.resample_failed.set(true);
+                }
+                Err(_) => {
+                    eprintln!("rsimgv: resampling the picture panicked, drawing it without");
+                    imp.resample_failed.set(true);
+                }
+            }
+            canvas.queue_draw();
+        });
     }
 
     /// Draws the picture cropped to cover the whole view, blurred, and dimmed, so it fills the background.
@@ -721,5 +921,51 @@ pub(crate) mod tests {
         canvas.set_fit(Fit::Window);
         canvas.set_fit(Fit::Original);
         assert_eq!(offset(&canvas), (0.0, 0.0), "with no pointer, centred");
+        resampling_scenarios();
+    }
+
+    /// Pumps the main context until `cond` holds, failing after five seconds.
+    fn wait_for(what: &str, cond: impl Fn() -> bool) {
+        let context = glib::MainContext::default();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !cond() {
+            assert!(std::time::Instant::now() < deadline, "timed out waiting for: {what}");
+            if !context.iteration(false) {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        }
+    }
+
+    /// The scalings OpenCV makes are resampled from the part of the picture in view, at the size it is drawn.
+    fn resampling_scenarios() {
+        let canvas = canvas();
+        canvas.set_smooth_scrolling(false);
+        canvas.set_scaling(Scaling::Linear, true);
+        let view = canvas.target_view().unwrap();
+        assert_eq!(canvas.resample_request(view), None, "GTK's own filters need no copy");
+
+        canvas.set_scaling(Scaling::CubicSharp, true);
+        let request = canvas.resample_request(view).expect("a copy is wanted");
+        assert_eq!(request.area, (0, 0, 2000, 1000), "a picture that fits is wanted whole");
+        let device = canvas.scale_factor().max(1);
+        assert_eq!(request.size, (800 * device, 400 * device), "at the size it is drawn, in device pixels");
+
+        canvas.start_resample(request);
+        wait_for("the copy", || canvas.imp().resampled.borrow().as_ref().is_some_and(|copy| copy.request == request));
+        let copy = canvas.imp().resampled.borrow().as_ref().map(|copy| copy.texture.clone()).unwrap();
+        assert_eq!((copy.width(), copy.height()), (800 * device, 400 * device));
+        assert!(!canvas.imp().resample_failed.get());
+
+        // Zoomed in, only the part in view is resampled, so the copy never outgrows the view.
+        canvas.set_fit(Fit::Original);
+        canvas.zoom_in();
+        canvas.zoom_in();
+        let zoomed = canvas.resample_request(canvas.target_view().unwrap()).unwrap();
+        assert!(zoomed.size.0 <= (800 + 2) * device && zoomed.size.1 <= (600 + 2) * device, "no larger than the view: {:?}", zoomed.size);
+        assert_ne!(zoomed, request, "a copy for another view is not drawn");
+
+        // Enlarged pictures are left to GTK when smooth upscaling is off.
+        canvas.set_scaling(Scaling::CubicSharp, false);
+        assert_eq!(canvas.resample_request(canvas.target_view().unwrap()), None);
     }
 }

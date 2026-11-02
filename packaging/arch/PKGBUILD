@@ -15,10 +15,12 @@ depends=(
   'gtk4>=4.22'
   'libadwaita>=1.9'
   'mpv'
+  'opencv'
   'glib2'
 )
 makedepends=(
   'cargo'
+  'clang'
   'meson'
   'ninja'
   'pkgconf'
