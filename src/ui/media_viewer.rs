@@ -1151,7 +1151,29 @@ impl MediaViewer {
         self.refresh_status();
         imp.controls.set_navigation(neighbour(index, len, false).is_some(), neighbour(index, len, true).is_some());
 
-        let settings = FileSettings::for_path(&path).ok();
+        // The file's settings are read on a worker thread: the moviehash reads the file, and the settings file is parsed.
+        let weak = self.downgrade();
+        glib::spawn_future_local(async move {
+            let settings = gio::spawn_blocking({
+                let path = path.clone();
+                move || FileSettings::for_path(&path).ok()
+            })
+            .await
+            .ok()
+            .flatten();
+            if let Some(viewer) = weak.upgrade() {
+                viewer.finish_load(index, path, settings);
+            }
+        });
+    }
+
+    /// Shows the item at `index`, `path`, once its settings are read. Nothing is shown if another item was asked for
+    /// in the meantime.
+    fn finish_load(&self, index: usize, path: PathBuf, settings: Option<FileSettings>) {
+        let imp = self.imp();
+        if imp.index.get() != index || imp.paths.borrow().get(index) != Some(&path) {
+            return;
+        }
         let video = is_video(&path);
         if video {
             // libmpv plays the video if it is chosen and starts; otherwise GTK's media backend does.
@@ -1284,17 +1306,20 @@ impl MediaViewer {
     /// Clears the shown item: a video is paused and released, and the picture is emptied.
     fn release(&self) {
         let imp = self.imp();
-        let mut settings = imp.file_settings.take();
+        let settings = imp.file_settings.take();
         let media = imp.media.take();
         let changes = match &media {
             Some(media) => video_settings(media),
             None if imp.canvas.texture().is_some() => Placement::to_settings(imp.canvas.placement()),
             None => Vec::new(),
         };
-        if let Some(settings) = settings.as_mut() {
-            if let Err(err) = settings.apply(changes) {
-                eprintln!("rsimgv: could not save the file's settings: {err}");
-            }
+        if let Some(mut settings) = settings {
+            // Saved on a worker thread, so the write does not hold up the window.
+            std::thread::spawn(move || {
+                if let Err(err) = settings.apply(changes) {
+                    eprintln!("rsimgv: could not save the file's settings: {err}");
+                }
+            });
         }
         if let Some(media) = media {
             media.set_playing(false);
