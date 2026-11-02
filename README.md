@@ -99,6 +99,12 @@ navigation:
   remember-folder-sort: false
 viewer:
   image-preloading: true
+image:
+  fit: window
+  keep-fit: true
+  original-focus: center
+  unlock-minimum-zoom: false
+  scaling-filter: linear
 thumbnails:
   threads: 4
   cache: true
