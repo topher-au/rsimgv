@@ -35,6 +35,7 @@ pub struct Playlist {
 
 impl Playlist {
     /// The items in the order they were made, whether or not they are shuffled.
+    #[cfg(test)]
     pub fn items(&self) -> &[PathBuf] {
         &self.items
     }
