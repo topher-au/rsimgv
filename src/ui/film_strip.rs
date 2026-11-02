@@ -1,6 +1,6 @@
 //! A video thumbnail's picture between two film strips: a dark strip down each side with light sprocket
-//! holes. It is drawn as the thumbnail is shown, so the picture is not changed and the strips fit it
-//! exactly, whatever size it is shown at.
+//! holes. It is drawn as the thumbnail is shown, so the picture is not changed. The strips are the same small
+//! size whatever size the thumbnail is shown at.
 
 use std::cell::RefCell;
 
@@ -12,10 +12,11 @@ use gtk::{gdk, glib, graphene};
 const STRIP_COLOUR: gdk::RGBA = gdk::RGBA::new(0.08, 0.08, 0.08, 1.0);
 const HOLE_COLOUR: gdk::RGBA = gdk::RGBA::new(0.85, 0.85, 0.85, 1.0);
 
-/// The width of one strip for a picture `height` pixels high: an eighth of the height, at least 4 pixels.
-fn strip_width(height: i32) -> i32 {
-    (height / 8).max(4)
-}
+/// The width of one strip, in pixels as drawn.
+const STRIP_WIDTH: f32 = 6.0;
+/// The size of a sprocket hole, and the distance from one hole to the next down a strip.
+const HOLE_SIZE: f32 = 3.0;
+const HOLE_PITCH: f32 = 6.0;
 
 mod imp {
     use super::*;
@@ -37,10 +38,7 @@ mod imp {
     impl PaintableImpl for FilmStrip {
         fn intrinsic_width(&self) -> i32 {
             let texture = self.texture.borrow();
-            texture.as_ref().map_or(0, |texture| {
-                let height = texture.intrinsic_height();
-                texture.intrinsic_width() + 2 * strip_width(height)
-            })
+            texture.as_ref().map_or(0, |texture| texture.intrinsic_width() + 2 * STRIP_WIDTH as i32)
         }
 
         fn intrinsic_height(&self) -> i32 {
@@ -52,25 +50,27 @@ mod imp {
             let Some(snapshot) = snapshot.downcast_ref::<gtk::Snapshot>() else { return };
             let (width, height) = (width as f32, height as f32);
 
-            // The strips are in the same proportion to the picture as in its intrinsic size.
-            let scale = width / self.obj().intrinsic_width().max(1) as f32;
-            let strip = strip_width(texture.intrinsic_height()) as f32 * scale;
+            // The strips are a set size, so the picture is fitted into what they leave, keeping its proportions.
+            let strip = STRIP_WIDTH.min(width / 4.0);
+            let free = (width - 2.0 * strip).max(0.0);
+            let (picture_width, picture_height) = (texture.intrinsic_width().max(1) as f32, texture.intrinsic_height().max(1) as f32);
+            let scale = (free / picture_width).min(height / picture_height);
+            let (shown_width, shown_height) = (picture_width * scale, picture_height * scale);
 
             snapshot.append_color(&STRIP_COLOUR, &graphene::Rect::new(0.0, 0.0, width, height));
             snapshot.append_texture(
                 &texture,
-                &graphene::Rect::new(strip, 0.0, width - 2.0 * strip, height),
+                &graphene::Rect::new(strip + (free - shown_width) / 2.0, (height - shown_height) / 2.0, shown_width, shown_height),
             );
 
-            let hole = strip / 2.0;
-            let left = (strip - hole) / 2.0;
+            let left = (strip - HOLE_SIZE) / 2.0;
             let right = width - strip + left;
-            let mut y = hole;
-            while y + hole <= height {
+            let mut y = (HOLE_PITCH - HOLE_SIZE) / 2.0;
+            while y + HOLE_SIZE <= height {
                 for x in [left, right] {
-                    snapshot.append_color(&HOLE_COLOUR, &graphene::Rect::new(x, y, hole, hole));
+                    snapshot.append_color(&HOLE_COLOUR, &graphene::Rect::new(x, y, HOLE_SIZE, HOLE_SIZE));
                 }
-                y += hole * 2.0;
+                y += HOLE_PITCH;
             }
         }
     }
