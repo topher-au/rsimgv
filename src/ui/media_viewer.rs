@@ -256,6 +256,8 @@ mod imp {
         /// The folder's pictures and videos, in display order, and the index of the one shown.
         pub(super) paths: RefCell<Vec<PathBuf>>,
         pub(super) index: Cell<usize>,
+        /// Whether the pictures either side of the item shown are decoded ahead of time.
+        pub(super) preloading: Cell<bool>,
         /// Pictures decoded ahead of the item shown, with the paths they are of.
         pub(super) prefetched: RefCell<Vec<(PathBuf, Pixels)>>,
         /// The settings kept for the item shown: a picture's zoom and pan, a video's position and speed. They are
@@ -535,6 +537,16 @@ impl MediaViewer {
     /// The thumbnail bar, so its toggles can be followed.
     pub fn thumbnail_bar(&self) -> &ThumbnailBar {
         &self.imp().thumbnail_bar
+    }
+
+    /// Sets whether the pictures either side of the item shown are decoded ahead of time. Those already decoded are
+    /// let go when it is turned off; when it is turned on, it starts with the next item shown.
+    pub fn set_preloading(&self, preloading: bool) {
+        let imp = self.imp();
+        imp.preloading.set(preloading);
+        if !preloading {
+            imp.prefetched.borrow_mut().clear();
+        }
     }
 
     /// Makes the thumbnails `size` pixels.
@@ -1302,6 +1314,9 @@ impl MediaViewer {
     /// Decodes the pictures either side of the item at `index`, so that stepping to them shows them at once.
     fn prefetch_neighbours(&self, index: usize) {
         let imp = self.imp();
+        if !imp.preloading.get() {
+            return;
+        }
         let paths = imp.paths.borrow();
         let len = paths.len();
         let ahead: Vec<PathBuf> = [neighbour(index, len, false), neighbour(index, len, true)]
@@ -1316,6 +1331,10 @@ impl MediaViewer {
             glib::spawn_future_local(async move {
                 let Some(pixels) = decode_picture(path.clone()).await else { return };
                 let Some(viewer) = weak.upgrade() else { return };
+                // Turned off while this was being decoded.
+                if !viewer.imp().preloading.get() {
+                    return;
+                }
                 let mut prefetched = viewer.imp().prefetched.borrow_mut();
                 if prefetched.len() >= PREFETCHED {
                     prefetched.remove(0);
@@ -1471,8 +1490,52 @@ impl MediaViewer {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+
+    /// The pictures either side of the one shown are decoded ahead only while preloading is on.
+    pub(crate) fn run_scenarios() {
+        let root = std::env::temp_dir().join(format!("rsimgv-viewer-preload-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let paths: Vec<PathBuf> = ["a.png", "b.png", "c.png"].iter().map(|name| root.join(name)).collect();
+        for path in &paths {
+            let pixbuf = gtk::gdk_pixbuf::Pixbuf::new(gtk::gdk_pixbuf::Colorspace::Rgb, false, 8, 8, 8).unwrap();
+            pixbuf.savev(path, "png", &[]).unwrap();
+        }
+        let pump = |until: &dyn Fn() -> bool| {
+            let context = glib::MainContext::default();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(1000);
+            while !until() && std::time::Instant::now() < deadline {
+                if !context.iteration(false) {
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+            }
+        };
+
+        let viewer: MediaViewer = glib::Object::new();
+        let imp = viewer.imp();
+        imp.paths.replace(paths);
+        viewer.set_preloading(true);
+        viewer.prefetch_neighbours(1);
+        pump(&|| imp.prefetched.borrow().len() == 2);
+        assert_eq!(imp.prefetched.borrow().len(), 2, "both neighbours are decoded");
+
+        viewer.set_preloading(false);
+        assert!(imp.prefetched.borrow().is_empty(), "turning it off lets them go");
+        viewer.prefetch_neighbours(1);
+        pump(&|| false);
+        assert!(imp.prefetched.borrow().is_empty(), "nothing is decoded while it is off");
+
+        // A decode under way when it is turned off is not kept.
+        viewer.set_preloading(true);
+        viewer.prefetch_neighbours(1);
+        viewer.set_preloading(false);
+        pump(&|| false);
+        assert!(imp.prefetched.borrow().is_empty(), "a decode under way is not kept");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn neighbours_stop_at_either_end() {

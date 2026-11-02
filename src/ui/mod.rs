@@ -55,6 +55,7 @@ mod tests {
         super::navigation_bar::tests::run_scenarios();
         super::preferences::tests::run_scenarios();
         super::browse_view::tests::run_scenarios();
+        super::media_viewer::tests::run_scenarios();
         crate::settings::store_layout_tests();
         super::window::tests::run_scenarios();
     }

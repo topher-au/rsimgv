@@ -84,6 +84,7 @@ const LAYOUT: &[(&str, &str, &str)] = &[
     ("last-file", "start", "last-file"),
     ("open-fullscreen", "viewer", "open-fullscreen"),
     ("auto-hide-cursor", "viewer", "auto-hide-cursor"),
+    ("image-preloading", "viewer", "image-preloading"),
     ("viewer-blurred-background", "viewer", "blurred-background"),
     ("viewer-thumbnail-bar", "viewer", "thumbnail-bar.side"),
     ("viewer-thumbnail-bar-shown", "viewer", "thumbnail-bar.shown"),

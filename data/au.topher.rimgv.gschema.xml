@@ -80,6 +80,10 @@
       <default>false</default>
       <summary>Use KDE Plasma's effects, such as blur behind floating overlays, where the compositor offers them</summary>
     </key>
+    <key name="image-preloading" type="b">
+      <default>true</default>
+      <summary>When viewing an image, preload the adjacent images in the background</summary>
+    </key>
     <key name="folder-preview-fit" type="b">
       <default>false</default>
       <summary>Fit as many previews to a folder's icon as their pictures' dimensions allow, instead of a set number</summary>

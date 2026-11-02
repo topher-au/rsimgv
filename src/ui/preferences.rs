@@ -83,6 +83,8 @@ mod imp {
         #[template_child]
         pub media_only_row: TemplateChild<adw::SwitchRow>,
         #[template_child]
+        pub image_preloading_row: TemplateChild<adw::SwitchRow>,
+        #[template_child]
         pub thumbnail_crop_row: TemplateChild<adw::SwitchRow>,
         #[template_child]
         pub video_frame_previews_row: TemplateChild<adw::SwitchRow>,
@@ -271,6 +273,7 @@ impl PreferencesDialog {
         settings.bind("show-hidden", &*imp.show_hidden_row, "active").build();
         settings.bind("collapse-on-navigate", &*imp.collapse_on_navigate_row, "active").build();
         settings.bind("media-only", &*imp.media_only_row, "active").build();
+        settings.bind("image-preloading", &*imp.image_preloading_row, "active").build();
         settings.bind("thumbnail-crop", &*imp.thumbnail_crop_row, "active").build();
         settings.bind("video-frame-previews", &*imp.video_frame_previews_row, "active").build();
         settings.bind("directory-previews", &*imp.directory_previews_row, "active").build();
@@ -706,6 +709,8 @@ pub(crate) mod tests {
         assert!(!dialog.imp().media_only_row.is_active());
         settings.set_boolean("media-only", true).unwrap();
         settings.set_int("item-size", 128).unwrap();
+
+        assert!(dialog.imp().image_preloading_row.is_active(), "image preloading is on by default");
 
         // A port row is insensitive while its transport is off.
         settings.set_boolean("ipc-tcp-enabled", false).unwrap();

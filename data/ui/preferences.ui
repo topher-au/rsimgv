@@ -917,10 +917,19 @@
                       </object>
                     </child>
                     <child>
-                      <object class="AdwStatusPage" id="advanced_page">
+                      <object class="AdwPreferencesPage" id="advanced_page">
                         <property name="title">Advanced</property>
-                        <property name="description">No advanced options yet.</property>
                         <property name="icon-name">applications-engineering-symbolic</property>
+                        <child>
+                          <object class="AdwPreferencesGroup">
+                            <child>
+                              <object class="AdwSwitchRow" id="image_preloading_row">
+                                <property name="title">Enable image preloading</property>
+                                <property name="subtitle">When viewing an image, preload the adjacent images in the background</property>
+                              </object>
+                            </child>
+                          </object>
+                        </child>
                       </object>
                     </child>
                     <child>

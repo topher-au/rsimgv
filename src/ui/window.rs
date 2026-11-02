@@ -296,6 +296,15 @@ impl Window {
         ] {
             settings.connect_changed(Some(key), apply_thumbnail_bar.clone());
         }
+        imp.viewer.set_preloading(settings.boolean("image-preloading"));
+        settings.connect_changed(Some("image-preloading"), {
+            let weak = window.downgrade();
+            move |settings, key| {
+                if let Some(window) = weak.upgrade() {
+                    window.imp().viewer.set_preloading(settings.boolean(key));
+                }
+            }
+        });
         imp.viewer.connect_thumbnail_side_requested({
             let settings = settings.clone();
             move |_, side| {
