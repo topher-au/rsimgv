@@ -96,13 +96,21 @@ struct Inner {
     root: PathBuf,
     /// What has been made in this process, by file.
     textures: RefCell<TextureCache>,
-    /// The order things were made in, for evicting the oldest.
-    made: RefCell<VecDeque<Key>>,
+    /// The order the cached things were used in, with the stamp each had then, for evicting the least recently used.
+    /// An entry whose stamp is no longer the thing's own is stale and is skipped.
+    used: RefCell<VecDeque<(Key, u64)>>,
+    /// The stamp of the latest use of each cached thing.
+    stamps: RefCell<HashMap<Key, u64>>,
+    /// The last stamp handed out.
+    stamp: Cell<u64>,
     /// The bytes the textures in `textures` take up.
     bytes: Cell<usize>,
     /// Requests waiting for each thing, whether it is queued or being made.
     waiters: RefCell<HashMap<Key, Vec<Waiter>>>,
-    queue: RefCell<VecDeque<Key>>,
+    /// Jobs waiting to be made, newest last, each with its stamp. `queued` holds the stamp that is current for each,
+    /// so asking for a queued job again moves it to the newest end without searching the queue.
+    queue: RefCell<VecDeque<(Key, u64)>>,
+    queued: RefCell<HashMap<Key, u64>>,
     running: Cell<usize>,
     /// How many of the running jobs are frame jobs.
     running_frames: Cell<usize>,
@@ -217,7 +225,9 @@ impl Thumbnails {
     }
 
     fn request(&self, key: Key, wanted: impl Fn() -> bool + 'static, on_ready: impl FnOnce(&[gdk::Texture]) + 'static) {
-        if let Some(textures) = self.inner.textures.borrow().get(&key).cloned() {
+        let cached = self.inner.textures.borrow().get(&key).cloned();
+        if let Some(textures) = cached {
+            self.touch(&key);
             on_ready(&textures);
             return;
         }
@@ -234,17 +244,56 @@ impl Thumbnails {
             list.push(waiter);
             drop(waiters);
             // Asked for again while queued, so it is wanted now: it moves to the front of the queue.
-            let mut queue = self.inner.queue.borrow_mut();
-            if let Some(position) = queue.iter().position(|queued| queued == &key) {
-                queue.remove(position);
-                queue.push_back(key);
+            if self.inner.queued.borrow().contains_key(&key) {
+                self.enqueue(key);
             }
             return;
         }
         waiters.insert(key.clone(), vec![waiter]);
         drop(waiters);
-        self.inner.queue.borrow_mut().push_back(key);
+        self.enqueue(key);
         self.start_jobs();
+    }
+
+    /// Puts `key` at the newest end of the queue.
+    fn enqueue(&self, key: Key) {
+        let stamp = self.next_stamp();
+        self.inner.queued.borrow_mut().insert(key.clone(), stamp);
+        let mut queue = self.inner.queue.borrow_mut();
+        queue.push_back((key, stamp));
+        // Moved jobs leave stale entries behind; they are cleared out once they outnumber the live ones.
+        if queue.len() > 2 * self.inner.queued.borrow().len() + 64 {
+            let queued = self.inner.queued.borrow();
+            queue.retain(|(key, stamp)| queued.get(key) == Some(stamp));
+        }
+    }
+
+    fn next_stamp(&self) -> u64 {
+        let stamp = self.inner.stamp.get() + 1;
+        self.inner.stamp.set(stamp);
+        stamp
+    }
+
+    /// The newest queued job with its stamp, skipping stale entries.
+    fn pop_newest(&self) -> Option<(Key, u64)> {
+        loop {
+            let (key, stamp) = self.inner.queue.borrow_mut().pop_back()?;
+            if self.inner.queued.borrow().get(&key) == Some(&stamp) {
+                return Some((key, stamp));
+            }
+        }
+    }
+
+    /// Marks the cached thing `key` as the most recently used.
+    fn touch(&self, key: &Key) {
+        let stamp = self.next_stamp();
+        self.inner.stamps.borrow_mut().insert(key.clone(), stamp);
+        let mut used = self.inner.used.borrow_mut();
+        used.push_back((key.clone(), stamp));
+        if used.len() > 2 * self.inner.textures.borrow().len() + 64 {
+            let stamps = self.inner.stamps.borrow();
+            used.retain(|(key, stamp)| stamps.get(key) == Some(stamp));
+        }
     }
 
     /// Starts queued jobs while there is room for them.
@@ -267,11 +316,12 @@ impl Thumbnails {
         let frames_full = self.inner.running_frames.get() >= MAX_FRAME_JOBS;
         let mut skipped_frames = Vec::new();
         let found = loop {
-            let Some(key) = self.inner.queue.borrow_mut().pop_back() else { break None };
+            let Some((key, stamp)) = self.pop_newest() else { break None };
             if frames_full && key.job == Job::Frames {
-                skipped_frames.push(key);
+                skipped_frames.push((key, stamp));
                 continue;
             }
+            self.inner.queued.borrow_mut().remove(&key);
             let wanted = self
                 .inner
                 .waiters
@@ -285,8 +335,8 @@ impl Thumbnails {
         };
         // The skipped frame jobs go back where they were, so they are still the next frames made.
         let mut queue = self.inner.queue.borrow_mut();
-        for key in skipped_frames.into_iter().rev() {
-            queue.push_back(key);
+        for entry in skipped_frames.into_iter().rev() {
+            queue.push_back(entry);
         }
         found
     }
@@ -318,14 +368,20 @@ impl Thumbnails {
         self.start_jobs();
     }
 
+    /// Keeps what was made in memory, and evicts the least recently used things while over the budget.
     fn remember(&self, key: Key, textures: Vec<gdk::Texture>) {
-        let mut made = self.inner.made.borrow_mut();
-        let mut cached = self.inner.textures.borrow_mut();
         let mut bytes = self.inner.bytes.get() + bytes_of(&textures);
-        made.push_back(key.clone());
-        cached.insert(key, textures);
-        while bytes > MAX_BYTES && made.len() > 1 {
-            if let Some(old) = made.pop_front() {
+        if let Some(replaced) = self.inner.textures.borrow_mut().insert(key.clone(), textures) {
+            bytes -= bytes_of(&replaced);
+        }
+        self.touch(&key);
+        let mut cached = self.inner.textures.borrow_mut();
+        let mut used = self.inner.used.borrow_mut();
+        let mut stamps = self.inner.stamps.borrow_mut();
+        while bytes > MAX_BYTES && cached.len() > 1 {
+            let Some((old, stamp)) = used.pop_front() else { break };
+            if stamps.get(&old) == Some(&stamp) {
+                stamps.remove(&old);
                 if let Some(removed) = cached.remove(&old) {
                     bytes -= bytes_of(&removed);
                 }
@@ -412,16 +468,18 @@ fn make(root: &Path, key: &Key) -> Option<Vec<Pixels>> {
             Some(vec![still])
         }
         Job::Frames => {
-            let duration = video_duration(&key.path)?;
+            let duration = duration_of(root, &digest, &key.path, key.mtime)?;
             // Frames are spread evenly through the video, at most a second apart, and at most MAX_FRAMES.
             let count = (duration as usize).clamp(1, MAX_FRAMES);
-            (0..count)
-                .map(|index| {
+            // A frame that cannot be made is left out, and the others still play.
+            let frames: Vec<Pixels> = (0..count)
+                .filter_map(|index| {
                     let file = root.join("frames").join(key.size.dir_name()).join(format!("{digest}-{index}.png"));
                     let at = duration * (index as f64 + 0.5) / count as f64;
                     cached_or_made(&file, &uri, key.mtime, || frame_pixbuf(&key.path, at, key.size))
                 })
-                .collect()
+                .collect();
+            (!frames.is_empty()).then_some(frames)
         }
     }
 }
@@ -464,6 +522,25 @@ fn frame_pixbuf(path: &Path, seconds: f64, size: Size) -> Option<gdk_pixbuf::Pix
     }
     let stream = gio::MemoryInputStream::from_bytes(&glib::Bytes::from_owned(png));
     gdk_pixbuf::Pixbuf::from_stream(&stream, None::<&gio::Cancellable>).ok()
+}
+
+/// The length of the video at `path` in seconds. It is read from the record kept for the video under `root` while the
+/// file has the modification time `mtime`, so a video whose frames are cached is not probed again. Otherwise `ffprobe`
+/// is asked, and the answer is recorded.
+fn duration_of(root: &Path, digest: &str, path: &Path, mtime: i64) -> Option<f64> {
+    let record = root.join("durations").join(digest);
+    if let Ok(text) = std::fs::read_to_string(&record) {
+        let mut lines = text.lines();
+        if lines.next().and_then(|line| line.parse::<i64>().ok()) == Some(mtime) {
+            if let Some(seconds) = lines.next().and_then(|line| line.parse::<f64>().ok()) {
+                return Some(seconds);
+            }
+        }
+    }
+    let seconds = video_duration(path)?;
+    // A record that cannot be written only costs the next run its probe.
+    let _ = write_atomically(&record, format!("{mtime}\n{seconds}\n").as_bytes());
+    Some(seconds)
 }
 
 /// The length of the video at `path` in seconds, if `ffprobe` knows it.
@@ -633,7 +710,9 @@ mod tests {
             waiters.insert(scrolled_away.clone(), vec![waiter(false)]);
             waiters.insert(newest.clone(), vec![waiter(true)]);
         }
-        thumbnails.inner.queue.borrow_mut().extend([old.clone(), scrolled_away.clone(), newest.clone()]);
+        for job in [old.clone(), scrolled_away.clone(), newest.clone()] {
+            thumbnails.enqueue(job);
+        }
 
         assert!(thumbnails.next_wanted() == Some(newest));
         assert!(thumbnails.next_wanted() == Some(old));
