@@ -2,6 +2,8 @@
 //!
 //!   actions.list    {}                       -> {"actions": [{"name", "label", "description", "scope", "contexts", "icon", "defaults"}, ...]}
 //!   actions.run     {"name", "value"?}       -> {}   value is passed to an action that takes one
+//!                   win.notify takes {"message", "level"?, "seconds"?} instead: it shows the message over the window
+//!                   (level is info, success, warning, error or plain; seconds is 4 by default).
 //!   window.info     {}                       -> {"current_path", "selected_file", "show_sidebar"}
 //!   window.set_show_sidebar {"show"}         -> {}
 //!   tabs.list       {}                       -> {"tabs": [{"id", "index", "path", "active"}, ...]}
@@ -57,7 +59,7 @@ use serde_json::{json, Value};
 
 use crate::bookmarks;
 use crate::ipc::Error;
-use crate::keybindings::actions::{find, ACTIONS};
+use crate::keybindings::actions::{find, ACTIONS, DEFAULT_NOTIFICATION_SECONDS, NOTIFICATION_LEVELS};
 use crate::ui::{Level, Message, Window};
 use crate::ui::message_overlay::Position;
 
@@ -84,6 +86,22 @@ pub fn handle(window: &Window, method: &str, params: &Value) -> Result<Value, Er
             let name = text_param(params, "name")?;
             if find(name).is_none() {
                 return Err(Error::new("unknown_action", format!("no action named {name}")));
+            }
+            if find(name).is_some_and(|action| action.takes_notification()) {
+                let message = text_param(params, "message")?;
+                let level = optional_text(params, "level")?.unwrap_or("info");
+                if !NOTIFICATION_LEVELS.contains(&level) {
+                    return Err(Error::new("invalid_params", format!("no level named {level}")));
+                }
+                let seconds = match params.get("seconds").filter(|seconds| !seconds.is_null()) {
+                    None => DEFAULT_NOTIFICATION_SECONDS,
+                    Some(seconds) => seconds
+                        .as_f64()
+                        .filter(|seconds| *seconds > 0.0)
+                        .ok_or_else(|| Error::new("invalid_params", "the parameter seconds must be a number above 0"))?,
+                };
+                window.show_notification(message, level, seconds);
+                return Ok(json!({}));
             }
             let value = params.get("value").and_then(Value::as_f64);
             if window.run_action(name, value) {

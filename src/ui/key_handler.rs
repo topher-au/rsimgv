@@ -62,11 +62,20 @@ fn handle(window: &Window, key: gdk::Key, state: gdk::ModifierType) -> glib::Pro
         return glib::Propagation::Proceed;
     }
     let scopes = window.active_scopes();
-    let Some((action, value, script)) = keybindings::with_table(|table| {
-        table.resolve_binding(&chord.format(), &scopes).map(|(action, binding)| (action, binding.value, binding.script.clone()))
+    let Some((action, value, script, notification)) = keybindings::with_table(|table| {
+        table
+            .resolve_binding(&chord.format(), &scopes)
+            .map(|(action, binding)| (action, binding.value, binding.script.clone(), binding.notification.clone()))
     }) else {
         return glib::Propagation::Stop;
     };
+    if action.takes_notification() {
+        match notification {
+            Some(notification) => window.show_notification(&notification.message, &notification.level, notification.seconds),
+            None => eprintln!("rsimgv: the binding for {} has no notification", chord.format()),
+        }
+        return glib::Propagation::Stop;
+    }
     if action.takes_script() {
         match script {
             Some(name) => window.run_script(&name),

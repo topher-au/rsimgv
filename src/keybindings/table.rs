@@ -4,23 +4,53 @@
 
 use serde_yaml_ng::{Mapping, Value};
 
-use super::actions::{ActionInfo, Scope, ACTIONS, SCRIPT_ACTION};
+use super::actions::{ActionInfo, Scope, ACTIONS, DEFAULT_NOTIFICATION_SECONDS, MAX_NOTIFICATION_SECONDS, NOTIFICATION_LEVELS};
 use super::chord::canonical;
 
+/// A notification to show over the window: its message, its level (one of `NOTIFICATION_LEVELS`) and how many seconds it
+/// stays up.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Notification {
+    pub message: String,
+    pub level: String,
+    pub seconds: f64,
+}
+
 /// A chord bound to an action, the context it is active in, the value it passes, for an action that takes one
-/// (`None` uses the action's default), and the script it runs, for the action that runs one.
+/// (`None` uses the action's default), the script it runs, for the action that runs one, and the notification it shows,
+/// for the action that shows one.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Binding {
     pub chord: String,
     pub context: Scope,
     pub value: Option<f64>,
     pub script: Option<String>,
+    pub notification: Option<Notification>,
 }
 
 impl Binding {
     fn new(chord: String, context: Scope) -> Self {
-        Self { chord, context, value: None, script: None }
+        Self { chord, context, value: None, script: None, notification: None }
     }
+}
+
+/// The notification a bindings file entry describes: a `message`, a `level` that is `info` unless it says another, and
+/// the `seconds` it stays, a default number unless it says another. `Err` is what is wrong with the entry.
+fn notification_of(entry: &Value) -> Result<Notification, String> {
+    let message = entry.get("message").and_then(Value::as_str).filter(|message| !message.trim().is_empty());
+    let Some(message) = message else { return Err("has no message".to_owned()) };
+    let level = match entry.get("level") {
+        None => "info",
+        Some(level) => level.as_str().filter(|level| NOTIFICATION_LEVELS.contains(level)).ok_or_else(|| "has an unknown level".to_owned())?,
+    };
+    let seconds = match entry.get("seconds") {
+        None => DEFAULT_NOTIFICATION_SECONDS,
+        Some(seconds) => seconds
+            .as_f64()
+            .filter(|seconds| *seconds > 0.0 && *seconds <= MAX_NOTIFICATION_SECONDS)
+            .ok_or_else(|| format!("must stay between 0 and {MAX_NOTIFICATION_SECONDS} seconds"))?,
+    };
+    Ok(Notification { message: message.to_owned(), level: level.to_owned(), seconds })
 }
 
 #[derive(Clone, PartialEq)]
@@ -56,22 +86,26 @@ impl BindingTable {
 
     /// Binds `chord` to `name` in `context`, passing `value`, if the action can be bound in that context, the chord
     /// is valid, and the chord is not already bound to the action. Returns whether it was added.
+    #[cfg(test)]
     pub fn add(&mut self, name: &str, chord: &str, context: Scope, value: Option<f64>) -> bool {
-        self.add_binding(name, chord, context, value, None)
+        self.insert(name, Binding { value, ..Binding::new(chord.to_owned(), context) })
     }
 
     /// Binds `chord` to the action that runs scripts, in `context`, to run the script called `script`. Returns whether
     /// it was added, as `add` does.
+    #[cfg(test)]
     pub fn add_script(&mut self, chord: &str, context: Scope, script: &str) -> bool {
-        self.add_binding(SCRIPT_ACTION, chord, context, None, Some(script.to_owned()))
+        self.insert(super::actions::SCRIPT_ACTION, Binding { script: Some(script.to_owned()), ..Binding::new(chord.to_owned(), context) })
     }
 
-    fn add_binding(&mut self, name: &str, chord: &str, context: Scope, value: Option<f64>, script: Option<String>) -> bool {
-        let (Some(index), Some(chord)) = (Self::index(name), canonical(chord)) else { return false };
-        if !ACTIONS[index].contexts().contains(&context) || self.chords[index].iter().any(|bound| bound.chord == chord) {
+    /// Binds the chord of `binding` to `name`, with the rest of the binding, if the action can be bound in its context,
+    /// the chord is valid, and the chord is not already bound to the action. Returns whether it was added.
+    pub fn insert(&mut self, name: &str, binding: Binding) -> bool {
+        let (Some(index), Some(chord)) = (Self::index(name), canonical(&binding.chord)) else { return false };
+        if !ACTIONS[index].contexts().contains(&binding.context) || self.chords[index].iter().any(|bound| bound.chord == chord) {
             return false;
         }
-        self.chords[index].push(Binding { chord, context, value, script });
+        self.chords[index].push(Binding { chord, ..binding });
         true
     }
 
@@ -130,7 +164,7 @@ impl BindingTable {
 
     /// The YAML file text for the bindings that differ from the defaults. A binding with a value, a script or a
     /// context other than the action's own is a mapping of `key`, and `value`, `script` and `context` when it has
-    /// them; any other is just its chord.
+    /// them (a notification is `message`, `level` and `seconds`); any other is just its chord.
     pub fn to_yaml(&self) -> String {
         let mut actions = Mapping::new();
         for (action, bindings) in ACTIONS.iter().zip(&self.chords) {
@@ -142,7 +176,7 @@ impl BindingTable {
                 .iter()
                 .map(|binding| {
                     let own_context = binding.context == action.default_context();
-                    if binding.value.is_none() && binding.script.is_none() && own_context {
+                    if binding.value.is_none() && binding.script.is_none() && binding.notification.is_none() && own_context {
                         return Value::String(binding.chord.clone());
                     }
                     let mut entry = Mapping::new();
@@ -152,6 +186,11 @@ impl BindingTable {
                     }
                     if let Some(script) = &binding.script {
                         entry.insert(Value::String("script".to_owned()), Value::String(script.clone()));
+                    }
+                    if let Some(notification) = &binding.notification {
+                        entry.insert(Value::String("message".to_owned()), Value::String(notification.message.clone()));
+                        entry.insert(Value::String("level".to_owned()), Value::String(notification.level.clone()));
+                        entry.insert(Value::String("seconds".to_owned()), Value::Number(notification.seconds.into()));
                     }
                     if !own_context {
                         entry.insert(Value::String("context".to_owned()), Value::String(binding.context.id().to_owned()));
@@ -169,7 +208,8 @@ impl BindingTable {
 
     /// Applies the actions in a YAML file over the table: each listed action gets the bindings the file gives it.
     /// Returns what could not be applied: unknown actions, invalid chords, unknown contexts, contexts the action
-    /// cannot be bound in, a script binding that names no script, or a file that cannot be read.
+    /// cannot be bound in, a script binding that names no script, a notification with no message or with a level or a
+    /// duration that does not fit, or a file that cannot be read.
     pub fn apply_yaml(&mut self, text: &str) -> Vec<String> {
         let root: Value = match serde_yaml_ng::from_str(text) {
             Ok(root) => root,
@@ -219,10 +259,21 @@ impl BindingTable {
                     problems.push(format!("{name}: {chord} names no script"));
                     continue;
                 }
+                let notification = if action.takes_notification() {
+                    match notification_of(entry) {
+                        Ok(notification) => Some(notification),
+                        Err(problem) => {
+                            problems.push(format!("{name}: {chord} {problem}"));
+                            continue;
+                        }
+                    }
+                } else {
+                    None
+                };
                 if bindings.iter().any(|bound| bound.chord == chord) {
                     continue;
                 }
-                bindings.push(Binding { chord, context, value: passed, script: script.filter(|_| action.takes_script()) });
+                bindings.push(Binding { chord, context, value: passed, script: script.filter(|_| action.takes_script()), notification });
             }
             self.chords[index] = bindings;
         }
@@ -302,7 +353,7 @@ mod tests {
         assert!(loaded.apply_yaml(&text).is_empty());
         assert_eq!(
             loaded.bindings("video.seek"),
-            [Binding { chord: "ctrl+right".to_owned(), context: Scope::Video, value: Some(30.0), script: None }]
+            [Binding { chord: "ctrl+right".to_owned(), context: Scope::Video, value: Some(30.0), script: None, notification: None }]
         );
         assert_eq!(loaded.resolve("ctrl+right", &[Scope::View, Scope::Video]).map(|(a, value)| (a.name, value)), Some(("video.seek", Some(30.0))));
     }
@@ -315,7 +366,7 @@ mod tests {
         assert!(text.contains("context: global"));
         let mut loaded = BindingTable::defaults();
         assert!(loaded.apply_yaml(&text).is_empty());
-        assert_eq!(loaded.bindings("view.next").last(), Some(&Binding { chord: "ctrl+n".to_owned(), context: Scope::Global, value: None, script: None }));
+        assert_eq!(loaded.bindings("view.next").last(), Some(&Binding { chord: "ctrl+n".to_owned(), context: Scope::Global, value: None, script: None, notification: None }));
     }
 
     #[test]
@@ -337,6 +388,32 @@ mod tests {
         let mut loaded = BindingTable::defaults();
         assert!(loaded.apply_yaml(&text).is_empty());
         assert_eq!(loaded.bindings("script"), table.bindings("script"));
+    }
+
+    #[test]
+    fn a_binding_carries_the_notification_it_shows() {
+        let mut table = BindingTable::defaults();
+        let saved = Notification { message: "Saved".to_owned(), level: "success".to_owned(), seconds: 2.5 };
+        assert!(table.insert("win.notify", Binding { notification: Some(saved.clone()), ..Binding::new("ctrl+shift+s".to_owned(), Scope::Global) }));
+        assert!(table.insert("win.notify", Binding { notification: Some(saved.clone()), ..Binding::new("ctrl+shift+v".to_owned(), Scope::Video) }));
+        let text = table.to_yaml();
+        assert!(text.contains("message: Saved") && text.contains("level: success"));
+        let mut loaded = BindingTable::defaults();
+        assert!(loaded.apply_yaml(&text).is_empty());
+        assert_eq!(loaded.bindings("win.notify"), table.bindings("win.notify"));
+        let (action, binding) = loaded.resolve_binding("ctrl+shift+s", &[Scope::Browse]).unwrap();
+        assert_eq!((action.name, binding.notification.as_ref()), ("win.notify", Some(&saved)));
+    }
+
+    #[test]
+    fn a_notification_binding_that_does_not_fit_is_reported() {
+        let mut table = BindingTable::defaults();
+        let text = "schema: 1\nactions:\n  win.notify:\n    - ctrl+a\n    - key: ctrl+b\n      message: ''\n    - key: ctrl+c\n      message: Hi\n      level: loud\n    - key: ctrl+d\n      message: Hi\n      seconds: 0\n    - key: ctrl+e\n      message: Hi\n    - key: ctrl+f\n      message: Hi\n      level: error\n      seconds: 9\n";
+        let problems = table.apply_yaml(text);
+        assert_eq!(problems.len(), 4, "{problems:?}");
+        let bound = table.bindings("win.notify");
+        assert_eq!(bound.iter().map(|binding| binding.chord.as_str()).collect::<Vec<_>>(), ["ctrl+e", "ctrl+f"]);
+        assert_eq!(bound[0].notification, Some(Notification { message: "Hi".to_owned(), level: "info".to_owned(), seconds: DEFAULT_NOTIFICATION_SECONDS }));
     }
 
     #[test]

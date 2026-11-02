@@ -8,7 +8,7 @@ use gio::prelude::StaticType;
 use gtk::prelude::*;
 use gtk::{gdk, gio, glib};
 
-use crate::keybindings::actions::Scope;
+use crate::keybindings::actions::{Scope, DEFAULT_NOTIFICATION_SECONDS, MAX_NOTIFICATION_SECONDS};
 use super::browse_view::{InfoField, ListedFile};
 use crate::bookmarks::{self, Bookmark};
 use super::image_canvas::{Fit, OriginalFocus, Scaling, PAN_STEP};
@@ -684,6 +684,18 @@ impl Window {
     /// the browse list, the viewer and the video. The catalogue in `keybindings::actions` gives each one's contexts.
     fn add_binding_actions(&self) {
         let weak = self.downgrade();
+        // The notification action takes what to show as its parameter: the message, the level and the seconds.
+        let notify = gio::SimpleAction::new("notify", Some(&<(String, String, f64)>::static_variant_type()));
+        notify.connect_activate({
+            let weak = weak.clone();
+            move |_, parameter| {
+                let Some(window) = weak.upgrade() else { return };
+                if let Some((message, level, seconds)) = parameter.and_then(|parameter| parameter.get::<(String, String, f64)>()) {
+                    window.show_notification(&message, &level, seconds);
+                }
+            }
+        });
+        self.add_action(&notify);
         bound_action(self, &weak, "settings", Window::show_preferences);
         bound_action(self, &weak, "settings-keybindings", |window| window.present_preferences(Some("keybindings")));
         bound_action(self, &weak, "open-folder", Window::open_folder);
@@ -1145,6 +1157,14 @@ impl Window {
     /// Shows `text` over the window for a few seconds.
     pub fn notify(&self, text: &str) {
         self.messages().show(Message::notification(text));
+    }
+
+    /// Shows `message` over the window as a notification of `level`, one of `NOTIFICATION_LEVELS` (an unknown one is
+    /// `info`), for `seconds`.
+    pub fn show_notification(&self, message: &str, level: &str, seconds: f64) {
+        let seconds = if seconds.is_finite() { seconds.clamp(0.1, MAX_NOTIFICATION_SECONDS) } else { DEFAULT_NOTIFICATION_SECONDS };
+        let level = Level::from_name(level).unwrap_or_default();
+        self.messages().show(Message::notification(message).level(level).lasting(std::time::Duration::from_secs_f64(seconds)));
     }
 
     /// Shows `text` over the window for a few seconds, as something that went wrong.

@@ -1,6 +1,7 @@
 //! The dialog that adds or changes a binding of an action: a chord captured from the keyboard, the context the
-//! binding is active in, for an action that takes a value, the value the binding passes, and for the action that
-//! runs a script, the script. It warns when the chord is already bound to an action whose context overlaps.
+//! binding is active in, for an action that takes a value, the value the binding passes, for the action that runs a
+//! script, the script, and for the action that shows a notification, its message, level and duration. It warns when
+//! the chord is already bound to an action whose context overlaps.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -8,30 +9,29 @@ use std::rc::Rc;
 use adw::prelude::*;
 use gtk::{gio, glib};
 
-use crate::keybindings::actions::{value_info, ActionInfo, Scope};
+use crate::keybindings::actions::{
+    value_info, ActionInfo, Scope, DEFAULT_NOTIFICATION_SECONDS, MAX_NOTIFICATION_SECONDS, NOTIFICATION_LEVELS,
+};
 use crate::scripts::read_scripts;
-use crate::keybindings::{self, chord::Chord};
+use crate::keybindings::{self, chord::Chord, Binding, Notification};
 use super::key_handler::chord_from_event;
 use super::keybind_label::KeybindLabel;
 
-/// What a binding is made of besides its action: the chord, the value it passes, the context it is active in, and the
-/// script it runs.
-pub type BindingParts = (String, Option<f64>, Scope, Option<String>);
-
 /// Opens the dialog over `parent` for `action`. `existing` is the binding being changed, or `None` to add one.
-/// `on_save` receives the canonical chord, the value for an action that takes one, the context, and the script for
-/// the action that runs one. With `on_delete`, the dialog also offers to delete the binding.
+/// `on_save` receives the binding as the dialog leaves it, with the chord as typed. With `on_delete`, the dialog also
+/// offers to delete the binding.
 pub fn show(
     parent: &impl IsA<gtk::Widget>,
     action: &'static ActionInfo,
-    existing: Option<BindingParts>,
-    on_save: impl Fn(String, Option<f64>, Scope, Option<String>) + 'static,
+    existing: Option<Binding>,
+    on_save: impl Fn(Binding) + 'static,
     on_delete: Option<Box<dyn Fn()>>,
 ) {
-    let existing_value = existing.as_ref().and_then(|(_, value, ..)| *value);
-    let existing_context = existing.as_ref().map(|(_, _, context, _)| *context);
-    let existing_script = existing.as_ref().and_then(|(.., script)| script.clone());
-    let existing = existing.map(|(chord, ..)| chord);
+    let existing_value = existing.as_ref().and_then(|binding| binding.value);
+    let existing_context = existing.as_ref().map(|binding| binding.context);
+    let existing_script = existing.as_ref().and_then(|binding| binding.script.clone());
+    let existing_notification = existing.as_ref().and_then(|binding| binding.notification.clone());
+    let existing = existing.map(|binding| binding.chord);
     let heading = if existing.is_some() { "Change Binding" } else { "Add Binding" };
     let dialog = adw::AlertDialog::new(Some(heading), Some(action.label));
     if on_delete.is_some() {
@@ -84,12 +84,34 @@ pub fn show(
     // A binding of the script action cannot be saved without a script to run.
     let can_save = scripts.as_ref().is_none_or(|names| !names.is_empty());
 
+    // The notification, for the action that shows one: its message, level and how long it stays.
+    let notification_fields = action.takes_notification().then(|| {
+        let message = gtk::Entry::new();
+        message.set_placeholder_text(Some("Message"));
+        message.set_hexpand(true);
+        let level = gtk::DropDown::from_strings(&["Info", "Success", "Warning", "Error", "Plain"]);
+        level.set_hexpand(true);
+        let seconds = gtk::SpinButton::with_range(0.5, MAX_NOTIFICATION_SECONDS, 0.5);
+        seconds.set_digits(1);
+        seconds.set_hexpand(true);
+        match &existing_notification {
+            Some(notification) => {
+                message.set_text(&notification.message);
+                level.set_selected(NOTIFICATION_LEVELS.iter().position(|name| *name == notification.level).unwrap_or(0) as u32);
+                seconds.set_value(notification.seconds);
+            }
+            None => seconds.set_value(DEFAULT_NOTIFICATION_SECONDS),
+        }
+        (message, level, seconds)
+    });
+
     let refresh = {
         let dialog = dialog.clone();
         let chord = chord.clone();
         let capture = capture.clone();
         let conflict = conflict.clone();
         let contexts = contexts.clone();
+        let message_field = notification_fields.as_ref().map(|(message, ..)| message.clone());
         Rc::new(move || {
             let Some(text) = chord.borrow().clone() else {
                 capture.set_child(Some(&gtk::Label::new(Some("Press a key\u{2026}"))));
@@ -98,7 +120,9 @@ pub fn show(
                 return;
             };
             capture.set_child(Some(&KeybindLabel::new(&text)));
-            dialog.set_response_enabled("save", can_save);
+            // A notification cannot be saved without a message to show.
+            let has_message = message_field.as_ref().is_none_or(|message| !message.text().trim().is_empty());
+            dialog.set_response_enabled("save", can_save && has_message);
             let clashes = keybindings::with_table(|table| table.conflicts(action.name, &text, selected_context(action, &contexts)));
             conflict.set_visible(!clashes.is_empty());
             let names: Vec<&str> = clashes.iter().map(|(clash, _)| clash.label).collect();
@@ -109,6 +133,10 @@ pub fn show(
     {
         let refresh = refresh.clone();
         contexts.connect_selected_notify(move |_| refresh());
+    }
+    if let Some((message, ..)) = &notification_fields {
+        let refresh = refresh.clone();
+        message.connect_changed(move |_| refresh());
     }
 
     {
@@ -135,6 +163,14 @@ pub fn show(
             row.append(picker);
         }
         content.append(&row);
+    }
+    if let Some((message, level, seconds)) = &notification_fields {
+        for (title, field) in [("Message", message.upcast_ref::<gtk::Widget>()), ("Level", level.upcast_ref()), ("Seconds", seconds.upcast_ref())] {
+            let row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+            row.append(&gtk::Label::new(Some(title)));
+            row.append(field);
+            content.append(&row);
+        }
     }
     // The value, for an action that takes one, starting at the binding's own or the action's default.
     let value = value_info(action.name).map(|info| {
@@ -194,7 +230,18 @@ pub fn show(
         }
         let Some(text) = chord.borrow().clone() else { return };
         let script = script_picker.as_ref().zip(scripts.as_ref()).and_then(|(picker, names)| names.get(picker.selected() as usize).cloned());
-        on_save(text, value.as_ref().map(gtk::SpinButton::value), selected_context(action, &contexts), script);
+        let notification = notification_fields.as_ref().map(|(message, level, seconds)| Notification {
+            message: message.text().trim().to_owned(),
+            level: NOTIFICATION_LEVELS.get(level.selected() as usize).copied().unwrap_or("info").to_owned(),
+            seconds: seconds.value(),
+        });
+        on_save(Binding {
+            chord: text,
+            context: selected_context(action, &contexts),
+            value: value.as_ref().map(gtk::SpinButton::value),
+            script,
+            notification,
+        });
     });
     adw::prelude::AdwDialogExt::present(&dialog, Some(parent.as_ref()));
 }

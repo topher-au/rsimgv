@@ -90,10 +90,26 @@ pub struct ActionInfo {
 /// The action that runs a script. Each binding of it names the script it runs.
 pub const SCRIPT_ACTION: &str = "script";
 
+/// The action that shows a notification over the window. Each binding of it carries the message, its level and how
+/// long it stays.
+pub const NOTIFY_ACTION: &str = "win.notify";
+
+/// The levels a notification can have, as the IPC and the bindings file name them.
+pub const NOTIFICATION_LEVELS: [&str; 5] = ["info", "success", "warning", "error", "plain"];
+
+/// How long a notification stays up unless its binding says otherwise, in seconds, and the longest it can be set to.
+pub const DEFAULT_NOTIFICATION_SECONDS: f64 = 4.0;
+pub const MAX_NOTIFICATION_SECONDS: f64 = 600.0;
+
 impl ActionInfo {
     /// Whether each binding of the action names a script to run.
     pub fn takes_script(&self) -> bool {
         self.name == SCRIPT_ACTION
+    }
+
+    /// Whether each binding of the action carries a notification to show.
+    pub fn takes_notification(&self) -> bool {
+        self.name == NOTIFY_ACTION
     }
 
     /// The scope the action belongs to, which its name gives: `browse.`, `view.`, `image.` and `video.` actions to
@@ -243,6 +259,9 @@ pub const ACTIONS: &[ActionInfo] = &[
     },
     ActionInfo {
         name: "win.toggle-fullscreen", description: "Switch the window between fullscreen and windowed.", icon: "view-fullscreen-symbolic", label: "Fullscreen", defaults: &["f11"],
+    },
+    ActionInfo {
+        name: NOTIFY_ACTION, description: "Show a message over the window. Each binding sets the message, its level and how many seconds it stays.", icon: "dialog-information-symbolic", label: "Show Notification", defaults: &[],
     },
     ActionInfo {
         name: SCRIPT_ACTION, description: "Run one of the scripts from the Scripts page on the item under the cursor while browsing, or on the item the viewer shows. Each binding picks its script.", icon: "utilities-terminal-symbolic", label: "Run Script", defaults: &[],

@@ -646,15 +646,10 @@ impl KeybindingList {
         let Some(picker) = self.imp().actions.get() else { return };
         let Some(action) = ACTIONS.get(picker.selected() as usize) else { return };
         let weak = self.downgrade();
-        binding_dialog::show(self, action, None, move |chord, value, context, script| {
+        binding_dialog::show(self, action, None, move |binding| {
             if let Some(list) = weak.upgrade() {
-                list.edit(|table| match script {
-                    Some(script) => {
-                        table.add_script(&chord, context, &script);
-                    }
-                    None => {
-                        table.add(action.name, &chord, context, value);
-                    }
+                list.edit(|table| {
+                    table.insert(action.name, binding);
                 });
             }
         }, None);
@@ -666,18 +661,12 @@ impl KeybindingList {
         let weak = self.downgrade();
         let previous = binding.chord.clone();
         let previous_for_delete = binding.chord.clone();
-        binding_dialog::show(self, action, Some((binding.chord, binding.value, binding.context, binding.script)), move |new_chord, value, context, script| {
+        binding_dialog::show(self, action, Some(binding), move |new_binding| {
             if let Some(list) = weak.upgrade() {
+                let new_chord = new_binding.chord.clone();
                 list.edit(|table| {
                     table.remove(action.name, &previous);
-                    match script {
-                        Some(script) => {
-                            table.add_script(&new_chord, context, &script);
-                        }
-                        None => {
-                            table.add(action.name, &new_chord, context, value);
-                        }
-                    }
+                    table.insert(action.name, new_binding);
                 });
                 // The rows are rebuilt by the change, so the edited binding is selected again.
                 list.select_binding(action.name, &new_chord);
@@ -839,8 +828,9 @@ impl KeybindingList {
 
         // The value the binding passes, for an action that takes one, as its unit shows it.
         let value = value_info(action.name).map(|info| (info, info.format(binding.value.unwrap_or(info.default))));
-        // The script the binding runs, for the action that runs one.
-        let script = binding.script.clone();
+        // The script the binding runs, for the action that runs one, or the message of the notification it shows.
+        let script = binding.script.clone().or_else(|| binding.notification.as_ref().map(|notification| notification.message.clone()));
+        let notification = binding.notification.clone();
 
         let icon = gtk::Image::from_icon_name(action.icon);
         if !clashes.is_empty() {
@@ -925,7 +915,17 @@ impl KeybindingList {
             let content = gtk::Box::new(gtk::Orientation::Vertical, 2);
             scope.set_margin_top(6);
             content.append(&name);
-            if let Some(script) = &script {
+            if let Some(notification) = &notification {
+                let line = gtk::Label::new(None);
+                line.set_xalign(0.0);
+                line.set_markup(&format!(
+                    "<b>Message:</b> {} <span alpha=\"55%\">({}, {} s)</span>",
+                    glib::markup_escape_text(&notification.message),
+                    glib::markup_escape_text(&notification.level),
+                    notification.seconds,
+                ));
+                content.append(&line);
+            } else if let Some(script) = &script {
                 let line = gtk::Label::new(None);
                 line.set_xalign(0.0);
                 line.set_markup(&format!("<b>Script:</b> {}", glib::markup_escape_text(script)));
