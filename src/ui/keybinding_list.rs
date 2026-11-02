@@ -646,10 +646,15 @@ impl KeybindingList {
         let Some(picker) = self.imp().actions.get() else { return };
         let Some(action) = ACTIONS.get(picker.selected() as usize) else { return };
         let weak = self.downgrade();
-        binding_dialog::show(self, action, None, move |chord, value, context| {
+        binding_dialog::show(self, action, None, move |chord, value, context, script| {
             if let Some(list) = weak.upgrade() {
-                list.edit(|table| {
-                    table.add(action.name, &chord, context, value);
+                list.edit(|table| match script {
+                    Some(script) => {
+                        table.add_script(&chord, context, &script);
+                    }
+                    None => {
+                        table.add(action.name, &chord, context, value);
+                    }
                 });
             }
         }, None);
@@ -661,11 +666,18 @@ impl KeybindingList {
         let weak = self.downgrade();
         let previous = binding.chord.clone();
         let previous_for_delete = binding.chord.clone();
-        binding_dialog::show(self, action, Some((binding.chord, binding.value, binding.context)), move |new_chord, value, context| {
+        binding_dialog::show(self, action, Some((binding.chord, binding.value, binding.context, binding.script)), move |new_chord, value, context, script| {
             if let Some(list) = weak.upgrade() {
                 list.edit(|table| {
                     table.remove(action.name, &previous);
-                    table.add(action.name, &new_chord, context, value);
+                    match script {
+                        Some(script) => {
+                            table.add_script(&new_chord, context, &script);
+                        }
+                        None => {
+                            table.add(action.name, &new_chord, context, value);
+                        }
+                    }
                 });
                 // The rows are rebuilt by the change, so the edited binding is selected again.
                 list.select_binding(action.name, &new_chord);
@@ -827,6 +839,8 @@ impl KeybindingList {
 
         // The value the binding passes, for an action that takes one, as its unit shows it.
         let value = value_info(action.name).map(|info| (info, info.format(binding.value.unwrap_or(info.default))));
+        // The script the binding runs, for the action that runs one.
+        let script = binding.script.clone();
 
         let icon = gtk::Image::from_icon_name(action.icon);
         if !clashes.is_empty() {
@@ -835,10 +849,11 @@ impl KeybindingList {
         content.append(&icon);
         let label = gtk::Label::new(None);
         let title = glib::markup_escape_text(action.label);
-        match &value {
-            // The value follows the title in brackets, dimmed.
-            Some((_, shown)) => label.set_markup(&format!("{title} <span alpha=\"55%\">({})</span>", glib::markup_escape_text(shown))),
-            None => label.set_markup(&title),
+        match (&value, &script) {
+            // The value or the script follows the title in brackets, dimmed.
+            (Some((_, shown)), _) => label.set_markup(&format!("{title} <span alpha=\"55%\">({})</span>", glib::markup_escape_text(shown))),
+            (None, Some(script)) => label.set_markup(&format!("{title} <span alpha=\"55%\">({})</span>", glib::markup_escape_text(script))),
+            (None, None) => label.set_markup(&title),
         }
         label.set_xalign(0.0);
         label.set_hexpand(true);
@@ -910,6 +925,12 @@ impl KeybindingList {
             let content = gtk::Box::new(gtk::Orientation::Vertical, 2);
             scope.set_margin_top(6);
             content.append(&name);
+            if let Some(script) = &script {
+                let line = gtk::Label::new(None);
+                line.set_xalign(0.0);
+                line.set_markup(&format!("<b>Script:</b> {}", glib::markup_escape_text(script)));
+                content.append(&line);
+            }
             if let Some((info, shown)) = &value {
                 let line = gtk::Label::new(None);
                 line.set_xalign(0.0);

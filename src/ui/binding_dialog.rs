@@ -1,31 +1,37 @@
 //! The dialog that adds or changes a binding of an action: a chord captured from the keyboard, the context the
-//! binding is active in, and for an action that takes a value, the value the binding passes. It warns when
-//! the chord is already bound to an action whose context overlaps.
+//! binding is active in, for an action that takes a value, the value the binding passes, and for the action that
+//! runs a script, the script. It warns when the chord is already bound to an action whose context overlaps.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use adw::prelude::*;
-use gtk::glib;
+use gtk::{gio, glib};
 
 use crate::keybindings::actions::{value_info, ActionInfo, Scope};
+use crate::scripts::read_scripts;
 use crate::keybindings::{self, chord::Chord};
 use super::key_handler::chord_from_event;
 use super::keybind_label::KeybindLabel;
 
-/// Opens the dialog over `parent` for `action`. `existing` is the chord being changed, its value and its context,
-/// or `None` to add one. `on_save` receives the canonical chord, the value for an action that takes one, and the
-/// context. With `on_delete`, the dialog also offers to delete the binding.
+/// What a binding is made of besides its action: the chord, the value it passes, the context it is active in, and the
+/// script it runs.
+pub type BindingParts = (String, Option<f64>, Scope, Option<String>);
+
+/// Opens the dialog over `parent` for `action`. `existing` is the binding being changed, or `None` to add one.
+/// `on_save` receives the canonical chord, the value for an action that takes one, the context, and the script for
+/// the action that runs one. With `on_delete`, the dialog also offers to delete the binding.
 pub fn show(
     parent: &impl IsA<gtk::Widget>,
     action: &'static ActionInfo,
-    existing: Option<(String, Option<f64>, Scope)>,
-    on_save: impl Fn(String, Option<f64>, Scope) + 'static,
+    existing: Option<BindingParts>,
+    on_save: impl Fn(String, Option<f64>, Scope, Option<String>) + 'static,
     on_delete: Option<Box<dyn Fn()>>,
 ) {
-    let existing_value = existing.as_ref().and_then(|(_, value, _)| *value);
-    let existing_context = existing.as_ref().map(|(_, _, context)| *context);
-    let existing = existing.map(|(chord, _, _)| chord);
+    let existing_value = existing.as_ref().and_then(|(_, value, ..)| *value);
+    let existing_context = existing.as_ref().map(|(_, _, context, _)| *context);
+    let existing_script = existing.as_ref().and_then(|(.., script)| script.clone());
+    let existing = existing.map(|(chord, ..)| chord);
     let heading = if existing.is_some() { "Change Binding" } else { "Add Binding" };
     let dialog = adw::AlertDialog::new(Some(heading), Some(action.label));
     if on_delete.is_some() {
@@ -56,6 +62,28 @@ pub fn show(
     contexts.set_selected(action.contexts.iter().position(|context| *context == start).unwrap_or(0) as u32);
     contexts.set_hexpand(true);
 
+    // The scripts to pick from, for the action that runs one: those on the Scripts page, and the one the binding
+    // already runs if it has since been removed from there, so changing the binding does not silently swap it.
+    let scripts = action.takes_script().then(|| {
+        let settings = gio::Settings::new("au.topher.rimgv");
+        let mut names: Vec<String> = read_scripts(&settings).into_iter().map(|script| script.name).collect();
+        if let Some(script) = existing_script.as_ref().filter(|script| !names.contains(script)) {
+            names.push(script.clone());
+        }
+        names
+    });
+    let script_picker = scripts.as_ref().map(|names| {
+        let shown: Vec<&str> = names.iter().map(String::as_str).collect();
+        let picker = gtk::DropDown::from_strings(&shown);
+        picker.set_hexpand(true);
+        if let Some(index) = existing_script.as_ref().and_then(|script| names.iter().position(|name| name == script)) {
+            picker.set_selected(index as u32);
+        }
+        picker
+    });
+    // A binding of the script action cannot be saved without a script to run.
+    let can_save = scripts.as_ref().is_none_or(|names| !names.is_empty());
+
     let refresh = {
         let dialog = dialog.clone();
         let chord = chord.clone();
@@ -70,7 +98,7 @@ pub fn show(
                 return;
             };
             capture.set_child(Some(&KeybindLabel::new(&text)));
-            dialog.set_response_enabled("save", true);
+            dialog.set_response_enabled("save", can_save);
             let clashes = keybindings::with_table(|table| table.conflicts(action.name, &text, selected_context(action, &contexts)));
             conflict.set_visible(!clashes.is_empty());
             let names: Vec<&str> = clashes.iter().map(|(clash, _)| clash.label).collect();
@@ -94,6 +122,20 @@ pub fn show(
     context_row.append(&gtk::Label::new(Some("Active in")));
     context_row.append(&contexts);
     content.append(&context_row);
+    if let (Some(picker), Some(names)) = (&script_picker, &scripts) {
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+        row.append(&gtk::Label::new(Some("Script")));
+        if names.is_empty() {
+            let hint = gtk::Label::new(Some("There are no scripts yet. Add one on the Scripts page."));
+            hint.set_wrap(true);
+            hint.set_xalign(0.0);
+            hint.add_css_class("dim-label");
+            row.append(&hint);
+        } else {
+            row.append(picker);
+        }
+        content.append(&row);
+    }
     // The value, for an action that takes one, starting at the binding's own or the action's default.
     let value = value_info(action.name).map(|info| {
         let spin = gtk::SpinButton::with_range(info.min, info.max, info.step);
@@ -151,7 +193,8 @@ pub fn show(
             return;
         }
         let Some(text) = chord.borrow().clone() else { return };
-        on_save(text, value.as_ref().map(gtk::SpinButton::value), selected_context(action, &contexts));
+        let script = script_picker.as_ref().zip(scripts.as_ref()).and_then(|(picker, names)| names.get(picker.selected() as usize).cloned());
+        on_save(text, value.as_ref().map(gtk::SpinButton::value), selected_context(action, &contexts), script);
     });
     adw::prelude::AdwDialogExt::present(&dialog, Some(parent.as_ref()));
 }

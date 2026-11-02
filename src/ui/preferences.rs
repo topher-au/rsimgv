@@ -8,6 +8,7 @@ use adw::prelude::{ActionRowExt, AdwDialogExt, PreferencesGroupExt, PreferencesP
 use adw::subclass::prelude::*;
 
 use super::keybinding_list::KeybindingList;
+use crate::scripts::{read_scripts, write_scripts, Script};
 use super::tight_layout::TightLayout;
 use super::browse_view::InfoField;
 use gtk::prelude::*;
@@ -401,43 +402,6 @@ impl PreferencesDialog {
         });
         dialog
     }
-}
-
-/// One script in the Scripts page: what it is called, the command it runs, and whether to wait for it to finish.
-#[derive(Clone, Debug, Default, PartialEq)]
-struct Script {
-    name: String,
-    command: String,
-    wait: bool,
-}
-
-impl Script {
-    /// The entry this script takes in the `scripts` setting, a JSON object.
-    fn to_setting(&self) -> String {
-        serde_json::json!({ "name": self.name, "command": self.command, "wait": self.wait }).to_string()
-    }
-
-    /// The script an entry of the `scripts` setting holds, or `None` if the entry is not one.
-    fn from_setting(text: &str) -> Option<Self> {
-        let value: serde_json::Value = serde_json::from_str(text).ok()?;
-        Some(Self {
-            name: value.get("name")?.as_str()?.to_owned(),
-            command: value.get("command")?.as_str()?.to_owned(),
-            wait: value.get("wait")?.as_bool()?,
-        })
-    }
-}
-
-/// The scripts in the `scripts` setting, in order. Entries that are not scripts are skipped.
-fn read_scripts(settings: &gio::Settings) -> Vec<Script> {
-    settings.strv("scripts").iter().filter_map(|text| Script::from_setting(text)).collect()
-}
-
-/// Saves `scripts` as the `scripts` setting.
-fn write_scripts(settings: &gio::Settings, scripts: &[Script]) {
-    let entries: Vec<String> = scripts.iter().map(Script::to_setting).collect();
-    let entries: Vec<&str> = entries.iter().map(String::as_str).collect();
-    let _ = settings.set_strv("scripts", entries.as_slice());
 }
 
 impl PreferencesDialog {
@@ -1292,22 +1256,5 @@ mod search_tests {
         let together = fuzzy_score("size", "Item size").unwrap();
         let scattered = fuzzy_score("size", "Show items zoomed in every case").unwrap();
         assert!(together > scattered);
-    }
-}
-
-#[cfg(test)]
-mod script_tests {
-    use super::Script;
-
-    #[test]
-    fn a_script_survives_a_round_trip_through_the_setting() {
-        let script = Script { name: "Open in GIMP".into(), command: "gimp %file%".into(), wait: true };
-        assert_eq!(Script::from_setting(&script.to_setting()), Some(script));
-    }
-
-    #[test]
-    fn entries_that_are_not_scripts_are_skipped() {
-        assert_eq!(Script::from_setting("not json"), None);
-        assert_eq!(Script::from_setting(r#"{"name": "x"}"#), None);
     }
 }

@@ -3,6 +3,7 @@ mod fs;
 mod ipc;
 mod remote;
 mod resample;
+mod scripts;
 mod svp;
 mod bookmarks;
 mod file_settings;

@@ -1131,6 +1131,63 @@ impl Window {
         self.imp().viewer.shown_item()
     }
 
+    /// The item a script is run on: the one the viewer shows, or while browsing, the one under the cursor.
+    fn script_target(&self) -> Option<PathBuf> {
+        if let Some(item) = self.viewer_item() {
+            return Some(item.path);
+        }
+        let browse = self.active_browse()?;
+        Some(browse.path()?.join(browse.selected_name()?))
+    }
+
+    /// Runs the script called `name` on the item in front of the user. A script that waits is followed to its end,
+    /// and the folder is listed again then, as the script may have changed what is in it. Problems are printed.
+    pub fn run_script(&self, name: &str) {
+        let Some(settings) = self.imp().settings.get() else { return };
+        let Some(script) = crate::scripts::find_script(settings, name) else {
+            eprintln!("rsimgv: there is no script called {name}");
+            return;
+        };
+        let target = self.script_target();
+        if script.uses_file() && target.is_none() {
+            eprintln!("rsimgv: {name} needs an item to run on, and none is selected");
+            return;
+        }
+        let mut child = match script.spawn(target.as_deref().filter(|_| script.uses_file())) {
+            Ok(child) => child,
+            Err(err) => {
+                eprintln!("rsimgv: could not run {name}: {err}");
+                return;
+            }
+        };
+        let weak = self.downgrade();
+        let wait = script.wait;
+        glib::spawn_future_local(async move {
+            // Waiting reaps the script either way, so a script that is not followed leaves no process behind.
+            let status = gio::spawn_blocking(move || child.wait()).await;
+            match status {
+                Ok(Ok(status)) if !status.success() => eprintln!("rsimgv: {} ended with {status}", script.name),
+                Ok(Err(err)) => eprintln!("rsimgv: could not wait for {}: {err}", script.name),
+                Err(_) => eprintln!("rsimgv: waiting for {} panicked", script.name),
+                Ok(Ok(_)) => {}
+            }
+            if let (true, Some(window)) = (wait, weak.upgrade()) {
+                window.reload_folder();
+            }
+        });
+    }
+
+    /// Lists the folder shown again, keeping the item selected.
+    fn reload_folder(&self) {
+        let (Some(browse), Some(path)) = (self.active_browse(), self.current_path()) else { return };
+        if let Some(name) = browse.selected_name() {
+            browse.set_pending(&path, move |view| {
+                view.select_named(&name);
+            });
+        }
+        browse.set_path(&path);
+    }
+
     pub fn viewer_is_open(&self) -> bool {
         self.imp().viewer_open.get()
     }

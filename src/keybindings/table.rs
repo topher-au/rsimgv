@@ -4,21 +4,22 @@
 
 use serde_yaml_ng::{Mapping, Value};
 
-use super::actions::{ActionInfo, Scope, ACTIONS};
+use super::actions::{ActionInfo, Scope, ACTIONS, SCRIPT_ACTION};
 use super::chord::canonical;
 
-/// A chord bound to an action, the context it is active in, and the value it passes, for an action that takes
-/// one; `None` uses the action's default.
+/// A chord bound to an action, the context it is active in, the value it passes, for an action that takes one
+/// (`None` uses the action's default), and the script it runs, for the action that runs one.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Binding {
     pub chord: String,
     pub context: Scope,
     pub value: Option<f64>,
+    pub script: Option<String>,
 }
 
 impl Binding {
     fn new(chord: String, context: Scope) -> Self {
-        Self { chord, context, value: None }
+        Self { chord, context, value: None, script: None }
     }
 }
 
@@ -56,11 +57,21 @@ impl BindingTable {
     /// Binds `chord` to `name` in `context`, passing `value`, if the action can be bound in that context, the chord
     /// is valid, and the chord is not already bound to the action. Returns whether it was added.
     pub fn add(&mut self, name: &str, chord: &str, context: Scope, value: Option<f64>) -> bool {
+        self.add_binding(name, chord, context, value, None)
+    }
+
+    /// Binds `chord` to the action that runs scripts, in `context`, to run the script called `script`. Returns whether
+    /// it was added, as `add` does.
+    pub fn add_script(&mut self, chord: &str, context: Scope, script: &str) -> bool {
+        self.add_binding(SCRIPT_ACTION, chord, context, None, Some(script.to_owned()))
+    }
+
+    fn add_binding(&mut self, name: &str, chord: &str, context: Scope, value: Option<f64>, script: Option<String>) -> bool {
         let (Some(index), Some(chord)) = (Self::index(name), canonical(chord)) else { return false };
         if !ACTIONS[index].contexts.contains(&context) || self.chords[index].iter().any(|bound| bound.chord == chord) {
             return false;
         }
-        self.chords[index].push(Binding { chord, context, value });
+        self.chords[index].push(Binding { chord, context, value, script });
         true
     }
 
@@ -78,19 +89,24 @@ impl BindingTable {
     /// The action `chord` runs in the active contexts, and the value it passes. Global applies everywhere; of the
     /// others, the deepest context wins, and among equals the catalogue's first.
     pub fn resolve(&self, chord: &str, active: &[Scope]) -> Option<(&'static ActionInfo, Option<f64>)> {
-        let mut best: Option<(&'static ActionInfo, Option<f64>, Scope)> = None;
+        self.resolve_binding(chord, active).map(|(action, binding)| (action, binding.value))
+    }
+
+    /// The action `chord` runs, as `resolve` finds it, with the binding that runs it.
+    pub fn resolve_binding(&self, chord: &str, active: &[Scope]) -> Option<(&'static ActionInfo, &Binding)> {
+        let mut best: Option<(&'static ActionInfo, &Binding)> = None;
         for (action, bindings) in ACTIONS.iter().zip(&self.chords) {
             for binding in bindings.iter().filter(|bound| bound.chord == chord) {
                 let context = binding.context;
                 if context != Scope::Global && !active.contains(&context) {
                     continue;
                 }
-                if best.is_none_or(|(_, _, current)| context.depth() > current.depth()) {
-                    best = Some((action, binding.value, context));
+                if best.is_none_or(|(_, current)| context.depth() > current.context.depth()) {
+                    best = Some((action, binding));
                 }
             }
         }
-        best.map(|(action, value, _)| (action, value))
+        best
     }
 
     /// The other actions with a binding to `chord` whose context overlaps `context`, each with the context of that
@@ -111,9 +127,9 @@ impl BindingTable {
             .collect()
     }
 
-    /// The YAML file text for the bindings that differ from the defaults. A binding with a value or a context
-    /// other than the action's own is a mapping of `key`, and `value` and `context` when it has them; any other
-    /// is just its chord.
+    /// The YAML file text for the bindings that differ from the defaults. A binding with a value, a script or a
+    /// context other than the action's own is a mapping of `key`, and `value`, `script` and `context` when it has
+    /// them; any other is just its chord.
     pub fn to_yaml(&self) -> String {
         let mut actions = Mapping::new();
         for (action, bindings) in ACTIONS.iter().zip(&self.chords) {
@@ -125,13 +141,16 @@ impl BindingTable {
                 .iter()
                 .map(|binding| {
                     let own_context = binding.context == action.default_context();
-                    if binding.value.is_none() && own_context {
+                    if binding.value.is_none() && binding.script.is_none() && own_context {
                         return Value::String(binding.chord.clone());
                     }
                     let mut entry = Mapping::new();
                     entry.insert(Value::String("key".to_owned()), Value::String(binding.chord.clone()));
                     if let Some(value) = binding.value {
                         entry.insert(Value::String("value".to_owned()), Value::Number(value.into()));
+                    }
+                    if let Some(script) = &binding.script {
+                        entry.insert(Value::String("script".to_owned()), Value::String(script.clone()));
                     }
                     if !own_context {
                         entry.insert(Value::String("context".to_owned()), Value::String(binding.context.id().to_owned()));
@@ -149,7 +168,7 @@ impl BindingTable {
 
     /// Applies the actions in a YAML file over the table: each listed action gets the bindings the file gives it.
     /// Returns what could not be applied: unknown actions, invalid chords, unknown contexts, contexts the action
-    /// cannot be bound in, or a file that cannot be read.
+    /// cannot be bound in, a script binding that names no script, or a file that cannot be read.
     pub fn apply_yaml(&mut self, text: &str) -> Vec<String> {
         let root: Value = match serde_yaml_ng::from_str(text) {
             Ok(root) => root,
@@ -168,8 +187,8 @@ impl BindingTable {
             // Each entry is a chord, or a mapping of a chord (`key`), the value it passes (`value`) and the context
             // it is active in (`context`), which is the action's own when it is left out.
             for entry in value.as_sequence().into_iter().flatten() {
-                let (chord, context, passed) = match entry {
-                    Value::String(chord) => (chord.as_str(), action.default_context(), None),
+                let (chord, context, passed, script) = match entry {
+                    Value::String(chord) => (chord.as_str(), action.default_context(), None, None),
                     Value::Mapping(_) => {
                         let Some(chord) = entry.get("key").and_then(Value::as_str) else { continue };
                         let context = match entry.get("context") {
@@ -182,7 +201,8 @@ impl BindingTable {
                                 }
                             },
                         };
-                        (chord, context, entry.get("value").and_then(Value::as_f64))
+                        let script = entry.get("script").and_then(Value::as_str).map(str::to_owned);
+                        (chord, context, entry.get("value").and_then(Value::as_f64), script)
                     }
                     _ => continue,
                 };
@@ -194,10 +214,14 @@ impl BindingTable {
                     problems.push(format!("{name}: {chord} cannot be bound in {}", context.title()));
                     continue;
                 }
+                if action.takes_script() && script.is_none() {
+                    problems.push(format!("{name}: {chord} names no script"));
+                    continue;
+                }
                 if bindings.iter().any(|bound| bound.chord == chord) {
                     continue;
                 }
-                bindings.push(Binding { chord, context, value: passed });
+                bindings.push(Binding { chord, context, value: passed, script: script.filter(|_| action.takes_script()) });
             }
             self.chords[index] = bindings;
         }
@@ -277,7 +301,7 @@ mod tests {
         assert!(loaded.apply_yaml(&text).is_empty());
         assert_eq!(
             loaded.bindings("video.seek"),
-            [Binding { chord: "ctrl+right".to_owned(), context: Scope::Video, value: Some(30.0) }]
+            [Binding { chord: "ctrl+right".to_owned(), context: Scope::Video, value: Some(30.0), script: None }]
         );
         assert_eq!(loaded.resolve("ctrl+right", &[Scope::View, Scope::Video]).map(|(a, value)| (a.name, value)), Some(("video.seek", Some(30.0))));
     }
@@ -290,7 +314,36 @@ mod tests {
         assert!(text.contains("context: global"));
         let mut loaded = BindingTable::defaults();
         assert!(loaded.apply_yaml(&text).is_empty());
-        assert_eq!(loaded.bindings("view.next").last(), Some(&Binding { chord: "ctrl+n".to_owned(), context: Scope::Global, value: None }));
+        assert_eq!(loaded.bindings("view.next").last(), Some(&Binding { chord: "ctrl+n".to_owned(), context: Scope::Global, value: None, script: None }));
+    }
+
+    #[test]
+    fn a_binding_names_the_script_it_runs() {
+        let mut table = BindingTable::defaults();
+        assert!(table.add_script("ctrl+g", Scope::Global, "Open in GIMP"));
+        assert!(table.add_script("ctrl+shift+g", Scope::Browse, "Resize"));
+        assert!(!table.add_script("ctrl+g", Scope::Browse, "Other"), "a chord is bound to an action once");
+        assert!(!table.add_script("ctrl+t", Scope::Video, "Too deep"), "the action is not bound in the video scope");
+
+        let (action, binding) = table.resolve_binding("ctrl+g", &[Scope::Browse]).unwrap();
+        assert_eq!((action.name, binding.script.as_deref()), ("script", Some("Open in GIMP")));
+        let (_, binding) = table.resolve_binding("ctrl+shift+g", &[Scope::Browse]).unwrap();
+        assert_eq!(binding.script.as_deref(), Some("Resize"));
+        assert!(table.resolve_binding("ctrl+shift+g", &[Scope::View]).is_none(), "a browsing script is not run in the viewer");
+
+        let text = table.to_yaml();
+        assert!(text.contains("script: Open in GIMP"));
+        let mut loaded = BindingTable::defaults();
+        assert!(loaded.apply_yaml(&text).is_empty());
+        assert_eq!(loaded.bindings("script"), table.bindings("script"));
+    }
+
+    #[test]
+    fn a_script_binding_with_no_script_is_reported() {
+        let mut table = BindingTable::defaults();
+        let problems = table.apply_yaml("schema: 1\nactions:\n  script:\n    - ctrl+g\n    - key: ctrl+h\n      script: Resize\n");
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert_eq!(table.chords("script"), ["ctrl+h"]);
     }
 
     #[test]

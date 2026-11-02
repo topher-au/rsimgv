@@ -90,7 +90,15 @@ pub struct ActionInfo {
     pub defaults: &'static [&'static str],
 }
 
+/// The action that runs a script. Each binding of it names the script it runs.
+pub const SCRIPT_ACTION: &str = "script";
+
 impl ActionInfo {
+    /// Whether each binding of the action names a script to run.
+    pub fn takes_script(&self) -> bool {
+        self.name == SCRIPT_ACTION
+    }
+
     /// The context a binding of the action gets unless it picks another: the action's own.
     pub fn default_context(&self) -> Scope {
         self.contexts.last().copied().unwrap_or(Scope::Global)
@@ -211,6 +219,9 @@ pub const ACTIONS: &[ActionInfo] = &[
     },
     ActionInfo {
         name: "win.toggle-fullscreen", description: "Switch the window between fullscreen and windowed.", icon: "view-fullscreen-symbolic", label: "Fullscreen", contexts: &[Scope::Global], defaults: &["f11"],
+    },
+    ActionInfo {
+        name: SCRIPT_ACTION, description: "Run one of the scripts from the Scripts page on the item under the cursor while browsing, or on the item the viewer shows. Each binding picks its script.", icon: "utilities-terminal-symbolic", label: "Run Script", contexts: &[Scope::Browse, Scope::View, Scope::Global], defaults: &[],
     },
     ActionInfo {
         name: "browse.cursor-up", description: "Move the cursor up one row.", icon: "go-up-symbolic", label: "Move Up", contexts: &[Scope::Global, Scope::Browse], defaults: &["up", "w"],

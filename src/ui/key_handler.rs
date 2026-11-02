@@ -62,9 +62,18 @@ fn handle(window: &Window, key: gdk::Key, state: gdk::ModifierType) -> glib::Pro
         return glib::Propagation::Proceed;
     }
     let scopes = window.active_scopes();
-    let Some((action, value)) = keybindings::with_table(|table| table.resolve(&chord.format(), &scopes)) else {
+    let Some((action, value, script)) = keybindings::with_table(|table| {
+        table.resolve_binding(&chord.format(), &scopes).map(|(action, binding)| (action, binding.value, binding.script.clone()))
+    }) else {
         return glib::Propagation::Stop;
     };
+    if action.takes_script() {
+        match script {
+            Some(name) => window.run_script(&name),
+            None => eprintln!("rsimgv: the binding for {} names no script", chord.format()),
+        }
+        return glib::Propagation::Stop;
+    }
     if window.run_action(action.name, value) {
         glib::Propagation::Stop
     } else {

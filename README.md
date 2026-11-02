@@ -29,6 +29,7 @@ library of pictures and videos without leaving the window. The media viewer is n
   your home folder.
 - **Settings** in a preferences dialog, saved as YAML and applied immediately.
 - **Hidden files** can be shown from the main menu.
+- **Scripts** are commands listed on the Scripts page, with `%file%` standing for the item they run on. The Run Script action in the keybinding editor binds a key to one: it runs on the item under the cursor, or on the one the viewer shows. A script that waits to finish has the folder listed again when it ends.
 
 ## Requirements
 
