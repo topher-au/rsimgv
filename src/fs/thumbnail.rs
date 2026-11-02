@@ -595,7 +595,7 @@ fn cached_or_made(file: &Path, uri: &str, mtime: i64, produce: impl FnOnce() -> 
     // A cached thumbnail is current only if the file has not changed since it was made. Its time is read from
     // the PNG's text chunks, so the picture is decoded once, when it is shown.
     if let Ok(data) = std::fs::read(file) {
-        if png_text(&data, "Thumb::MTime").and_then(|value| value.parse::<i64>().ok()) == Some(mtime) {
+        if png_text(&data, "rsimgv::MTime").and_then(|value| value.parse::<i64>().ok()) == Some(mtime) {
             if let Some(pixels) = Pixels::from_png(&data) {
                 return Some(pixels);
             }
@@ -609,7 +609,7 @@ fn cached_or_made(file: &Path, uri: &str, mtime: i64, produce: impl FnOnce() -> 
             "png",
             &[
                 ("tEXt::Thumb::URI", uri),
-                ("tEXt::Thumb::MTime", mtime_text.as_str()),
+                ("tEXt::rsimgv::MTime", mtime_text.as_str()),
                 ("tEXt::Thumb::Software", "rsimgv"),
             ],
         )
@@ -690,7 +690,7 @@ mod tests {
         let file = root.join("128").read_dir().unwrap().next().unwrap().unwrap().path();
         let made = gdk_pixbuf::Pixbuf::from_file(&file).unwrap();
         assert!(made.width() <= 128 && made.height() <= 128);
-        assert_eq!(made.option("tEXt::Thumb::MTime").as_deref(), Some("1000"));
+        assert_eq!(made.option("tEXt::rsimgv::MTime").as_deref(), Some("1000"));
         assert!(made.option("tEXt::Thumb::URI").unwrap().starts_with("file://"));
 
         // Same modification time: the cached file is used, so it is not rewritten.
@@ -702,7 +702,7 @@ mod tests {
         // A changed picture makes a new thumbnail.
         make(&root, &key(2000)).expect("remade");
         let remade = gdk_pixbuf::Pixbuf::from_file(&file).unwrap();
-        assert_eq!(remade.option("tEXt::Thumb::MTime").as_deref(), Some("2000"));
+        assert_eq!(remade.option("tEXt::rsimgv::MTime").as_deref(), Some("2000"));
     }
 
     #[test]
@@ -787,9 +787,9 @@ mod tests {
         let (_, dir) = folder("text-chunk");
         let path = picture(&dir, 16, 16);
         let pixbuf = gdk_pixbuf::Pixbuf::from_file(&path).unwrap();
-        let data = pixbuf.save_to_bufferv("png", &[("tEXt::Thumb::MTime", "1234")]).unwrap();
-        assert_eq!(png_text(&data, "Thumb::MTime"), Some("1234"));
+        let data = pixbuf.save_to_bufferv("png", &[("tEXt::rsimgv::MTime", "1234")]).unwrap();
+        assert_eq!(png_text(&data, "rsimgv::MTime"), Some("1234"));
         assert_eq!(png_text(&data, "Thumb::Missing"), None);
-        assert_eq!(png_text(b"not a png", "Thumb::MTime"), None);
+        assert_eq!(png_text(b"not a png", "rsimgv::MTime"), None);
     }
 }
