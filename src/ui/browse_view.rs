@@ -668,8 +668,6 @@ mod imp {
         pub(super) pending: RefCell<Option<(PathBuf, Box<dyn FnOnce(&super::BrowseView)>)>>,
         /// The sorted model, so its sorter can be set aside while a folder lists.
         pub(super) sorted: OnceCell<gtk::SortListModel>,
-        /// Whether the items are being brought up to date with the folder, when a selection change is not the user's.
-        pub(super) reconciling: Cell<bool>,
         /// How many times each position's cell has been bound, to tell a request made for an earlier bind from a current one.
         pub(super) bind_generations: RefCell<HashMap<u32, u64>>,
         pub(super) store: OnceCell<gio::ListStore>,
@@ -874,7 +872,7 @@ mod imp {
                     if let Some(view) = view.upgrade() {
                         view.update_status();
                         // A folder being listed clears its selection; that is not the user's choice, so it is not reported.
-                        if !view.imp().loading.get() && !view.imp().reconciling.get() {
+                        if !view.imp().loading.get() {
                             view.imp().restoring_scroll.set(false);
                             view.emit_by_name::<()>("selection-changed", &[&view.selected_name().unwrap_or_default()]);
                         }
@@ -1453,7 +1451,6 @@ impl BrowseView {
     fn reconcile(&self, listed: &[FileEntry]) {
         let imp = self.imp();
         let Some(store) = imp.store.get() else { return };
-        imp.reconciling.set(true);
         let selected = imp
             .grid
             .model()
@@ -1495,7 +1492,6 @@ impl BrowseView {
                 model.set_selected(position);
             }
         }
-        imp.reconciling.set(false);
         self.update_status();
         if changed {
             self.emit_by_name::<()>("listing-changed", &[]);
