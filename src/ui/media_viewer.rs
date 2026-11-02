@@ -1050,7 +1050,10 @@ impl MediaViewer {
 
     /// Skips the video by `micros`, and shows how far it has got.
     pub fn seek(&self, micros: i64) {
-        if let Some(target) = self.imp().controls.seek_by(micros) {
+        // While a skip is on its way the video has not moved yet, so the next one goes on from where that one lands.
+        let seeking = self.imp().media.borrow().as_ref().is_some_and(|media| media.is_seeking());
+        let from = self.imp().seek_landing.get().filter(|_| seeking).map(|(target, _)| target);
+        if let Some(target) = self.imp().controls.seek_by(from, micros) {
             self.imp().seek_landing.set(Some((target, std::time::Instant::now())));
             self.flash_seek_overlay();
         }
