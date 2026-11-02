@@ -338,6 +338,8 @@ mod imp {
         pub(super) svp_announcement: RefCell<Option<String>>,
         /// The timer that puts that filter in place.
         pub(super) svp_timer: RefCell<Option<glib::SourceId>>,
+        /// Whether that filter is being kept out, as the video was skipped through or has only just started.
+        pub(super) svp_held: Cell<bool>,
         /// This viewer's hold on the server SVP's libraries connect to, kept while SVP is on.
         pub(super) svp_manager: RefCell<Option<std::rc::Rc<crate::svp_manager::Manager>>>,
     }
@@ -982,6 +984,7 @@ impl MediaViewer {
         if let Err(err) = stream.set_interpolation_filter(crate::svp::FILTER_LABEL, None) {
             eprintln!("rsimgv: SVP could not be removed: {err}");
         }
+        self.watch_seeks(stream);
         let (weak_viewer, weak_stream) = (self.downgrade(), stream.downgrade());
         let mut tries = 0;
         glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
@@ -991,6 +994,8 @@ impl MediaViewer {
             tries += 1;
             if stream.fps().is_some() {
                 let speed = stream.speed().unwrap_or(1.0);
+                // Stepping through videos need not wait on SVP for ones that are left at once.
+                viewer.hold_svp(&stream);
                 viewer.apply_svp(&stream, speed, false);
                 return glib::ControlFlow::Break;
             }
@@ -999,6 +1004,57 @@ impl MediaViewer {
             }
             glib::ControlFlow::Continue
         });
+    }
+
+    /// Keeps SVP out of `stream`'s video while it is skipped through: a seek takes the filter out, and it comes back once
+    /// seeks have stopped for the settings' time, or when a video paused in the meantime is played.
+    fn watch_seeks(&self, stream: &crate::mpv::MpvStream) {
+        let weak = self.downgrade();
+        stream.connect_seek_requested(move |stream| {
+            let Some(viewer) = weak.upgrade() else { return };
+            if viewer.imp().svp_filter.borrow().is_some() {
+                viewer.hold_svp(stream);
+            }
+        });
+        // A slow seek takes up some of the time, so it is counted again from when the seek lands.
+        let weak = self.downgrade();
+        stream.connect_seeking_notify(move |stream| {
+            let Some(viewer) = weak.upgrade() else { return };
+            if !stream.is_seeking() && viewer.imp().svp_held.get() {
+                viewer.hold_svp(stream);
+            }
+        });
+        let weak = self.downgrade();
+        stream.connect_playing_notify(move |stream| {
+            let Some(viewer) = weak.upgrade() else { return };
+            let imp = viewer.imp();
+            if stream.is_playing() && imp.svp_held.get() && imp.svp_timer.borrow().is_none() {
+                viewer.end_svp_wait(stream);
+            }
+        });
+    }
+
+    /// Takes the video's SVP filter out for the settings' time after a seek, if they ask for that.
+    fn hold_svp(&self, stream: &crate::mpv::MpvStream) {
+        let imp = self.imp();
+        let delay = imp.svp.borrow().as_ref().filter(|config| config.enabled).and_then(|config| config.seek_bypass);
+        let Some(delay) = delay else { return };
+        imp.svp_held.set(true);
+        if let Err(err) = stream.set_interpolation_filter(crate::svp::FILTER_LABEL, None) {
+            eprintln!("rsimgv: SVP could not be removed: {err}");
+        }
+        self.arm_svp_timer(stream, delay);
+    }
+
+    /// Puts the video's SVP filter in place, now the wait for it is over. A video held back and paused waits to be played,
+    /// as each seek made while paused would have to wait for the filter otherwise, and it has no motion to smooth.
+    fn end_svp_wait(&self, stream: &crate::mpv::MpvStream) {
+        let imp = self.imp();
+        if imp.svp_held.get() && !stream.is_playing() {
+            return;
+        }
+        imp.svp_held.set(false);
+        self.install_svp(stream);
     }
 
     /// Writes the SVP script for `stream`'s video at `speed` and has mpv load it, or removes the filter when SVP is off.
@@ -1010,6 +1066,7 @@ impl MediaViewer {
         // The OSD says when SVP changes state: on when it is applied, off when it was on and is turned off.
         if !config.enabled {
             self.cancel_svp_timer();
+            imp.svp_held.set(false);
             imp.svp_announcement.take();
             imp.svp_manager.take();
             if let Err(err) = stream.set_interpolation_filter(crate::svp::FILTER_LABEL, None) {
@@ -1066,6 +1123,10 @@ impl MediaViewer {
         }
         imp.svp_filter.replace(Some(filter));
         imp.svp_announcement.replace(Some(text));
+        // A filter held back goes in when the hold ends.
+        if imp.svp_held.get() {
+            return;
+        }
         if speed_changed {
             self.arm_svp_timer(stream, SVP_SPEED_SETTLE);
         } else {
@@ -1099,7 +1160,7 @@ impl MediaViewer {
             let (Some(viewer), Some(stream)) = (weak_viewer.upgrade(), weak_stream.upgrade()) else { return };
             // The timer has fired, so there is nothing left to cancel.
             viewer.imp().svp_timer.take();
-            viewer.install_svp(&stream);
+            viewer.end_svp_wait(&stream);
         });
         self.imp().svp_timer.replace(Some(timer));
     }
@@ -1612,6 +1673,7 @@ impl MediaViewer {
         let imp = self.imp();
         self.hide_seek_overlay();
         self.cancel_svp_timer();
+        imp.svp_held.set(false);
         imp.svp_filter.take();
         imp.svp_announcement.take();
         let settings = imp.file_settings.take();

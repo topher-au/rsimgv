@@ -2,10 +2,14 @@
 //! script interpolates the video to a target rate, and mpv loads it through its `vapoursynth` filter. The target
 //! follows the playback speed in the display and variable modes, so slow motion and fast forward keep the output
 //! rate in range.
+//!
+//! mpv reloads the script after every seek, as the filter drops VapourSynth when it is reset. So that skipping through a
+//! video does not wait on that each time, the filter can be left out until the skipping has stopped.
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use gtk::gio::prelude::SettingsExt;
 use gtk::gio;
@@ -188,6 +192,8 @@ pub struct Config {
     pub plugin_directory: PathBuf,
     pub rate: Rate,
     pub nvof: bool,
+    /// How long after a seek the filter stays out, or `None` to keep it in through seeks.
+    pub seek_bypass: Option<Duration>,
 }
 
 impl Config {
@@ -202,6 +208,9 @@ impl Config {
                 maximum: f64::from(settings.int("svp-fps-maximum")),
             },
             nvof: settings.boolean("svp-nvof"),
+            seek_bypass: settings
+                .boolean("svp-seek-bypass")
+                .then(|| Duration::from_secs_f64(settings.double("svp-seek-bypass-delay"))),
         }
     }
 }

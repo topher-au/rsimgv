@@ -59,6 +59,10 @@ mod imp {
         #[template_child]
         pub svp_nvof_row: TemplateChild<adw::SwitchRow>,
         #[template_child]
+        pub svp_seek_bypass_row: TemplateChild<adw::SwitchRow>,
+        #[template_child]
+        pub svp_seek_bypass_delay_row: TemplateChild<adw::SpinRow>,
+        #[template_child]
         pub viewer_status_bar_row: TemplateChild<adw::SwitchRow>,
         #[template_child]
         pub status_overlay_position_row: TemplateChild<adw::ComboRow>,
@@ -360,6 +364,9 @@ impl PreferencesDialog {
         settings.bind("svp-plugin-directory", &*imp.svp_plugin_directory_row, "text").build();
         settings.bind("svp-fps-target", &*imp.svp_fps_target_row, "value").build();
         settings.bind("svp-nvof", &*imp.svp_nvof_row, "active").build();
+        settings.bind("svp-seek-bypass", &*imp.svp_seek_bypass_row, "active").build();
+        settings.bind("svp-seek-bypass-delay", &*imp.svp_seek_bypass_delay_row, "value").build();
+        settings.bind("svp-seek-bypass", &*imp.svp_seek_bypass_delay_row, "sensitive").get_only().build();
         bind_port(settings, &imp.svp_fps_minimum_row, "svp-fps-minimum");
         bind_port(settings, &imp.svp_fps_maximum_row, "svp-fps-maximum");
         settings.bind("viewer-status-bar", &*imp.viewer_status_bar_row, "active").build();
