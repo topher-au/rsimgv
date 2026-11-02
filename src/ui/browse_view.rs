@@ -658,6 +658,10 @@ mod imp {
         /// What to do once the folder has listed, such as selecting its first picture or video.
         /// What runs once the folder it is for has listed, with that folder.
         pub(super) pending: RefCell<Option<(PathBuf, Box<dyn FnOnce(&super::BrowseView)>)>>,
+        /// The sorted model, so its sorter can be set aside while a folder lists.
+        pub(super) sorted: OnceCell<gtk::SortListModel>,
+        /// Whether the items are being brought up to date with the folder, when a selection change is not the user's.
+        pub(super) reconciling: Cell<bool>,
         pub(super) store: OnceCell<gio::ListStore>,
         pub(super) filter: OnceCell<gtk::CustomFilter>,
         pub(super) sorter: OnceCell<gtk::CustomSorter>,
@@ -849,6 +853,7 @@ mod imp {
                 }
             });
             let sorted = gtk::SortListModel::new(Some(store.clone()), Some(sorter.clone()));
+            let _ = self.sorted.set(sorted.clone());
             let visible = gtk::FilterListModel::new(Some(sorted), Some(filter.clone()));
             let selection = gtk::SingleSelection::new(Some(visible));
             selection.set_autoselect(false);
@@ -859,7 +864,7 @@ mod imp {
                     if let Some(view) = view.upgrade() {
                         view.update_status();
                         // A folder being listed clears its selection; that is not the user's choice, so it is not reported.
-                        if !view.imp().loading.get() {
+                        if !view.imp().loading.get() && !view.imp().reconciling.get() {
                             view.imp().restoring_scroll.set(false);
                             view.emit_by_name::<()>("selection-changed", &[&view.selected_name().unwrap_or_default()]);
                         }
@@ -1277,6 +1282,9 @@ impl BrowseView {
         let saved = imp.scroll_memory.borrow().get(path).copied().unwrap_or(0.0);
         imp.path.replace(Some(path.to_path_buf()));
         imp.loading.set(true);
+        // A folder lists in the order it is read, and is sorted once it is in: sorting each batch as it arrives would cost
+        // a sort of everything listed so far, for every batch.
+        self.set_sorting(false);
         imp.floating_bar.cancel_hover_hide();
         self.update_status();
         if let Some(store) = imp.store.get() {
@@ -1305,6 +1313,7 @@ impl BrowseView {
             let Some(view) = view.upgrade() else { return };
             view.imp().reading.take();
             view.imp().loading.set(false);
+            view.set_sorting(true);
             view.attach_selection();
             view.update_status();
             // A selection waiting for the folder brings its item into view, so the saved scroll position does not apply.
@@ -1433,24 +1442,26 @@ impl BrowseView {
     fn reconcile(&self, listed: &[FileEntry]) {
         let imp = self.imp();
         let Some(store) = imp.store.get() else { return };
+        imp.reconciling.set(true);
         let selected = imp
             .grid
             .model()
             .and_then(|model| model.item(model.selected()).and_downcast::<FileEntry>())
             .map(|entry| entry.name());
 
-        let mut wanted: std::collections::HashMap<String, FileEntry> =
-            listed.iter().map(|entry| (entry.name(), entry.clone())).collect();
+        // Entries are matched by path, which unlike a display name is unique within a folder.
+        let mut wanted: std::collections::HashMap<PathBuf, FileEntry> =
+            listed.iter().map(|entry| (entry.path().to_path_buf(), entry.clone())).collect();
         let mut removals = Vec::new();
         let mut position = store.n_items();
         while position > 0 {
             position -= 1;
             let Some(shown) = store.item(position).and_downcast::<FileEntry>() else { continue };
             let unchanged = wanted
-                .get(&shown.name())
+                .get(shown.path())
                 .is_some_and(|new| new.modified() == shown.modified() && new.size() == shown.size());
             if unchanged {
-                wanted.remove(&shown.name());
+                wanted.remove(shown.path());
             } else {
                 removals.push(position);
             }
@@ -1473,6 +1484,7 @@ impl BrowseView {
                 model.set_selected(position);
             }
         }
+        imp.reconciling.set(false);
         self.update_status();
         if changed {
             self.emit_by_name::<()>("listing-changed", &[]);
@@ -1576,6 +1588,13 @@ impl BrowseView {
     /// arrangement replaces it.
     pub fn set_pending(&self, folder: &Path, run: impl FnOnce(&BrowseView) + 'static) {
         self.imp().pending.replace(Some((folder.to_path_buf(), Box::new(run))));
+    }
+
+    /// Sets the items sorted, or not: while a folder lists, its items are left in the order they arrive.
+    fn set_sorting(&self, sorting: bool) {
+        let imp = self.imp();
+        let (Some(sorted), Some(sorter)) = (imp.sorted.get(), imp.sorter.get()) else { return };
+        sorted.set_sorter(if sorting { Some(sorter) } else { None::<&gtk::CustomSorter> });
     }
 
     /// Drops whatever was arranged with `set_pending`.
@@ -1781,6 +1800,7 @@ impl BrowseView {
             reading.cancel();
         }
         imp.loading.set(false);
+        self.set_sorting(true);
         self.attach_selection();
         self.update_status();
     }
