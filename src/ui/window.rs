@@ -54,7 +54,7 @@ mod imp {
         #[template_child]
         pub bookmarks_list: TemplateChild<gtk::ListBox>,
         #[template_child]
-        pub playlist_revealer: TemplateChild<gtk::Revealer>,
+        pub playlist_split: TemplateChild<OverlaySplitView>,
         #[template_child]
         pub playlist_side: TemplateChild<gtk::Box>,
         /// The window the playlist is in while it is taken out of the window, if it is.
@@ -273,6 +273,8 @@ impl Window {
         let panel = PlaylistPanel::new();
         window.imp().playlist_side.append(panel.content());
         let _ = window.imp().playlist_panel.set(panel);
+        window.imp().playlist_split.set_sidebar_position(gtk::PackType::End);
+        window.imp().playlist_split.set_show_sidebar(false);
         window.imp().viewer.set_use_mpv(settings.string("video-backend") == "mpv");
         window.imp().viewer.set_mpv_options(&settings.string("mpv-args"));
         crate::mpv::watch_config({
@@ -1187,8 +1189,8 @@ impl Window {
             gtk::prelude::GtkWindowExt::present(detached);
             return;
         }
-        let revealer = &imp.playlist_revealer;
-        revealer.set_reveal_child(!revealer.reveals_child());
+        let split = &imp.playlist_split;
+        split.set_show_sidebar(!split.show_sidebar());
     }
 
     /// Shuffles the order the playlist plays in, or puts back the order its items were made in, and shows the change.
@@ -1241,7 +1243,7 @@ impl Window {
             glib::Propagation::Proceed
         });
         panel.set_detached(true);
-        imp.playlist_revealer.set_reveal_child(false);
+        imp.playlist_split.set_show_sidebar(false);
         gtk::prelude::GtkWindowExt::present(&window);
         imp.playlist_window.replace(Some(window));
     }
@@ -1265,7 +1267,7 @@ impl Window {
         }
         imp.playlist_side.append(content);
         panel.set_detached(false);
-        imp.playlist_revealer.set_reveal_child(true);
+        imp.playlist_split.set_show_sidebar(true);
     }
 
     /// Asks for a playlist file, and loads it.

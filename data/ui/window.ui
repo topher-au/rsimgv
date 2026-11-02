@@ -4,9 +4,21 @@
     <property name="default-width">960</property>
     <property name="default-height">640</property>
     <property name="title">rsimgv</property>
+    <child>
+      <object class="AdwBreakpoint">
+        <condition>max-width: 800px</condition>
+        <setter object="playlist_split" property="collapsed">True</setter>
+      </object>
+    </child>
     <property name="content">
       <object class="GtkOverlay" id="message_layer">
         <property name="child">
+      <object class="RsimgvOverlaySplitView" id="playlist_split">
+        <child type="sidebar">
+          <!-- The playlist is the sidebar on the opposite side from the browse split's, and stays up over the viewer too. -->
+          <object class="GtkBox" id="playlist_side"/>
+        </child>
+        <child type="content">
       <object class="GtkStack" id="pages">
         <child>
           <object class="RsimgvOverlaySplitView" id="split">
@@ -303,15 +315,6 @@
                 </property>
                   </object>
                 </child>
-                <child>
-                  <!-- The playlist sits on the opposite side of the sidebar, and is empty while it is in its own window. -->
-                  <object class="GtkRevealer" id="playlist_revealer">
-                    <property name="transition-type">slide-left</property>
-                    <child>
-                      <object class="GtkBox" id="playlist_side"/>
-                    </child>
-                  </object>
-                </child>
               </object>
             </property>
           </object>
@@ -320,6 +323,8 @@
         </child>
         <child>
           <object class="RsimgvMediaViewer" id="viewer"/>
+        </child>
+      </object>
         </child>
       </object>
         </property>
