@@ -19,6 +19,8 @@ use crate::fs::FileEntry;
 /// Space between items horizontally and vertically, in pixels.
 const SPACING_X: i32 = 8;
 const SPACING_Y: i32 = 8;
+/// The most layouts the view is put back after a reflow over, in case the rows never settle.
+const MAX_RESTORE_PASSES: u8 = 20;
 
 /// The position `delta` items on from `current`, kept within `count` items. With nothing selected, any
 /// move starts at the first item.
@@ -134,6 +136,40 @@ impl RowTable {
     }
 }
 
+/// Where the view stands: an item, and how far the item's row starts below the top of the view (negative for a row that
+/// starts above it). Kept so the item holds its place when the rows are laid out again.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ViewAnchor {
+    position: u32,
+    offset: f64,
+}
+
+/// The anchor for a view `value` pixels down and `page` tall over `table`: the selected item if it is entirely in
+/// view, otherwise the first item of the row at the top.
+fn anchor_for(table: &RowTable, columns: i32, items: u32, selected: Option<u32>, value: f64, page: f64) -> Option<ViewAnchor> {
+    if items == 0 || table.heights.is_empty() {
+        return None;
+    }
+    if let Some(position) = selected.filter(|position| *position < items) {
+        let row = position as usize / columns as usize;
+        let (top, bottom) = (f64::from(table.tops[row]), f64::from(table.tops[row] + table.heights[row]));
+        if top >= value && bottom <= value + page {
+            return Some(ViewAnchor { position, offset: top - value });
+        }
+    }
+    let row = table.row_at(value);
+    Some(ViewAnchor { position: (row * columns as usize) as u32, offset: f64::from(table.tops[row]) - value })
+}
+
+/// How far down the view must be so `anchor`'s item is as far below the top of the view as it was, over `table`.
+fn value_for(table: &RowTable, columns: i32, items: u32, anchor: ViewAnchor) -> Option<f64> {
+    if items == 0 {
+        return None;
+    }
+    let row = anchor.position.min(items - 1) as usize / columns as usize;
+    table.tops.get(row).map(|top| f64::from(*top) - anchor.offset)
+}
+
 mod layout {
     use super::*;
 
@@ -181,6 +217,17 @@ mod layout {
                 let (x, y) = table.origin(columns, index, width);
                 let transform = gsk::Transform::new().translate(&graphene::Point::new(x as f32, y as f32));
                 cell.allocate(columns.cell_w, table.heights[row], -1, Some(transform));
+            }
+            if let Some(anchor) = grid.imp().restore.get() {
+                // A selection to scroll to takes the view's place instead.
+                if grid.imp().reveal.get().is_some() {
+                    grid.imp().restore.take();
+                } else {
+                    grid.restore_view(anchor, width, &table, changed);
+                }
+            }
+            if grid.imp().restore.get().is_none() && !changed {
+                grid.remember_view(width, &table);
             }
             // A selection made while the grid was hidden, or before it had its size, is scrolled to now. If rows were
             // just measured, the scroller does not know the grid's new height yet, so the scroll waits for the next
@@ -239,6 +286,12 @@ mod imp {
         /// The position a shift-click extends the marks from: where the last plain or ctrl-click, or the
         /// last move of the cursor, left the cursor.
         pub(super) anchor: Cell<Option<u32>>,
+        /// Where the view stood at the last layout that left the rows as they were.
+        pub(super) view: Cell<Option<ViewAnchor>>,
+        /// Where the view is to be put back to after the rows were laid out again with another number of columns, until
+        /// the scroller has taken the new height of the grid, and how many layouts that has taken.
+        pub(super) restore: Cell<Option<ViewAnchor>>,
+        pub(super) restore_passes: Cell<u8>,
     }
 
     #[glib::object_subclass]
@@ -723,6 +776,12 @@ impl ItemGrid {
         let mut changed = false;
         // Rows only mean the same items while the number of columns holds.
         if imp.measured_columns.get() != columns.count {
+            // The view is put back where it stood once the rows are laid out for the new columns. A reflow already
+            // waiting for that keeps the place it began from.
+            if imp.restore.get().is_none() {
+                imp.restore.set(imp.view.get());
+                imp.restore_passes.set(0);
+            }
             self.reset();
             imp.measured_columns.set(columns.count);
             changed = true;
@@ -846,6 +905,41 @@ impl ItemGrid {
         imp.spare.borrow_mut().push(widget);
     }
 
+    /// Notes where the view stands: the selected item if it is in view, otherwise the item at the top.
+    fn remember_view(&self, width: i32, table: &RowTable) {
+        let imp = self.imp();
+        let Some(scroller) = self.scroller() else { return };
+        let adjustment = scroller.vadjustment();
+        let selected = imp.model.borrow().as_ref().map(|model| model.selected());
+        let anchor = anchor_for(table, self.columns(width).count, self.item_count(), selected, adjustment.value(), adjustment.page_size());
+        imp.view.set(anchor);
+    }
+
+    /// Puts the view back where `anchor` says, over the rows as they are now. That is repeated at each layout until
+    /// the rows have been measured and the scroller has the grid's height, which a scroll cannot go beyond before.
+    fn restore_view(&self, anchor: ViewAnchor, width: i32, table: &RowTable, measuring: bool) {
+        let imp = self.imp();
+        let Some(scroller) = self.scroller() else {
+            imp.restore.take();
+            return;
+        };
+        let adjustment = scroller.vadjustment();
+        let Some(wanted) = value_for(table, self.columns(width).count, self.item_count(), anchor) else {
+            imp.restore.take();
+            return;
+        };
+        let reachable = wanted.clamp(adjustment.lower(), (adjustment.upper() - adjustment.page_size()).max(adjustment.lower()));
+        adjustment.set_value(wanted);
+        let passes = imp.restore_passes.get().saturating_add(1);
+        imp.restore_passes.set(passes);
+        let known = adjustment.upper() + 0.5 >= f64::from(table.total());
+        if (!measuring && known && (adjustment.value() - reachable).abs() < 0.5) || passes >= MAX_RESTORE_PASSES {
+            imp.restore.take();
+        } else {
+            self.queue_allocate();
+        }
+    }
+
     /// Listens to the scroller's position, so the shown items follow it.
     fn follow_scroller(&self) {
         let Some(scroller) = self.scroller() else { return };
@@ -873,7 +967,53 @@ impl ItemGrid {
 
 #[cfg(test)]
 mod tests {
-    use super::target_position;
+    use super::{anchor_for, target_position, value_for, Columns, RowTable, ViewAnchor};
+
+    fn table(columns: i32, items: u32) -> (Columns, RowTable) {
+        let columns = Columns { cell_w: 100, count: columns };
+        (columns, RowTable::new(columns, items, &[], 92))
+    }
+
+    #[test]
+    fn the_item_at_the_top_keeps_its_place_when_the_columns_change() {
+        // Four columns, scrolled to the middle of the fourth row (item 12 starts it).
+        let (four, rows_of_four) = table(4, 100);
+        let value = f64::from(rows_of_four.tops[3]) + 30.0;
+        let anchor = anchor_for(&rows_of_four, four.count, 100, None, value, 400.0).unwrap();
+        assert_eq!(anchor, ViewAnchor { position: 12, offset: -30.0 });
+
+        // Five columns put item 12 in the third row, and the view is where that row starts less the same 30.
+        let (five, rows_of_five) = table(5, 100);
+        let restored = value_for(&rows_of_five, five.count, 100, anchor).unwrap();
+        assert_eq!(restored, f64::from(rows_of_five.tops[2]) + 30.0);
+    }
+
+    #[test]
+    fn a_selected_item_in_view_holds_its_place_over_the_top_one() {
+        let (four, rows) = table(4, 100);
+        let value = f64::from(rows.tops[3]);
+        // Item 21 is in the sixth row, which is in view in a page of 400.
+        let anchor = anchor_for(&rows, four.count, 100, Some(21), value, 400.0).unwrap();
+        assert_eq!(anchor.position, 21);
+        assert_eq!(anchor.offset, f64::from(rows.tops[5] - rows.tops[3]));
+        // One out of view is not held.
+        let anchor = anchor_for(&rows, four.count, 100, Some(90), value, 400.0).unwrap();
+        assert_eq!(anchor.position, 12);
+    }
+
+    #[test]
+    fn no_items_have_no_place_to_keep() {
+        let (columns, rows) = table(4, 0);
+        assert_eq!(anchor_for(&rows, columns.count, 0, None, 0.0, 400.0), None);
+        assert_eq!(value_for(&rows, columns.count, 0, ViewAnchor { position: 3, offset: 0.0 }), None);
+    }
+
+    #[test]
+    fn an_anchor_past_the_end_of_a_shorter_list_is_held_at_the_last_item() {
+        let (columns, rows) = table(4, 10);
+        let value = value_for(&rows, columns.count, 10, ViewAnchor { position: 50, offset: 0.0 }).unwrap();
+        assert_eq!(value, f64::from(rows.tops[2]));
+    }
 
     #[test]
     fn moves_are_clamped_to_the_list() {
