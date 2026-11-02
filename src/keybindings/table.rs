@@ -88,6 +88,7 @@ impl BindingTable {
 
     /// The action `chord` runs in the active contexts, and the value it passes. Global applies everywhere; of the
     /// others, the deepest context wins, and among equals the catalogue's first.
+    #[cfg(test)]
     pub fn resolve(&self, chord: &str, active: &[Scope]) -> Option<(&'static ActionInfo, Option<f64>)> {
         self.resolve_binding(chord, active).map(|(action, binding)| (action, binding.value))
     }
