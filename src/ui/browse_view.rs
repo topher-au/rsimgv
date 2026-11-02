@@ -602,13 +602,41 @@ fn is_media(entry: &FileEntry) -> bool {
         .is_some_and(|kind| kind.starts_with("image/") || kind.starts_with("video/"))
 }
 
-/// Orders `a` and `b` by the `sort_by` key. Names are equal under `name`, so the caller breaks those ties.
-fn compare_by(sort_by: &str, a: &FileEntry, b: &FileEntry) -> std::cmp::Ordering {
-    match sort_by {
-        "modified" => a.modified().cmp(&b.modified()),
-        "size" => a.size().cmp(&b.size()),
-        "type" => a.content_type().cmp(&b.content_type()),
-        _ => std::cmp::Ordering::Equal,
+/// What the files are sorted by.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum SortBy {
+    #[default]
+    Name,
+    Modified,
+    Size,
+    Type,
+}
+
+/// The sort settings, as the sorter reads them.
+#[derive(Clone, Copy, Default)]
+struct Order {
+    by: SortBy,
+    descending: bool,
+    /// Whether folders are sorted among the files, rather than before them.
+    inline_folders: bool,
+}
+
+/// The filter settings, as the filter reads them.
+#[derive(Clone, Copy, Default)]
+struct Visibility {
+    show_hidden: bool,
+    media_only: bool,
+    /// Whether folders are listed at all.
+    folders_listed: bool,
+}
+
+/// Orders `a` and `b` by the `by` key. Names are equal under `Name`, so the caller breaks those ties.
+fn compare_by(by: SortBy, a: &FileEntry, b: &FileEntry) -> std::cmp::Ordering {
+    match by {
+        SortBy::Modified => a.modified().cmp(&b.modified()),
+        SortBy::Size => a.size().cmp(&b.size()),
+        SortBy::Type => a.content_type().cmp(&b.content_type()),
+        SortBy::Name => std::cmp::Ordering::Equal,
     }
 }
 
@@ -706,6 +734,9 @@ mod imp {
         /// What the files and folders are sorted by: `name`, `modified`, `size` or `type`.
         #[property(get, set)]
         sort_by: RefCell<String>,
+        /// The sort and filter settings as plain values, from the properties above; see `cache_settings`.
+        pub(super) order: Cell<Order>,
+        pub(super) visibility: Cell<Visibility>,
         /// `ascending` or `descending`.
         #[property(get, set)]
         sort_order: RefCell<String>,
@@ -770,8 +801,14 @@ mod imp {
             self.info_fields
                 .replace(vec![InfoField::Size, InfoField::Modified]);
 
+            // The sorter and filter read their settings as plain values, kept up to date as the properties change.
+            obj.cache_settings();
+            for name in ["show-hidden", "media-only", "show-directories", "sort-by", "sort-order"] {
+                obj.connect_notify_local(Some(name), |view, _| view.cache_settings());
+            }
+
             let store = gio::ListStore::new::<FileEntry>();
-            // The filter reads the view's properties, so it always reflects the current settings.
+            // The filter reads the view's settings, so it always reflects the current ones.
             let view = obj.downgrade();
             let filter = gtk::CustomFilter::new(move |item| {
                 let Some(entry) = item.downcast_ref::<FileEntry>() else {
@@ -780,9 +817,11 @@ mod imp {
                 let Some(view) = view.upgrade() else {
                     return true;
                 };
-                let visible_when_hidden = view.show_hidden() || !entry.name().starts_with('.');
-                let visible_when_media = !view.media_only() || entry.is_dir() || is_media(entry);
-                let visible_when_listed = !entry.is_dir() || view.show_directories() != "none";
+                let visibility = view.imp().visibility.get();
+                let hidden = entry.path().file_name().is_some_and(|name| name.as_encoded_bytes().starts_with(b"."));
+                let visible_when_hidden = visibility.show_hidden || !hidden;
+                let visible_when_media = !visibility.media_only || entry.is_dir() || is_media(entry);
+                let visible_when_listed = !entry.is_dir() || visibility.folders_listed;
                 visible_when_hidden && visible_when_media && visible_when_listed
             });
 
@@ -795,13 +834,13 @@ mod imp {
                     else {
                         return gtk::Ordering::Equal;
                     };
-                    let mode = view.show_directories();
-                    let rank = |entry: &FileEntry| match (mode.as_str(), entry.is_dir()) {
-                        ("inline", _) => 0,
-                        (_, is_dir) => u8::from(!is_dir),
+                    let settings = view.imp().order.get();
+                    let rank = |entry: &FileEntry| match (settings.inline_folders, entry.is_dir()) {
+                        (true, _) => 0,
+                        (false, is_dir) => u8::from(!is_dir),
                     };
-                    let order = compare_by(&view.sort_by(), a, b).then_with(|| natural_cmp(&a.name(), &b.name()));
-                    let order = if view.sort_order() == "descending" { order.reverse() } else { order };
+                    let order = compare_by(settings.by, a, b).then_with(|| natural_cmp(&a.name(), &b.name()));
+                    let order = if settings.descending { order.reverse() } else { order };
                     match rank(a).cmp(&rank(b)).then(order) {
                         std::cmp::Ordering::Less => gtk::Ordering::Smaller,
                         std::cmp::Ordering::Equal => gtk::Ordering::Equal,
@@ -1889,6 +1928,29 @@ impl BrowseView {
     /// Whether `cell` shows a folder, and folder previews are on.
     fn is_folder_cell(&self, cell: &gtk::Box) -> bool {
         self.directory_previews() && entry_in(self, cell).is_some_and(|entry| entry.is_dir())
+    }
+
+    /// Reads the sort and filter settings from the properties into plain values, which the sorter and filter read on
+    /// each comparison without allocating. Called when any of them changes.
+    fn cache_settings(&self) {
+        let imp = self.imp();
+        let by = match self.sort_by().as_str() {
+            "modified" => SortBy::Modified,
+            "size" => SortBy::Size,
+            "type" => SortBy::Type,
+            _ => SortBy::Name,
+        };
+        let folders = self.show_directories();
+        imp.order.set(Order {
+            by,
+            descending: self.sort_order() == "descending",
+            inline_folders: folders == "inline",
+        });
+        imp.visibility.set(Visibility {
+            show_hidden: self.show_hidden(),
+            media_only: self.media_only(),
+            folders_listed: folders != "none",
+        });
     }
 
     /// The pictures and videos scanned for `folder`'s previews, if the scan is kept and the folder has not changed since
