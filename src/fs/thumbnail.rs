@@ -8,7 +8,8 @@
 //! and `ffprobe` programs; without them, videos keep their icon.
 //!
 //! Like Nautilus's thumbnailer, only a few are made at a time, and a request that no item on screen
-//! wants any more is dropped before it runs. They are made on a thread pool of their own, so however many
+//! wants any more is dropped before it runs. A thumbnail no item on screen shows any more can be let go from
+//! memory too, and is read back when it is next wanted. They are made on a thread pool of their own, so however many
 //! run, they leave GIO's few worker threads to folder listings.
 
 use std::cell::{Cell, RefCell};
@@ -84,9 +85,12 @@ struct Key {
 /// Receives the textures of a finished job.
 type OnReady = dyn FnOnce(&[gdk::Texture]);
 
+/// Says whether a request for a thumbnail, or the item it was given to, is still on screen.
+type Wanted = Rc<dyn Fn() -> bool>;
+
 /// A request for a thumbnail. `wanted` says whether it is still needed.
 struct Waiter {
-    wanted: Rc<dyn Fn() -> bool>,
+    wanted: Wanted,
     on_ready: Box<OnReady>,
 }
 
@@ -122,9 +126,21 @@ struct Inner {
     running_frames: Cell<usize>,
     /// Whether the cache under `root` is used.
     disk_cache: Cell<bool>,
+    /// Whether things that no item shows any more are let go from `textures`.
+    unload_offscreen: Cell<bool>,
+    /// What each thing was given to, for as long as that is still on screen.
+    holders: RefCell<HashMap<Key, Vec<Wanted>>>,
+    /// Whether a pass over `holders` is waiting to run.
+    unload_pending: Cell<bool>,
     /// The things that could not be made, so they are not tried again.
     failed: RefCell<HashSet<Key>>,
 }
+
+/// How long after an item leaves the screen its thumbnail is let go, so a quick scroll back finds it still there.
+const UNLOAD_DELAY: Duration = Duration::from_secs(1);
+
+/// The most holders remembered for one thumbnail.
+const MAX_HOLDERS: usize = 8;
 
 /// How many days a thumbnail may go unmade before the start-up sweep removes it. It is made again when it is needed.
 const KEEP_DAYS: u64 = 90;
@@ -184,6 +200,7 @@ impl Thumbnails {
                 root,
                 max_jobs: Cell::new(DEFAULT_THREADS.min(thread_limit())),
                 disk_cache: Cell::new(true),
+                unload_offscreen: Cell::new(true),
                 pool: Some(glib::ThreadPool::shared(None).expect("a shared thread pool does not start any threads yet")),
                 ..Inner::default()
             }),
@@ -201,6 +218,78 @@ impl Thumbnails {
     /// current again if the cache is turned back on, and the start-up sweep removes it in time.
     pub fn set_disk_cache(&self, on: bool) {
         self.inner.disk_cache.set(on);
+    }
+
+    /// Sets whether thumbnails that no item shows any more are let go from memory. Otherwise they stay until the memory
+    /// budget pushes them out.
+    pub fn set_unload_offscreen(&self, on: bool) {
+        self.inner.unload_offscreen.set(on);
+        if on {
+            self.unload_soon();
+        }
+    }
+
+    /// Whether thumbnails that no item shows any more are let go from memory, so items leaving the screen should let
+    /// go of theirs too.
+    pub fn unloads_offscreen(&self) -> bool {
+        self.inner.unload_offscreen.get()
+    }
+
+    /// Looks, in a moment, for thumbnails that no item shows any more. Called when an item leaves the screen.
+    pub fn unload_soon(&self) {
+        if self.inner.unload_pending.replace(true) {
+            return;
+        }
+        let thumbnails = self.clone();
+        glib::timeout_add_local_once(UNLOAD_DELAY, move || {
+            thumbnails.inner.unload_pending.set(false);
+            thumbnails.unload_offscreen();
+        });
+    }
+
+    /// Forgets what is no longer on screen, and lets go of the thumbnails that leaves with nothing to show them.
+    fn unload_offscreen(&self) {
+        self.inner.holders.borrow_mut().retain(|_, list| {
+            list.retain(|wanted| wanted());
+            !list.is_empty()
+        });
+        if !self.inner.unload_offscreen.get() {
+            return;
+        }
+        let gone: Vec<Key> = {
+            let holders = self.inner.holders.borrow();
+            self.inner.textures.borrow().keys().filter(|key| !holders.contains_key(*key)).cloned().collect()
+        };
+        for key in gone {
+            self.forget(&key);
+        }
+    }
+
+    /// Lets go of the cached thing `key`.
+    fn forget(&self, key: &Key) {
+        self.inner.stamps.borrow_mut().remove(key);
+        if let Some(removed) = self.inner.textures.borrow_mut().remove(key) {
+            self.inner.bytes.set(self.inner.bytes.get() - bytes_of(&removed));
+        }
+    }
+
+    /// Remembers that `key` was given to something, which holds on to it while `wanted` says so. A folder that keeps
+    /// cycling asks for the same pictures again and again, so only the latest few holders are kept. Losing one costs
+    /// at most reading the thumbnail back.
+    fn hold(&self, key: &Key, wanted: Wanted) {
+        let mut holders = self.inner.holders.borrow_mut();
+        let list = holders.entry(key.clone()).or_default();
+        list.retain(|wanted| wanted());
+        if list.len() >= MAX_HOLDERS {
+            list.remove(0);
+        }
+        list.push(wanted);
+    }
+
+    /// Whether a thumbnail of the file at `path` is in memory.
+    #[cfg(test)]
+    pub fn has_loaded(&self, path: &Path) -> bool {
+        self.inner.textures.borrow().keys().any(|key| key.path == path)
     }
 
     /// Calls `on_ready` with the still thumbnail of the file at `path`, modified at `mtime`, once it is made.
@@ -249,9 +338,11 @@ impl Thumbnails {
     }
 
     fn request(&self, key: Key, wanted: impl Fn() -> bool + 'static, on_ready: impl FnOnce(&[gdk::Texture]) + 'static) {
+        let wanted: Wanted = Rc::new(wanted);
         let cached = self.inner.textures.borrow().get(&key).cloned();
         if let Some(textures) = cached {
             self.touch(&key);
+            self.hold(&key, wanted);
             on_ready(&textures);
             return;
         }
@@ -260,7 +351,7 @@ impl Thumbnails {
             return;
         }
         let waiter = Waiter {
-            wanted: Rc::new(wanted),
+            wanted,
             on_ready: Box::new(on_ready),
         };
         let mut waiters = self.inner.waiters.borrow_mut();
@@ -378,18 +469,25 @@ impl Thumbnails {
         let textures: Vec<gdk::Texture> = match made {
             Some(made) => {
                 let textures: Vec<gdk::Texture> = made.iter().map(Pixels::texture).collect();
-                self.remember(key, textures.clone());
+                self.remember(key.clone(), textures.clone());
                 textures
             }
             None => {
-                self.inner.failed.borrow_mut().insert(key);
+                self.inner.failed.borrow_mut().insert(key.clone());
                 Vec::new()
             }
         };
+        let mut held = false;
         for waiter in waiters {
             if (waiter.wanted)() {
+                self.hold(&key, waiter.wanted);
+                held = true;
                 (waiter.on_ready)(&textures);
             }
+        }
+        // Made for items that have left the screen since, so nothing will say when to let it go.
+        if !held && !textures.is_empty() {
+            self.unload_soon();
         }
         self.start_jobs();
     }
@@ -875,6 +973,52 @@ mod tests {
                 }
             })
             .unwrap();
+    }
+
+    /// Thumbnails with one file in memory, requested by something on screen while the returned flag says so.
+    fn loaded(name: &str) -> (Thumbnails, PathBuf, Rc<Cell<bool>>) {
+        let (root, dir) = folder(name);
+        let path = picture(&dir, 16, 16);
+        let thumbnails = Thumbnails::with_root(root);
+        let job = key(&path, 1, Size::for_pixels(128), Job::Still(Media::Picture));
+        thumbnails.remember(job.clone(), vec![Pixels::from_file(&path).expect("read").texture()]);
+        let on_screen = Rc::new(Cell::new(true));
+        let flag = on_screen.clone();
+        thumbnails.request(job, move || flag.get(), |_| {});
+        (thumbnails, path, on_screen)
+    }
+
+    #[test]
+    fn a_thumbnail_is_let_go_once_no_item_shows_it() {
+        let (thumbnails, path, on_screen) = loaded("unload");
+        thumbnails.unload_offscreen();
+        assert!(thumbnails.has_loaded(&path), "still on screen");
+
+        on_screen.set(false);
+        thumbnails.unload_offscreen();
+        assert!(!thumbnails.has_loaded(&path), "no longer on screen");
+        assert_eq!(thumbnails.inner.bytes.get(), 0);
+        assert!(thumbnails.inner.holders.borrow().is_empty());
+    }
+
+    #[test]
+    fn asking_again_and_again_keeps_only_the_latest_holders() {
+        let (thumbnails, path, _on_screen) = loaded("holders");
+        let job = key(&path, 1, Size::for_pixels(128), Job::Still(Media::Picture));
+        for _ in 0..3 * MAX_HOLDERS {
+            thumbnails.request(job.clone(), || true, |_| {});
+        }
+        assert_eq!(thumbnails.inner.holders.borrow()[&job].len(), MAX_HOLDERS);
+    }
+
+    #[test]
+    fn with_unloading_off_a_thumbnail_stays_in_memory() {
+        let (thumbnails, path, on_screen) = loaded("no-unload");
+        thumbnails.inner.unload_offscreen.set(false);
+        on_screen.set(false);
+        thumbnails.unload_offscreen();
+        assert!(thumbnails.has_loaded(&path));
+        assert!(thumbnails.inner.holders.borrow().is_empty(), "what is off screen is still forgotten");
     }
 
     #[test]

@@ -93,6 +93,10 @@
       <default>true</default>
       <summary>Keep thumbnails on disk, so they are not made again the next time they are shown</summary>
     </key>
+    <key name="thumbnail-unload-offscreen" type="b">
+      <default>true</default>
+      <summary>Free the memory of thumbnails scrolled out of view, and load them again when they come back</summary>
+    </key>
     <key name="folder-preview-fit" type="b">
       <default>false</default>
       <summary>Fit as many previews to a folder's icon as their pictures' dimensions allow, instead of a set number</summary>

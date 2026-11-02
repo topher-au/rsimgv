@@ -953,6 +953,12 @@
                                 <property name="subtitle">Keeps thumbnails on disk, so they are not made again the next time they are shown</property>
                               </object>
                             </child>
+                            <child>
+                              <object class="AdwSwitchRow" id="thumbnail_unload_offscreen_row">
+                                <property name="title">Unload offscreen thumbnails</property>
+                                <property name="subtitle">Frees the memory of thumbnails scrolled out of view, and loads them again when they come back</property>
+                              </object>
+                            </child>
                           </object>
                         </child>
                       </object>

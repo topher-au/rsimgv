@@ -38,10 +38,11 @@ fn set_class(widget: &gtk::Widget, class: &str, on: bool) {
     }
 }
 
-/// Builds an item's widget once, and fills it in for an item each time it is shown.
+/// Builds an item's widget once, fills it in for an item each time it is shown, and clears it when it stops.
 pub struct Builders {
     setup: Box<dyn Fn() -> gtk::Widget>,
     bind: Box<dyn Fn(&gtk::Widget, &FileEntry, u32)>,
+    unbind: Box<dyn Fn(&gtk::Widget)>,
 }
 
 /// How many items fit across for a width.
@@ -318,15 +319,17 @@ glib::wrapper! {
 
 impl ItemGrid {
     /// Sets how each item is built and filled in. `setup` makes a widget for one item; `bind` fills it in
-    /// for the item at a position.
+    /// for the item at a position; `unbind` clears it when it stops showing an item and is put aside.
     pub fn set_builders(
         &self,
         setup: impl Fn() -> gtk::Widget + 'static,
         bind: impl Fn(&gtk::Widget, &FileEntry, u32) + 'static,
+        unbind: impl Fn(&gtk::Widget) + 'static,
     ) {
         self.imp().builders.replace(Some(Rc::new(Builders {
             setup: Box::new(setup),
             bind: Box::new(bind),
+            unbind: Box::new(unbind),
         })));
     }
 
@@ -412,8 +415,7 @@ impl ItemGrid {
         for shown in gone {
             let removed = imp.shown.borrow_mut().remove(&shown);
             if let Some(widget) = removed {
-                put_spare(&widget);
-                imp.spare.borrow_mut().push(widget);
+                self.put_aside(widget);
             }
         }
         imp.row_heights.borrow_mut().truncate(from_row);
@@ -734,8 +736,7 @@ impl ItemGrid {
             // Taken out first: hiding a cell can run handlers that look at the shown cells.
             let removed = imp.shown.borrow_mut().remove(&position);
             if let Some(widget) = removed {
-                put_spare(&widget);
-                imp.spare.borrow_mut().push(widget);
+                self.put_aside(widget);
             }
         }
 
@@ -822,9 +823,19 @@ impl ItemGrid {
         imp.shown_range.set(None);
         let shown: Vec<gtk::Widget> = imp.shown.borrow_mut().drain().map(|(_, widget)| widget).collect();
         for widget in shown {
-            put_spare(&widget);
-            imp.spare.borrow_mut().push(widget);
+            self.put_aside(widget);
         }
+    }
+
+    /// Keeps a widget that is no longer shown to reuse, cleared of its item.
+    fn put_aside(&self, widget: gtk::Widget) {
+        let imp = self.imp();
+        put_spare(&widget);
+        let builders = imp.builders.borrow().clone();
+        if let Some(builders) = builders {
+            (builders.unbind)(&widget);
+        }
+        imp.spare.borrow_mut().push(widget);
     }
 
     /// Listens to the scroller's position, so the shown items follow it.

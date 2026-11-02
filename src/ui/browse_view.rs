@@ -1134,6 +1134,16 @@ mod imp {
                         style_item(&view, cell, entry);
                     }
                 },
+                |widget| {
+                    // A spare cell must not keep its item's thumbnail in memory.
+                    let thumbnails = Thumbnails::shared();
+                    if thumbnails.unloads_offscreen() {
+                        if let Some(icon) = widget.downcast_ref::<gtk::Box>().and_then(icon_of) {
+                            icon.clear();
+                        }
+                    }
+                    thumbnails.unload_soon();
+                },
             );
 
             // The description of the item under the pointer, in a popover below the item rather than a
@@ -2580,6 +2590,39 @@ pub(crate) mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
+    /// A thumbnail is let go from memory once its item has left the screen, by its cell too.
+    fn an_item_leaving_the_screen_lets_go_of_its_thumbnail() {
+        let root = std::env::temp_dir().join(format!("rsimgv-browse-unload-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let (pictures, empty) = (root.join("pictures"), root.join("empty"));
+        fs::create_dir_all(&pictures).unwrap();
+        fs::create_dir_all(&empty).unwrap();
+        let picture = pictures.join("picture.png");
+        let pixbuf = gtk::gdk_pixbuf::Pixbuf::new(gtk::gdk_pixbuf::Colorspace::Rgb, false, 8, 64, 32).unwrap();
+        pixbuf.fill(0x3366ccff);
+        pixbuf.savev(&picture, "png", &[]).unwrap();
+
+        let view = BrowseView::new();
+        let window = gtk::Window::new();
+        window.set_default_size(600, 400);
+        window.set_child(Some(&view));
+        window.present();
+        view.set_path(&pictures);
+        let thumbnails = Thumbnails::shared();
+        wait_for("the thumbnail", || thumbnails.has_loaded(&picture));
+        let cell = view.imp().grid.first_child().and_downcast::<gtk::Box>().expect("a cell");
+        let icon = icon_of(&cell).expect("an icon");
+        wait_for("the thumbnail on its item", || icon.paintable().is_some());
+
+        view.set_path(&empty);
+        wait_for("the empty folder", || view.item_count() == 0);
+        wait_for("the thumbnail let go", || !thumbnails.has_loaded(&picture));
+        assert_eq!(icon.storage_type(), gtk::ImageType::Empty, "the spare cell does not keep it");
+
+        window.destroy();
+        let _ = fs::remove_dir_all(&root);
+    }
+
     /// Changing whether previews are fitted reaches the folders already on screen.
     fn the_fit_setting_reaches_folders_on_screen() {
         let root = std::env::temp_dir().join(format!("rsimgv-browse-fit-setting-{}", std::process::id()));
@@ -2647,6 +2690,7 @@ pub(crate) mod tests {
         modified_selection_is_not_reported_as_lost();
         a_fitted_folder_is_laid_out_once_per_picture();
         the_fit_setting_reaches_folders_on_screen();
+        an_item_leaving_the_screen_lets_go_of_its_thumbnail();
         a_folder_s_previews_are_up_before_its_first_picture();
         let root = std::env::temp_dir().join(format!("rsimgv-browse-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);

@@ -497,6 +497,7 @@ fn factory(
         if let Some(image) = item.downcast_ref::<gtk::ListItem>().and_then(|item| item.child()).and_downcast::<gtk::Image>() {
             image.set_icon_name(Some("image-x-generic-symbolic"));
         }
+        Thumbnails::shared().unload_soon();
     });
     factory
 }

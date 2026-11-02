@@ -89,6 +89,8 @@ mod imp {
         #[template_child]
         pub thumbnail_cache_row: TemplateChild<adw::SwitchRow>,
         #[template_child]
+        pub thumbnail_unload_offscreen_row: TemplateChild<adw::SwitchRow>,
+        #[template_child]
         pub thumbnail_crop_row: TemplateChild<adw::SwitchRow>,
         #[template_child]
         pub video_frame_previews_row: TemplateChild<adw::SwitchRow>,
@@ -281,6 +283,7 @@ impl PreferencesDialog {
         imp.thumbnail_threads_row.adjustment().set_upper(crate::fs::thumbnail::thread_limit() as f64);
         bind_port(settings, &imp.thumbnail_threads_row, "thumbnail-threads");
         settings.bind("thumbnail-cache", &*imp.thumbnail_cache_row, "active").build();
+        settings.bind("thumbnail-unload-offscreen", &*imp.thumbnail_unload_offscreen_row, "active").build();
         settings.bind("thumbnail-crop", &*imp.thumbnail_crop_row, "active").build();
         settings.bind("video-frame-previews", &*imp.video_frame_previews_row, "active").build();
         settings.bind("directory-previews", &*imp.directory_previews_row, "active").build();
@@ -719,6 +722,7 @@ pub(crate) mod tests {
 
         assert!(dialog.imp().image_preloading_row.is_active(), "image preloading is on by default");
         assert!(dialog.imp().thumbnail_cache_row.is_active(), "the thumbnail cache is on by default");
+        assert!(dialog.imp().thumbnail_unload_offscreen_row.is_active(), "offscreen thumbnails are unloaded by default");
         let threads = dialog.imp().thumbnail_threads_row.adjustment();
         assert_eq!(threads.lower(), 1.0);
         assert_eq!(threads.upper(), crate::fs::thumbnail::thread_limit() as f64, "at most the system's threads");

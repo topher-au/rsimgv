@@ -22,13 +22,14 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 /// The settings about making thumbnails.
-const THUMBNAIL_KEYS: [&str; 2] = ["thumbnail-threads", "thumbnail-cache"];
+const THUMBNAIL_KEYS: [&str; 3] = ["thumbnail-threads", "thumbnail-cache", "thumbnail-unload-offscreen"];
 
 /// Gives the thumbnails what the settings say about making them.
 fn apply_thumbnail_settings(settings: &gio::Settings) {
     let thumbnails = fs::thumbnail::Thumbnails::shared();
     thumbnails.set_thread_count(settings.int("thumbnail-threads").max(1) as usize);
     thumbnails.set_disk_cache(settings.boolean("thumbnail-cache"));
+    thumbnails.set_unload_offscreen(settings.boolean("thumbnail-unload-offscreen"));
 }
 
 /// The settings that decide which IPC transports run, and on which ports.
