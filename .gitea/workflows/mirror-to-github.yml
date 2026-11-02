@@ -1,0 +1,26 @@
+name: mirror-main-to-github
+on:
+  push:
+    branches: [main]
+jobs:
+  mirror:
+    runs-on: host
+    steps:
+      - name: Push only main to GitHub
+        env:
+          GH_PUSH_TOKEN: ${{ secrets.GH_PUSH_TOKEN }}
+          SRC_TOKEN: ${{ github.token }}
+          SRC_URL: ${{ github.server_url }}/${{ github.repository }}.git
+          DEST_URL: https://github.com/topher-au/rsimgv.git
+        run: |
+          set -eu
+          WORK=$(mktemp -d)
+          trap 'rm -rf "$WORK"' EXIT
+          SRC_AUTH=$(printf 'gitea-actions:%s' "$SRC_TOKEN" | base64 -w0)
+          DEST_AUTH=$(printf 'x-access-token:%s' "$GH_PUSH_TOKEN" | base64 -w0)
+          git -c http.extraHeader="Authorization: Basic $SRC_AUTH" \
+            clone --quiet --single-branch --branch main "$SRC_URL" "$WORK/repo"
+          cd "$WORK/repo"
+          echo "pushing $(git rev-parse --short HEAD) to GitHub main"
+          git -c http.extraHeader="Authorization: Basic $DEST_AUTH" \
+            push "$DEST_URL" HEAD:refs/heads/main
