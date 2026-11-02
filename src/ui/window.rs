@@ -719,6 +719,9 @@ impl Window {
     fn show_in_viewer(&self, paths: Vec<PathBuf>, index: usize, playlist: bool) {
         let imp = self.imp();
         imp.playlist_playing.set(playlist);
+        if let (true, Some(path)) = (playlist, paths.get(index)) {
+            self.read_length_when_played(path);
+        }
         self.apply_folder_end();
         imp.viewer.show(paths, index);
         imp.viewer_open.set(true);
@@ -731,6 +734,24 @@ impl Window {
             imp.viewer_fullscreened.set(true);
         }
         self.update_title();
+    }
+
+    /// Reads the length of the playlist item `path` when it is played, if the playlist does not read lengths in the
+    /// background. The panel then shows it once it is read.
+    fn read_length_when_played(&self, path: &Path) {
+        let Some(settings) = self.imp().settings.get() else { return };
+        if settings.boolean("playlist-fetch-in-background") {
+            return;
+        }
+        let Some((mtime, size)) = stamp(path) else { return };
+        let weak = self.downgrade();
+        MediaInfo::shared().request(path, mtime, size, || true, move || {
+            if let Some(window) = weak.upgrade() {
+                if let Some(panel) = window.imp().playlist_panel.get() {
+                    panel.refresh();
+                }
+            }
+        });
     }
 
     /// Returns from the viewer to the browse view, releasing what the viewer held.

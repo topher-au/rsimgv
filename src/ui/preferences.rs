@@ -115,6 +115,8 @@ mod imp {
         #[template_child]
         pub remember_folder_sort_row: TemplateChild<adw::SwitchRow>,
         #[template_child]
+        pub playlist_fetch_row: TemplateChild<adw::SwitchRow>,
+        #[template_child]
         pub default_sort_by_row: TemplateChild<adw::ComboRow>,
         #[template_child]
         pub default_sort_order_row: TemplateChild<adw::ComboRow>,
@@ -588,6 +590,7 @@ impl PreferencesDialog {
 fn bind_switches(settings: &gio::Settings, imp: &imp::PreferencesDialog) {
     let switches = [
         ("remember-folder-sort", &imp.remember_folder_sort_row),
+        ("playlist-fetch-in-background", &imp.playlist_fetch_row),
         ("seek-overlay", &imp.seek_overlay_row),
         ("seek-overlay-bar", &imp.seek_overlay_bar_row),
         ("seek-overlay-time", &imp.seek_overlay_time_row),

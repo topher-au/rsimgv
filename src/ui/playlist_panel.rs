@@ -1,7 +1,8 @@
-//! The playlist panel: a heading, the items in columns under a row of headings, and a toolbar of buttons that act on the
-//! list. A click on a sortable heading sorts the playlist by that column, and a right click on an item opens its menu.
-//! The columns can be hidden from that menu. The panel is one widget, which sits beside the browse view or, when
-//! detached, in a window of its own. What the panel asks for, it asks of the window through its `win.playlist-*` actions.
+//! The playlist panel: a heading, the items in a table of columns, and a toolbar of buttons that act on the list. The
+//! columns can be resized and hidden, and their contents are ellipsized to fit. A click on a sortable column's heading
+//! sorts the playlist by it, and a right click on an item opens its menu. The panel is one widget, which sits beside the
+//! browse view or, when detached, in a window of its own. What the panel asks for, it asks of the window through its
+//! `win.playlist-*` actions.
 
 use std::cell::{Cell, RefCell};
 use std::path::Path;
@@ -19,18 +20,15 @@ use crate::scripts;
 
 /// How wide the panel is, in pixels.
 const PANEL_WIDTH: i32 = 400;
-/// The width of the position column, and of the length column, which holds a time.
-const POSITION_WIDTH: i32 = 36;
-const LENGTH_WIDTH: i32 = 72;
 /// The symbol that marks the item shown, in the position column.
 const CURRENT_MARK: &str = "▶";
-/// The setting that shows each column, and the menu label that toggles it, in the order the columns are in: position,
-/// name, length, filename.
-const COLUMNS: [(&str, &str); 4] = [
-    ("playlist-show-position", "Show position column"),
-    ("playlist-show-name", "Show name column"),
-    ("playlist-show-length", "Show length column"),
-    ("playlist-show-filename", "Show filename column"),
+/// The columns in order: the setting that shows each, the menu label that toggles it, its title, and how wide it starts,
+/// in pixels. The position column is -1 wide, which is as wide as its marker, and cannot be resized.
+const COLUMNS: [(&str, &str, &str, i32); 4] = [
+    ("playlist-show-position", "Show position column", "#", -1),
+    ("playlist-show-name", "Show name column", "Name", 200),
+    ("playlist-show-length", "Show length column", "Length", 80),
+    ("playlist-show-filename", "Show filename column", "Filename / URL", 300),
 ];
 
 /// A column the playlist can be sorted by. The position is not one, as it is the order the list is in.
@@ -60,34 +58,6 @@ impl SortColumn {
             _ => None,
         }
     }
-
-    fn heading(self) -> &'static str {
-        match self {
-            Self::Name => "Name",
-            Self::Length => "Length",
-            Self::Filename => "Filename / URL",
-        }
-    }
-}
-
-/// The sortable headings, each with its label, and the column the list is sorted by, and whether it is sorted down.
-struct Headings {
-    buttons: Vec<(SortColumn, gtk::Button, gtk::Label)>,
-    sorted: Cell<Option<(SortColumn, bool)>>,
-}
-
-impl Headings {
-    /// Shows the arrow of the column the list is sorted by, and no arrow on the others.
-    fn show(&self) {
-        for (column, _, label) in &self.buttons {
-            let arrow = match self.sorted.get() {
-                Some((sorted, false)) if sorted == *column => " ▲",
-                Some((sorted, true)) if sorted == *column => " ▼",
-                _ => "",
-            };
-            label.set_label(&format!("{}{arrow}", column.heading()));
-        }
-    }
 }
 
 pub struct PlaylistPanel {
@@ -96,8 +66,7 @@ pub struct PlaylistPanel {
     title: gtk::Label,
     detach: gtk::Button,
     shuffle: gtk::Button,
-    header: gtk::Box,
-    view: gtk::ListView,
+    view: gtk::ColumnView,
     empty: gtk::Label,
     scroller: gtk::ScrolledWindow,
     /// The items' paths, in the order shown.
@@ -106,12 +75,12 @@ pub struct PlaylistPanel {
     shown: RefCell<Vec<String>>,
     /// The position of the item marked as the current one.
     current: Rc<Cell<Option<u32>>>,
-    /// The rows showing an item now.
+    /// The number cells showing an item now.
     rows: Rc<RefCell<Vec<gtk::ListItem>>>,
 }
 
 impl PlaylistPanel {
-    /// Makes the panel, showing the playlist as it is. The columns shown follow `settings`.
+    /// Makes the panel, showing the playlist as it is. The columns shown and the lengths read follow `settings`.
     pub fn new(settings: &gio::Settings) -> Self {
         let current = Rc::new(Cell::new(None));
         let rows = Rc::new(RefCell::new(Vec::new()));
@@ -119,32 +88,51 @@ impl PlaylistPanel {
         let selection = gtk::SingleSelection::new(Some(paths.clone()));
         selection.set_autoselect(false);
         selection.set_can_unselect(true);
-
-        let (header, buttons) = header_row(settings);
-        let headings = Rc::new(Headings { buttons, sorted: Cell::new(None) });
-        for (column, button, _) in &headings.buttons {
-            let column = *column;
-            let headings = headings.clone();
-            button.connect_clicked(move |button| {
-                let down = match headings.sorted.get() {
-                    Some((sorted, down)) if sorted == column => !down,
-                    _ => false,
-                };
-                headings.sorted.set(Some((column, down)));
-                headings.show();
-                let _ = button.activate_action("win.playlist-sort", Some(&(column.name(), down).to_variant()));
-            });
-        }
-
-        let factory = row_factory(settings, current.clone(), rows.clone(), headings.clone());
-        let view = gtk::ListView::new(Some(selection.clone()), Some(factory));
-        view.add_css_class("navigation-sidebar");
+        let view = gtk::ColumnView::new(Some(selection.clone()));
+        view.add_css_class("data-table");
         view.connect_activate(|view, position| {
             let _ = view.activate_action("win.playlist-play-index", Some(&position.to_variant()));
         });
 
+        // The sorter of each sortable column compares nothing, so the view keeps the order the playlist is in. Clicking
+        // a heading tells the window to sort the playlist instead.
+        let mut sortable = Vec::new();
+        for (index, (key, _, title, width)) in COLUMNS.into_iter().enumerate() {
+            let factory = cell_factory(index, settings, &current, &rows);
+            let column = gtk::ColumnViewColumn::new(Some(title), Some(factory));
+            column.set_resizable(width >= 0);
+            if width >= 0 {
+                column.set_fixed_width(width);
+            }
+            settings.bind(key, &column, "visible").build();
+            let sort = match index {
+                1 => Some(SortColumn::Name),
+                2 => Some(SortColumn::Length),
+                3 => Some(SortColumn::Filename),
+                _ => None,
+            };
+            if let Some(sort) = sort {
+                column.set_sorter(Some(&gtk::CustomSorter::new(|_, _| gtk::Ordering::Equal)));
+                sortable.push((sort, column.clone()));
+            }
+            view.append_column(&column);
+        }
+        if let Some(sorter) = view.sorter() {
+            let view_weak = view.downgrade();
+            sorter.connect_changed(move |sorter, _| {
+                let Some(sorter) = sorter.downcast_ref::<gtk::ColumnViewSorter>() else { return };
+                let Some(column) = sorter.primary_sort_column() else { return };
+                let Some((sort, _)) = sortable.iter().find(|(_, candidate)| *candidate == column) else { return };
+                let descending = sorter.primary_sort_order() == gtk::SortType::Descending;
+                if let Some(view) = view_weak.upgrade() {
+                    let _ = view.activate_action("win.playlist-sort", Some(&(sort.name(), descending).to_variant()));
+                }
+            });
+        }
+
         let scroller = gtk::ScrolledWindow::new();
-        scroller.set_hscrollbar_policy(gtk::PolicyType::Never);
+        scroller.set_hscrollbar_policy(gtk::PolicyType::Automatic);
+        scroller.set_vscrollbar_policy(gtk::PolicyType::Automatic);
         scroller.set_vexpand(true);
         scroller.set_child(Some(&view));
 
@@ -177,13 +165,12 @@ impl PlaylistPanel {
         content.set_width_request(PANEL_WIDTH);
         content.append(&heading);
         content.append(&empty);
-        content.append(&header);
         content.append(&scroller);
         content.append(&toolbar);
 
         // The menu's column toggles are actions of the panel, named by their settings.
         let actions = gio::SimpleActionGroup::new();
-        for (key, _) in COLUMNS {
+        for (key, _, _, _) in COLUMNS {
             actions.add_action(&settings.create_action(key));
         }
         content.insert_action_group("playlist", Some(&actions));
@@ -201,7 +188,6 @@ impl PlaylistPanel {
             title,
             detach,
             shuffle,
-            header,
             view,
             empty,
             scroller,
@@ -225,7 +211,8 @@ impl PlaylistPanel {
     }
 
     /// Shows the playlist's items as they are now, in the order they are shown, with their titles and lengths. Only the
-    /// items that changed are added and removed, so the list keeps its place.
+    /// items that changed are added and removed, so the list keeps its place. Every row is bound again, as titles and
+    /// lengths may have changed.
     pub fn refresh(&self) {
         let (items, shuffled) = playlist::with(|list| {
             let items: Vec<String> = list.order().iter().map(|path| path.to_string_lossy().into_owned()).collect();
@@ -237,12 +224,10 @@ impl PlaylistPanel {
         let end = items.iter().rev().zip(shown.iter().rev()).take(most).take_while(|(item, row)| item == row).count();
         let added: Vec<&str> = items[start..items.len() - end].iter().map(String::as_str).collect();
         self.paths.splice(start as u32, (shown.len() - start - end) as u32, &added);
-        // The rows are bound again, as their titles may have changed.
         self.paths.items_changed(0, items.len() as u32, items.len() as u32);
 
         self.title.set_label(&if items.is_empty() { "Playlist".to_owned() } else { format!("Playlist ({})", items.len()) });
         self.empty.set_visible(items.is_empty());
-        self.header.set_visible(!items.is_empty());
         self.scroller.set_visible(!items.is_empty());
         if shuffled {
             self.shuffle.add_css_class("suggested-action");
@@ -259,14 +244,12 @@ impl PlaylistPanel {
         let current = playlist::with(|list| list.current()).map(|index| index as u32);
         let moved = self.current.replace(current) != current;
         for item in self.rows.borrow().iter() {
-            if let Some(row) = item.child().and_downcast::<gtk::Box>() {
-                if let Some(number) = cells(&row).first() {
-                    number.set_label(&number_text(item.position(), current == Some(item.position())));
-                }
+            if let Some(number) = item.child().and_downcast::<gtk::Label>() {
+                number.set_label(&number_text(item.position(), current == Some(item.position())));
             }
         }
         if let Some(current) = current.filter(|_| moved) {
-            self.view.scroll_to(current, gtk::ListScrollFlags::NONE, None);
+            self.view.scroll_to(current, None::<&gtk::ColumnViewColumn>, gtk::ListScrollFlags::NONE, None);
         }
     }
 
@@ -297,13 +280,18 @@ pub fn stamp(path: &Path) -> Option<(i64, u64)> {
     Some((mtime, metadata.len()))
 }
 
-/// Shows the length of the item at `path` in `label`: from its metadata if that is known, else once it has been read.
-/// The label remembers the path it shows, so a reading that arrives after the row shows another item is dropped.
-fn show_length(label: &gtk::Label, path: &Path) {
+/// Shows the length of the item at `path` in `label`. Its metadata is used if it is known. Otherwise, if `fetch`, it is
+/// read in the background and shown once it is; if not, it is read when the item is played. The label remembers the
+/// path it shows, so a reading that arrives after the row shows another item is dropped.
+fn show_length(label: &gtk::Label, path: &Path, fetch: bool) {
     label.set_widget_name(&path.to_string_lossy());
     label.set_label("");
     let Some((mtime, size)) = stamp(path) else { return };
     let info = MediaInfo::shared();
+    if !fetch {
+        label.set_label(&length_text(info.get(path, mtime, size).and_then(|metadata| metadata.duration)));
+        return;
+    }
     let shows = Rc::new({
         let weak = label.downgrade();
         let name = path.to_string_lossy().into_owned();
@@ -324,146 +312,103 @@ fn show_length(label: &gtk::Label, path: &Path) {
     label.set_label(&length_text(metadata.and_then(|metadata| metadata.duration)));
 }
 
-/// A label for a cell of a row, `width` wide if it is not -1, aligned by `xalign`.
-fn cell(width: i32, xalign: f32, ellipsize: EllipsizeMode) -> gtk::Label {
-    let label = gtk::Label::new(None);
-    label.set_width_request(width);
-    label.set_xalign(xalign);
-    label.set_margin_start(6);
-    label.set_margin_end(6);
-    label.set_ellipsize(ellipsize);
-    label
-}
-
-/// The labels of a row's cells, in the order the columns are in.
-fn cells(row: &gtk::Box) -> Vec<gtk::Label> {
-    let mut labels = Vec::new();
-    let mut child = row.first_child();
-    while let Some(widget) = child {
-        child = widget.next_sibling();
-        labels.extend(widget.downcast::<gtk::Label>().ok());
-    }
-    labels
-}
-
-/// The row of headings above the list. Each heading is as wide as its column in the rows.
-fn header_row(settings: &gio::Settings) -> (gtk::Box, Vec<(SortColumn, gtk::Button, gtk::Label)>) {
-    let header = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    header.add_css_class("caption-heading");
-    header.add_css_class("dimmed");
-    let position = cell(POSITION_WIDTH, 0.5, EllipsizeMode::None);
-    position.set_label("#");
-    settings.bind(COLUMNS[0].0, &position, "visible").build();
-    header.append(&position);
-
-    let mut buttons = Vec::new();
-    for (column, key) in [(SortColumn::Name, COLUMNS[1].0), (SortColumn::Length, COLUMNS[2].0), (SortColumn::Filename, COLUMNS[3].0)] {
-        let label = gtk::Label::new(None);
-        label.set_xalign(if column == SortColumn::Length { 1.0 } else { 0.0 });
-        label.set_margin_start(6);
-        label.set_margin_end(6);
-        let button = gtk::Button::new();
-        button.set_child(Some(&label));
-        button.add_css_class("flat");
-        if column == SortColumn::Length {
-            button.set_width_request(LENGTH_WIDTH);
-        } else {
-            button.set_hexpand(true);
-        }
-        settings.bind(key, &button, "visible").build();
-        header.append(&button);
-        buttons.push((column, button, label));
-    }
-    (header, buttons)
-}
-
-/// The factory of the rows. A row holds the cells of the columns, each shown or hidden by its setting, and can be
-/// dragged to move its item, take items dropped on it, and open its menu on a right click.
-fn row_factory(
+/// The factory of one column's cells. Each cell is a label, which can be dragged to move its item, takes items dropped on
+/// it, and opens the item's menu on a right click. The number column also keeps the rows it binds, to mark the current one.
+fn cell_factory(
+    index: usize,
     settings: &gio::Settings,
-    current: Rc<Cell<Option<u32>>>,
-    rows: Rc<RefCell<Vec<gtk::ListItem>>>,
-    headings: Rc<Headings>,
+    current: &Rc<Cell<Option<u32>>>,
+    rows: &Rc<RefCell<Vec<gtk::ListItem>>>,
 ) -> gtk::SignalListItemFactory {
     let factory = gtk::SignalListItemFactory::new();
     let setup_settings = settings.clone();
     factory.connect_setup(move |_, item| {
         let Some(item) = item.downcast_ref::<gtk::ListItem>() else { return };
-        let row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        let cells = [
-            cell(POSITION_WIDTH, 0.5, EllipsizeMode::None),
-            cell(-1, 0.0, EllipsizeMode::End),
-            cell(LENGTH_WIDTH, 1.0, EllipsizeMode::None),
-            cell(-1, 0.0, EllipsizeMode::Middle),
-        ];
-        for (label, (key, _)) in cells.iter().zip(COLUMNS) {
-            setup_settings.bind(key, label, "visible").build();
-            if label.width_request() == -1 {
-                label.set_hexpand(true);
-            }
-            row.append(label);
-        }
-
-        let source = gtk::DragSource::new();
-        source.set_actions(gdk::DragAction::MOVE);
-        let weak = item.downgrade();
-        source.connect_prepare(move |_, _, _| Some(gdk::ContentProvider::for_value(&weak.upgrade()?.position().to_value())));
-        row.add_controller(source);
-
-        let target = gtk::DropTarget::new(u32::static_type(), gdk::DragAction::MOVE);
-        let weak = item.downgrade();
-        let headings = headings.clone();
-        target.connect_drop(move |target, value, _, _| {
-            let (Some(item), Some(widget), Ok(from)) = (weak.upgrade(), target.widget(), value.get::<u32>()) else { return false };
-            // Moving items changes the order by hand, so the list is no longer sorted by any column.
-            headings.sorted.set(None);
-            headings.show();
-            widget.activate_action("win.playlist-move", Some(&(from, item.position()).to_variant())).is_ok()
+        let label = gtk::Label::new(None);
+        label.set_margin_start(6);
+        label.set_margin_end(6);
+        label.set_xalign(match index {
+            0 => 0.5,
+            2 => 1.0,
+            _ => 0.0,
         });
-        row.add_controller(target);
-
-        let click = gtk::GestureClick::new();
-        click.set_button(gdk::BUTTON_SECONDARY);
-        let weak = item.downgrade();
-        let menu_settings = setup_settings.clone();
-        click.connect_pressed(move |gesture, _, x, y| {
-            let (Some(item), Some(widget)) = (weak.upgrade(), gesture.widget()) else { return };
-            let Some(path) = item.item().and_downcast::<gtk::StringObject>() else { return };
-            gesture.set_state(gtk::EventSequenceState::Claimed);
-            let menu = row_menu(&menu_settings, item.position(), &path.string());
-            popup_menu(&widget, &menu, x, y);
+        label.set_ellipsize(match index {
+            0 => EllipsizeMode::None,
+            3 => EllipsizeMode::Middle,
+            _ => EllipsizeMode::End,
         });
-        row.add_controller(click);
-
-        item.set_child(Some(&row));
+        label.set_hexpand(index != 0);
+        attach_row_controls(&label, item, &setup_settings);
+        item.set_child(Some(&label));
     });
 
+    let current = current.clone();
     let bound_rows = rows.clone();
+    let unbound_rows = rows.clone();
+    let bind_settings = settings.clone();
     factory.connect_bind(move |_, item| {
         let Some(item) = item.downcast_ref::<gtk::ListItem>() else { return };
-        let (Some(row), Some(string)) = (item.child().and_downcast::<gtk::Box>(), item.item().and_downcast::<gtk::StringObject>()) else {
+        let (Some(label), Some(string)) = (item.child().and_downcast::<gtk::Label>(), item.item().and_downcast::<gtk::StringObject>()) else {
             return;
         };
         let text = string.string();
         let path = Path::new(text.as_str());
-        let cells = cells(&row);
-        let [number, name, length, filename] = cells.as_slice() else { return };
-        number.set_label(&number_text(item.position(), current.get() == Some(item.position())));
-        name.set_label(&playlist::with(|list| list.title(path)));
-        name.set_tooltip_text(Some(path.to_string_lossy().as_ref()));
-        filename.set_label(&path.to_string_lossy());
-        show_length(length, path);
-        let mut bound = bound_rows.borrow_mut();
-        if !bound.contains(item) {
-            bound.push(item.clone());
+        match index {
+            0 => {
+                label.set_label(&number_text(item.position(), current.get() == Some(item.position())));
+                let mut bound = bound_rows.borrow_mut();
+                if !bound.contains(item) {
+                    bound.push(item.clone());
+                }
+            }
+            1 => {
+                label.set_label(&playlist::with(|list| list.title(path)));
+                label.set_tooltip_text(Some(path.to_string_lossy().as_ref()));
+            }
+            2 => show_length(&label, path, bind_settings.boolean("playlist-fetch-in-background")),
+            _ => label.set_label(&path.to_string_lossy()),
         }
     });
     factory.connect_unbind(move |_, item| {
-        if let Some(item) = item.downcast_ref::<gtk::ListItem>() {
-            rows.borrow_mut().retain(|row| row != item);
+        if let (0, Some(item)) = (index, item.downcast_ref::<gtk::ListItem>()) {
+            unbound_rows.borrow_mut().retain(|row| row != item);
         }
     });
     factory
+}
+
+/// Gives a cell's label the drag, drop and menu behaviour of its item.
+fn attach_row_controls(label: &gtk::Label, item: &gtk::ListItem, settings: &gio::Settings) {
+    let source = gtk::DragSource::new();
+    source.set_actions(gdk::DragAction::MOVE);
+    let weak = item.downgrade();
+    source.connect_prepare(move |_, _, _| Some(gdk::ContentProvider::for_value(&weak.upgrade()?.position().to_value())));
+    label.add_controller(source);
+
+    let target = gtk::DropTarget::new(u32::static_type(), gdk::DragAction::MOVE);
+    let weak = item.downgrade();
+    target.connect_drop(move |target, value, _, _| {
+        let (Some(item), Some(widget), Ok(from)) = (weak.upgrade(), target.widget(), value.get::<u32>()) else { return false };
+        // Moving items changes the order by hand, so the list is no longer sorted by any column.
+        if let Some(view) = widget.ancestor(gtk::ColumnView::static_type()).and_downcast::<gtk::ColumnView>() {
+            view.sort_by_column(None::<&gtk::ColumnViewColumn>, gtk::SortType::Ascending);
+        }
+        widget.activate_action("win.playlist-move", Some(&(from, item.position()).to_variant())).is_ok()
+    });
+    label.add_controller(target);
+
+    let click = gtk::GestureClick::new();
+    click.set_button(gdk::BUTTON_SECONDARY);
+    let weak = item.downgrade();
+    let menu_settings = settings.clone();
+    click.connect_pressed(move |gesture, _, x, y| {
+        let (Some(item), Some(widget)) = (weak.upgrade(), gesture.widget()) else { return };
+        let Some(path) = item.item().and_downcast::<gtk::StringObject>() else { return };
+        gesture.set_state(gtk::EventSequenceState::Claimed);
+        let menu = row_menu(&menu_settings, item.position(), &path.string());
+        popup_menu(&widget, &menu, x, y);
+    });
+    label.add_controller(click);
 }
 
 /// The menu of an item at `position` in the playlist, whose path is `path`: what the item is played and removed by, its
@@ -493,7 +438,7 @@ fn row_menu(settings: &gio::Settings, position: u32, path: &str) -> gio::Menu {
     menu.append_section(None, &file);
 
     let columns = gio::Menu::new();
-    for (key, label) in COLUMNS {
+    for (key, label, _, _) in COLUMNS {
         columns.append(Some(label), Some(&format!("playlist.{key}")));
     }
     menu.append_section(None, &columns);

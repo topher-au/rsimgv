@@ -162,6 +162,10 @@
       <default>true</default>
       <summary>Whether the sidebar's filesystem section is expanded</summary>
     </key>
+    <key name="playlist-fetch-in-background" type="b">
+      <default>true</default>
+      <summary>Whether the playlist reads the lengths of its items in the background, rather than when each is first played</summary>
+    </key>
     <key name="playlist-show-position" type="b">
       <default>true</default>
       <summary>Whether the playlist shows the position column</summary>
