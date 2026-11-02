@@ -158,11 +158,13 @@ pub fn script(plugins: &Plugins, source: f64, target: f64, nvof: bool) -> String
     )
 }
 
-/// The mpv filter that runs the script at `path`.
+/// The mpv filter that runs the script at `path`. The path has mpv's `%length%` quoting, as it can hold the `:` and `,`
+/// that otherwise end a filter option.
 pub fn filter(path: &Path) -> String {
+    let path = path.display().to_string();
     format!(
-        "@{FILTER_LABEL}:vapoursynth=file={}:buffered-frames={BUFFERED_FRAMES}:concurrent-frames={CONCURRENT_FRAMES}",
-        path.display()
+        "@{FILTER_LABEL}:vapoursynth=file=%{}%{path}:buffered-frames={BUFFERED_FRAMES}:concurrent-frames={CONCURRENT_FRAMES}",
+        path.len()
     )
 }
 
@@ -235,6 +237,12 @@ mod tests {
         assert!(text.contains("core.svp1.Analyse"));
         let nvof = script(&plugins, 30.0, 60.0, true);
         assert!(nvof.contains("SmoothFps_NVOF"));
+    }
+
+    #[test]
+    fn the_filter_quotes_the_script_path_by_its_length_in_bytes() {
+        let text = filter(Path::new("/home/é,a:b/video.py"));
+        assert!(text.contains(":vapoursynth=file=%21%/home/é,a:b/video.py:buffered-frames="), "{text}");
     }
 
     #[test]
