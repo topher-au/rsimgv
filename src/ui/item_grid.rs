@@ -233,6 +233,8 @@ mod imp {
         pub(super) connected: RefCell<Option<glib::WeakRef<gtk::SingleSelection>>>,
         /// The items marked for acting on together, by path, so a mark follows its item through a relayout.
         pub(super) marked: RefCell<HashSet<PathBuf>>,
+        /// Whether a batch of changes to the items is being made, in which the marks are not pruned item by item.
+        pub(super) batching: Cell<bool>,
         /// The position a shift-click extends the marks from: where the last plain or ctrl-click, or the
         /// last move of the cursor, left the cursor.
         pub(super) anchor: Cell<Option<u32>>,
@@ -365,9 +367,9 @@ impl ItemGrid {
     fn follow_selection(&self, selection: &gtk::SingleSelection) {
         selection.connect_items_changed({
             let grid = self.downgrade();
-            move |_, _, _, _| {
+            move |_, position, _, _| {
                 if let Some(grid) = grid.upgrade() {
-                    grid.reset();
+                    grid.reset_from(position);
                     grid.prune_marks();
                     grid.queue_resize();
                 }
@@ -400,6 +402,34 @@ impl ItemGrid {
         self.imp().table.take();
     }
 
+    /// Removes the shown items from `position` on, and forgets the row heights of the rows from there on. The
+    /// items before it did not change, so their widgets and heights stay.
+    fn reset_from(&self, position: u32) {
+        let imp = self.imp();
+        let columns = imp.measured_columns.get().max(1) as usize;
+        let from_row = position as usize / columns;
+        let gone: Vec<u32> = imp.shown.borrow().keys().copied().filter(|shown| *shown >= position).collect();
+        for shown in gone {
+            let removed = imp.shown.borrow_mut().remove(&shown);
+            if let Some(widget) = removed {
+                widget.set_child_visible(false);
+                imp.spare.borrow_mut().push(widget);
+            }
+        }
+        imp.row_heights.borrow_mut().truncate(from_row);
+        imp.shown_range.set(None);
+        imp.table.take();
+    }
+
+    /// Makes a batch of changes to the items. The marks follow their items through it, and are pruned once, at its end.
+    pub fn batch_changes(&self, change: impl FnOnce()) {
+        let imp = self.imp();
+        imp.batching.set(true);
+        change();
+        imp.batching.set(false);
+        self.prune_marks();
+    }
+
     /// Selects the item at `position`, and scrolls it fully into view. The scroll happens at the grid's next layout,
     /// so it uses the grid's real size, even when the grid is hidden until then.
     pub fn select(&self, position: u32) {
@@ -409,6 +439,11 @@ impl ItemGrid {
         self.imp().anchor.set(Some(position));
         self.imp().reveal.set(Some(position));
         self.queue_allocate();
+    }
+
+    /// How many items are marked. Marks are pruned as the items change, so each one is a listed item.
+    pub fn marked_count(&self) -> usize {
+        self.imp().marked.borrow().len()
     }
 
     /// The paths of the marked items, in the order they are listed.
@@ -465,7 +500,7 @@ impl ItemGrid {
 
     /// Drops the marks of items that are no longer listed, as when the folder changes.
     fn prune_marks(&self) {
-        if self.imp().marked.borrow().is_empty() {
+        if self.imp().batching.get() || self.imp().marked.borrow().is_empty() {
             return;
         }
         let listed: HashSet<PathBuf> = (0..self.item_count()).filter_map(|position| self.path_at(position)).collect();

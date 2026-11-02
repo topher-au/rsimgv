@@ -243,6 +243,22 @@ fn modified_secs(entry: &FileEntry) -> i64 {
 }
 
 /// The item a cell shows, if it shows one.
+/// The runs of neighbouring positions in `descending` (which is in descending order), as (first position, count),
+/// in the same order. Removing the runs in that order leaves the positions of the others unchanged.
+fn runs(descending: &[u32]) -> Vec<(u32, u32)> {
+    let mut runs: Vec<(u32, u32)> = Vec::new();
+    for &position in descending {
+        match runs.last_mut() {
+            Some((first, count)) if position + 1 == *first => {
+                *first = position;
+                *count += 1;
+            }
+            _ => runs.push((position, 1)),
+        }
+    }
+    runs
+}
+
 fn entry_in(view: &BrowseView, cell: &gtk::Box) -> Option<FileEntry> {
     let position = cell.widget_name().parse::<u32>().ok()?;
     view.imp().grid.model()?.item(position).and_downcast::<FileEntry>()
@@ -1363,7 +1379,7 @@ impl BrowseView {
 
         let mut wanted: std::collections::HashMap<String, FileEntry> =
             listed.iter().map(|entry| (entry.name(), entry.clone())).collect();
-        let mut removed = false;
+        let mut removals = Vec::new();
         let mut position = store.n_items();
         while position > 0 {
             position -= 1;
@@ -1374,13 +1390,18 @@ impl BrowseView {
             if unchanged {
                 wanted.remove(&shown.name());
             } else {
-                store.remove(position);
-                removed = true;
+                removals.push(position);
             }
         }
         let added: Vec<FileEntry> = wanted.into_values().collect();
-        let changed = removed || !added.is_empty();
-        store.splice(store.n_items(), 0, &added);
+        let changed = !removals.is_empty() || !added.is_empty();
+        // One change to the grid for the whole batch, so each change does not lay out and mark-prune the grid again.
+        imp.grid.batch_changes(|| {
+            for (first, count) in runs(&removals) {
+                store.splice(first, count, &[] as &[FileEntry]);
+            }
+            store.splice(store.n_items(), 0, &added);
+        });
 
         // Selecting by name here, rather than with `select_named`, leaves the scroll where it is.
         if let (Some(name), Some(model)) = (selected, imp.grid.model()) {
@@ -1720,7 +1741,7 @@ impl BrowseView {
             return;
         }
         imp.floating_bar.set_loading(false);
-        let marked = imp.grid.marked_paths().len();
+        let marked = imp.grid.marked_count();
         if marked > 1 {
             imp.floating_bar.set_labels(Some(&format!("{marked} items selected")), None);
             imp.floating_bar.set_visible(true);
@@ -2284,4 +2305,15 @@ fn restore_scroll_after_layout(view: &BrowseView, scroller: &gtk::ScrolledWindow
             glib::ControlFlow::Break
         }
     });
+}
+
+#[cfg(test)]
+mod run_tests {
+    use super::runs;
+
+    #[test]
+    fn neighbouring_removals_form_one_run() {
+        assert_eq!(runs(&[9, 8, 7, 4, 2, 1]), vec![(7, 3), (4, 1), (1, 2)]);
+        assert_eq!(runs(&[]), Vec::<(u32, u32)>::new());
+    }
 }
