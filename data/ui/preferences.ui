@@ -882,9 +882,12 @@
                     <child>
                       <object class="AdwViewStack" id="controls_stack">
                         <child>
-                          <object class="AdwPreferencesPage" id="keybindings_page">
+                          <object class="AdwViewStackPage">
                             <property name="title">Keyboard</property>
                             <property name="icon-name">input-keyboard-symbolic</property>
+                            <property name="child">
+                              <object class="GtkBox" id="keybindings_page"/>
+                            </property>
                           </object>
                         </child>
                         <child>

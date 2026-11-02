@@ -154,7 +154,7 @@ mod imp {
         #[template_child]
         pub smooth_upscaling_row: TemplateChild<adw::SwitchRow>,
         #[template_child]
-        pub keybindings_page: TemplateChild<adw::PreferencesPage>,
+        pub keybindings_page: TemplateChild<gtk::Box>,
         #[template_child]
         pub back_button_row: TemplateChild<adw::ComboRow>,
         #[template_child]
@@ -832,13 +832,13 @@ const SECTIONS: [(&str, &str, &str); 9] = [
 ];
 
 impl PreferencesDialog {
-    /// Puts the keybindings editor on the keybindings page.
+    /// Puts the keybindings editor on the keybindings page, which it fills. The page is a plain box rather than a
+    /// preferences page, as that would keep the editor to a narrow column and scroll it as a whole.
     fn build_keybindings_page(&self) {
-        let imp = self.imp();
         let editor = KeybindingList::new();
-        let group = adw::PreferencesGroup::new();
-        group.add(&editor);
-        imp.keybindings_page.add(&group);
+        editor.set_hexpand(true);
+        editor.set_vexpand(true);
+        self.imp().keybindings_page.append(&editor);
     }
 
     /// Names the sections, lists them in the sidebar, and joins each section's tab row to its stack.
