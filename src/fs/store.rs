@@ -404,7 +404,7 @@ mod tests {
                 let folder = dir.clone();
                 store.clone().read(
                     &dir,
-                    move |batch: &[FileEntry]| {
+                    move |_batch: &[FileEntry]| {
                         batches.set(batches.get() + 1);
                         // Joins after the first batch, while the rest of the folder is still being read.
                         if batches.get() == 1 && joined.borrow().is_none() {
