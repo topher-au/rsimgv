@@ -54,7 +54,11 @@ mod imp {
         #[template_child]
         pub bookmarks_list: TemplateChild<gtk::ListBox>,
         #[template_child]
-        pub playlist_expander: TemplateChild<gtk::Expander>,
+        pub playlist_revealer: TemplateChild<gtk::Revealer>,
+        #[template_child]
+        pub playlist_side: TemplateChild<gtk::Box>,
+        /// The window the playlist is in while it is taken out of the window, if it is.
+        pub(super) playlist_window: RefCell<Option<adw::Window>>,
         /// The playlist in the sidebar, made once the template is built.
         pub(super) playlist_panel: std::cell::OnceCell<PlaylistPanel>,
         #[template_child]
@@ -206,6 +210,10 @@ impl Window {
             if let Some(keys) = window.imp().key_handler.get() {
                 keys.uninstall();
             }
+            // A playlist in a window of its own closes with the window it belongs to.
+            if let Some(detached) = window.imp().playlist_window.take() {
+                detached.destroy();
+            }
             glib::Propagation::Proceed
         });
         let tree = (*imp.tree).clone();
@@ -262,7 +270,9 @@ impl Window {
         let _ = window.imp().key_handler.set(keys);
         window.connect_sources();
         window.refresh_bookmarks();
-        let _ = window.imp().playlist_panel.set(PlaylistPanel::new(&window.imp().playlist_expander));
+        let panel = PlaylistPanel::new();
+        window.imp().playlist_side.append(panel.content());
+        let _ = window.imp().playlist_panel.set(panel);
         window.imp().viewer.set_use_mpv(settings.string("video-backend") == "mpv");
         window.imp().viewer.set_mpv_options(&settings.string("mpv-args"));
         crate::mpv::watch_config({
@@ -853,6 +863,8 @@ impl Window {
         bound_action(self, &weak, "playlist-load", Window::choose_playlist_to_load);
         bound_action(self, &weak, "playlist-save", Window::choose_playlist_to_save);
         bound_action(self, &weak, "playlist-clear", Window::confirm_clear_playlist);
+        bound_action(self, &weak, "playlist-shuffle", Window::toggle_playlist_shuffle);
+        bound_action(self, &weak, "playlist-detach", Window::toggle_detached_playlist);
         bound_action(self, &weak, "toggle-playlist", Window::toggle_playlist_panel);
         bound_action(self, &weak, "toggle-sidebar", |window| {
             let split = &window.imp().split;
@@ -1085,7 +1097,7 @@ impl Window {
             }
         }
         if imp.playlist_playing.get() {
-            let items = playlist::with(|list| list.items().to_vec());
+            let items = playlist::with(|list| list.order().to_vec());
             if items.is_empty() {
                 self.close_viewer();
             } else {
@@ -1134,7 +1146,7 @@ impl Window {
     /// Shows the playlist's item at `index` in the viewer, if there is one.
     fn play_playlist_at(&self, index: usize) {
         let imp = self.imp();
-        let items = if imp.playlist_playing.get() { None } else { Some(playlist::with(|list| list.items().to_vec())) };
+        let items = if imp.playlist_playing.get() { None } else { Some(playlist::with(|list| list.order().to_vec())) };
         if index >= playlist::with(|list| list.len()) {
             return;
         }
@@ -1167,16 +1179,93 @@ impl Window {
         });
     }
 
-    /// Shows the playlist's items in the sidebar, or hides them. A sidebar that is hidden opens to show them.
+    /// Shows the playlist beside the browse view, on the side opposite the sidebar, or hides it. While it is in a window
+    /// of its own, that window is brought forward instead.
     fn toggle_playlist_panel(&self) {
         let imp = self.imp();
-        let Some(panel) = imp.playlist_panel.get() else { return };
-        if imp.split.show_sidebar() {
-            panel.toggle_expanded();
-        } else {
-            imp.split.set_show_sidebar(true);
-            panel.expand();
+        if let Some(detached) = imp.playlist_window.borrow().as_ref() {
+            gtk::prelude::GtkWindowExt::present(detached);
+            return;
         }
+        let revealer = &imp.playlist_revealer;
+        revealer.set_reveal_child(!revealer.reveal_child());
+    }
+
+    /// Shuffles the order the playlist plays in, or puts back the order its items were made in, and shows the change.
+    fn toggle_playlist_shuffle(&self) {
+        let on = !playlist::with(|list| list.is_shuffled());
+        playlist::with(|list| list.set_shuffled(on));
+        self.playlist_changed();
+    }
+
+    /// Takes the playlist out into a window of its own, or puts it back beside the browse view.
+    fn toggle_detached_playlist(&self) {
+        if self.imp().playlist_window.borrow().is_some() {
+            self.attach_playlist();
+        } else {
+            self.detach_playlist();
+        }
+    }
+
+    /// Moves the playlist from beside the browse view into a window of its own. That window takes this window's actions,
+    /// so its buttons and the playlist's actions work from it.
+    fn detach_playlist(&self) {
+        let imp = self.imp();
+        let Some(panel) = imp.playlist_panel.get() else { return };
+        let content = panel.content();
+        imp.playlist_side.remove(content);
+        let holder = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        holder.append(content);
+
+        let attach = gtk::Button::from_icon_name("view-restore-symbolic");
+        attach.set_tooltip_text(Some("Put the playlist back beside the browse view"));
+        attach.set_action_name(Some("win.playlist-detach"));
+        let header = adw::HeaderBar::new();
+        header.pack_end(&attach);
+        let toolbar = adw::ToolbarView::new();
+        toolbar.add_top_bar(&header);
+        toolbar.set_content(Some(&holder));
+
+        let window = adw::Window::new();
+        window.set_title(Some("Playlist"));
+        window.set_default_size(320, 600);
+        window.set_transient_for(Some(self.upcast_ref::<gtk::Window>()));
+        window.set_content(Some(&toolbar));
+        window.insert_action_group("win", Some(self));
+        let weak = self.downgrade();
+        window.connect_close_request(move |_| {
+            if let Some(window) = weak.upgrade() {
+                window.imp().playlist_window.take();
+                window.reattach_playlist();
+            }
+            glib::Propagation::Proceed
+        });
+        panel.set_detached(true);
+        imp.playlist_revealer.set_reveal_child(false);
+        gtk::prelude::GtkWindowExt::present(&window);
+        imp.playlist_window.replace(Some(window));
+    }
+
+    /// Puts the playlist back beside the browse view, and closes the window it was in.
+    fn attach_playlist(&self) {
+        let detached = self.imp().playlist_window.take();
+        self.reattach_playlist();
+        if let Some(window) = detached {
+            window.close();
+        }
+    }
+
+    /// Moves the playlist's widget back beside the browse view, and shows it there.
+    fn reattach_playlist(&self) {
+        let imp = self.imp();
+        let Some(panel) = imp.playlist_panel.get() else { return };
+        let content = panel.content();
+        if let Some(parent) = content.parent().and_downcast::<gtk::Box>() {
+            parent.remove(content);
+        }
+        imp.playlist_side.append(content);
+        panel.set_detached(false);
+        imp.playlist_revealer.set_reveal_child(true);
     }
 
     /// Asks for a playlist file, and loads it.
@@ -1287,7 +1376,7 @@ impl Window {
                 (PathBuf::from(name), Format::M3u)
             }
         };
-        let text = playlist::with(|list| format::write(file_format, list.items()));
+        let text = playlist::with(|list| format::write(file_format, list.order()));
         let weak = self.downgrade();
         glib::spawn_future_local(async move {
             let name = path.file_name().map_or_else(|| path.display().to_string(), |name| name.to_string_lossy().into_owned());
@@ -3009,7 +3098,7 @@ pub(crate) mod tests {
         window.add_to_playlist_later(vec![alpha.join("notes.txt")], false);
         window.add_to_playlist_later(vec![alpha.join("one.png"), gamma.clone()], false);
         wait_for("the item and the folder to be added", || len() == 3);
-        assert_eq!(playlist::with(|list| list.items().to_vec()), [alpha.join("one.png"), gamma.join("one.png"), gamma.join("two.png")]);
+        assert_eq!(playlist::with(|list| list.order().to_vec()), [alpha.join("one.png"), gamma.join("one.png"), gamma.join("two.png")]);
         window.add_to_playlist_later(vec![gamma.clone()], true);
         wait_for("the folder to be taken off", || len() == 1);
         window.add_to_playlist_later(vec![gamma.clone()], false);
@@ -3068,7 +3157,7 @@ pub(crate) mod tests {
         // A move in the panel keeps the item shown, at its new place.
         assert_eq!(current(), Some(1));
         gtk::prelude::WidgetExt::activate_action(&window, "win.playlist-move", Some(&(1u32, 0u32).to_variant())).unwrap();
-        assert_eq!(playlist::with(|list| list.items().to_vec()), [gamma.join("two.png"), alpha.join("one.png")]);
+        assert_eq!(playlist::with(|list| list.order().to_vec()), [gamma.join("two.png"), alpha.join("one.png")]);
         assert_eq!(current(), Some(0));
         assert!(shows(&gamma.join("two.png")));
 

@@ -98,11 +98,6 @@
                   </object>
                 </child>
                 <child>
-                  <object class="GtkExpander" id="playlist_expander">
-                    <style><class name="rsimgv-sidebar-section"/></style>
-                  </object>
-                </child>
-                <child>
                   <object class="GtkExpander" id="filesystem_expander">
                     <property name="expanded">true</property>
                     <style><class name="rsimgv-sidebar-section"/></style>
@@ -292,7 +287,10 @@
               </object>
             </child>
             <property name="content">
-              <object class="AdwToolbarView">
+              <object class="GtkBox" id="content_body">
+                <child>
+                  <object class="AdwToolbarView">
+                <property name="hexpand">true</property>
                 <child type="bottom">
                   <object class="AdwTabBar" id="tab_bar">
                     <property name="view">tab_view</property>
@@ -303,6 +301,17 @@
                 <property name="content">
                   <object class="AdwTabView" id="tab_view"/>
                 </property>
+                  </object>
+                </child>
+                <child>
+                  <!-- The playlist sits on the opposite side of the sidebar, and is empty while it is in its own window. -->
+                  <object class="GtkRevealer" id="playlist_revealer">
+                    <property name="transition-type">slide-left</property>
+                    <child>
+                      <object class="GtkBox" id="playlist_side"/>
+                    </child>
+                  </object>
+                </child>
               </object>
             </property>
           </object>

@@ -1,28 +1,27 @@
-//! The playlist in the sidebar: buttons to play, load, save and clear it, and its items, which can be dragged into another
-//! order. Files dragged onto it are added. What the panel asks for, it asks of the window through its `win.playlist-*`
-//! actions.
+//! The playlist panel: buttons to play, shuffle, load, save and clear it, and its items, which can be dragged into another
+//! order. Files dragged onto it are added. The panel is one widget, which sits beside the browse view or, when detached,
+//! in a window of its own. What the panel asks for, it asks of the window through its `win.playlist-*` actions.
 
 use std::cell::{Cell, RefCell};
 use std::path::Path;
 use std::rc::Rc;
 
-use gtk::prelude::*;
 use gtk::gdk;
+use gtk::prelude::*;
 
 use super::drag;
 use crate::playlist;
 
-/// The tallest the list gets before it scrolls, in pixels, so the folder tree below it keeps its room.
-const MAX_LIST_HEIGHT: i32 = 260;
-
 pub struct PlaylistPanel {
-    expander: gtk::Expander,
-    /// The section's heading, which says how many items there are.
+    content: gtk::Box,
+    /// The heading, which says how many items there are.
     title: gtk::Label,
+    detach: gtk::Button,
+    shuffle: gtk::Button,
     view: gtk::ListView,
     empty: gtk::Label,
     scroller: gtk::ScrolledWindow,
-    /// The items' paths, which the rows are made from.
+    /// The items' paths, in the order shown, which the rows are made from.
     paths: gtk::StringList,
     /// What `paths` holds, to compare with the playlist.
     shown: RefCell<Vec<String>>,
@@ -33,8 +32,8 @@ pub struct PlaylistPanel {
 }
 
 impl PlaylistPanel {
-    /// Fills `expander` with the panel, showing the playlist as it is. It starts open if there is anything to show.
-    pub fn new(expander: &gtk::Expander) -> Self {
+    /// Makes the panel, showing the playlist as it is.
+    pub fn new() -> Self {
         let current = Rc::new(Cell::new(None));
         let rows = Rc::new(RefCell::new(Vec::new()));
         let paths = gtk::StringList::new(&[]);
@@ -46,8 +45,7 @@ impl PlaylistPanel {
 
         let scroller = gtk::ScrolledWindow::new();
         scroller.set_hscrollbar_policy(gtk::PolicyType::Never);
-        scroller.set_propagate_natural_height(true);
-        scroller.set_max_content_height(MAX_LIST_HEIGHT);
+        scroller.set_vexpand(true);
         scroller.set_child(Some(&view));
 
         let empty = gtk::Label::new(Some("Nothing yet. Right-click an item to add it, or drag files here."));
@@ -59,19 +57,29 @@ impl PlaylistPanel {
         empty.add_css_class("caption");
         empty.add_css_class("dimmed");
 
-        let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        content.append(&toolbar());
-        content.append(&empty);
-        content.append(&scroller);
-        expander.set_child(Some(&content));
-
-        // The heading looks like those of the sidebar's other sections.
         let title = gtk::Label::new(None);
         title.set_hexpand(true);
         title.set_xalign(0.0);
         title.add_css_class("caption-heading");
         title.add_css_class("dimmed");
-        expander.set_label_widget(Some(&title));
+        let detach = gtk::Button::from_icon_name("window-new-symbolic");
+        detach.set_action_name(Some("win.playlist-detach"));
+        detach.add_css_class("flat");
+        let heading = gtk::Box::new(gtk::Orientation::Horizontal, 2);
+        heading.set_margin_start(8);
+        heading.set_margin_end(2);
+        heading.append(&title);
+        heading.append(&detach);
+
+        let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        content.set_width_request(PANEL_WIDTH);
+        content.add_css_class("rsimgv-playlist");
+        content.append(&heading);
+        let (transport, shuffle) = transport_row();
+        content.append(&transport);
+        content.append(&file_row());
+        content.append(&empty);
+        content.append(&scroller);
 
         let drop = gtk::DropTarget::new(gdk::FileList::static_type(), gdk::DragAction::COPY);
         drop.connect_drop(|target, value, _, _| {
@@ -79,17 +87,30 @@ impl PlaylistPanel {
             let Some(widget) = target.widget() else { return false };
             !dropped.is_empty() && widget.activate_action("win.playlist-add-paths", Some(&dropped.to_variant())).is_ok()
         });
-        expander.add_controller(drop);
+        content.add_controller(drop);
 
-        let panel = Self { expander: expander.clone(), title, view, empty, scroller, paths, shown: RefCell::new(Vec::new()), current, rows };
+        let panel = Self { content, title, detach, shuffle, view, empty, scroller, paths, shown: RefCell::new(Vec::new()), current, rows };
         panel.refresh();
-        expander.set_expanded(!panel.shown.borrow().is_empty());
         panel
     }
 
-    /// Shows the playlist's items as they are now. Only the items that changed are touched, so the list keeps its place.
+    /// The panel's widget, which the window puts beside the browse view or in a window of its own.
+    pub fn content(&self) -> &gtk::Box {
+        &self.content
+    }
+
+    /// Says whether the panel is in a window of its own, which the detach button then offers to undo.
+    pub fn set_detached(&self, detached: bool) {
+        self.detach.set_tooltip_text(Some(if detached { "Put the playlist back beside the browse view" } else { "Show the playlist in its own window" }));
+    }
+
+    /// Shows the playlist's items as they are now, in the order they are shown. Only the items that changed are touched,
+    /// so the list keeps its place.
     pub fn refresh(&self) {
-        let items: Vec<String> = playlist::with(|list| list.items().iter().map(|path| path.to_string_lossy().into_owned()).collect());
+        let (items, shuffled) = playlist::with(|list| {
+            let items: Vec<String> = list.order().iter().map(|path| path.to_string_lossy().into_owned()).collect();
+            (items, list.is_shuffled())
+        });
         let mut shown = self.shown.borrow_mut();
         let start = items.iter().zip(shown.iter()).take_while(|(item, row)| item == row).count();
         let most = items.len().min(shown.len()) - start;
@@ -100,6 +121,11 @@ impl PlaylistPanel {
         self.title.set_label(&if items.is_empty() { "Playlist".to_owned() } else { format!("Playlist ({})", items.len()) });
         self.empty.set_visible(items.is_empty());
         self.scroller.set_visible(!items.is_empty());
+        if shuffled {
+            self.shuffle.add_css_class("suggested-action");
+        } else {
+            self.shuffle.remove_css_class("suggested-action");
+        }
         *shown = items;
         drop(shown);
         self.refresh_current();
@@ -117,16 +143,6 @@ impl PlaylistPanel {
         }
     }
 
-    /// Shows the panel's items, or hides them.
-    pub fn toggle_expanded(&self) {
-        self.expander.set_expanded(!self.expander.is_expanded());
-    }
-
-    /// Shows the panel's items.
-    pub fn expand(&self) {
-        self.expander.set_expanded(true);
-    }
-
     /// The number of rows the panel has.
     #[cfg(test)]
     pub fn row_count(&self) -> u32 {
@@ -134,8 +150,12 @@ impl PlaylistPanel {
     }
 }
 
-/// The buttons above the list.
-fn toolbar() -> gtk::Box {
+/// How wide the panel is, in pixels.
+const PANEL_WIDTH: i32 = 280;
+
+/// The buttons that play the playlist and move through it, with the one that shuffles it. The shuffle button is marked
+/// while the playlist is shuffled.
+fn transport_row() -> (gtk::Box, gtk::Button) {
     let bar = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     let button = |icon: &str, tooltip: &str, action: &str| {
         let button = gtk::Button::from_icon_name(icon);
@@ -144,9 +164,27 @@ fn toolbar() -> gtk::Box {
         button.add_css_class("flat");
         button
     };
-    bar.append(&button("media-playback-start-symbolic", "Play the playlist", "win.playlist-play"));
     bar.append(&button("media-skip-backward-symbolic", "Previous item", "win.playlist-previous"));
+    bar.append(&button("media-playback-start-symbolic", "Play the playlist", "win.playlist-play"));
     bar.append(&button("media-skip-forward-symbolic", "Next item", "win.playlist-next"));
+    let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    spacer.set_hexpand(true);
+    bar.append(&spacer);
+    let shuffle = button("media-playlist-shuffle-symbolic", "Shuffle the playlist, keeping the order it was made in", "win.playlist-shuffle");
+    bar.append(&shuffle);
+    (bar, shuffle)
+}
+
+/// The buttons that load, save and clear the playlist's files.
+fn file_row() -> gtk::Box {
+    let bar = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    let button = |icon: &str, tooltip: &str, action: &str| {
+        let button = gtk::Button::from_icon_name(icon);
+        button.set_tooltip_text(Some(tooltip));
+        button.set_action_name(Some(action));
+        button.add_css_class("flat");
+        button
+    };
     let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     spacer.set_hexpand(true);
     bar.append(&spacer);

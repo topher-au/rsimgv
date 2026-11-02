@@ -88,7 +88,7 @@ Items in the playlist have a line around them in the browse view. To add or remo
 
 - press <kbd>I</kbd> on the item under the cursor, on the marked items, or in the viewer on the item it shows; pressing it again takes them off
 - right-click an item or folder and choose **Add to Playlist** or **Remove from Playlist**
-- drag files onto the **Playlist** section of the sidebar, or use the remove button on a row there
+- drag files onto the playlist panel, or use the remove button on a row there
 
 A folder stands for the pictures and videos in it and in the folders under it. A file appears once, however many times it is added. Rows in the sidebar can be dragged into another order, and double-clicking one plays from it.
 
@@ -96,11 +96,15 @@ A folder stands for the pictures and videos in it and in the folders under it. A
 | --- | --- |
 | <kbd>Ctrl</kbd>+<kbd>P</kbd> | Show the playlist in the viewer, from the item it was left on |
 | <kbd>]</kbd> and <kbd>[</kbd> | Next and previous item, going round the ends. Pressed elsewhere, they show the playlist from the item it was left on |
-| <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>P</kbd> | Show or hide the list in the sidebar |
+| <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>P</kbd> | Show or hide the playlist panel, on the right opposite the sidebar |
 
 These can all be rebound, and first item, last item, load, save and clear can be given keys, in the keybinding editor. While the viewer shows the playlist, its own previous and next keys, the thumbnail bar and auto-advance go through the playlist too. They stop at its ends, whatever the **folder-end** setting says.
 
-The sidebar's buttons load and save M3U and M3U8 (`.m3u`, `.m3u8`), PLS (`.pls`) and XSPF (`.xspf`) files. Saved files use absolute paths. Loading into a playlist that has items asks whether to replace them or add to the end. Web addresses and files that are not pictures or videos are left out, and you are told how many. A file listed twice is kept once.
+The panel's buttons load and save M3U and M3U8 (`.m3u`, `.m3u8`), PLS (`.pls`) and XSPF (`.xspf`) files. Saved files use absolute paths. Loading into a playlist that has items asks whether to replace them or add to the end. Web addresses and files that are not pictures or videos are left out, and you are told how many. A file listed twice is kept once.
+
+The shuffle button plays the playlist in a random order, with the item shown first so it keeps playing. The order the items were made in is kept beside it: turning shuffle off goes back to that order, and moving items while shuffled changes only the shuffled order. Adding and removing change both. Saved playlist files keep the made order, and the shuffled order too, in comments that other players ignore. Exporting a file writes the order the panel shows.
+
+The panel's detach button takes it out into a window of its own, which keeps working with the playlist and its keys. Its button puts it back, and closing that window does the same. The panel shows beside the browse view on the right, opposite the sidebar.
 
 The playlist is kept in `playlist.m3u8` beside the settings file. Other programs can drive it with the `win.playlist-*` actions over the remote control server.
 

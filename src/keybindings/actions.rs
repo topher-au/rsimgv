@@ -282,7 +282,13 @@ pub const ACTIONS: &[ActionInfo] = &[
         name: "win.playlist-clear", description: "Remove everything from the playlist, after asking.", icon: "edit-clear-all-symbolic", label: "Clear Playlist", defaults: &[],
     },
     ActionInfo {
-        name: "win.toggle-playlist", description: "Show the playlist in the sidebar, or hide it.", icon: "view-list-symbolic", label: "Toggle Playlist Panel", defaults: &["ctrl+shift+p"],
+        name: "win.playlist-shuffle", description: "Shuffle the order the playlist plays in, or go back to the order its items were made in. The other order is kept either way.", icon: "media-playlist-shuffle-symbolic", label: "Shuffle Playlist", defaults: &[],
+    },
+    ActionInfo {
+        name: "win.playlist-detach", description: "Take the playlist out into a window of its own, or put it back beside the browse view.", icon: "window-new-symbolic", label: "Detach Playlist", defaults: &[],
+    },
+    ActionInfo {
+        name: "win.toggle-playlist", description: "Show the playlist beside the browse view, on the side opposite the sidebar, or hide it. While it is in its own window, that window comes forward.", icon: "view-list-symbolic", label: "Toggle Playlist Panel", defaults: &["ctrl+shift+p"],
     },
     ActionInfo {
         name: "win.toggle-filesystem", description: "Expand or collapse the folder tree in the sidebar.", icon: "drive-harddisk-symbolic", label: "Toggle Filesystem", defaults: &[],
