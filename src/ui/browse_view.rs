@@ -334,6 +334,10 @@ fn request_thumbnail(
 /// The most entries of a folder looked at to find its pictures, so a huge folder does not hold up the view.
 const SCATTER_SCAN: usize = 500;
 
+/// The most entries of a folder read to choose those from, by name. A folder with more takes its names from the first
+/// ones it lists, so its previews may depend on the order it lists them in.
+const SCATTER_READ: usize = 20_000;
+
 /// The most folders whose scans are kept, so the cache stays small when browsing many folders. The least recently
 /// used goes first.
 const MAX_CACHED_SCANS: usize = 256;
@@ -342,17 +346,22 @@ const MAX_CACHED_SCANS: usize = 256;
 /// a screen of large folders must not take them all.
 const MAX_SCANS: usize = 2;
 
+/// The entries of a folder to look at: the first `SCATTER_SCAN` by name, so the same ones are taken whatever order the
+/// folder lists them in, of at most the first `SCATTER_READ` listed.
+fn first_by_name(listed: impl Iterator<Item = PathBuf>) -> Vec<PathBuf> {
+    let mut paths: Vec<PathBuf> = listed.take(SCATTER_READ).collect();
+    paths.sort();
+    paths.truncate(SCATTER_SCAN);
+    paths
+}
+
 /// Every picture and video of `folder`, with their modification times and kinds, in a shuffled order. The order is
 /// random, but the same for the same folder, so scrolling does not reshuffle them. Hidden entries and folders are
 /// skipped. This reads the disk, so it runs on a worker thread.
 fn scattered_media(folder: &Path) -> Vec<Picture> {
     let mut random = Seeded::for_folder(folder);
     let Ok(read) = std::fs::read_dir(folder) else { return Vec::new() };
-    // The same names are taken whatever order the folder lists them in: the first ones by name.
-    let mut paths: Vec<PathBuf> = read.filter_map(|entry| entry.ok().map(|entry| entry.path())).collect();
-    paths.sort();
-    paths.truncate(SCATTER_SCAN);
-    let mut media: Vec<Picture> = paths
+    let mut media: Vec<Picture> = first_by_name(read.filter_map(|entry| entry.ok().map(|entry| entry.path())))
         .into_iter()
         .filter_map(|path| {
             let name = path.file_name()?.to_string_lossy();
@@ -2690,6 +2699,23 @@ mod scan_tests {
         assert_eq!(scans.kept.len(), MAX_CACHED_SCANS);
         assert!(scans.get(&folder(0), 1).is_some(), "used just now");
         assert!(scans.get(&folder(1), 1).is_none(), "the oldest");
+    }
+
+    #[test]
+    fn a_folder_s_first_names_are_taken_whatever_order_it_lists_them_in() {
+        let names = |order: Vec<usize>| order.into_iter().map(|index| PathBuf::from(format!("{index:06}")));
+        let forward = first_by_name(names((0..SCATTER_SCAN + 10).collect()));
+        let backward = first_by_name(names((0..SCATTER_SCAN + 10).rev().collect()));
+        assert_eq!(forward.len(), SCATTER_SCAN);
+        assert_eq!(forward, backward);
+        assert_eq!(forward[0], PathBuf::from("000000"));
+    }
+
+    #[test]
+    fn a_huge_folder_is_read_only_so_far() {
+        let mut listed = (0..SCATTER_READ + 5).map(|index| PathBuf::from(format!("{index:06}")));
+        first_by_name(listed.by_ref());
+        assert_eq!(listed.count(), 5);
     }
 
     #[test]
