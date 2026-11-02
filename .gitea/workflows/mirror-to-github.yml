@@ -22,5 +22,6 @@ jobs:
             clone --quiet --single-branch --branch main "$SRC_URL" "$WORK/repo"
           cd "$WORK/repo"
           echo "pushing $(git rev-parse --short HEAD) to GitHub main"
+          # Forced, because rewriting commit messages on Gitea changes the history GitHub already has.
           git -c http.extraHeader="Authorization: Basic $DEST_AUTH" \
-            push "$DEST_URL" HEAD:refs/heads/main
+            push --force "$DEST_URL" HEAD:refs/heads/main
