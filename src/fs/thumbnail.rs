@@ -320,7 +320,7 @@ fn key(path: &Path, mtime: i64, size: Size, job: Job) -> Key {
 
 /// The decoded pixels of one thumbnail. Decoding happens on a worker thread; only the cheap wrap into a texture
 /// happens on the main loop, since a texture cannot leave the main thread.
-struct Pixels {
+pub(crate) struct Pixels {
     bytes: glib::Bytes,
     width: i32,
     height: i32,
@@ -329,6 +329,11 @@ struct Pixels {
 }
 
 impl Pixels {
+    /// The pixels of the picture at `path`, decoded in full.
+    pub(crate) fn from_file(path: &Path) -> Result<Self, glib::Error> {
+        gdk_pixbuf::Pixbuf::from_file(path).map(|pixbuf| Self::from_pixbuf(&pixbuf))
+    }
+
     fn from_pixbuf(pixbuf: &gdk_pixbuf::Pixbuf) -> Self {
         Self {
             bytes: pixbuf.read_pixel_bytes(),
@@ -345,7 +350,7 @@ impl Pixels {
         gdk_pixbuf::Pixbuf::from_stream(&stream, None::<&gio::Cancellable>).ok().map(|pixbuf| Self::from_pixbuf(&pixbuf))
     }
 
-    fn texture(&self) -> gdk::Texture {
+    pub(crate) fn texture(&self) -> gdk::Texture {
         let format = if self.alpha { gdk::MemoryFormat::R8g8b8a8 } else { gdk::MemoryFormat::R8g8b8 };
         gdk::MemoryTexture::new(self.width, self.height, format, &self.bytes, self.stride).upcast()
     }

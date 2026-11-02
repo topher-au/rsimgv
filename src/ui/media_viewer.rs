@@ -18,6 +18,7 @@ use super::drag;
 use super::image_canvas::{Fit, ImageCanvas, Placement};
 use crate::file_settings::FileSettings;
 use crate::fs::metadata::MediaInfo;
+use crate::fs::thumbnail::Pixels;
 use super::media_controls::MediaControls;
 use super::thumbnail_bar::ThumbnailBar;
 
@@ -81,10 +82,15 @@ fn overlay_alignment(position: &str) -> (gtk::Align, gtk::Align) {
     (horizontal, vertical)
 }
 
-/// The picture in `path`, or `None` if it cannot be read.
-fn load_texture(path: &Path) -> Option<gdk::Texture> {
-    match gdk::Texture::from_file(&gio::File::for_path(path)) {
-        Ok(texture) => Some(texture),
+/// The pictures decoded ahead of the item shown, at most this many.
+const PREFETCHED: usize = 2;
+
+/// Decodes the picture at `path` on a worker thread, so the window stays responsive. `None` if it cannot be read.
+async fn decode_picture(path: PathBuf) -> Option<Pixels> {
+    let work = path.clone();
+    let decoded = gio::spawn_blocking(move || Pixels::from_file(&work)).await.ok()?;
+    match decoded {
+        Ok(pixels) => Some(pixels),
         Err(err) => {
             eprintln!("rsimgv: could not open {}: {err}", path.display());
             None
@@ -242,6 +248,8 @@ mod imp {
         /// The folder's pictures and videos, in display order, and the index of the one shown.
         pub(super) paths: RefCell<Vec<PathBuf>>,
         pub(super) index: Cell<usize>,
+        /// Pictures decoded ahead of the item shown, with the paths they are of.
+        pub(super) prefetched: RefCell<Vec<(PathBuf, Pixels)>>,
         /// The settings kept for the item shown: a picture's zoom and pan, a video's position and speed. They are
         /// saved when it is left.
         pub(super) file_settings: RefCell<Option<FileSettings>>,
@@ -458,6 +466,7 @@ impl MediaViewer {
     pub fn show(&self, paths: Vec<PathBuf>, index: usize) {
         self.imp().thumbnail_bar.set_paths(&paths);
         self.imp().paths.replace(paths);
+        self.imp().prefetched.borrow_mut().clear();
         self.load(index);
     }
 
@@ -1203,15 +1212,73 @@ impl MediaViewer {
             imp.media.replace(Some(media));
         } else {
             imp.pages.set_visible_child(&*imp.canvas);
-            imp.canvas.set_texture(load_texture(&path));
-            if let Some(placement) = settings.as_ref().and_then(Placement::from_settings) {
-                imp.canvas.restore(placement);
-            }
+            let placement = settings.as_ref().and_then(Placement::from_settings);
+            self.show_picture(index, &path, placement);
+            self.prefetch_neighbours(index);
         }
         imp.file_settings.replace(settings);
         imp.controls_revealer.set_visible(video);
         self.update_zoom_indicator();
         self.emit_by_name::<()>("item-changed", &[&path.to_string_lossy().into_owned()]);
+    }
+
+    /// Shows the picture at `path`, the item at `index`, once it is decoded. A picture decoded ahead is shown at once. A
+    /// decode that finishes after another item is shown is not shown.
+    fn show_picture(&self, index: usize, path: &Path, placement: Option<Placement>) {
+        let imp = self.imp();
+        let ahead = {
+            let mut prefetched = imp.prefetched.borrow_mut();
+            prefetched.iter().position(|(ahead, _)| ahead == path).map(|position| prefetched.remove(position).1)
+        };
+        if let Some(pixels) = ahead {
+            self.set_picture(&pixels, placement);
+            return;
+        }
+        let weak = self.downgrade();
+        let path = path.to_path_buf();
+        glib::spawn_future_local(async move {
+            let Some(pixels) = decode_picture(path).await else { return };
+            let Some(viewer) = weak.upgrade() else { return };
+            if viewer.imp().index.get() == index && viewer.imp().media.borrow().is_none() {
+                viewer.set_picture(&pixels, placement);
+            }
+        });
+    }
+
+    /// Puts the decoded picture on the canvas, at the placement it was left at.
+    fn set_picture(&self, pixels: &Pixels, placement: Option<Placement>) {
+        let imp = self.imp();
+        imp.canvas.set_texture(Some(pixels.texture()));
+        if let Some(placement) = placement {
+            imp.canvas.restore(placement);
+        }
+        self.update_zoom_indicator();
+    }
+
+    /// Decodes the pictures either side of the item at `index`, so that stepping to them shows them at once.
+    fn prefetch_neighbours(&self, index: usize) {
+        let imp = self.imp();
+        let paths = imp.paths.borrow();
+        let len = paths.len();
+        let ahead: Vec<PathBuf> = [neighbour(index, len, false), neighbour(index, len, true)]
+            .into_iter()
+            .flatten()
+            .filter_map(|neighbour_index| paths.get(neighbour_index).cloned())
+            .filter(|path| !is_video(path))
+            .collect();
+        drop(paths);
+        for path in ahead {
+            let weak = self.downgrade();
+            glib::spawn_future_local(async move {
+                let Some(pixels) = decode_picture(path.clone()).await else { return };
+                let Some(viewer) = weak.upgrade() else { return };
+                let mut prefetched = viewer.imp().prefetched.borrow_mut();
+                if prefetched.len() >= PREFETCHED {
+                    prefetched.remove(0);
+                }
+                prefetched.push((path, pixels));
+            });
+        }
     }
 
     /// Clears the shown item: a video is paused and released, and the picture is emptied.
