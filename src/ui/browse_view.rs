@@ -672,6 +672,12 @@ fn show_scattered(view: &BrowseView, cell: &gtk::Box, entry: &FileEntry, icon: &
     }
 }
 
+/// The thumbnail size for a folder's pictures in items of `size` pixels. Each is drawn at `PHOTO_SHARE` of the item at
+/// most, so a thumbnail of the whole item's size would only take up memory.
+fn photo_size(size: i32, scale: i32) -> ThumbnailSize {
+    ThumbnailSize::for_pixels((size as f32 * PHOTO_SHARE).ceil() as i32 * scale)
+}
+
 /// Requests the picture `index` of a folder's scattered previews, and shows it on `icon` once it is made.
 fn request_photo(view: &BrowseView, cell: &gtk::Box, icon: &gtk::Image, scattered: &ScatteredThumbnail, index: usize, picture: &Picture, size: i32) {
     let (path, modified, _, kind) = picture;
@@ -683,7 +689,7 @@ fn request_photo(view: &BrowseView, cell: &gtk::Box, icon: &gtk::Image, scattere
         path,
         *modified,
         *kind,
-        ThumbnailSize::for_pixels(size * cell.scale_factor()),
+        photo_size(size, cell.scale_factor()),
         wanted_at(view, cell, folder, size),
         move |texture| {
             // A newer layout of the folder may already be up on the icon; this picture belongs to the old one.
@@ -2233,7 +2239,7 @@ impl BrowseView {
                 path,
                 *modified,
                 *kind,
-                ThumbnailSize::for_pixels(cycle.size * cell.scale_factor()),
+                photo_size(cycle.size, cell.scale_factor()),
                 wanted_for(self, cell, &cycle.folder),
                 move |texture| {
                     let mut preload = preload.borrow_mut();
@@ -2268,7 +2274,7 @@ impl BrowseView {
                 path,
                 *modified,
                 *kind,
-                ThumbnailSize::for_pixels(cycle.size * cell.scale_factor()),
+                photo_size(cycle.size, cell.scale_factor()),
                 wanted_for(self, cell, &cycle.folder),
                 move |texture| scattered.set_photo(slot, texture, turn),
             );
@@ -2716,6 +2722,14 @@ mod scan_tests {
         let mut listed = (0..SCATTER_READ + 5).map(|index| PathBuf::from(format!("{index:06}")));
         first_by_name(listed.by_ref());
         assert_eq!(listed.count(), 5);
+    }
+
+    #[test]
+    fn a_folder_s_pictures_are_requested_at_the_size_they_are_drawn() {
+        assert_eq!(photo_size(256, 1).pixels(), 128);
+        assert_eq!(photo_size(256, 2).pixels(), 256);
+        assert_eq!(photo_size(1024, 2).pixels(), 1024);
+        assert_eq!(photo_size(32, 1).pixels(), 32);
     }
 
     #[test]
