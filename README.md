@@ -29,6 +29,7 @@ library of pictures and videos without leaving the window. The media viewer is n
   your home folder.
 - **Settings** in a preferences dialog, saved as YAML and applied immediately.
 - **Hidden files** can be shown from the main menu.
+- **Playlist**: one list of pictures and videos from anywhere, in your own order, kept between runs and shared by the windows. Playing it leaves the folder you are browsing, and the item selected there, as they were. See [Playlist](#playlist).
 - **Scripts** are commands listed on the Scripts page, with `%file%` standing for the item they run on. The Run Script action in the keybinding editor binds a key to one: it runs on the item under the cursor, or on the one the viewer shows. A script that waits to finish has the folder listed again when it ends.
 - **Messages** appear over the window: notifications that go away by themselves, and persistent messages that stay until dismissed. A script that fails reports it this way, and other programs can show their own through the remote control server (`messages.show`). F1 shows a list of the keybindings in force where you are, and hides it again. Skipping through a video shows a progress bar and the time over it, which the Overlay tab of the video preferences sets up. The Show Notification action in the keybinding editor binds a key to a notification: each binding sets its message, level and how many seconds it stays.
 
@@ -78,6 +79,28 @@ Each argument opens in a new tab of the open window, or of a new window if none 
 in its tab. A file opens in a tab on its folder with the file selected, and a picture or video also opens
 in the viewer. A running rsimgv takes the arguments of a second launch. `rsimgv --version` prints the version.
 
+## Playlist
+
+Items in the playlist have a line around them in the browse view. To add or remove them:
+
+- press <kbd>I</kbd> on the item under the cursor, on the marked items, or in the viewer on the item it shows; pressing it again takes them off
+- right-click an item or folder and choose **Add to Playlist** or **Remove from Playlist**
+- drag files onto the **Playlist** section of the sidebar, or use the remove button on a row there
+
+A folder stands for the pictures and videos in it and in the folders under it. A file appears once, however many times it is added. Rows in the sidebar can be dragged into another order, and double-clicking one plays from it.
+
+| Key | Action |
+| --- | --- |
+| <kbd>Ctrl</kbd>+<kbd>P</kbd> | Show the playlist in the viewer, from the item it was left on |
+| <kbd>]</kbd> and <kbd>[</kbd> | Next and previous item, going round the ends. Pressed elsewhere, they show the playlist from the item it was left on |
+| <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>P</kbd> | Show or hide the list in the sidebar |
+
+These can all be rebound, and first item, last item, load, save and clear can be given keys, in the keybinding editor. While the viewer shows the playlist, its own previous and next keys, the thumbnail bar and auto-advance go through the playlist too. They stop at its ends, whatever the **folder-end** setting says.
+
+The sidebar's buttons load and save M3U and M3U8 (`.m3u`, `.m3u8`), PLS (`.pls`) and XSPF (`.xspf`) files. Saved files use absolute paths. Loading into a playlist that has items asks whether to replace them or add to the end. Web addresses and files that are not pictures or videos are left out, and you are told how many. A file listed twice is kept once.
+
+The playlist is kept in `playlist.m3u8` beside the settings file. Other programs can drive it with the `win.playlist-*` actions over the remote control server.
+
 ## Settings
 
 Settings are stored as YAML in `~/.config/rsimgv/rsimgv.conf`. Set `RSIMGV_CONFIG` to use another file.
@@ -123,6 +146,7 @@ straight away. The schema is `data/au.topher.rimgv.gschema.xml`.
 src/
   main.rs            application startup, actions, icon theme registration
   fs/                directory entries, lazy tree nodes, natural sort
+  playlist/          the playlist and its file formats
   settings/          GSettings backend (backend.c) and YAML storage (store.rs)
   ui/                widgets: window, folder tree, browse view, path bar,
                      navigation bar, header bar, preferences, split view
