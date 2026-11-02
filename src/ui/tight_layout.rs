@@ -1,6 +1,7 @@
 //! A layout manager that stacks its widget's children in a column with no gap between them. A box leaves a gap of
 //! its spacing, and the one inside a preferences page leaves a wide one between its groups. The first child can be
-//! indented, which sets a group's title in from its rows.
+//! indented, even while it is hidden, which sets a group's title in from its rows and leaves them where they are when
+//! the group has no title.
 
 use std::cell::Cell;
 
@@ -33,7 +34,7 @@ mod imp {
 
         fn measure(&self, widget: &gtk::Widget, orientation: gtk::Orientation, for_size: i32) -> (i32, i32, i32, i32) {
             let (mut minimum, mut natural) = (0, 0);
-            for (index, child) in children(widget).enumerate() {
+            for (index, child) in children(widget) {
                 let indent = self.indent(index);
                 let (child_minimum, child_natural, ..) = if orientation == gtk::Orientation::Vertical {
                     child.measure(orientation, if for_size < 0 { for_size } else { (for_size - indent).max(0) })
@@ -54,7 +55,6 @@ mod imp {
 
         fn allocate(&self, widget: &gtk::Widget, width: i32, height: i32, _baseline: i32) {
             let children: Vec<(gtk::Widget, i32, i32, i32)> = children(widget)
-                .enumerate()
                 .map(|(index, child)| {
                     let indent = self.indent(index);
                     let (minimum, natural, ..) = child.measure(gtk::Orientation::Vertical, (width - indent).max(0));
@@ -80,9 +80,12 @@ mod imp {
         }
     }
 
-    /// The children of `widget` that take part in the layout, top to bottom.
-    fn children(widget: &gtk::Widget) -> impl Iterator<Item = gtk::Widget> {
-        std::iter::successors(widget.first_child(), |child| child.next_sibling()).filter(|child| child.should_layout())
+    /// The children of `widget` that take part in the layout, top to bottom, each with its place among all the
+    /// children, hidden ones too.
+    fn children(widget: &gtk::Widget) -> impl Iterator<Item = (usize, gtk::Widget)> {
+        std::iter::successors(widget.first_child(), |child| child.next_sibling())
+            .enumerate()
+            .filter(|(_, child)| child.should_layout())
     }
 }
 
@@ -140,6 +143,13 @@ pub(crate) mod tests {
         assert_eq!((bounds.x() as i32, bounds.width() as i32), (10, 190), "the first child is set in");
         let bounds = tall[1].compute_bounds(&column).expect("the child is in the column");
         assert_eq!((bounds.x() as i32, bounds.width() as i32), (0, 200), "the others are not");
+
+        // The indent belongs to the first child, so while that is hidden nothing else takes it.
+        tall[0].set_visible(false);
+        column.allocate(200, 70, -1, None);
+        let bounds = tall[1].compute_bounds(&column).expect("the child is in the column");
+        assert_eq!((bounds.x() as i32, bounds.width() as i32), (0, 200), "the rows of an untitled group are not set in");
+        tall[0].set_visible(true);
 
         tall[1].set_visible(false);
         assert_eq!(column.measure(gtk::Orientation::Vertical, 200).1, 60, "a hidden child takes no room");

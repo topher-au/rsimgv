@@ -945,7 +945,7 @@ fn group_columns(widget: &gtk::Widget) -> Vec<gtk::Widget> {
 }
 
 /// How far a group's title is set in from its rows, in pixels.
-const GROUP_TITLE_INDENT: i32 = 6;
+const GROUP_TITLE_INDENT: i32 = 10;
 
 /// The box inside each preferences group under `widget`, which holds the group's header above its rows.
 fn group_bodies(widget: &gtk::Widget) -> Vec<gtk::Widget> {
