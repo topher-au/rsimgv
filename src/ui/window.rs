@@ -20,6 +20,7 @@ use super::path_bar::OpenTarget;
 use super::{BrowseView, FsTree, HeaderBar, MediaViewer, MessageOverlay, NavigationBar, OverlaySplitView, PathBar, PreferencesDialog, ShownItem};
 use super::{Level, Message};
 use super::message_overlay::{MessageId, Position};
+use super::keybinds_overlay::KeybindsOverlay;
 
 mod imp {
     use super::*;
@@ -38,6 +39,8 @@ mod imp {
         pub message_layer: TemplateChild<gtk::Overlay>,
         /// The messages over the window, made once the template is built.
         pub messages: std::cell::OnceCell<MessageOverlay>,
+        /// The list of the keybindings in force, made when it is first wanted.
+        pub(super) keybinds: std::cell::OnceCell<KeybindsOverlay>,
         /// The message naming the folder the viewer moved to, while it is up, so the next one replaces it.
         pub(super) folder_notice: Cell<Option<MessageId>>,
         #[template_child]
@@ -281,6 +284,7 @@ impl Window {
             move |_, _| {
                 if let Some(window) = weak.upgrade() {
                     window.update_title();
+                    window.refresh_keybinds_overlay();
                 }
             }
         });
@@ -623,6 +627,7 @@ impl Window {
         let imp = self.imp();
         imp.viewer.show(paths, index);
         imp.viewer_open.set(true);
+        self.refresh_keybinds_overlay();
         imp.pages.set_visible_child(&*imp.viewer);
         imp.viewer.grab_focus();
         if imp.settings.get().is_some_and(|settings| settings.boolean("open-fullscreen")) && !self.is_fullscreen() {
@@ -637,6 +642,7 @@ impl Window {
         let imp = self.imp();
         imp.viewer.close();
         imp.viewer_open.set(false);
+        self.refresh_keybinds_overlay();
         imp.pages.set_visible_child(&*imp.split);
         if imp.viewer_fullscreened.take() {
             self.unfullscreen();
@@ -703,6 +709,7 @@ impl Window {
             }
         });
         self.add_action(&notify);
+        bound_action(self, &weak, "toggle-keybinds", Window::toggle_keybinds_overlay);
         bound_action(self, &weak, "settings", Window::show_preferences);
         bound_action(self, &weak, "settings-keybindings", |window| window.present_preferences(Some("keybindings")));
         bound_action(self, &weak, "open-folder", Window::open_folder);
@@ -1164,6 +1171,24 @@ impl Window {
     /// Shows `text` over the window for a few seconds.
     pub fn notify(&self, text: &str) {
         self.messages().show(Message::notification(text));
+    }
+
+    /// Shows the list of the keybindings in force where the user is, or hides it.
+    fn toggle_keybinds_overlay(&self) {
+        let overlay = self.imp().keybinds.get_or_init(|| KeybindsOverlay::new(&self.imp().message_layer));
+        if overlay.is_shown() {
+            overlay.hide();
+        } else {
+            overlay.show(&self.active_scopes(), self.height());
+        }
+    }
+
+    /// Makes the list of keybindings, if it is up, the ones in force now, as the viewer opened or closed or showed
+    /// another kind of item.
+    fn refresh_keybinds_overlay(&self) {
+        if let Some(overlay) = self.imp().keybinds.get().filter(|overlay| overlay.is_shown()) {
+            overlay.rebuild(&self.active_scopes());
+        }
     }
 
     /// Shows `message` over the window as a notification of `level`, one of `NOTIFICATION_LEVELS` (an unknown one is

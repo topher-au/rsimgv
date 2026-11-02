@@ -11,6 +11,7 @@ mod kde_blur;
 mod keybinding_list;
 mod key_handler;
 mod keybind_label;
+mod keybinds_overlay;
 mod media_controls;
 mod media_viewer;
 pub mod message_overlay;

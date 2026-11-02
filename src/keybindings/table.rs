@@ -144,6 +144,21 @@ impl BindingTable {
         best
     }
 
+    /// Every binding in force in the active contexts, with its action, in the catalogue's order: those in Global and in
+    /// the active contexts, less any a deeper context takes the chord from.
+    pub fn active_bindings(&self, active: &[Scope]) -> Vec<(&'static ActionInfo, &Binding)> {
+        let mut found = Vec::new();
+        for (action, bindings) in ACTIONS.iter().zip(&self.chords) {
+            for binding in bindings {
+                let in_force = self.resolve_binding(&binding.chord, active).is_some_and(|(_, winner)| std::ptr::eq(winner, binding));
+                if in_force {
+                    found.push((action, binding));
+                }
+            }
+        }
+        found
+    }
+
     /// The other actions with a binding to `chord` whose context overlaps `context`, each with the context of that
     /// binding: what binding it to `name` in `context` would clash with.
     pub fn conflicts(&self, name: &str, chord: &str, context: Scope) -> Vec<(&'static ActionInfo, Scope)> {
@@ -367,6 +382,31 @@ mod tests {
         let mut loaded = BindingTable::defaults();
         assert!(loaded.apply_yaml(&text).is_empty());
         assert_eq!(loaded.bindings("view.next").last(), Some(&Binding { chord: "ctrl+n".to_owned(), context: Scope::Global, value: None, script: None, notification: None }));
+    }
+
+    #[test]
+    fn the_active_bindings_are_those_in_force_in_the_contexts() {
+        let table = BindingTable::defaults();
+        let names = |active: &[Scope]| table.active_bindings(active).iter().map(|(action, _)| action.name).collect::<Vec<_>>();
+        let browsing = names(&[Scope::Browse]);
+        assert!(browsing.contains(&"browse.cursor-up") && browsing.contains(&"win.settings"), "browsing and global ones");
+        assert!(!browsing.contains(&"video.seek-forward") && !browsing.contains(&"view.next"), "not the viewer's");
+        let video = names(&[Scope::View, Scope::Video]);
+        assert!(video.contains(&"video.seek-forward") && video.contains(&"view.next") && video.contains(&"win.settings"));
+        assert!(!video.contains(&"browse.cursor-up") && !video.contains(&"image.zoom-in"));
+    }
+
+    #[test]
+    fn a_chord_a_deeper_context_takes_is_not_active_in_the_shallower() {
+        let mut table = BindingTable::defaults();
+        assert!(table.add("view.next", "ctrl+x", Scope::Global, None));
+        assert!(table.add("video.mute", "ctrl+x", Scope::Video, None));
+        let active = table.active_bindings(&[Scope::View, Scope::Video]);
+        let on_x: Vec<&str> = active.iter().filter(|(_, binding)| binding.chord == "ctrl+x").map(|(action, _)| action.name).collect();
+        assert_eq!(on_x, ["video.mute"]);
+        let browsing = table.active_bindings(&[Scope::Browse]);
+        let on_x: Vec<&str> = browsing.iter().filter(|(_, binding)| binding.chord == "ctrl+x").map(|(action, _)| action.name).collect();
+        assert_eq!(on_x, ["view.next"], "the video's binding does not apply while browsing");
     }
 
     #[test]
