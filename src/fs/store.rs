@@ -23,6 +23,9 @@ standard::icon,standard::content-type,standard::is-hidden,time::modified";
 const BATCH_SIZE: i32 = 100;
 /// Finished listings that nobody reads are kept this many at most; the least recently used go first.
 const MAX_IDLE_LISTINGS: usize = 16;
+/// The entries of the finished listings that nobody reads are kept this many at most, so a huge folder cannot keep
+/// the memory it was listed into.
+const MAX_IDLE_ENTRIES: usize = 100_000;
 
 thread_local! {
     static SHARED: FileStore = FileStore::default();
@@ -139,18 +142,18 @@ impl FileStore {
         if fresh {
             glib::spawn_future_local(read(self.clone(), dir.to_path_buf(), cancel));
         } else {
-            // Replayed on the thread's main context, like the reads themselves.
-            glib::spawn_future_local(async move {
-                if !reader.active.get() {
-                    return;
-                }
-                if !entries.is_empty() {
-                    (reader.on_batch)(&entries);
-                }
-                if let Some(result) = done {
-                    (reader.on_done)(result);
-                }
-            });
+            // The entries listed so far are given now, before anything read after them, and the end of the read, if it
+            // has come, is given on the main loop.
+            if !entries.is_empty() {
+                (reader.on_batch)(&entries);
+            }
+            if let Some(result) = done {
+                glib::spawn_future_local(async move {
+                    if reader.active.get() {
+                        (reader.on_done)(result);
+                    }
+                });
+            }
         }
 
         Reading {
@@ -227,20 +230,23 @@ impl FileStore {
         self.trim();
     }
 
-    /// Keeps at most `MAX_IDLE_LISTINGS` finished listings that nobody reads, dropping the least recently used.
+    /// Keeps the finished listings that nobody reads, the most recently used first, up to `MAX_IDLE_LISTINGS` of them
+    /// and `MAX_IDLE_ENTRIES` entries in all. The rest are dropped.
     fn trim(&self) {
         let mut listings = self.inner.listings.borrow_mut();
-        let mut idle: Vec<(u64, PathBuf)> = listings
+        let mut idle: Vec<(u64, PathBuf, usize)> = listings
             .iter()
             .filter(|(_, listing)| listing.readers.is_empty() && !matches!(listing.state, State::Loading))
-            .map(|(dir, listing)| (listing.used, dir.clone()))
+            .map(|(dir, listing)| (listing.used, dir.clone(), listing.entries.len()))
             .collect();
-        if idle.len() <= MAX_IDLE_LISTINGS {
-            return;
-        }
-        idle.sort();
-        for (_, dir) in idle.drain(..idle.len() - MAX_IDLE_LISTINGS) {
-            listings.remove(&dir);
+        idle.sort_by(|a, b| b.0.cmp(&a.0));
+        let mut kept_entries = 0;
+        for (position, (_, dir, count)) in idle.into_iter().enumerate() {
+            if position < MAX_IDLE_LISTINGS && kept_entries + count <= MAX_IDLE_ENTRIES {
+                kept_entries += count;
+            } else {
+                listings.remove(&dir);
+            }
         }
     }
 }
@@ -255,11 +261,9 @@ async fn read(store: FileStore, dir: PathBuf, cancel: gio::Cancellable) {
 }
 
 async fn read_batches(store: &FileStore, dir: &Path, cancel: &gio::Cancellable) -> Result<(), glib::Error> {
-    let enumerator = gio::File::for_path(dir)
-        .enumerate_children_future(QUERY_ATTRIBUTES, gio::FileQueryInfoFlags::NONE, glib::Priority::DEFAULT)
-        .await?;
+    let enumerator = enumerate(dir, cancel).await?;
     while !cancel.is_cancelled() {
-        let infos = enumerator.next_files_future(BATCH_SIZE, glib::Priority::DEFAULT).await?;
+        let infos = next_files(&enumerator, cancel).await?;
         if infos.is_empty() || cancel.is_cancelled() {
             break;
         }
@@ -270,6 +274,34 @@ async fn read_batches(store: &FileStore, dir: &Path, cancel: &gio::Cancellable) 
         store.append(dir, &batch);
     }
     Ok(())
+}
+
+/// The enumerator of the children of `dir`. A cancelled read stops in the middle of the I/O, not after it.
+async fn enumerate(dir: &Path, cancel: &gio::Cancellable) -> Result<gio::FileEnumerator, glib::Error> {
+    let (sender, receiver) = futures_channel::oneshot::channel();
+    gio::File::for_path(dir).enumerate_children_async(
+        QUERY_ATTRIBUTES,
+        gio::FileQueryInfoFlags::NONE,
+        glib::Priority::DEFAULT,
+        Some(cancel),
+        move |result| {
+            let _ = sender.send(result);
+        },
+    );
+    receiver.await.unwrap_or_else(|_| Err(cancelled()))
+}
+
+/// The next batch of the children being enumerated, or none at the end.
+async fn next_files(enumerator: &gio::FileEnumerator, cancel: &gio::Cancellable) -> Result<Vec<gio::FileInfo>, glib::Error> {
+    let (sender, receiver) = futures_channel::oneshot::channel();
+    enumerator.next_files_async(BATCH_SIZE, glib::Priority::DEFAULT, Some(cancel), move |result| {
+        let _ = sender.send(result);
+    });
+    receiver.await.unwrap_or_else(|_| Err(cancelled()))
+}
+
+fn cancelled() -> glib::Error {
+    glib::Error::new(gio::IOErrorEnum::Cancelled, "the read was cancelled")
 }
 
 #[cfg(test)]
