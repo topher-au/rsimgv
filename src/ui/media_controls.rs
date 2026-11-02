@@ -455,7 +455,8 @@ mod tests {
     fn seeks_stay_within_the_media() {
         assert_eq!(seek_target(5_000_000, -SEEK_STEP, 60_000_000), 0);
         assert_eq!(seek_target(55_000_000, SEEK_STEP, 60_000_000), 60_000_000);
-        assert_eq!(seek_target(5_000_000, SEEK_STEP, 0), 15_000_000);
+        // An unknown duration does not stop a seek forward.
+        assert_eq!(seek_target(5_000_000, SEEK_STEP, 0), 5_000_000 + SEEK_STEP);
     }
 
     #[test]
