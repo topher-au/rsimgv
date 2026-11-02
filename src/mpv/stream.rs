@@ -285,11 +285,12 @@ impl MpvStream {
         }
     }
 
-    /// Replaces the video filters with `filter`, or removes them all when it is empty.
-    pub fn set_video_filter(&self, filter: &str) -> Result<(), String> {
+    /// Puts `filter`, which is labelled `label`, after the other video filters in place of the one before, or takes that
+    /// one out when it is `None`.
+    pub fn set_interpolation_filter(&self, label: &str, filter: Option<&str>) -> Result<(), String> {
         let player = self.imp().player.borrow();
         let player = player.as_ref().ok_or("no player")?;
-        player.set_video_filter(filter)
+        player.set_interpolation_filter(label, filter)
     }
 
     /// Turns the video upright, by the rotation its decoder reports, or its container before there is a decoded frame.

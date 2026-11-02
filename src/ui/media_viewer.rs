@@ -85,6 +85,10 @@ pub(super) fn overlay_alignment(position: &str) -> (gtk::Align, gtk::Align) {
 
 /// How long after a skip the seek overlay shows where it went, rather than where the video is, which lags behind it.
 const SEEK_SETTLE: std::time::Duration = std::time::Duration::from_millis(400);
+/// How long the playback speed has to stay put before SVP is rebuilt for it, as each rebuild holds up the video.
+const SVP_SPEED_SETTLE: std::time::Duration = std::time::Duration::from_millis(300);
+/// How long the OSD says what SVP is doing, in milliseconds.
+const SVP_OSD_MILLIS: u32 = 2500;
 
 /// The pictures decoded ahead of the item shown, at most this many.
 const PREFETCHED: usize = 2;
@@ -328,8 +332,12 @@ mod imp {
         pub(super) seek_landing: Cell<Option<(i64, std::time::Instant)>>,
         /// The SVP frame interpolation settings, applied to the videos mpv plays.
         pub(super) svp: RefCell<Option<crate::svp::Config>>,
-        /// Whether SVP is applied to the video shown.
-        pub(super) svp_active: Cell<bool>,
+        /// The filter that applies SVP to the video shown, while SVP is on for it.
+        pub(super) svp_filter: RefCell<Option<String>>,
+        /// What the OSD says once that filter is in place.
+        pub(super) svp_announcement: RefCell<Option<String>>,
+        /// The timer that puts that filter in place.
+        pub(super) svp_timer: RefCell<Option<glib::SourceId>>,
         /// This viewer's hold on the server SVP's libraries connect to, kept while SVP is on.
         pub(super) svp_manager: RefCell<Option<std::rc::Rc<crate::svp_manager::Manager>>>,
     }
@@ -946,17 +954,21 @@ impl MediaViewer {
         if let Some(stream) = stream {
             stream.set_speed(speed);
             // SVP's target rate follows the speed, so its filter is rebuilt for it.
-            self.apply_svp(&stream, speed);
+            self.apply_svp(&stream, speed, true);
         }
     }
 
     /// Sets the SVP settings, and applies them to the video shown.
     pub fn set_svp(&self, config: crate::svp::Config) {
+        // Every viewer setting's change arrives here, and only these need the video disturbed.
+        if self.imp().svp.borrow().as_ref() == Some(&config) {
+            return;
+        }
         self.imp().svp.replace(Some(config));
         let stream = self.imp().media.borrow().as_ref().and_then(|media| media.downcast_ref::<crate::mpv::MpvStream>().cloned());
         if let Some(stream) = stream {
             let speed = stream.speed().unwrap_or(1.0);
-            self.apply_svp(&stream, speed);
+            self.apply_svp(&stream, speed, false);
         }
         // With no video shown, nothing above has let go of the server.
         if !self.imp().svp.borrow().as_ref().is_some_and(|config| config.enabled) {
@@ -964,9 +976,12 @@ impl MediaViewer {
         }
     }
 
-    /// Applies SVP to the video `stream` plays at `speed`, once mpv knows the video's frame rate. The video's filter
-    /// is only replaced while SVP is on or was on, so videos without it keep their filters.
+    /// Applies SVP to the video `stream` plays at `speed`, once mpv knows the video's frame rate. The filter left by the
+    /// video before goes first, as this video's first frame would otherwise wait for it to load, only for it to be replaced.
     fn start_svp(&self, stream: &crate::mpv::MpvStream) {
+        if let Err(err) = stream.set_interpolation_filter(crate::svp::FILTER_LABEL, None) {
+            eprintln!("rsimgv: SVP could not be removed: {err}");
+        }
         let (weak_viewer, weak_stream) = (self.downgrade(), stream.downgrade());
         let mut tries = 0;
         glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
@@ -976,7 +991,7 @@ impl MediaViewer {
             tries += 1;
             if stream.fps().is_some() {
                 let speed = stream.speed().unwrap_or(1.0);
-                viewer.apply_svp(&stream, speed);
+                viewer.apply_svp(&stream, speed, false);
                 return glib::ControlFlow::Break;
             }
             if tries >= 100 {
@@ -986,17 +1001,22 @@ impl MediaViewer {
         });
     }
 
-    /// Writes the SVP script for `stream`'s video at `speed` and loads it into mpv, or removes the filter when SVP is
-    /// off. Only the SVP settings' plugins and the video's own rate are read.
-    fn apply_svp(&self, stream: &crate::mpv::MpvStream, speed: f64) {
-        let Some(config) = self.imp().svp.borrow().clone() else { return };
+    /// Writes the SVP script for `stream`'s video at `speed` and has mpv load it, or removes the filter when SVP is off.
+    /// Only the SVP settings' plugins and the video's own rate are read. With `speed_changed`, the OSD reports the speed
+    /// even if SVP stays as it is, and the filter waits for the speed to settle.
+    fn apply_svp(&self, stream: &crate::mpv::MpvStream, speed: f64, speed_changed: bool) {
+        let imp = self.imp();
+        let Some(config) = imp.svp.borrow().clone() else { return };
         // The OSD says when SVP changes state: on when it is applied, off when it was on and is turned off.
-        const OSD_MILLIS: u32 = 2500;
         if !config.enabled {
-            let _ = stream.set_video_filter("");
-            self.imp().svp_manager.take();
-            if self.imp().svp_active.replace(false) {
-                stream.show_text("SVP off", OSD_MILLIS);
+            self.cancel_svp_timer();
+            imp.svp_announcement.take();
+            imp.svp_manager.take();
+            if let Err(err) = stream.set_interpolation_filter(crate::svp::FILTER_LABEL, None) {
+                eprintln!("rsimgv: SVP could not be removed: {err}");
+            }
+            if imp.svp_filter.take().is_some() {
+                stream.show_text("SVP off", SVP_OSD_MILLIS);
             }
             return;
         }
@@ -1005,46 +1025,88 @@ impl MediaViewer {
         let Some(source) = stream.fps() else { return };
         if !usable {
             eprintln!("rsimgv: SVP plugins not found in {}", config.plugin_directory.display());
-            stream.show_text(&format!("SVP plugins not found in {}", config.plugin_directory.display()), OSD_MILLIS);
+            stream.show_text(&format!("SVP plugins not found in {}", config.plugin_directory.display()), SVP_OSD_MILLIS);
             return;
         }
         let target = crate::svp::target_fps(&config.rate, source, speed, stream.display_fps());
+        let script = crate::svp::script(&plugins, source, target, config.nvof);
         let directory = crate::svp::script_directory();
-        let path = directory.join("video.py");
-        let written = std::fs::create_dir_all(&directory)
-            .and_then(|()| std::fs::write(&path, crate::svp::script(&plugins, source, target, config.nvof)));
-        if let Err(err) = written {
-            eprintln!("rsimgv: could not write the SVP script: {err}");
-            stream.show_text("SVP script could not be written", OSD_MILLIS);
-            return;
+        let path = directory.join(crate::svp::script_name(&script));
+        if std::fs::read_to_string(&path).ok().as_deref() != Some(script.as_str()) {
+            let written = std::fs::create_dir_all(&directory).and_then(|()| std::fs::write(&path, &script));
+            if let Err(err) = written {
+                eprintln!("rsimgv: could not write the SVP script: {err}");
+                stream.show_text("SVP script could not be written", SVP_OSD_MILLIS);
+                return;
+            }
+            println!("rsimgv: SVP script written to {}", path.display());
         }
-        println!("rsimgv: SVP script written to {}", path.display());
         // The server comes first, as SVP's libraries connect to it as soon as the filter loads them. SVP still plays
         // without it, as it did before there was one.
-        if self.imp().svp_manager.borrow().is_none() {
+        if imp.svp_manager.borrow().is_none() {
             match crate::svp_manager::shared() {
                 Ok(manager) => {
-                    self.imp().svp_manager.replace(Some(manager));
+                    imp.svp_manager.replace(Some(manager));
                 }
                 Err(err) => eprintln!("rsimgv: SVP manager: {err}"),
             }
         }
-        match stream.set_video_filter(&crate::svp::filter(&path)) {
+        let text = format!(
+            "SVP: {} -> {} ({:.0}% speed)",
+            crate::fs::metadata::format_fps(source),
+            crate::fs::metadata::format_fps(target),
+            speed * 100.0
+        );
+        let filter = crate::svp::filter(&path);
+        if imp.svp_filter.borrow().as_deref() == Some(filter.as_str()) {
+            if speed_changed {
+                stream.show_text(&text, SVP_OSD_MILLIS);
+            }
+            return;
+        }
+        imp.svp_filter.replace(Some(filter));
+        imp.svp_announcement.replace(Some(text));
+        if speed_changed {
+            self.arm_svp_timer(stream, SVP_SPEED_SETTLE);
+        } else {
+            self.install_svp(stream);
+        }
+    }
+
+    /// Puts the video's SVP filter in place, and says so on the OSD if it is new.
+    fn install_svp(&self, stream: &crate::mpv::MpvStream) {
+        let imp = self.imp();
+        let filter = imp.svp_filter.borrow().clone();
+        match stream.set_interpolation_filter(crate::svp::FILTER_LABEL, filter.as_deref()) {
             Ok(()) => {
-                println!("rsimgv: SVP filter set: {}", crate::svp::filter(&path));
-                self.imp().svp_active.set(true);
-                let text = format!(
-                    "SVP: {} -> {} ({:.0}% speed)",
-                    crate::fs::metadata::format_fps(source),
-                    crate::fs::metadata::format_fps(target),
-                    speed * 100.0
-                );
-                stream.show_text(&text, OSD_MILLIS);
+                if let Some(text) = imp.svp_announcement.take() {
+                    println!("rsimgv: SVP filter set: {}", filter.as_deref().unwrap_or_default());
+                    stream.show_text(&text, SVP_OSD_MILLIS);
+                }
             }
             Err(err) => {
                 eprintln!("rsimgv: SVP could not be applied: {err}");
-                stream.show_text("SVP could not be applied", OSD_MILLIS);
+                stream.show_text("SVP could not be applied", SVP_OSD_MILLIS);
             }
+        }
+    }
+
+    /// Puts the video's SVP filter in place after `delay`, instead of when any earlier call would have.
+    fn arm_svp_timer(&self, stream: &crate::mpv::MpvStream, delay: std::time::Duration) {
+        self.cancel_svp_timer();
+        let (weak_viewer, weak_stream) = (self.downgrade(), stream.downgrade());
+        let timer = glib::timeout_add_local_once(delay, move || {
+            let (Some(viewer), Some(stream)) = (weak_viewer.upgrade(), weak_stream.upgrade()) else { return };
+            // The timer has fired, so there is nothing left to cancel.
+            viewer.imp().svp_timer.take();
+            viewer.install_svp(&stream);
+        });
+        self.imp().svp_timer.replace(Some(timer));
+    }
+
+    fn cancel_svp_timer(&self) {
+        if let Some(timer) = self.imp().svp_timer.take() {
+            timer.remove();
         }
     }
 
@@ -1549,6 +1611,9 @@ impl MediaViewer {
     fn release(&self) {
         let imp = self.imp();
         self.hide_seek_overlay();
+        self.cancel_svp_timer();
+        imp.svp_filter.take();
+        imp.svp_announcement.take();
         let settings = imp.file_settings.take();
         let media = imp.media.take();
         let changes = match &media {

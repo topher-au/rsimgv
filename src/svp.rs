@@ -3,6 +3,8 @@
 //! follows the playback speed in the display and variable modes, so slow motion and fast forward keep the output
 //! rate in range.
 
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 
 use gtk::gio::prelude::SettingsExt;
@@ -12,7 +14,7 @@ use serde_json::{json, Value};
 /// The whole frame rates the output is rounded to.
 const ROUND_TO: f64 = 1.0;
 /// The label of the filter in mpv's chain, and the frames the filter buffers.
-const FILTER_LABEL: &str = "svp";
+pub const FILTER_LABEL: &str = "@svp";
 const BUFFERED_FRAMES: u32 = 4;
 const CONCURRENT_FRAMES: u32 = 8;
 
@@ -158,10 +160,18 @@ pub fn script(plugins: &Plugins, source: f64, target: f64, nvof: bool) -> String
     )
 }
 
+/// The file name for `script`, which differs with its text. mpv keeps a filter whose options have not changed, so a
+/// script with new contents has to be at a new path for mpv to load it, and one with the same contents is not reloaded.
+pub fn script_name(script: &str) -> String {
+    let mut hasher = DefaultHasher::new();
+    script.hash(&mut hasher);
+    format!("video-{:016x}.py", hasher.finish())
+}
+
 /// The mpv filter that runs the script at `path`.
 pub fn filter(path: &Path) -> String {
     format!(
-        "@{FILTER_LABEL}:vapoursynth=file={}:buffered-frames={BUFFERED_FRAMES}:concurrent-frames={CONCURRENT_FRAMES}",
+        "{FILTER_LABEL}:vapoursynth=file={}:buffered-frames={BUFFERED_FRAMES}:concurrent-frames={CONCURRENT_FRAMES}",
         path.display()
     )
 }
@@ -235,6 +245,14 @@ mod tests {
         assert!(text.contains("core.svp1.Analyse"));
         let nvof = script(&plugins, 30.0, 60.0, true);
         assert!(nvof.contains("SmoothFps_NVOF"));
+    }
+
+    #[test]
+    fn scripts_are_named_by_their_contents() {
+        let plugins = Plugins { svp1: Some(PathBuf::from("/p/svp1.so")), svp2: Some(PathBuf::from("/p/svp2.so")) };
+        let name = |target| script_name(&script(&plugins, 24.0, target, false));
+        assert_eq!(name(60.0), name(60.0));
+        assert_ne!(name(60.0), name(120.0), "mpv only reloads a script at a new path");
     }
 
     #[test]
