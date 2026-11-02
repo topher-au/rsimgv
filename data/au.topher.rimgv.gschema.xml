@@ -320,5 +320,58 @@
       <default>false</default>
       <summary>Show a blurred, dimmed, cropped copy of the picture behind it in the viewer</summary>
     </key>
+    <key name="scripts" type="as">
+      <default>[]</default>
+      <summary>Scripts listed in the preferences, each a JSON object with its name, command and wait flag</summary>
+    </key>
+    <key name="mouse-back" type="s">
+      <choices>
+        <choice value="back"/>
+        <choice value="up"/>
+        <choice value="previous"/>
+        <choice value="next"/>
+        <choice value="forward"/>
+        <choice value="none"/>
+      </choices>
+      <default>'back'</default>
+      <summary>What the mouse's back button does: back, up, previous, next, forward, or none</summary>
+    </key>
+    <key name="mouse-forward" type="s">
+      <choices>
+        <choice value="back"/>
+        <choice value="up"/>
+        <choice value="previous"/>
+        <choice value="next"/>
+        <choice value="forward"/>
+        <choice value="none"/>
+      </choices>
+      <default>'forward'</default>
+      <summary>What the mouse's forward button does: back, up, previous, next, forward, or none</summary>
+    </key>
+    <key name="scroll-image" type="s">
+      <choices>
+        <choice value="ctrl-zoom"/>
+        <choice value="zoom"/>
+        <choice value="step"/>
+        <choice value="none"/>
+      </choices>
+      <default>'ctrl-zoom'</default>
+      <summary>What the scroll wheel does over a picture: zoom with Ctrl, zoom, step between items, or nothing</summary>
+    </key>
+    <key name="scroll-video" type="s">
+      <choices>
+        <choice value="volume"/>
+        <choice value="seek"/>
+        <choice value="step"/>
+        <choice value="none"/>
+      </choices>
+      <default>'none'</default>
+      <summary>What the scroll wheel does over a video: volume, seek, step between items, or nothing</summary>
+    </key>
+    <key name="scroll-speed" type="i">
+      <range min="10" max="400"/>
+      <default>100</default>
+      <summary>How far each notch of the scroll wheel moves, in percent of the normal amount</summary>
+    </key>
   </schema>
 </schemalist>

@@ -14,6 +14,7 @@ use gtk::prelude::*;
 use gtk::subclass::prelude::*;
 use gtk::{gdk, gio, glib};
 
+use super::drag;
 use super::image_canvas::{Fit, ImageCanvas, Placement};
 use crate::file_settings::FileSettings;
 use crate::fs::metadata::MediaInfo;
@@ -298,6 +299,37 @@ mod imp {
             let obj = self.obj();
             let weak = obj.downgrade();
 
+            // Dragging the shown file carries it to other applications. A zoomed picture is panned by dragging
+            // instead, so there is no file drag then.
+            let drag = gtk::DragSource::new();
+            drag.set_actions(gtk::gdk::DragAction::COPY);
+            drag.connect_prepare({
+                let weak = weak.clone();
+                move |_, _, _| {
+                    let viewer = weak.upgrade()?;
+                    let imp = viewer.imp();
+                    let shows_canvas = imp.pages.visible_child().as_ref() == Some(imp.canvas.upcast_ref::<gtk::Widget>());
+                    if shows_canvas && imp.canvas.is_zoomed() {
+                        return None;
+                    }
+                    Some(drag::file_list(&[viewer.shown_path()?]))
+                }
+            });
+            self.pages.add_controller(drag);
+
+            // A file dropped on the viewer is shown, wherever it is.
+            let drop = gtk::DropTarget::new(gtk::gdk::FileList::static_type(), gtk::gdk::DragAction::COPY);
+            drop.connect_drop({
+                let weak = weak.clone();
+                move |_, value, _, _| {
+                    let Some(viewer) = weak.upgrade() else { return false };
+                    let Some(path) = drag::dropped_paths(value).into_iter().find(|path| path.is_file()) else { return false };
+                    viewer.emit_by_name::<()>("file-dropped", &[&path.to_string_lossy().into_owned()]);
+                    true
+                }
+            });
+            obj.add_controller(drop);
+
             self.back_button.connect_clicked({
                 let weak = weak.clone();
                 move |_| {
@@ -406,7 +438,7 @@ mod imp {
         fn signals() -> &'static [Signal] {
             use std::sync::LazyLock;
             static SIGNALS: LazyLock<Vec<Signal>> =
-                LazyLock::new(|| vec![Signal::builder("back-requested").build(), Signal::builder("item-changed").param_types([String::static_type()]).build(), Signal::builder("thumbnail-side-requested").param_types([String::static_type()]).build(), Signal::builder("thumbnail-size-requested").param_types([i32::static_type()]).build()]);
+                LazyLock::new(|| vec![Signal::builder("back-requested").build(), Signal::builder("item-changed").param_types([String::static_type()]).build(), Signal::builder("file-dropped").param_types([String::static_type()]).build(), Signal::builder("thumbnail-side-requested").param_types([String::static_type()]).build(), Signal::builder("thumbnail-size-requested").param_types([i32::static_type()]).build()]);
             SIGNALS.as_ref()
         }
     }
@@ -555,6 +587,16 @@ impl MediaViewer {
     pub fn close(&self) {
         self.release();
         self.imp().paths.take();
+    }
+
+    /// Calls `callback` with the path of a file dropped on the viewer.
+    pub fn connect_file_dropped<F: Fn(&Self, &Path) + 'static>(&self, callback: F) -> glib::SignalHandlerId {
+        self.connect_local("file-dropped", false, move |values| {
+            let viewer = values[0].get::<MediaViewer>().expect("viewer argument");
+            let path = values[1].get::<String>().expect("path argument");
+            callback(&viewer, Path::new(&path));
+            None
+        })
     }
 
     /// Calls `callback` when the viewer asks to go back, by its Back button or Escape.
@@ -725,6 +767,11 @@ impl MediaViewer {
     /// Makes each zoom step change the scale by `percent`.
     pub fn set_zoom_step(&self, percent: i32) {
         self.imp().canvas.set_zoom_step(percent);
+    }
+
+    /// Zooms the picture by `notches` of the scroll wheel, keeping the point under the pointer in place.
+    pub fn zoom_wheel(&self, notches: f64) {
+        self.imp().canvas.zoom_wheel(notches);
     }
 
     /// Limits how much fitting to the window enlarges a small picture, to `factor` times its size; 0 has no limit.
@@ -1184,6 +1231,10 @@ impl MediaViewer {
         }
         if let Some(media) = media {
             media.set_playing(false);
+            // The video is stopped now, rather than when the stream is finally freed.
+            if let Some(stream) = media.downcast_ref::<crate::mpv::MpvStream>() {
+                stream.stop();
+            }
         }
         imp.controls.set_media(None);
         imp.picture.set_paintable(None::<&gdk::Paintable>);

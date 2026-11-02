@@ -211,20 +211,6 @@ mod imp {
             });
             obj.add_controller(motion);
 
-            // Ctrl and the wheel zoom on the pointer; a smooth scroll zooms by as much as it moves.
-            let scroll = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::VERTICAL);
-            scroll.connect_scroll({
-                let weak = obj.downgrade();
-                move |controller, _, dy| {
-                    let Some(canvas) = weak.upgrade() else { return glib::Propagation::Proceed };
-                    if !controller.current_event_state().contains(gdk::ModifierType::CONTROL_MASK) {
-                        return glib::Propagation::Proceed;
-                    }
-                    canvas.zoom_at_pointer(canvas.imp().zoom_step.get().powf(-dy.clamp(-1.0, 1.0)));
-                    glib::Propagation::Stop
-                }
-            });
-            obj.add_controller(scroll);
         }
     }
 
@@ -409,6 +395,11 @@ impl ImageCanvas {
 
     pub fn zoom_out_at_pointer(&self) {
         self.zoom_at_pointer(1.0 / self.imp().zoom_step.get());
+    }
+
+    /// Zooms by `notches` of the scroll wheel, keeping the point of the picture under the pointer where it is.
+    pub fn zoom_wheel(&self, notches: f64) {
+        self.zoom_at_pointer(self.imp().zoom_step.get().powf(-notches));
     }
 
     /// Zooms by `factor`, keeping the point of the picture under the pointer where it is.
