@@ -55,8 +55,6 @@ mod imp {
         pub bookmarks_list: TemplateChild<gtk::ListBox>,
         #[template_child]
         pub playlist_split: TemplateChild<OverlaySplitView>,
-        #[template_child]
-        pub playlist_side: TemplateChild<gtk::Box>,
         /// The window the playlist is in while it is taken out of the window, if it is.
         pub(super) playlist_window: RefCell<Option<adw::Window>>,
         /// The playlist in the sidebar, made once the template is built.
@@ -99,6 +97,9 @@ mod imp {
         /// Whether the viewer is showing the playlist, rather than the folder's items. The viewer then has nothing to
         /// do with the folder the window shows, which stays as it was.
         pub(super) playlist_playing: Cell<bool>,
+        /// Whether the playlist's sidebar is open. It is kept as the sidebar opens and closes, and the sidebar is then
+        /// put beside whichever page is shown.
+        pub(super) playlist_shown: Cell<bool>,
         /// Whether the viewer made the window fullscreen when it opened, so closing it leaves fullscreen again.
         pub(super) viewer_fullscreened: Cell<bool>,
         /// The keybinding handler, detached when the window closes.
@@ -271,10 +272,8 @@ impl Window {
         window.connect_sources();
         window.refresh_bookmarks();
         let panel = PlaylistPanel::new();
-        window.imp().playlist_side.append(panel.content());
         let _ = window.imp().playlist_panel.set(panel);
-        window.imp().playlist_split.set_sidebar_position(gtk::PackType::End);
-        window.imp().playlist_split.set_show_sidebar(false);
+        window.setup_playlist_splits();
         window.imp().viewer.set_use_mpv(settings.string("video-backend") == "mpv");
         window.imp().viewer.set_mpv_options(&settings.string("mpv-args"));
         crate::mpv::watch_config({
@@ -722,6 +721,7 @@ impl Window {
         self.apply_folder_end();
         imp.viewer.show(paths, index);
         imp.viewer_open.set(true);
+        self.place_playlist();
         self.refresh_keybinds_overlay();
         imp.pages.set_visible_child(&*imp.viewer);
         imp.viewer.grab_focus();
@@ -737,6 +737,7 @@ impl Window {
         let imp = self.imp();
         imp.viewer.close();
         imp.viewer_open.set(false);
+        self.place_playlist();
         imp.playlist_playing.set(false);
         self.apply_folder_end();
         self.refresh_keybinds_overlay();
@@ -1189,8 +1190,75 @@ impl Window {
             gtk::prelude::GtkWindowExt::present(detached);
             return;
         }
-        let split = &imp.playlist_split;
+        let split = self.active_playlist_split();
         split.set_show_sidebar(!split.show_sidebar());
+    }
+
+    /// The split view the playlist is beside now: the viewer's while it is shown, else the browse view's.
+    fn active_playlist_split(&self) -> OverlaySplitView {
+        let imp = self.imp();
+        if self.viewer_is_open() {
+            imp.viewer.playlist_split()
+        } else {
+            (*imp.playlist_split).clone()
+        }
+    }
+
+    /// Sets up the playlist's two split views, the browse view's and the viewer's: their sidebars are on the end side,
+    /// they collapse together, and their openness is kept as the playlist's. Then the playlist is put beside the page.
+    fn setup_playlist_splits(&self) {
+        let imp = self.imp();
+        let browse = (*imp.playlist_split).clone();
+        let viewer = imp.viewer.playlist_split();
+        for split in [&browse, &viewer] {
+            split.set_sidebar_position(gtk::PackType::End);
+            split.connect_show_sidebar_changed({
+                let weak = self.downgrade();
+                move |view, shown| {
+                    // A split view with no playlist beside it opening or closing says nothing about the playlist.
+                    if view.sidebar().is_none() {
+                        return;
+                    }
+                    if let Some(window) = weak.upgrade() {
+                        window.imp().playlist_shown.set(shown);
+                    }
+                }
+            });
+        }
+        browse.bind_property("collapsed", &viewer, "collapsed").sync_create().build();
+        self.place_playlist();
+    }
+
+    /// Puts the playlist's sidebar in the split view of the page on show, open or closed as it was, and takes it out of
+    /// the other. While the playlist is in a window of its own, neither split view holds it.
+    fn place_playlist(&self) {
+        let imp = self.imp();
+        let Some(panel) = imp.playlist_panel.get() else { return };
+        let active = self.active_playlist_split();
+        let browse = (*imp.playlist_split).clone();
+        let viewer = imp.viewer.playlist_split();
+        let idle = if active == browse { viewer } else { browse };
+        idle.set_sidebar(None::<&gtk::Widget>);
+        idle.set_show_sidebar(false);
+        if imp.playlist_window.borrow().is_some() {
+            active.set_sidebar(None::<&gtk::Widget>);
+            return;
+        }
+        let content = panel.content();
+        if let Some(parent) = content.parent().and_downcast::<gtk::Box>() {
+            parent.remove(content);
+        }
+        active.set_sidebar(Some(content));
+        active.set_show_sidebar(imp.playlist_shown.get());
+    }
+
+    /// Takes the playlist out of both split views, so it can be put in a window of its own.
+    fn clear_playlist_sidebars(&self) {
+        let imp = self.imp();
+        for split in [(*imp.playlist_split).clone(), imp.viewer.playlist_split()] {
+            split.set_sidebar(None::<&gtk::Widget>);
+            split.set_show_sidebar(false);
+        }
     }
 
     /// Shuffles the order the playlist plays in, or puts back the order its items were made in, and shows the change.
@@ -1215,7 +1283,7 @@ impl Window {
         let imp = self.imp();
         let Some(panel) = imp.playlist_panel.get() else { return };
         let content = panel.content();
-        imp.playlist_side.remove(content);
+        self.clear_playlist_sidebars();
         let holder = gtk::Box::new(gtk::Orientation::Vertical, 0);
         holder.append(content);
 
@@ -1243,7 +1311,6 @@ impl Window {
             glib::Propagation::Proceed
         });
         panel.set_detached(true);
-        imp.playlist_split.set_show_sidebar(false);
         gtk::prelude::GtkWindowExt::present(&window);
         imp.playlist_window.replace(Some(window));
     }
@@ -1265,9 +1332,8 @@ impl Window {
         if let Some(parent) = content.parent().and_downcast::<gtk::Box>() {
             parent.remove(content);
         }
-        imp.playlist_side.append(content);
         panel.set_detached(false);
-        imp.playlist_split.set_show_sidebar(true);
+        self.place_playlist();
     }
 
     /// Asks for a playlist file, and loads it.

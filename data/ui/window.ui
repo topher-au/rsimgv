@@ -13,12 +13,6 @@
     <property name="content">
       <object class="GtkOverlay" id="message_layer">
         <property name="child">
-      <object class="RsimgvOverlaySplitView" id="playlist_split">
-        <child type="sidebar">
-          <!-- The playlist is the sidebar on the opposite side from the browse split's, and stays up over the viewer too. -->
-          <object class="GtkBox" id="playlist_side"/>
-        </child>
-        <child type="content">
       <object class="GtkStack" id="pages">
         <child>
           <object class="RsimgvOverlaySplitView" id="split">
@@ -299,8 +293,9 @@
               </object>
             </child>
             <property name="content">
-              <object class="GtkBox" id="content_body">
-                <child>
+              <!-- The playlist is a sidebar below the header, on the opposite side from the browse split's. -->
+              <object class="RsimgvOverlaySplitView" id="playlist_split">
+                <child type="content">
                   <object class="AdwToolbarView">
                 <property name="hexpand">true</property>
                 <child type="bottom">
@@ -323,8 +318,6 @@
         </child>
         <child>
           <object class="RsimgvMediaViewer" id="viewer"/>
-        </child>
-      </object>
         </child>
       </object>
         </property>

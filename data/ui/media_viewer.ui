@@ -96,6 +96,11 @@
       </object>
     </child>
     <child>
+      <!-- The playlist is a sidebar below the header, on the opposite side from the browse split's. The window fills it. -->
+      <object class="RsimgvOverlaySplitView" id="playlist_split">
+        <property name="hexpand">true</property>
+        <property name="vexpand">true</property>
+        <child type="content">
       <object class="GtkBox" id="body">
     <child>
       <object class="GtkOverlay" id="overlay">
@@ -134,6 +139,8 @@
         </child>
       </object>
     </child>
+      </object>
+        </child>
       </object>
     </child>
     <child>

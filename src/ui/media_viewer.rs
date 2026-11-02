@@ -20,6 +20,7 @@ use crate::file_settings::FileSettings;
 use crate::fs::metadata::MediaInfo;
 use crate::fs::thumbnail::Pixels;
 use super::media_controls::MediaControls;
+use super::overlay_split_view::OverlaySplitView;
 use super::seek_overlay::{SeekOptions, SeekOverlay};
 use super::thumbnail_bar::ThumbnailBar;
 
@@ -235,6 +236,8 @@ mod imp {
         pub header_dock: TemplateChild<gtk::Box>,
         #[template_child]
         pub body: TemplateChild<gtk::Box>,
+        #[template_child]
+        pub playlist_split: TemplateChild<OverlaySplitView>,
         #[template_child]
         pub pin_button: TemplateChild<gtk::ToggleButton>,
         #[template_child]
@@ -513,6 +516,11 @@ glib::wrapper! {
 }
 
 impl MediaViewer {
+    /// The split view around the picture, whose sidebar holds the playlist while the viewer is shown.
+    pub fn playlist_split(&self) -> OverlaySplitView {
+        self.imp().playlist_split.clone()
+    }
+
     /// Shows the item at `index` of `paths`, the folder's pictures and videos in display order.
     pub fn show(&self, paths: Vec<PathBuf>, index: usize) {
         self.imp().thumbnail_bar.set_paths(&paths);

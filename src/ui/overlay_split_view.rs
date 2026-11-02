@@ -117,6 +117,7 @@ mod imp {
                         .maximum(2000)
                         .default_value(480)
                         .build(),
+                    glib::ParamSpecBoolean::builder("collapsed").build(),
                 ]
             });
             PROPERTIES.as_ref()
@@ -236,6 +237,10 @@ mod imp {
             match id {
                 1 => self.min_sidebar_width.set(value.get().unwrap_or(180)),
                 2 => self.max_sidebar_width.set(value.get().unwrap_or(480)),
+                3 => {
+                    self.obj().set_collapsed(value.get().unwrap_or(false));
+                    return;
+                }
                 _ => unimplemented!(),
             }
             self.obj().queue_resize();
@@ -245,6 +250,7 @@ mod imp {
             match id {
                 1 => self.min_sidebar_width.get().to_value(),
                 2 => self.max_sidebar_width.get().to_value(),
+                3 => self.collapsed.get().to_value(),
                 _ => unimplemented!(),
             }
         }
@@ -366,6 +372,7 @@ impl OverlaySplitView {
             self.set_show_sidebar_inner(!collapsed, false);
         }
         self.queue_resize();
+        self.notify("collapsed");
     }
 
     pub fn show_sidebar(&self) -> bool {
