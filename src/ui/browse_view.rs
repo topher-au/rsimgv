@@ -262,6 +262,13 @@ fn wanted_for(view: &BrowseView, cell: &gtk::Box, path: &Path) -> impl Fn() -> b
     }
 }
 
+/// Whether a thumbnail requested at item size `size` for the item at `path` is still wanted: as `wanted_for`, and the
+/// items are still that size. A thumbnail made for an earlier size would otherwise be shown over the new one.
+fn wanted_at(view: &BrowseView, cell: &gtk::Box, path: &Path, size: i32) -> impl Fn() -> bool + 'static {
+    let (view_weak, wanted) = (view.downgrade(), wanted_for(view, cell, path));
+    move || wanted() && view_weak.upgrade().is_some_and(|view| view.item_size() == size)
+}
+
 /// The image in a cell's visual part.
 fn icon_of(cell: &gtk::Box) -> Option<gtk::Image> {
     cell.first_child().and_then(|visual| visual.first_child()).and_downcast::<gtk::Image>()
@@ -286,7 +293,7 @@ fn request_thumbnail(
         modified_secs(entry),
         media,
         ThumbnailSize::for_pixels(size),
-        wanted_for(view, cell, &path),
+        wanted_at(view, cell, &path, size),
         move |texture| {
             if let Some(icon) = icon.upgrade() {
                 icon.set_pixel_size(size);
@@ -522,7 +529,7 @@ fn request_photo(view: &BrowseView, cell: &gtk::Box, icon: &gtk::Image, scattere
         *modified,
         *kind,
         ThumbnailSize::for_pixels(size),
-        wanted_for(view, cell, folder),
+        wanted_at(view, cell, folder, size),
         move |texture| {
             scattered.set_photo(index, texture, turn);
             if let Some(icon) = icon.upgrade() {
@@ -1963,7 +1970,7 @@ impl BrowseView {
             let (path, modified, _, kind) = &cycle.media[offset + slot];
             let turn = photo_turn(path);
             let preload = preload.clone();
-            Thumbnails::shared().request_still(
+            Thumbnails::shared().request_still_or_failed(
                 path,
                 *modified,
                 *kind,
@@ -1971,7 +1978,10 @@ impl BrowseView {
                 wanted_for(self, cell, &cycle.folder),
                 move |texture| {
                     let mut preload = preload.borrow_mut();
-                    preload.page[slot] = Some((texture.clone(), turn));
+                    // A picture that cannot be made leaves its slot empty, but still counts as made, so the cycle moves on.
+                    if let Some(texture) = texture {
+                        preload.page[slot] = Some((texture.clone(), turn));
+                    }
                     preload.remaining -= 1;
                 },
             );
@@ -2038,14 +2048,23 @@ impl BrowseView {
         }));
         let view = self.downgrade();
         let weak_cell = cell.downgrade();
+        // The frames are wanted only while this hover lasts: once the pointer has moved on, they are not made.
+        let still_wanted = wanted_for(self, cell, &path);
+        let hover_view = self.downgrade();
         Thumbnails::shared().request_frames(
             &path,
             modified_secs(&entry),
             ThumbnailSize::for_pixels(self.item_size()),
-            wanted_for(self, cell, &path),
+            move || {
+                still_wanted()
+                    && hover_view.upgrade().is_some_and(|view| is_current_hover(&view.imp().hovered.borrow(), generation))
+            },
             move |frames| {
                 let (Some(view), Some(cell)) = (view.upgrade(), weak_cell.upgrade()) else { return };
-                view.start_playing(&cell, generation, frames.to_vec());
+                // Empty when the frames cannot be made, such as a video that ffmpeg cannot read.
+                if !frames.is_empty() {
+                    view.start_playing(&cell, generation, frames.to_vec());
+                }
             },
         );
     }

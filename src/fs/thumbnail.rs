@@ -10,7 +10,10 @@
 //! wants any more is dropped before it runs.
 
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::io::Read;
+use std::process::Stdio;
+use std::time::{Duration, Instant};
 use std::fs::DirBuilder;
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
@@ -29,6 +32,10 @@ const MAX_BYTES: usize = 256 * 1024 * 1024;
 pub const SIZES: [i32; 7] = [32, 64, 128, 256, 512, 1024, 2048];
 /// Most frames in a video's hover sequence.
 pub const MAX_FRAMES: usize = 10;
+/// Frame jobs made at the same time, so that they leave room for stills.
+const MAX_FRAME_JOBS: usize = 1;
+/// How long `ffmpeg` or `ffprobe` may run on one file before it is stopped.
+const TOOL_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// A thumbnail size, in pixels, one of `SIZES`.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -97,6 +104,10 @@ struct Inner {
     waiters: RefCell<HashMap<Key, Vec<Waiter>>>,
     queue: RefCell<VecDeque<Key>>,
     running: Cell<usize>,
+    /// How many of the running jobs are frame jobs.
+    running_frames: Cell<usize>,
+    /// The things that could not be made, so they are not tried again.
+    failed: RefCell<HashSet<Key>>,
 }
 
 thread_local! {
@@ -125,7 +136,7 @@ impl Thumbnails {
     }
 
     /// Calls `on_ready` with the still thumbnail of the file at `path`, modified at `mtime`, once it is made.
-    /// A thumbnail already made is given at once.
+    /// A thumbnail already made is given at once. Nothing is called if it cannot be made.
     pub fn request_still(
         &self,
         path: &Path,
@@ -135,8 +146,26 @@ impl Thumbnails {
         wanted: impl Fn() -> bool + 'static,
         on_ready: impl FnOnce(&gdk::Texture) + 'static,
     ) {
+        self.request_still_or_failed(path, mtime, media, size, wanted, move |texture| {
+            if let Some(texture) = texture {
+                on_ready(texture);
+            }
+        });
+    }
+
+    /// Like `request_still`, but `on_done` is also called with `None` when the thumbnail cannot be made, so the
+    /// caller can count it as done.
+    pub fn request_still_or_failed(
+        &self,
+        path: &Path,
+        mtime: i64,
+        media: Media,
+        size: Size,
+        wanted: impl Fn() -> bool + 'static,
+        on_done: impl FnOnce(Option<&gdk::Texture>) + 'static,
+    ) {
         let key = key(path, mtime, size, Job::Still(media));
-        self.request(key, wanted, move |textures| on_ready(&textures[0]));
+        self.request(key, wanted, move |textures| on_done(textures.first()));
     }
 
     /// Calls `on_ready` with the frames of the video at `path`, spread through it, once they are made.
@@ -154,6 +183,10 @@ impl Thumbnails {
     fn request(&self, key: Key, wanted: impl Fn() -> bool + 'static, on_ready: impl FnOnce(&[gdk::Texture]) + 'static) {
         if let Some(textures) = self.inner.textures.borrow().get(&key).cloned() {
             on_ready(&textures);
+            return;
+        }
+        if self.inner.failed.borrow().contains(&key) {
+            on_ready(&[]);
             return;
         }
         let waiter = Waiter {
@@ -183,16 +216,26 @@ impl Thumbnails {
         while self.inner.running.get() < MAX_JOBS {
             let Some(key) = self.next_wanted() else { return };
             self.inner.running.set(self.inner.running.get() + 1);
+            if key.job == Job::Frames {
+                self.inner.running_frames.set(self.inner.running_frames.get() + 1);
+            }
             glib::spawn_future_local(run(self.clone(), key));
         }
     }
 
     /// The newest queued job that something on screen still wants. The queue is newest first: items
     /// that just came into view are requested last, so they are made first. A job nothing wants any
-    /// more, because its item has scrolled away, is dropped without being made.
+    /// more, because its item has scrolled away, is dropped without being made. Frame jobs take at most
+    /// `MAX_FRAME_JOBS` of the slots, so the stills of items on screen are not held up behind them.
     fn next_wanted(&self) -> Option<Key> {
-        loop {
-            let key = self.inner.queue.borrow_mut().pop_back()?;
+        let frames_full = self.inner.running_frames.get() >= MAX_FRAME_JOBS;
+        let mut skipped_frames = Vec::new();
+        let found = loop {
+            let Some(key) = self.inner.queue.borrow_mut().pop_back() else { break None };
+            if frames_full && key.job == Job::Frames {
+                skipped_frames.push(key);
+                continue;
+            }
             let wanted = self
                 .inner
                 .waiters
@@ -200,23 +243,40 @@ impl Thumbnails {
                 .get(&key)
                 .is_some_and(|list| list.iter().any(|waiter| (waiter.wanted)()));
             if wanted {
-                return Some(key);
+                break Some(key);
             }
             self.inner.waiters.borrow_mut().remove(&key);
+        };
+        // The skipped frame jobs go back where they were, so they are still the next frames made.
+        let mut queue = self.inner.queue.borrow_mut();
+        for key in skipped_frames.into_iter().rev() {
+            queue.push_back(key);
         }
+        found
     }
 
-    /// Hands what was made to the requests that still want it.
+    /// Hands what was made to the requests that still want it. A job that could not be made is remembered, so
+    /// it is not tried again, and its requests are told there is nothing.
     fn finish(&self, key: Key, made: Option<Vec<Pixels>>) {
         self.inner.running.set(self.inner.running.get() - 1);
+        if key.job == Job::Frames {
+            self.inner.running_frames.set(self.inner.running_frames.get() - 1);
+        }
         let waiters = self.inner.waiters.borrow_mut().remove(&key).unwrap_or_default();
-        if let Some(made) = made {
-            let textures: Vec<gdk::Texture> = made.iter().map(Pixels::texture).collect();
-            self.remember(key, textures.clone());
-            for waiter in waiters {
-                if (waiter.wanted)() {
-                    (waiter.on_ready)(&textures);
-                }
+        let textures: Vec<gdk::Texture> = match made {
+            Some(made) => {
+                let textures: Vec<gdk::Texture> = made.iter().map(Pixels::texture).collect();
+                self.remember(key, textures.clone());
+                textures
+            }
+            None => {
+                self.inner.failed.borrow_mut().insert(key);
+                Vec::new()
+            }
+        };
+        for waiter in waiters {
+            if (waiter.wanted)() {
+                (waiter.on_ready)(&textures);
             }
         }
         self.start_jobs();
@@ -342,41 +402,63 @@ fn still_pixbuf(path: &Path, size: Size, media: Media) -> Option<gdk_pixbuf::Pix
 /// The frame of the video at `path` at `seconds`, scaled to fit the size class.
 fn frame_pixbuf(path: &Path, seconds: f64, size: Size) -> Option<gdk_pixbuf::Pixbuf> {
     let pixels = size.pixels();
-    let output = Command::new("ffmpeg")
-        .args(["-v", "error", "-ss", &format!("{seconds:.3}"), "-i"])
-        .arg(path)
-        .args([
-            "-frames:v",
-            "1",
-            "-vf",
-            &format!("scale={pixels}:{pixels}:force_original_aspect_ratio=decrease"),
-            "-f",
-            "image2pipe",
-            "-c:v",
-            "png",
-            "-",
-        ])
-        .output()
-        .ok()?;
-    if !output.status.success() || output.stdout.is_empty() {
+    let png = run_tool(
+        Command::new("ffmpeg")
+            .args(["-v", "error", "-ss", &format!("{seconds:.3}"), "-i"])
+            .arg(path)
+            .args([
+                "-frames:v",
+                "1",
+                "-vf",
+                &format!("scale={pixels}:{pixels}:force_original_aspect_ratio=decrease"),
+                "-f",
+                "image2pipe",
+                "-c:v",
+                "png",
+                "-",
+            ]),
+    )?;
+    if png.is_empty() {
         return None;
     }
-    let stream = gio::MemoryInputStream::from_bytes(&glib::Bytes::from_owned(output.stdout));
+    let stream = gio::MemoryInputStream::from_bytes(&glib::Bytes::from_owned(png));
     gdk_pixbuf::Pixbuf::from_stream(&stream, None::<&gio::Cancellable>).ok()
 }
 
 /// The length of the video at `path` in seconds, if `ffprobe` knows it.
 fn video_duration(path: &Path) -> Option<f64> {
-    let output = Command::new("ffprobe")
-        .args(["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0"])
-        .arg(path)
-        .output()
-        .ok()?;
-    String::from_utf8_lossy(&output.stdout)
+    let output = run_tool(Command::new("ffprobe").args(["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0"]).arg(path))?;
+    String::from_utf8_lossy(&output)
         .trim()
         .parse::<f64>()
         .ok()
         .filter(|seconds| *seconds > 0.0)
+}
+
+/// The standard output of `command` if it succeeds within `TOOL_TIMEOUT`. A run that takes longer is killed, so a
+/// stalled file does not hold its job slot for good.
+fn run_tool(command: &mut Command) -> Option<Vec<u8>> {
+    let mut child = command.stdout(Stdio::piped()).stderr(Stdio::null()).spawn().ok()?;
+    let mut stdout = child.stdout.take()?;
+    // The output is read while the program runs, so a large frame does not fill the pipe and stall it.
+    let reader = std::thread::spawn(move || {
+        let mut data = Vec::new();
+        stdout.read_to_end(&mut data).map(|_| data)
+    });
+    let deadline = Instant::now() + TOOL_TIMEOUT;
+    let status = loop {
+        if let Some(status) = child.try_wait().ok()? {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let data = reader.join().ok()?.ok()?;
+    status.success().then_some(data)
 }
 
 /// The pixels at `file` if they were made from the file at `mtime`. Otherwise the pixbuf from `produce`, saved
