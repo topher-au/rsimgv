@@ -78,6 +78,7 @@ const LAYOUT: &[(&str, &str, &str)] = &[
     ("window-height", "window", "height"),
     ("window-maximized", "window", "maximized"),
     ("sidebar-width", "window", "sidebar-width"),
+    ("folder-end", "navigation", "folder-end"),
     ("start-location", "start", "location"),
     ("start-directory", "start", "directory"),
     ("last-directory", "start", "last-directory"),

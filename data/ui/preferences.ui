@@ -172,6 +172,26 @@
                                 </child>
                               </object>
                             </child>
+                            <child>
+                              <object class="AdwPreferencesGroup">
+                                <property name="title">Folder Navigation</property>
+                                <child>
+                                  <object class="AdwComboRow" id="folder_end_row">
+                                    <property name="title">When reaching the end</property>
+                                    <property name="subtitle">What stepping past the first or last item in the viewer does</property>
+                                    <property name="model">
+                                      <object class="GtkStringList">
+                                        <items>
+                                          <item>Stop</item>
+                                          <item>Loop folder</item>
+                                          <item>Go to next folder</item>
+                                        </items>
+                                      </object>
+                                    </property>
+                                  </object>
+                                </child>
+                              </object>
+                            </child>
                           </object>
                         </child>
                         <child>

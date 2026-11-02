@@ -290,6 +290,15 @@
       <default>'ascending'</default>
       <summary>Whether the browse view sorts ascending or descending</summary>
     </key>
+    <key name="folder-end" type="s">
+      <choices>
+        <choice value="stop"/>
+        <choice value="loop"/>
+        <choice value="next-folder"/>
+      </choices>
+      <default>'stop'</default>
+      <summary>What stepping past either end of a folder in the viewer does: stop, loop around the folder, or go on to the next folder with media</summary>
+    </key>
     <key name="info-layout" type="s">
       <choices>
         <choice value="disabled"/>

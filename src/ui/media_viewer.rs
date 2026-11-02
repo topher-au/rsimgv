@@ -184,6 +184,31 @@ pub fn neighbour(index: usize, len: usize, forward: bool) -> Option<usize> {
     if forward { (index + 1 < len).then_some(index + 1) } else { index.checked_sub(1) }
 }
 
+/// What stepping past the first or last item does.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FolderEnd {
+    #[default]
+    Stop,
+    Loop,
+    NextFolder,
+}
+
+impl FolderEnd {
+    /// The behaviour a setting value names, or the default for any other.
+    pub fn from_name(name: &str) -> Self {
+        match name {
+            "loop" => Self::Loop,
+            "next-folder" => Self::NextFolder,
+            _ => Self::Stop,
+        }
+    }
+}
+
+/// The item a step moves to in the folder: its neighbour or, when looping, the item at the other end.
+fn step_index(index: usize, len: usize, forward: bool, end: FolderEnd) -> Option<usize> {
+    neighbour(index, len, forward).or_else(|| (end == FolderEnd::Loop && len > 1).then(|| if forward { 0 } else { len - 1 }))
+}
+
 mod imp {
     use super::*;
 
@@ -268,6 +293,8 @@ mod imp {
         /// Whether a video starts again when it ends, and whether the next item plays when it ends instead.
         pub(super) repeat: Cell<bool>,
         pub(super) auto_advance: Cell<bool>,
+        /// What stepping past the first or last item does.
+        pub(super) folder_end: Cell<FolderEnd>,
         /// Whether videos are played by libmpv rather than GTK's own media backend.
         pub(super) use_mpv: Cell<bool>,
         /// Extra mpv command line options for the mpv player.
@@ -456,7 +483,7 @@ mod imp {
         fn signals() -> &'static [Signal] {
             use std::sync::LazyLock;
             static SIGNALS: LazyLock<Vec<Signal>> =
-                LazyLock::new(|| vec![Signal::builder("back-requested").build(), Signal::builder("item-changed").param_types([String::static_type()]).build(), Signal::builder("file-dropped").param_types([String::static_type()]).build(), Signal::builder("thumbnail-side-requested").param_types([String::static_type()]).build(), Signal::builder("thumbnail-size-requested").param_types([i32::static_type()]).build()]);
+                LazyLock::new(|| vec![Signal::builder("back-requested").build(), Signal::builder("item-changed").param_types([String::static_type()]).build(), Signal::builder("file-dropped").param_types([String::static_type()]).build(), Signal::builder("thumbnail-side-requested").param_types([String::static_type()]).build(), Signal::builder("thumbnail-size-requested").param_types([i32::static_type()]).build(), Signal::builder("folder-end-reached").param_types([bool::static_type()]).build()]);
             SIGNALS.as_ref()
         }
     }
@@ -590,6 +617,30 @@ impl MediaViewer {
         })
     }
 
+    /// Calls `callback` with the direction of a step past the end of the folder, when that goes on to the next folder.
+    pub fn connect_folder_end_reached<F: Fn(&Self, bool) + 'static>(&self, callback: F) -> glib::SignalHandlerId {
+        self.connect_local("folder-end-reached", false, move |values| {
+            let viewer = values[0].get::<MediaViewer>().expect("viewer argument");
+            let forward = values[1].get::<bool>().expect("direction argument");
+            callback(&viewer, forward);
+            None
+        })
+    }
+
+    /// Sets what stepping past the first or last item does.
+    pub fn set_folder_end(&self, end: FolderEnd) {
+        let imp = self.imp();
+        imp.folder_end.set(end);
+        self.update_navigation(imp.index.get(), imp.paths.borrow().len());
+    }
+
+    /// Enables the previous and next controls for the steps that can be taken from the item at `index`.
+    fn update_navigation(&self, index: usize, len: usize) {
+        let end = self.imp().folder_end.get();
+        let can_step = |forward| end == FolderEnd::NextFolder || step_index(index, len, forward, end).is_some();
+        self.imp().controls.set_navigation(can_step(false), can_step(true));
+    }
+
     /// Replaces the items with `paths`, as the folder they come from has changed. The item shown stays shown, at
     /// its new place; if it is gone, the item at its place takes its place instead.
     pub fn update_paths(&self, paths: Vec<PathBuf>) {
@@ -604,7 +655,7 @@ impl MediaViewer {
                 imp.index.set(index);
                 imp.thumbnail_bar.select(index);
                 imp.position.set_label(&format!("{} / {}", index + 1, len));
-                imp.controls.set_navigation(neighbour(index, len, false).is_some(), neighbour(index, len, true).is_some());
+                self.update_navigation(index, len);
                 self.refresh_status();
             }
             None if len > 0 => self.load(imp.index.get().min(len - 1)),
@@ -1183,7 +1234,7 @@ impl MediaViewer {
         imp.filename.set_label(&name);
         imp.position.set_label(&format!("{} / {}", index + 1, len));
         self.refresh_status();
-        imp.controls.set_navigation(neighbour(index, len, false).is_some(), neighbour(index, len, true).is_some());
+        self.update_navigation(index, len);
 
         // The file's settings are read on a worker thread: the moviehash reads the file, and the settings file is parsed.
         let weak = self.downgrade();
@@ -1319,7 +1370,8 @@ impl MediaViewer {
         }
         let paths = imp.paths.borrow();
         let len = paths.len();
-        let ahead: Vec<PathBuf> = [neighbour(index, len, false), neighbour(index, len, true)]
+        let end = imp.folder_end.get();
+        let ahead: Vec<PathBuf> = [step_index(index, len, false, end), step_index(index, len, true, end)]
             .into_iter()
             .flatten()
             .filter_map(|neighbour_index| paths.get(neighbour_index).cloned())
@@ -1383,12 +1435,15 @@ impl MediaViewer {
         }
     }
 
-    /// Moves to the item before or after the one shown, if there is one.
+    /// Moves to the item before or after the one shown. Past the first or last item, what happens is up to `folder_end`.
     pub fn step(&self, forward: bool) {
         let imp = self.imp();
         let len = imp.paths.borrow().len();
-        if let Some(index) = neighbour(imp.index.get(), len, forward) {
-            self.load(index);
+        let end = imp.folder_end.get();
+        match step_index(imp.index.get(), len, forward, end) {
+            Some(index) => self.load(index),
+            None if end == FolderEnd::NextFolder => self.emit_by_name::<()>("folder-end-reached", &[&forward]),
+            None => {}
         }
     }
 
@@ -1535,6 +1590,19 @@ pub(crate) mod tests {
         assert!(imp.prefetched.borrow().is_empty(), "a decode under way is not kept");
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn steps_past_the_end_follow_the_setting() {
+        assert_eq!(step_index(2, 3, true, FolderEnd::Stop), None);
+        assert_eq!(step_index(2, 3, true, FolderEnd::NextFolder), None, "the window moves to the next folder");
+        assert_eq!(step_index(2, 3, true, FolderEnd::Loop), Some(0));
+        assert_eq!(step_index(0, 3, false, FolderEnd::Loop), Some(2));
+        assert_eq!(step_index(1, 3, true, FolderEnd::Loop), Some(2), "looping changes only the ends");
+        assert_eq!(step_index(0, 1, true, FolderEnd::Loop), None, "a lone item has nothing to loop to");
+        assert_eq!(step_index(0, 0, true, FolderEnd::Loop), None);
+        assert_eq!(FolderEnd::from_name("next-folder"), FolderEnd::NextFolder);
+        assert_eq!(FolderEnd::from_name("unknown"), FolderEnd::Stop);
     }
 
     #[test]

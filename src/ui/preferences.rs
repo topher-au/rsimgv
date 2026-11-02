@@ -109,6 +109,8 @@ mod imp {
         #[template_child]
         pub start_directory_button: TemplateChild<gtk::Button>,
         #[template_child]
+        pub folder_end_row: TemplateChild<adw::ComboRow>,
+        #[template_child]
         pub open_fullscreen_row: TemplateChild<adw::SwitchRow>,
         #[template_child]
         pub auto_hide_cursor_row: TemplateChild<adw::SwitchRow>,
@@ -567,7 +569,8 @@ fn bind_switches(settings: &gio::Settings, imp: &imp::PreferencesDialog) {
 
 /// Binds each combo row to a string setting whose value is one of `choices`, by position in the row.
 fn bind_choices(settings: &gio::Settings, imp: &imp::PreferencesDialog) {
-    let combos: [(&str, &glib::Object, &[&str]); 15] = [
+    let combos: [(&str, &glib::Object, &[&str]); 16] = [
+        ("folder-end", imp.folder_end_row.upcast_ref(), &["stop", "loop", "next-folder"]),
         ("mouse-back", imp.back_button_row.upcast_ref(), &["back", "up", "previous", "next", "forward", "none"]),
         ("mouse-forward", imp.forward_button_row.upcast_ref(), &["back", "up", "previous", "next", "forward", "none"]),
         ("scroll-image", imp.scroll_image_row.upcast_ref(), &["ctrl-zoom", "zoom", "step", "none"]),

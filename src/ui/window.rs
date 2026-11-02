@@ -640,6 +640,7 @@ impl Window {
         viewer.set_status_bar(settings.boolean("viewer-status-bar"));
         viewer.set_status_overlay_position(&settings.string("viewer-status-overlay-position"));
         viewer.set_svp(crate::svp::Config::from_settings(settings));
+        viewer.set_folder_end(super::media_viewer::FolderEnd::from_name(&settings.string("folder-end")));
         self.update_title();
     }
 
@@ -1129,7 +1130,7 @@ impl Window {
     pub fn step_media_folder(&self, forward: bool) -> Option<PathBuf> {
         let current = self.current_path()?;
         let target = walk_folder(&current, self.show_hidden(), forward, true)?;
-        self.show_media_folder(target, forward)
+        self.show_media_folder(target, forward, false)
     }
 
     /// Shows the next folder, or the previous one, in depth-first order of the folder tree. Returns the folder shown,
@@ -1143,13 +1144,18 @@ impl Window {
     /// Steps to the next or previous folder with media, as `step_media_folder` does, for the keys. The tree is walked
     /// on a worker thread, so a large or slow tree does not freeze the window while it is searched.
     pub fn step_media_folder_later(&self, forward: bool) {
+        self.walk_media_folder_later(forward, false);
+    }
+
+    /// Finds the next or previous folder with media on a worker thread and shows it, as `show_media_folder` does.
+    fn walk_media_folder_later(&self, forward: bool, viewer_last: bool) {
         let Some(current) = self.current_path() else { return };
         let show_hidden = self.show_hidden();
         let weak = self.downgrade();
         glib::spawn_future_local(async move {
             let walked = gio::spawn_blocking(move || walk_folder(&current, show_hidden, forward, true)).await;
             if let (Some(window), Some(target)) = (weak.upgrade(), walked.ok().flatten()) {
-                window.show_media_folder(target, forward);
+                window.show_media_folder(target, forward, viewer_last);
             }
         });
     }
@@ -1172,10 +1178,10 @@ impl Window {
         self.imp().settings.get().is_some_and(|settings| settings.boolean("show-hidden"))
     }
 
-    /// Opens the folder `target` that a media-folder step found: in the viewer its first picture or video is shown,
-    /// and while browsing its first or last is selected, once the folder has listed. Returns the folder moved to, or
-    /// `None` when the window could not move there.
-    fn show_media_folder(&self, target: PathBuf, forward: bool) -> Option<PathBuf> {
+    /// Opens the folder `target` that a media-folder step found: in the viewer its first picture or video is shown, or
+    /// its last with `viewer_last`, and while browsing its first or last is selected, once the folder has listed.
+    /// Returns the folder moved to, or `None` when the window could not move there.
+    fn show_media_folder(&self, target: PathBuf, forward: bool, viewer_last: bool) -> Option<PathBuf> {
         // The arrangement waits for the folder to list, so it is set before the folder is shown.
         let viewer = self.viewer_is_open();
         let last = !forward && !viewer;
@@ -1184,8 +1190,9 @@ impl Window {
         if let Some(view) = &view {
             view.set_pending(&target, move |view: &BrowseView| {
                 if viewer {
-                    let first = view.media_paths().into_iter().next();
-                    if let (Some(window), Some(path)) = (weak.upgrade(), first) {
+                    let mut paths = view.media_paths();
+                    let item = if viewer_last { paths.pop() } else { paths.into_iter().next() };
+                    if let (Some(window), Some(path)) = (weak.upgrade(), item) {
                         window.open_viewer(view, &path);
                     }
                 } else {
@@ -1489,6 +1496,15 @@ impl Window {
                 }
             }
         });
+        imp.viewer.connect_folder_end_reached({
+            let weak = weak.clone();
+            move |_, forward| {
+                if let Some(window) = weak.upgrade() {
+                    // Stepping back past the first item goes on from the last item of the folder before.
+                    window.walk_media_folder_later(forward, !forward);
+                }
+            }
+        });
         imp.navigation.connect_open_location({
             let weak = weak.clone();
             move |_, path| {
@@ -1766,7 +1782,8 @@ const WHEEL_VOLUME_STEP: f64 = 5.0;
 const WHEEL_SEEK_STEP: f64 = 5.0;
 
 /// The settings the viewer and the window title are set from, applied again whenever one changes.
-const VIEWER_SETTINGS: [&str; 20] = [
+const VIEWER_SETTINGS: [&str; 21] = [
+    "folder-end",
     "zoom-step",
     "expand-up-to-factor",
     "keep-fit-mode",
