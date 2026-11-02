@@ -1188,7 +1188,7 @@ impl Window {
             return;
         }
         let revealer = &imp.playlist_revealer;
-        revealer.set_reveal_child(!revealer.reveal_child());
+        revealer.set_reveal_child(!revealer.reveals_child());
     }
 
     /// Shuffles the order the playlist plays in, or puts back the order its items were made in, and shows the change.
@@ -1230,7 +1230,7 @@ impl Window {
         window.set_title(Some("Playlist"));
         window.set_default_size(320, 600);
         window.set_transient_for(Some(self.upcast_ref::<gtk::Window>()));
-        window.set_content(Some(&toolbar));
+        adw::prelude::AdwWindowExt::set_content(&window, Some(&toolbar));
         window.insert_action_group("win", Some(self));
         let weak = self.downgrade();
         window.connect_close_request(move |_| {

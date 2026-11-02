@@ -424,9 +424,10 @@ mod tests {
         assert_eq!(Playlist::from_saved_bytes(b"#X-RSIMGV-CURRENT:9\n/a\n", Path::new("/")).current(), None, "out of range");
     }
 
-    fn counting(bound: usize) -> impl FnMut(usize) -> usize {
+    /// A deterministic source of numbers below each bound it is asked for.
+    fn counting() -> impl FnMut(usize) -> usize {
         let mut calls = 0;
-        move |_| {
+        move |bound| {
             calls += 1;
             (calls * 7) % bound
         }
@@ -436,7 +437,7 @@ mod tests {
     fn shuffling_keeps_the_items_in_their_own_order() {
         let mut list = playlist(&["a", "b", "c", "d", "e"]);
         list.set_current(3);
-        list.set_shuffled_with(true, counting(100));
+        list.set_shuffled_with(true, counting());
         assert!(list.is_shuffled());
         assert_eq!(list.items(), paths(&["a", "b", "c", "d", "e"]), "the made order is untouched");
         let mut shown = list.order().to_vec();
@@ -449,7 +450,7 @@ mod tests {
     #[test]
     fn turning_shuffle_off_brings_back_the_made_order() {
         let mut list = playlist(&["a", "b", "c"]);
-        list.set_shuffled_with(true, counting(10));
+        list.set_shuffled_with(true, counting());
         list.set_shuffled(false);
         assert!(!list.is_shuffled());
         assert_eq!(list.order(), paths(&["a", "b", "c"]));
@@ -458,7 +459,7 @@ mod tests {
     #[test]
     fn a_change_to_one_order_leaves_the_other_alone() {
         let mut list = playlist(&["a", "b", "c"]);
-        list.set_shuffled_with(true, counting(10));
+        list.set_shuffled_with(true, counting());
         let shuffled = list.order().to_vec();
         assert!(list.move_item(0, 2));
         assert_ne!(list.order(), shuffled.as_slice());
@@ -470,20 +471,21 @@ mod tests {
     #[test]
     fn adding_and_removing_change_both_orders() {
         let mut list = playlist(&["a", "b", "c"]);
-        list.set_shuffled_with(true, counting(10));
+        list.set_shuffled_with(true, counting());
         assert_eq!(list.add(paths(&["d"])), 1);
         assert_eq!(list.order().last(), Some(&PathBuf::from("/d")));
+        let removed = list.order()[1].clone();
         assert!(list.remove_at(1));
         assert_eq!(list.len(), 3);
         list.set_shuffled(false);
-        assert!(!list.contains(Path::new("/b")) && list.order().len() == 3);
-        assert_eq!(list.order(), paths(&["a", "c", "d"]));
+        assert!(!list.contains(&removed), "gone from the made order too");
+        assert_eq!(list.order(), paths(&["a", "b", "c", "d"]).into_iter().filter(|item| *item != removed).collect::<Vec<_>>());
     }
 
     #[test]
     fn stepping_follows_the_shuffled_order() {
         let mut list = playlist(&["a", "b", "c"]);
-        list.set_shuffled_with(true, counting(10));
+        list.set_shuffled_with(true, counting());
         let order = list.order().to_vec();
         list.set_current(0);
         assert_eq!(list.step_index(true), Some(1));
@@ -494,7 +496,7 @@ mod tests {
     #[test]
     fn the_saved_file_keeps_both_orders_and_the_item_shown() {
         let mut list = playlist(&["a", "b", "c", "d"]);
-        list.set_shuffled_with(true, counting(10));
+        list.set_shuffled_with(true, counting());
         list.set_current_path(Path::new("/c"));
         let text = list.to_saved_text();
         assert!(text.contains("#X-RSIMGV-SHUFFLE:"), "{text}");
