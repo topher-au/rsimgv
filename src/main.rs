@@ -21,10 +21,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::time::Duration;
 
+/// The settings about making thumbnails.
+const THUMBNAIL_KEYS: [&str; 2] = ["thumbnail-threads", "thumbnail-cache"];
+
 /// Gives the thumbnails what the settings say about making them.
 fn apply_thumbnail_settings(settings: &gio::Settings) {
     let thumbnails = fs::thumbnail::Thumbnails::shared();
     thumbnails.set_thread_count(settings.int("thumbnail-threads").max(1) as usize);
+    thumbnails.set_disk_cache(settings.boolean("thumbnail-cache"));
 }
 
 /// The settings that decide which IPC transports run, and on which ports.
@@ -119,7 +123,9 @@ fn main() -> glib::ExitCode {
             move |_, _| ipc_server.borrow_mut().apply(&ipc_config(&settings))
         });
     }
-    settings.connect_changed(Some("thumbnail-threads"), |settings, _| apply_thumbnail_settings(settings));
+    for key in THUMBNAIL_KEYS {
+        settings.connect_changed(Some(key), |settings, _| apply_thumbnail_settings(settings));
+    }
     let shutdown_server = ipc_server.clone();
     let startup_settings = settings.clone();
     app.connect_startup(move |app| {

@@ -947,6 +947,12 @@
                                 </property>
                               </object>
                             </child>
+                            <child>
+                              <object class="AdwSwitchRow" id="thumbnail_cache_row">
+                                <property name="title">Enable thumbnail cache</property>
+                                <property name="subtitle">Keeps thumbnails on disk, so they are not made again the next time they are shown</property>
+                              </object>
+                            </child>
                           </object>
                         </child>
                       </object>

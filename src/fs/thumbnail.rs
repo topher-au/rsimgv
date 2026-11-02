@@ -1,6 +1,7 @@
 //! Thumbnails of pictures and videos, kept in the app's own cache (`~/.cache/rsimgv`). A thumbnail is made
 //! on a worker thread at the smallest size that covers the item, and written as a PNG. A picture whose
-//! thumbnail is current for its modification time is not decoded again.
+//! thumbnail is current for its modification time is not decoded again. With the cache turned off, nothing
+//! is read from it or written to it, and thumbnails last only as long as they are in memory.
 //!
 //! A video's still thumbnail is a frame a tenth of the way in. Hovering a video asks for a sequence of up
 //! to `MAX_FRAMES` frames spread through it, cached beside the thumbnails. Frames come from the `ffmpeg`
@@ -119,6 +120,8 @@ struct Inner {
     pool: Option<glib::ThreadPool>,
     /// How many of the running jobs are frame jobs.
     running_frames: Cell<usize>,
+    /// Whether the cache under `root` is used.
+    disk_cache: Cell<bool>,
     /// The things that could not be made, so they are not tried again.
     failed: RefCell<HashSet<Key>>,
 }
@@ -180,6 +183,7 @@ impl Thumbnails {
             inner: Rc::new(Inner {
                 root,
                 max_jobs: Cell::new(DEFAULT_THREADS.min(thread_limit())),
+                disk_cache: Cell::new(true),
                 pool: Some(glib::ThreadPool::shared(None).expect("a shared thread pool does not start any threads yet")),
                 ..Inner::default()
             }),
@@ -191,6 +195,12 @@ impl Thumbnails {
     pub fn set_thread_count(&self, threads: usize) {
         self.inner.max_jobs.set(threads.clamp(1, thread_limit()));
         self.start_jobs();
+    }
+
+    /// Sets whether thumbnails are read from and written to the disk. What is already there is left alone: it is
+    /// current again if the cache is turned back on, and the start-up sweep removes it in time.
+    pub fn set_disk_cache(&self, on: bool) {
+        self.inner.disk_cache.set(on);
     }
 
     /// Calls `on_ready` with the still thumbnail of the file at `path`, modified at `mtime`, once it is made.
@@ -471,9 +481,9 @@ impl Pixels {
 
 /// Makes one job on a worker thread, then shows it on the main loop.
 async fn run(thumbnails: Thumbnails, key: Key) {
-    let root = thumbnails.inner.root.clone();
+    let root = thumbnails.inner.disk_cache.get().then(|| thumbnails.inner.root.clone());
     let work = key.clone();
-    let made = match thumbnails.inner.pool.as_ref().map(|pool| pool.push_future(move || make(&root, &work))) {
+    let made = match thumbnails.inner.pool.as_ref().map(|pool| pool.push_future(move || make(root.as_deref(), &work))) {
         Some(Ok(made)) => made.await.ok().flatten(),
         Some(Err(error)) => {
             eprintln!("rsimgv: cannot start a thumbnail thread: {error}");
@@ -484,15 +494,15 @@ async fn run(thumbnails: Thumbnails, key: Key) {
     thumbnails.finish(key, made);
 }
 
-/// The pixels of a job: from the cache under `root` where they are current, or made and cached now.
-/// `None` if the file cannot be decoded.
-fn make(root: &Path, key: &Key) -> Option<Vec<Pixels>> {
+/// The pixels of a job: from the cache under `root` where they are current, or made and cached now. With no `root`,
+/// they are made without touching the disk. `None` if the file cannot be decoded.
+fn make(root: Option<&Path>, key: &Key) -> Option<Vec<Pixels>> {
     let uri = glib::filename_to_uri(&key.path, None).ok()?;
     let digest = glib::compute_checksum_for_string(glib::ChecksumType::Md5, uri.as_str())?;
     match key.job {
         Job::Still(media) => {
-            let file = root.join(key.size.dir_name()).join(format!("{digest}.png"));
-            let still = cached_or_made(&file, &uri, key.mtime, || still_pixbuf(&key.path, key.size, media))?;
+            let file = root.map(|root| root.join(key.size.dir_name()).join(format!("{digest}.png")));
+            let still = cached_or_made(file.as_deref(), &uri, key.mtime, || still_pixbuf(&key.path, key.size, media))?;
             Some(vec![still])
         }
         Job::Frames => {
@@ -502,9 +512,9 @@ fn make(root: &Path, key: &Key) -> Option<Vec<Pixels>> {
             // A frame that cannot be made is left out, and the others still play.
             let frames: Vec<Pixels> = (0..count)
                 .filter_map(|index| {
-                    let file = root.join("frames").join(key.size.dir_name()).join(format!("{digest}-{index}.png"));
+                    let file = root.map(|root| root.join("frames").join(key.size.dir_name()).join(format!("{digest}-{index}.png")));
                     let at = duration * (index as f64 + 0.5) / count as f64;
-                    cached_or_made(&file, &uri, key.mtime, || frame_pixbuf(&key.path, at, key.size))
+                    cached_or_made(file.as_deref(), &uri, key.mtime, || frame_pixbuf(&key.path, at, key.size))
                 })
                 .collect();
             (!frames.is_empty()).then_some(frames)
@@ -554,8 +564,9 @@ fn frame_pixbuf(path: &Path, seconds: f64, size: Size) -> Option<gdk_pixbuf::Pix
 
 /// The length of the video at `path` in seconds. It is read from the record kept for the video under `root` while the
 /// file has the modification time `mtime`, so a video whose frames are cached is not probed again. Otherwise `ffprobe`
-/// is asked, and the answer is recorded.
-fn duration_of(root: &Path, digest: &str, path: &Path, mtime: i64) -> Option<f64> {
+/// is asked, and the answer is recorded. With no `root`, `ffprobe` is always asked.
+fn duration_of(root: Option<&Path>, digest: &str, path: &Path, mtime: i64) -> Option<f64> {
+    let Some(root) = root else { return video_duration(path) };
     let record = root.join("durations").join(digest);
     if let Ok(text) = std::fs::read_to_string(&record) {
         let mut lines = text.lines();
@@ -627,8 +638,9 @@ pub fn stamp(path: &Path) -> i64 {
 }
 
 /// The pixels at `file` if they were made from the file at `mtime`. Otherwise the pixbuf from `produce`, saved
-/// as a thumbnail with its metadata, and cached at `file`.
-fn cached_or_made(file: &Path, uri: &str, mtime: i64, produce: impl FnOnce() -> Option<gdk_pixbuf::Pixbuf>) -> Option<Pixels> {
+/// as a thumbnail with its metadata, and cached at `file`. With no `file`, just the pixbuf from `produce`.
+fn cached_or_made(file: Option<&Path>, uri: &str, mtime: i64, produce: impl FnOnce() -> Option<gdk_pixbuf::Pixbuf>) -> Option<Pixels> {
+    let Some(file) = file else { return produce().map(|picture| Pixels::from_pixbuf(&picture)) };
     // A cached thumbnail is current only if the file has not changed since it was made. Its time is read from
     // the PNG's text chunks, so the picture is decoded once, when it is shown.
     if let Ok(data) = std::fs::read(file) {
@@ -723,7 +735,7 @@ mod tests {
         let (root, dir) = folder("reuse");
         let path = picture(&dir, 600, 300);
         let key = |mtime| key(&path, mtime, Size::for_pixels(128), Job::Still(Media::Picture));
-        let first = make(&root, &key(1000)).expect("made");
+        let first = make(Some(&root), &key(1000)).expect("made");
         let file = root.join("128").read_dir().unwrap().next().unwrap().unwrap().path();
         let made = gdk_pixbuf::Pixbuf::from_file(&file).unwrap();
         assert!(made.width() <= 128 && made.height() <= 128);
@@ -732,14 +744,31 @@ mod tests {
 
         // Same modification time: the cached file is used, so it is not rewritten.
         let modified = std::fs::metadata(&file).unwrap().modified().unwrap();
-        let again = make(&root, &key(1000)).expect("read");
+        let again = make(Some(&root), &key(1000)).expect("read");
         assert_eq!(first[0].bytes.as_ref(), again[0].bytes.as_ref());
         assert_eq!(std::fs::metadata(&file).unwrap().modified().unwrap(), modified);
 
         // A changed picture makes a new thumbnail.
-        make(&root, &key(2000)).expect("remade");
+        make(Some(&root), &key(2000)).expect("remade");
         let remade = gdk_pixbuf::Pixbuf::from_file(&file).unwrap();
         assert_eq!(remade.option("tEXt::rsimgv::MTime").as_deref(), Some("2000"));
+    }
+
+    #[test]
+    fn without_the_cache_a_thumbnail_is_made_without_touching_the_disk() {
+        let (root, dir) = folder("no-cache");
+        let path = picture(&dir, 600, 300);
+        let key = key(&path, 1000, Size::for_pixels(128), Job::Still(Media::Picture));
+        let made = make(None, &key).expect("made");
+        assert!(made[0].width <= 128 && made[0].height <= 128);
+        assert!(!root.exists(), "nothing is written");
+
+        // What the cache holds is not read either: a thumbnail cached for the same time is passed over.
+        make(Some(&root), &key).expect("cached");
+        let file = root.join("128").read_dir().unwrap().next().unwrap().unwrap().path();
+        std::fs::write(&file, b"not a thumbnail").unwrap();
+        assert!(make(None, &key).is_some());
+        assert_eq!(std::fs::read(&file).unwrap(), b"not a thumbnail", "nothing is rewritten");
     }
 
     #[test]
@@ -863,7 +892,7 @@ mod tests {
         let (root, dir) = folder("not-picture");
         let path = dir.join("text.png");
         std::fs::write(&path, b"not an image").unwrap();
-        assert!(make(&root, &key(&path, 1, Size::for_pixels(128), Job::Still(Media::Picture))).is_none());
+        assert!(make(Some(&root), &key(&path, 1, Size::for_pixels(128), Job::Still(Media::Picture))).is_none());
     }
 
     #[test]
@@ -873,9 +902,9 @@ mod tests {
             eprintln!("ffmpeg is not installed; skipping");
             return;
         };
-        let still = make(&root, &key(&path, 7, Size::for_pixels(128), Job::Still(Media::Video))).expect("still");
+        let still = make(Some(&root), &key(&path, 7, Size::for_pixels(128), Job::Still(Media::Video))).expect("still");
         assert_eq!(still.len(), 1);
-        let frames = make(&root, &key(&path, 7, Size::for_pixels(128), Job::Frames)).expect("frames");
+        let frames = make(Some(&root), &key(&path, 7, Size::for_pixels(128), Job::Frames)).expect("frames");
         // A four-second clip gives one frame a second.
         assert_eq!(frames.len(), 4);
         for frame in &frames {

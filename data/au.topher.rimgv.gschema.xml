@@ -89,6 +89,10 @@
       <range min="1" max="4096"/>
       <summary>How many thumbnails are made at the same time, at most the number of threads on the system</summary>
     </key>
+    <key name="thumbnail-cache" type="b">
+      <default>true</default>
+      <summary>Keep thumbnails on disk, so they are not made again the next time they are shown</summary>
+    </key>
     <key name="folder-preview-fit" type="b">
       <default>false</default>
       <summary>Fit as many previews to a folder's icon as their pictures' dimensions allow, instead of a set number</summary>
