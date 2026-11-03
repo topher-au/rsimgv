@@ -403,7 +403,9 @@ impl Player {
             let mut player = Self { handle, render: std::ptr::null_mut(), wakeup: None, render_update: None, rotation: Cell::new(0), orientation: Cell::new(Orientation::default()), interpolation: Default::default(), crop: Cell::new(None), detector: Cell::new(false), gate: Arc::default(), rotation_checks: Cell::new(0) };
             for (name, value) in [
                 ("vo", "libmpv"),
-                ("hwdec", "auto-safe"),
+                // The software renderer has no way to share a hardware decoder's surfaces, so decoding in hardware means copying
+                // each frame back to memory. `auto-safe` would try the decoders that cannot copy first, and fall back to the CPU.
+                ("hwdec", "auto-copy-safe"),
                 ("keep-open", "yes"),
                 ("idle", "yes"),
                 ("terminal", "no"),
