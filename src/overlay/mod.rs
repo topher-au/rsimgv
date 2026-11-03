@@ -531,6 +531,8 @@ pub struct Element {
     /// Whether the element fades in and out rather than appearing at once, and how long the fade takes, in milliseconds.
     pub fade: bool,
     pub fade_ms: i32,
+    /// How far the text is turned clockwise, in degrees. Turned text is one line.
+    pub text_rotation: f64,
     pub style: Style,
 }
 
@@ -553,6 +555,9 @@ pub struct Style {
     pub padding: i32,
     /// How opaque the element as a whole is, from 0 to 1.
     pub opacity: f64,
+    /// The least width and height of the element, in pixels, or 0 for as much as it needs.
+    pub min_width: i32,
+    pub min_height: i32,
     /// Whether the element has a background, an outline round its letters, and a drop shadow, each in the way set below.
     pub background_on: bool,
     pub stroke_on: bool,
@@ -584,6 +589,8 @@ impl Default for Style {
             radius: 10,
             padding: 8,
             opacity: 1.0,
+            min_width: 0,
+            min_height: 0,
             background_on: true,
             stroke_on: false,
             shadow_on: true,
@@ -604,6 +611,8 @@ pub const FONT_SIZE_RANGE: (f64, f64) = (6.0, 96.0);
 pub const RADIUS_RANGE: (i32, i32) = (0, 40);
 pub const PADDING_RANGE: (i32, i32) = (0, 60);
 pub const STROKE_RANGE: (f64, f64) = (0.5, 8.0);
+pub const MIN_SIZE_RANGE: (i32, i32) = (0, 2000);
+pub const TEXT_ROTATION_RANGE: (f64, f64) = (-180.0, 180.0);
 pub const SHADOW_OFFSET_RANGE: (f64, f64) = (-30.0, 30.0);
 pub const SHADOW_BLUR_RANGE: (f64, f64) = (0.0, 30.0);
 pub const BAR_WIDTH_RANGE: (i32, i32) = (60, 1200);
@@ -660,6 +669,7 @@ impl Element {
             filename_opacity: DEFAULT_FILENAME_OPACITY,
             fade: true,
             fade_ms: DEFAULT_FADE_MS,
+            text_rotation: 0.0,
             style: Style::default(),
         };
         match kind {
@@ -751,6 +761,9 @@ impl Element {
             "fullscreen-only": self.fullscreen_only,
             "max-notifications": self.max_notifications,
             "overflow": match self.overflow { Overflow::PushOut => "push-out", Overflow::Wait => "wait" },
+            "text-rotation": self.text_rotation,
+            "min-width": self.style.min_width,
+            "min-height": self.style.min_height,
             "fade": self.fade,
             "fade-ms": self.fade_ms,
             "filename-template": self.filename_template,
@@ -846,6 +859,9 @@ impl Element {
         element.seconds = number("seconds", element.seconds, SECONDS_RANGE);
         element.fullscreen_only = flag("fullscreen-only", false);
         element.max_notifications = whole("max-notifications", element.max_notifications, MAX_NOTIFICATIONS_RANGE);
+        element.text_rotation = number("text-rotation", element.text_rotation, TEXT_ROTATION_RANGE);
+        element.style.min_width = whole("min-width", element.style.min_width, MIN_SIZE_RANGE);
+        element.style.min_height = whole("min-height", element.style.min_height, MIN_SIZE_RANGE);
         element.fade = flag("fade", element.fade);
         element.fade_ms = whole("fade-ms", element.fade_ms, FADE_RANGE);
         if let Some(template) = text("filename-template") {
@@ -1127,6 +1143,15 @@ mod tests {
         // The first layouts hid the text with a time format of none.
         let old = Layout::from_json(r#"{"elements":[{"kind":"seek","time-format":"none"}]}"#).unwrap();
         assert!(!old.elements[0].show_text);
+    }
+
+    #[test]
+    fn the_least_size_and_the_text_turn_are_kept_and_held_in_range() {
+        let layout = Layout::from_json(r#"{"elements":[{"min-width":99999,"min-height":120,"text-rotation":-270},{}]}"#).unwrap();
+        let element = &layout.elements[0];
+        assert_eq!((element.style.min_width, element.style.min_height, element.text_rotation), (MIN_SIZE_RANGE.1, 120, TEXT_ROTATION_RANGE.0));
+        assert_eq!((layout.elements[1].style.min_width, layout.elements[1].text_rotation), (0, 0.0));
+        assert_eq!(Layout::from_json(&layout.to_json()), Some(layout));
     }
 
     #[test]

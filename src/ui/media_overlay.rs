@@ -11,6 +11,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use gtk::{gdk, gio};
 
+use super::rotated_label::RotatedLabel;
+
 use crate::overlay::template::Template;
 use crate::overlay::{TRIGGERS, DEFAULT_MARGIN, plain_icon, sample, Element, FilenameWrap, IconStyle, Items, Kind, Layout, Legacy, Slot, Style, TextAlign, Visibility};
 
@@ -94,6 +96,12 @@ pub fn style_css(selector: &str, style: &Style) -> String {
     if let Some(color) = color(&style.text_color, style.text_opacity) {
         css.push_str(&format!(" color: {color};"));
     }
+    if style.min_width > 0 {
+        css.push_str(&format!(" min-width: {}px;", style.min_width));
+    }
+    if style.min_height > 0 {
+        css.push_str(&format!(" min-height: {}px;", style.min_height));
+    }
     // The family is quoted, with what would end the quotes taken out, as it is the user's text.
     let family = style.font_family.replace(['"', '\\', ';', '{', '}'], "");
     if !family.is_empty() {
@@ -107,34 +115,89 @@ pub fn style_css(selector: &str, style: &Style) -> String {
 /// what matches `box_selector` is shadowed behind its background. A stroke is made of copies of the letters shadowed round
 /// them, as CSS has no stroke for text.
 pub fn effects_css(box_selector: &str, text_selector: &str, style: &Style) -> String {
-    let color = |text: &str, opacity: f64| {
-        gdk::RGBA::parse(text).ok().map(|color| {
-            let alpha = (color.alpha() * opacity as f32).clamp(0.0, 1.0);
-            gdk::RGBA::new(color.red(), color.green(), color.blue(), alpha).to_str().to_string()
-        })
+    let text_shadows: Vec<String> = text_shadows(style)
+        .into_iter()
+        .map(|(dx, dy, blur, color)| format!("{dx:.2}px {dy:.2}px {blur}px {}", color.to_str()))
+        .collect();
+    let text_shadow = if text_shadows.is_empty() { "none".to_owned() } else { text_shadows.join(", ") };
+    // A shadow under a background that is not there would only show round nothing.
+    let box_shadow = match (style.shadow_on && style.box_shadow && style.background_on, drop_shadow(style)) {
+        (true, Some((dx, dy, blur, color))) => format!("{dx}px {dy}px {blur}px {}", color.to_str()),
+        _ => "none".to_owned(),
     };
-    let mut text_shadows = Vec::new();
+    format!("{text_selector} {{ text-shadow: {text_shadow}; }} {box_selector} {{ box-shadow: {box_shadow}; }}")
+}
+
+/// A colour of `style`, as the settings write it, made as see-through as `opacity` says.
+fn faded_color(text: &str, opacity: f64) -> Option<gdk::RGBA> {
+    gdk::RGBA::parse(text).ok().map(|color| {
+        let alpha = (color.alpha() * opacity as f32).clamp(0.0, 1.0);
+        gdk::RGBA::new(color.red(), color.green(), color.blue(), alpha)
+    })
+}
+
+/// The drop shadow of `style`: how far across and down, how blurred, and its colour.
+fn drop_shadow(style: &Style) -> Option<(f32, f32, f32, gdk::RGBA)> {
+    faded_color(&style.shadow_color, style.shadow_opacity).map(|color| (style.shadow_x as f32, style.shadow_y as f32, style.shadow_blur as f32, color))
+}
+
+/// What is drawn under the letters of `style`, top one first: the stroke, which is made of copies of the letters shadowed
+/// round them as there is no stroke for text, then the drop shadow.
+pub fn text_shadows(style: &Style) -> Vec<(f32, f32, f32, gdk::RGBA)> {
+    let mut shadows = Vec::new();
     if style.stroke_on && style.stroke_width > 0.0 {
-        if let Some(stroke) = color(&style.stroke_color, 1.0) {
+        if let Some(stroke) = faded_color(&style.stroke_color, 1.0) {
             // Copies all the way round, closer together the wider the stroke, so it has no gaps.
             let copies = if style.stroke_width > 2.0 { 24 } else { 12 };
             for step in 0..copies {
                 let angle = f64::from(step) / f64::from(copies) * std::f64::consts::TAU;
-                text_shadows.push(format!("{:.2}px {:.2}px 0 {stroke}", angle.cos() * style.stroke_width, angle.sin() * style.stroke_width));
+                shadows.push(((angle.cos() * style.stroke_width) as f32, (angle.sin() * style.stroke_width) as f32, 0.0, stroke));
             }
         }
     }
-    let shadow = color(&style.shadow_color, style.shadow_opacity).map(|color| format!("{}px {}px {}px {color}", style.shadow_x, style.shadow_y, style.shadow_blur));
-    if let (true, Some(shadow)) = (style.shadow_on && style.text_shadow, &shadow) {
-        text_shadows.push(shadow.clone());
+    if style.shadow_on && style.text_shadow {
+        shadows.extend(drop_shadow(style));
     }
-    let text_shadow = if text_shadows.is_empty() { "none".to_owned() } else { text_shadows.join(", ") };
-    // A shadow under a background that is not there would only show round nothing.
-    let box_shadow = match (style.shadow_on && style.box_shadow && style.background_on, shadow) {
-        (true, Some(shadow)) => shadow,
-        _ => "none".to_owned(),
-    };
-    format!("{text_selector} {{ text-shadow: {text_shadow}; }} {box_selector} {{ box-shadow: {box_shadow}; }}")
+    shadows
+}
+
+/// The text of an element: a label, or for turned text a label that draws it at an angle.
+#[derive(Clone)]
+enum TextLabel {
+    Plain(gtk::Label),
+    Turned(RotatedLabel),
+}
+
+impl TextLabel {
+    fn new(element: &Element) -> Self {
+        if element.text_rotation.abs() < f64::EPSILON {
+            return Self::Plain(gtk::Label::new(None));
+        }
+        let label = RotatedLabel::new("", element.text_rotation);
+        label.set_shadows(text_shadows(&element.style));
+        Self::Turned(label)
+    }
+
+    fn widget(&self) -> gtk::Widget {
+        match self {
+            Self::Plain(label) => label.clone().upcast(),
+            Self::Turned(label) => label.clone().upcast(),
+        }
+    }
+
+    fn set_text(&self, text: &str) {
+        match self {
+            Self::Plain(label) => label.set_text(text),
+            Self::Turned(label) => label.set_text(text),
+        }
+    }
+
+    fn text(&self) -> String {
+        match self {
+            Self::Plain(label) => label.text().to_string(),
+            Self::Turned(label) => label.text(),
+        }
+    }
 }
 
 /// A stylesheet added to the display for as long as it is held.
@@ -265,7 +328,7 @@ struct Placed {
     element: Element,
     template: Template,
     revealer: gtk::Revealer,
-    label: gtk::Label,
+    label: TextLabel,
     bar: Option<gtk::ProgressBar>,
     /// A media status's state icon, and the filename under its text.
     icon: Option<gtk::Label>,
@@ -423,7 +486,7 @@ fn fill(item: &Placed, frame: &Frame) -> bool {
     if item.label.text() != text {
         item.label.set_text(&text);
     }
-    item.label.set_visible(!text.is_empty());
+    item.label.widget().set_visible(!text.is_empty());
     if let Some(bar) = &item.bar {
         bar.set_fraction(if item.element.kind == Kind::Volume { frame.volume_fraction } else { frame.fraction });
     }
@@ -487,20 +550,23 @@ fn build(index: usize, element: &Element) -> Placed {
         }
         bar
     });
-    let label = gtk::Label::new(None);
-    label.add_css_class("overlay-text");
-    align_label(&label, align);
+    let label = TextLabel::new(element);
+    label.widget().add_css_class("overlay-text");
+    match &label {
+        TextLabel::Plain(plain) => align_label(plain, align),
+        TextLabel::Turned(_) => label.widget().set_halign(horizontal_align(align)),
+    }
     if beside {
-        label.set_valign(gtk::Align::Center);
+        label.widget().set_valign(gtk::Align::Center);
     }
     // The text goes before the bar above it or to its left, and after it otherwise.
     let text_first = element.text_position.is_first();
     if let (Some(bar), true) = (&bar, text_first) {
-        card.append(&label);
+        card.append(&label.widget());
         card.append(bar);
     } else if let Some(bar) = &bar {
         card.append(bar);
-        card.append(&label);
+        card.append(&label.widget());
     }
 
     // A media status has an icon beside its text, and the filename under the text, lined up with it.
@@ -529,15 +595,15 @@ fn build(index: usize, element: &Element) -> Placed {
         if let Some(icon) = &icon {
             grid.attach(icon, 0, 0, 1, 1);
         }
-        label.set_hexpand(true);
-        grid.attach(&label, column, 0, 1, 1);
+        label.widget().set_hexpand(true);
+        grid.attach(&label.widget(), column, 0, 1, 1);
         if let Some(filename) = &filename {
             filename.set_hexpand(true);
             grid.attach(filename, column, 1, 1, 1);
         }
         card.append(&grid);
     } else if bar.is_none() {
-        card.append(&label);
+        card.append(&label.widget());
     }
 
     let revealer = gtk::Revealer::new();

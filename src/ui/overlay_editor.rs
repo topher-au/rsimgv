@@ -12,7 +12,7 @@ use gtk::{gdk, gio, glib};
 use super::media_overlay::{layout_from_settings, set_preview, Preview};
 use crate::overlay::template::Template;
 use crate::overlay::{
-    sample, Element, FilenameWrap, IconStyle, Items, Kind, Layout, Overflow, Slot, Visibility, BAR_WIDTH_RANGE, FADE_RANGE, FILENAME_CHARS_RANGE, FONT_SIZE_RANGE, MARGIN_RANGE, SHADOW_BLUR_RANGE, SHADOW_OFFSET_RANGE, STROKE_RANGE, MAX_NOTIFICATIONS_RANGE, PADDING_RANGE, PROPERTIES, RADIUS_RANGE,
+    sample, Element, FilenameWrap, IconStyle, Items, Kind, Layout, Overflow, Slot, Visibility, BAR_WIDTH_RANGE, FADE_RANGE, FILENAME_CHARS_RANGE, MIN_SIZE_RANGE, TEXT_ROTATION_RANGE, FONT_SIZE_RANGE, MARGIN_RANGE, SHADOW_BLUR_RANGE, SHADOW_OFFSET_RANGE, STROKE_RANGE, MAX_NOTIFICATIONS_RANGE, PADDING_RANGE, PROPERTIES, RADIUS_RANGE,
     SECONDS_RANGE, STATUS_PARTS, TIME_FORMATS, RotationFormat, SpeedFormat, TextPosition,
 };
 
@@ -869,6 +869,12 @@ impl Editor {
             move |row| editor.edit(|element| element.style.text_opacity = row.value() / 100.0)
         });
         text.add(&text_opacity);
+        let rotation = spin("Text rotation", "In degrees clockwise. Turned text is one line", TEXT_ROTATION_RANGE, 5.0, element.text_rotation);
+        rotation.connect_value_notify({
+            let editor = self.clone();
+            move |row| editor.edit(|element| element.text_rotation = row.value())
+        });
+        text.add(&rotation);
 
         let background_on = adw::SwitchRow::builder().title("Show a background").active(style.background_on).build();
         boxed.add(&background_on);
@@ -922,6 +928,19 @@ impl Editor {
             move |row| editor.edit(|element| element.style.opacity = row.value() / 100.0)
         });
         whole.add(&opacity);
+        let size_range = (f64::from(MIN_SIZE_RANGE.0), f64::from(MIN_SIZE_RANGE.1));
+        let min_width = spin("Minimum width", "In pixels; 0 for as wide as it needs", size_range, 10.0, f64::from(style.min_width));
+        min_width.connect_value_notify({
+            let editor = self.clone();
+            move |row| editor.edit(|element| element.style.min_width = row.value() as i32)
+        });
+        whole.add(&min_width);
+        let min_height = spin("Minimum height", "In pixels; 0 for as tall as it needs", size_range, 10.0, f64::from(style.min_height));
+        min_height.connect_value_notify({
+            let editor = self.clone();
+            move |row| editor.edit(|element| element.style.min_height = row.value() as i32)
+        });
+        whole.add(&min_height);
 
         let fade = adw::SwitchRow::builder().title("Fade in and out").subtitle("Otherwise it appears and goes at once").active(element.fade).build();
         let fade_time = spin("Fade time", "In milliseconds", (f64::from(FADE_RANGE.0), f64::from(FADE_RANGE.1)), 50.0, f64::from(element.fade_ms));

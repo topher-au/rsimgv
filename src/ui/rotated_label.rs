@@ -22,6 +22,8 @@ mod imp {
         pub(super) text: RefCell<String>,
         /// The clockwise angle the text is turned by, in degrees.
         pub(super) angle: Cell<f64>,
+        /// Shadows drawn under the text, top one first: how far across and down, how blurred, and their colour.
+        pub(super) shadows: RefCell<Vec<(f32, f32, f32, gtk::gdk::RGBA)>>,
     }
 
     #[glib::object_subclass]
@@ -50,6 +52,21 @@ mod imp {
             let (text_width, text_height) = layout.pixel_size();
             // The text is drawn upright about the middle of the widget, which is turned about its own middle.
             snapshot.translate(&graphene::Point::new(label.width() as f32 / 2.0, label.height() as f32 / 2.0));
+            // The shadows fall in the same direction whatever the angle, and the top one is drawn last of them.
+            for &(dx, dy, blur, color) in self.shadows.borrow().iter().rev() {
+                snapshot.save();
+                snapshot.translate(&graphene::Point::new(dx, dy));
+                snapshot.rotate(self.angle.get() as f32);
+                snapshot.translate(&graphene::Point::new(-(text_width as f32) / 2.0, -(text_height as f32) / 2.0));
+                if blur > 0.0 {
+                    snapshot.push_blur(f64::from(blur) / 2.0);
+                    snapshot.append_layout(&layout, &color);
+                    snapshot.pop();
+                } else {
+                    snapshot.append_layout(&layout, &color);
+                }
+                snapshot.restore();
+            }
             snapshot.rotate(self.angle.get() as f32);
             snapshot.translate(&graphene::Point::new(-(text_width as f32) / 2.0, -(text_height as f32) / 2.0));
             snapshot.append_layout(&layout, &label.color());
@@ -96,6 +113,12 @@ impl RotatedLabel {
         if (self.imp().angle.replace(degrees) - degrees).abs() > f64::EPSILON {
             self.queue_resize();
         }
+    }
+
+    /// Draws `shadows` under the text, top one first: how far across and down each falls, how blurred it is, and its colour.
+    pub fn set_shadows(&self, shadows: Vec<(f32, f32, f32, gtk::gdk::RGBA)>) {
+        self.imp().shadows.replace(shadows);
+        self.queue_draw();
     }
 
     pub fn angle(&self) -> f64 {
