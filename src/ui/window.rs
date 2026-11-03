@@ -2704,7 +2704,7 @@ impl Window {
     /// such folder, in which case the window stays where it is.
     pub fn step_media_folder(&self, forward: bool) -> Option<PathBuf> {
         let current = self.current_path()?;
-        let target = walk_folder(&current, self.show_hidden(), forward, true)?;
+        let target = walk_folder(&current, self.media_filter(), forward, true)?;
         self.show_media_folder(target, forward, false)
     }
 
@@ -2712,7 +2712,7 @@ impl Window {
     /// or `None` when there is no such folder, in which case the window stays where it is.
     pub fn step_folder(&self, forward: bool) -> Option<PathBuf> {
         let current = self.current_path()?;
-        let target = walk_folder(&current, self.show_hidden(), forward, false)?;
+        let target = walk_folder(&current, self.media_filter(), forward, false)?;
         self.navigate(&target).then_some(target)
     }
 
@@ -2725,10 +2725,10 @@ impl Window {
     /// Finds the next or previous folder with media on a worker thread and shows it, as `show_media_folder` does.
     fn walk_media_folder_later(&self, forward: bool, viewer_last: bool) {
         let Some(current) = self.current_path() else { return };
-        let show_hidden = self.show_hidden();
+        let filter = self.media_filter();
         let weak = self.downgrade();
         glib::spawn_future_local(async move {
-            let walked = gio::spawn_blocking(move || walk_folder(&current, show_hidden, forward, true)).await;
+            let walked = gio::spawn_blocking(move || walk_folder(&current, filter, forward, true)).await;
             if let (Some(window), Some(target)) = (weak.upgrade(), walked.ok().flatten()) {
                 window.show_media_folder(target, forward, viewer_last);
             }
@@ -2738,14 +2738,22 @@ impl Window {
     /// Shows the next or previous folder, as `step_folder` does, for the keys. The tree is walked on a worker thread.
     pub fn step_folder_later(&self, forward: bool) {
         let Some(current) = self.current_path() else { return };
-        let show_hidden = self.show_hidden();
+        let filter = self.media_filter();
         let weak = self.downgrade();
         glib::spawn_future_local(async move {
-            let walked = gio::spawn_blocking(move || walk_folder(&current, show_hidden, forward, false)).await;
+            let walked = gio::spawn_blocking(move || walk_folder(&current, filter, forward, false)).await;
             if let (Some(window), Some(target)) = (weak.upgrade(), walked.ok().flatten()) {
                 window.navigate(&target);
             }
         });
+    }
+
+    /// Which files count as media when stepping from folder to folder: the pictures and videos the settings show, and
+    /// hidden ones only if hidden files are.
+    fn media_filter(&self) -> crate::fs::walk::MediaFilter {
+        let settings = self.imp().settings.get();
+        let flag = |key: &str| settings.is_some_and(|settings| settings.boolean(key));
+        crate::fs::walk::MediaFilter { show_hidden: flag("show-hidden"), images: flag("show-images"), videos: flag("show-videos") }
     }
 
     /// Whether hidden folders are listed, from the settings.
@@ -4397,14 +4405,15 @@ fn properties_text(path: &Path) -> (String, String) {
 }
 
 /// The folder a step moves to from `current`, in depth-first order of the folder tree: the next or previous folder,
-/// or with `media` the next or previous one that holds a picture or video. This reads the disk, so it runs on a
+/// or with `media` the next or previous one that holds media the filter accepts. This reads the disk, so it runs on a
 /// worker thread.
-fn walk_folder(current: &Path, show_hidden: bool, forward: bool, media: bool) -> Option<PathBuf> {
-    let children = |folder: &Path| crate::fs::walk::child_directories(folder, show_hidden);
+fn walk_folder(current: &Path, filter: crate::fs::walk::MediaFilter, forward: bool, media: bool) -> Option<PathBuf> {
+    let children = |folder: &Path| crate::fs::walk::child_directories(folder, filter.show_hidden);
+    let has_media = |folder: &Path| crate::fs::walk::has_media(folder, filter);
     match (forward, media) {
         (true, false) => crate::fs::walk::next_folder(current, &children),
         (false, false) => crate::fs::walk::previous_folder(current, &children),
-        (true, true) => crate::fs::walk::next_media_folder(current, &children, &|folder| crate::fs::walk::has_media(folder)),
-        (false, true) => crate::fs::walk::previous_media_folder(current, &children, &|folder| crate::fs::walk::has_media(folder)),
+        (true, true) => crate::fs::walk::next_media_folder(current, &children, &has_media),
+        (false, true) => crate::fs::walk::previous_media_folder(current, &children, &has_media),
     }
 }

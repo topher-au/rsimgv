@@ -60,10 +60,30 @@ pub fn is_media_name(name: &str) -> bool {
     kind.starts_with("image/") || kind.starts_with("video/")
 }
 
-/// Whether `folder` holds at least one picture or video. Folders in it do not count.
-pub fn has_media(folder: &Path) -> bool {
+/// Which files count as media when walking from folder to folder: the same ones the browse view lists, so a step never
+/// lands in a folder that would show nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MediaFilter {
+    pub show_hidden: bool,
+    pub images: bool,
+    pub videos: bool,
+}
+
+impl MediaFilter {
+    /// Whether a file called `name` counts: a picture or video that is wanted, and not hidden unless hidden files are.
+    pub fn accepts(&self, name: &str) -> bool {
+        if !self.show_hidden && name.starts_with('.') {
+            return false;
+        }
+        let (kind, _) = gtk::gio::content_type_guess(Some(name), None::<&[u8]>);
+        (self.images && kind.starts_with("image/")) || (self.videos && kind.starts_with("video/"))
+    }
+}
+
+/// Whether `folder` holds at least one picture or video that `filter` accepts. Folders in it do not count.
+pub fn has_media(folder: &Path, filter: MediaFilter) -> bool {
     let Ok(read) = std::fs::read_dir(folder) else { return false };
-    read.flatten().any(|entry| entry.path().is_file() && is_media_name(&entry.file_name().to_string_lossy()))
+    read.flatten().any(|entry| entry.path().is_file() && filter.accepts(&entry.file_name().to_string_lossy()))
 }
 
 /// The pictures and videos in `folder` and the folders under it, depth first, each folder's in name order. Hidden files
@@ -84,7 +104,7 @@ pub fn media_files(folder: &Path, show_hidden: bool) -> Vec<PathBuf> {
     found
 }
 
-/// The next folder in depth-first order that holds a picture or video. Folders without media are passed over.
+/// The next folder in depth-first order that holds media. Folders without any are passed over.
 pub fn next_media_folder(
     current: &Path,
     children: &dyn Fn(&Path) -> Vec<PathBuf>,
@@ -99,7 +119,7 @@ pub fn next_media_folder(
     }
 }
 
-/// The previous folder in depth-first order that holds a picture or video. Folders without media are passed over.
+/// The previous folder in depth-first order that holds media. Folders without any are passed over.
 pub fn previous_media_folder(
     current: &Path,
     children: &dyn Fn(&Path) -> Vec<PathBuf>,
@@ -141,6 +161,19 @@ mod tests {
 
     fn lookup(tree: &HashMap<PathBuf, Vec<PathBuf>>) -> impl Fn(&Path) -> Vec<PathBuf> + '_ {
         move |folder: &Path| tree.get(folder).cloned().unwrap_or_default()
+    }
+
+    #[test]
+    fn the_filter_accepts_what_the_browse_view_would_list() {
+        let all = MediaFilter { show_hidden: false, images: true, videos: true };
+        assert!(all.accepts("a.png") && all.accepts("b.mp4"));
+        assert!(!all.accepts("notes.txt"));
+        assert!(!all.accepts(".hidden.png"));
+        assert!(MediaFilter { show_hidden: true, ..all }.accepts(".hidden.png"));
+        let pictures = MediaFilter { videos: false, ..all };
+        assert!(pictures.accepts("a.png") && !pictures.accepts("b.mp4"));
+        let videos = MediaFilter { images: false, ..all };
+        assert!(!videos.accepts("a.png") && videos.accepts("b.mp4"));
     }
 
     #[test]
