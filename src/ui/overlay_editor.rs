@@ -12,7 +12,7 @@ use gtk::{gdk, gio, glib};
 use super::media_overlay::{layout_from_settings, set_preview, Preview};
 use crate::overlay::template::Template;
 use crate::overlay::{
-    sample, Element, FilenameWrap, IconStyle, Items, Kind, Layout, Overflow, Slot, Visibility, BAR_WIDTH_RANGE, FILENAME_CHARS_RANGE, FONT_SIZE_RANGE, MAX_NOTIFICATIONS_RANGE, PADDING_RANGE, PROPERTIES, RADIUS_RANGE,
+    sample, Element, FilenameWrap, IconStyle, Items, Kind, Layout, Overflow, Slot, Visibility, BAR_WIDTH_RANGE, FILENAME_CHARS_RANGE, FONT_SIZE_RANGE, MARGIN_RANGE, MAX_NOTIFICATIONS_RANGE, PADDING_RANGE, PROPERTIES, RADIUS_RANGE,
     SECONDS_RANGE, STATUS_PARTS, TIME_FORMATS,
 };
 
@@ -52,21 +52,25 @@ pub fn build(settings: &gio::Settings) -> gtk::Widget {
         delete: gtk::Button::with_label("Delete"),
     });
     editor.map.add_css_class("overlay-map");
-    editor.map.set_size_request(-1, 300);
+    editor.map.set_vexpand(true);
+    editor.map.set_hexpand(true);
 
-    // The map, with what it is for above it and the reset below.
-    let map_page = adw::PreferencesPage::new();
-    let layout_group = adw::PreferencesGroup::new();
-    layout_group.set_description(Some(
-        "Drag elements between places, or within one, to arrange them. Elements in one place stack, the first on top, and \
-         their text lines up toward the nearest edge. Click one to change it, or add one with +.",
-    ));
+    // The map fills the page, with the reset in a bar under it.
+    let map_page = adw::ToolbarView::new();
     let frame = gtk::Frame::new(None);
     frame.set_child(Some(&editor.map));
-    layout_group.add(&frame);
-    map_page.add(&layout_group);
-    let reset_group = adw::PreferencesGroup::new();
+    frame.set_margin_top(12);
+    frame.set_margin_start(12);
+    frame.set_margin_end(12);
+    frame.set_margin_bottom(12);
+    map_page.set_content(Some(&frame));
+    let bar = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    bar.set_margin_top(12);
+    bar.set_margin_bottom(12);
+    bar.set_margin_start(12);
+    bar.set_margin_end(12);
     let reset = gtk::Button::with_label("Reset the overlay");
+    reset.set_hexpand(true);
     reset.set_halign(gtk::Align::End);
     reset.add_css_class("destructive-action");
     reset.set_tooltip_text(Some("Goes back to the layout the older seek overlay and status bar settings make"));
@@ -77,9 +81,8 @@ pub fn build(settings: &gio::Settings) -> gtk::Widget {
             editor.reload();
         }
     });
-    reset_group.add(&reset);
-    map_page.add(&reset_group);
-    super::preferences::tighten(map_page.upcast_ref());
+    bar.append(&reset);
+    map_page.add_bottom_bar(&bar);
     editor.pages.add_named(&map_page, Some(MAP_PAGE));
 
     // The element's editor: tabs on top, Save and Cancel at the bottom.
@@ -256,10 +259,32 @@ impl Editor {
         for slot in Slot::all() {
             let cell = gtk::Box::new(gtk::Orientation::Vertical, 4);
             cell.add_css_class("overlay-map-cell");
+
+            // The place's name, and how far from the edge of the frame what is in it sits.
+            let header = gtk::Box::new(gtk::Orientation::Horizontal, 4);
             let heading = gtk::Label::new(Some(&slot.name().replace('-', " ")));
             heading.add_css_class("caption");
             heading.add_css_class("dim-label");
-            cell.append(&heading);
+            heading.set_hexpand(true);
+            heading.set_xalign(0.0);
+            heading.set_ellipsize(gtk::pango::EllipsizeMode::End);
+            header.append(&heading);
+            let margin = gtk::SpinButton::with_range(f64::from(MARGIN_RANGE.0), f64::from(MARGIN_RANGE.1), 1.0);
+            margin.set_value(f64::from(self.layout.borrow().margin(slot)));
+            margin.set_width_chars(3);
+            margin.set_tooltip_text(Some("Space from the edge of the frame, in pixels"));
+            margin.connect_value_changed({
+                let editor = self.clone();
+                move |spin| {
+                    editor.layout.borrow_mut().set_margin(slot, spin.value() as i32);
+                    editor.save();
+                }
+            });
+            header.append(&margin);
+            cell.append(&header);
+
+            // The elements stack here, and scroll when there are more than the place has room for.
+            let stack = gtk::Box::new(gtk::Orientation::Vertical, 4);
             for (index, element) in self.layout.borrow().elements.iter().enumerate().filter(|(_, element)| element.slot == slot) {
                 let chip = gtk::Button::with_label(&element.name);
                 chip.add_css_class("overlay-chip");
@@ -273,9 +298,18 @@ impl Editor {
                 });
                 self.drag_source(&chip, index);
                 self.drop_target(&chip, slot, Some(index), "drop-before");
-                cell.append(&chip);
+                stack.append(&chip);
             }
-            let add = gtk::MenuButton::builder().icon_name("list-add-symbolic").tooltip_text("Add an element here").valign(gtk::Align::End).vexpand(true).build();
+            let scroller = gtk::ScrolledWindow::builder()
+                .hscrollbar_policy(gtk::PolicyType::Never)
+                .vscrollbar_policy(gtk::PolicyType::Automatic)
+                .min_content_height(40)
+                .propagate_natural_height(false)
+                .vexpand(true)
+                .child(&stack)
+                .build();
+            cell.append(&scroller);
+            let add = gtk::MenuButton::builder().icon_name("list-add-symbolic").tooltip_text("Add an element here").build();
             add.add_css_class("flat");
             let choices = gtk::Box::new(gtk::Orientation::Vertical, 0);
             let popover = gtk::Popover::new();

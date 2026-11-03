@@ -883,6 +883,7 @@ impl Window {
             width: settings.double("video-controls-width"),
         });
         let layout = super::media_overlay::layout_from_settings(settings);
+        self.messages().set_margins(&layout);
         self.messages().configure(layout.elements.iter().find(|element| element.kind == crate::overlay::Kind::Messages));
         viewer.set_overlay_layout(layout);
         self.update_title();

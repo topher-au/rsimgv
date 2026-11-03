@@ -12,10 +12,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use gtk::{gdk, gio};
 
 use crate::overlay::template::Template;
-use crate::overlay::{plain_icon, sample, Element, FilenameWrap, IconStyle, Items, Kind, Layout, Legacy, Slot, Style, TextAlign, Visibility};
+use crate::overlay::{DEFAULT_MARGIN, plain_icon, sample, Element, FilenameWrap, IconStyle, Items, Kind, Layout, Legacy, Slot, Style, TextAlign, Visibility};
 
-/// The space between the edge of the item and the elements, and between one element and the next, in pixels.
-const MARGIN: i32 = 12;
+/// The space between one element and the next, in pixels.
 const SPACING: i32 = 6;
 /// How long an element takes to fade in and out, in milliseconds.
 const FADE: u32 = 150;
@@ -38,6 +37,15 @@ pub fn layout_from_settings(settings: &gio::Settings) -> Layout {
         status_enabled: settings.boolean("viewer-status-bar"),
         status_position: settings.string("viewer-status-overlay-position").to_string(),
     })
+}
+
+/// Keeps the column of the place `slot` `margin` pixels from the edges of the frame that it is at. A place in the middle
+/// of a side is not at that edge.
+pub fn set_edge_margins(column: &gtk::Box, slot: Slot, margin: i32) {
+    column.set_margin_top(if slot.row == 0 { margin } else { 0 });
+    column.set_margin_bottom(if slot.row == 2 { margin } else { 0 });
+    column.set_margin_start(if slot.column == 0 { margin } else { 0 });
+    column.set_margin_end(if slot.column == 2 { margin } else { 0 });
 }
 
 /// How the time `micros` into a video is written: `1:23`, or `1:02:05` from an hour in.
@@ -241,10 +249,7 @@ impl MediaOverlay {
                 let column = gtk::Box::new(gtk::Orientation::Vertical, SPACING);
                 column.set_halign([gtk::Align::Start, gtk::Align::Center, gtk::Align::End][usize::from(slot.column)]);
                 column.set_valign([gtk::Align::Start, gtk::Align::Center, gtk::Align::End][usize::from(slot.row)]);
-                column.set_margin_start(MARGIN);
-                column.set_margin_end(MARGIN);
-                column.set_margin_top(MARGIN);
-                column.set_margin_bottom(MARGIN);
+                set_edge_margins(&column, slot, DEFAULT_MARGIN);
                 column.set_can_target(false);
                 overlay.add_overlay(&column);
                 (slot, column)
@@ -266,6 +271,9 @@ impl MediaOverlay {
     /// Replaces the elements with those of `layout`, all hidden until the next update.
     pub fn set_layout(&self, layout: &Layout) {
         self.drop_preview();
+        for (slot, column) in &self.columns {
+            set_edge_margins(column, *slot, layout.margin(*slot));
+        }
         for placed in self.placed.borrow_mut().drain(..) {
             if let Some(column) = placed.revealer.parent().and_downcast::<gtk::Box>() {
                 column.remove(&placed.revealer);

@@ -590,9 +590,21 @@ pub struct Legacy {
 const FILE_INFO_TEMPLATE: &str =
     "[${playlist-pos}/${playlist-count}]  ${filename}${?resolution:  ${resolution}}${?fps:  ${fps}}${?file-size:  ${file-size}}";
 
-#[derive(Debug, Clone, PartialEq, Default)]
+/// The space between the frame's edge and the elements, in pixels, unless a place says otherwise, and the most it can be.
+pub const DEFAULT_MARGIN: i32 = 12;
+pub const MARGIN_RANGE: (i32, i32) = (0, 200);
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct Layout {
     pub elements: Vec<Element>,
+    /// The margin of each place, row by row from the top left.
+    margins: [i32; 9],
+}
+
+impl Default for Layout {
+    fn default() -> Self {
+        Self { elements: Vec::new(), margins: [DEFAULT_MARGIN; 9] }
+    }
 }
 
 impl Layout {
@@ -614,7 +626,7 @@ impl Layout {
 
         let mut elements = vec![seek, info, Element::of_kind(Kind::Messages, Slot::BOTTOM_MIDDLE)];
         elements.extend(Self::examples());
-        Self { elements }
+        Self { elements, ..Self::default() }
     }
 
     /// Elements that are off, to turn on and change: the playback status at the top left, and the speed at the top right.
@@ -628,8 +640,24 @@ impl Layout {
         vec![status, speed]
     }
 
+    /// The space between the frame's edge and the elements in `slot`, in pixels. A place in the middle of a side has none on
+    /// that side, so this is what its edges take.
+    pub fn margin(&self, slot: Slot) -> i32 {
+        self.margins[usize::from(slot.row.min(2)) * 3 + usize::from(slot.column.min(2))]
+    }
+
+    pub fn set_margin(&mut self, slot: Slot, margin: i32) {
+        self.margins[usize::from(slot.row.min(2)) * 3 + usize::from(slot.column.min(2))] = margin.clamp(MARGIN_RANGE.0, MARGIN_RANGE.1);
+    }
+
     pub fn to_json(&self) -> String {
-        json!({ "version": VERSION, "elements": self.elements.iter().map(Element::to_json).collect::<Vec<_>>() }).to_string()
+        let margins: Map<String, Value> = Slot::all().map(|slot| (slot.name(), json!(self.margin(slot)))).collect();
+        json!({
+            "version": VERSION,
+            "elements": self.elements.iter().map(Element::to_json).collect::<Vec<_>>(),
+            "margins": margins,
+        })
+        .to_string()
     }
 
     /// The layout `text` says, or `None` if it is not a layout. An element that is not an object is left out.
@@ -637,7 +665,15 @@ impl Layout {
         let value: Value = serde_json::from_str(text).ok()?;
         let object: &Map<String, Value> = value.as_object()?;
         let elements = object.get("elements")?.as_array()?;
-        Some(Self { elements: elements.iter().filter_map(Element::from_json).collect() })
+        let mut layout = Self { elements: elements.iter().filter_map(Element::from_json).collect(), ..Self::default() };
+        if let Some(margins) = object.get("margins").and_then(Value::as_object) {
+            for slot in Slot::all() {
+                if let Some(margin) = margins.get(&slot.name()).and_then(Value::as_f64) {
+                    layout.set_margin(slot, margin as i32);
+                }
+            }
+        }
+        Some(layout)
     }
 
     /// Moves the element at `from` into `slot`, in front of the element at `before`, or after the last of those already
@@ -774,6 +810,18 @@ mod tests {
     }
 
     #[test]
+    fn each_place_keeps_its_own_margin() {
+        let mut layout = Layout::default();
+        assert!(Slot::all().all(|slot| layout.margin(slot) == DEFAULT_MARGIN));
+        layout.set_margin(Slot::TOP_RIGHT, 40);
+        layout.set_margin(Slot::BOTTOM_MIDDLE, 9999);
+        assert_eq!((layout.margin(Slot::TOP_RIGHT), layout.margin(Slot::TOP_LEFT), layout.margin(Slot::BOTTOM_MIDDLE)), (40, DEFAULT_MARGIN, MARGIN_RANGE.1));
+        assert_eq!(Layout::from_json(&layout.to_json()), Some(layout));
+        // A layout saved without margins gets the usual one.
+        assert_eq!(Layout::from_json(r#"{"elements":[]}"#).map(|layout| layout.margin(Slot::TOP_LEFT)), Some(DEFAULT_MARGIN));
+    }
+
+    #[test]
     fn an_element_moves_between_places_and_within_one() {
         let named = |layout: &Layout| layout.elements.iter().map(|element| (element.name.clone(), element.slot)).collect::<Vec<_>>();
         let mut layout = Layout {
@@ -782,6 +830,7 @@ mod tests {
                 Element::new("b", Slot::TOP_LEFT, ""),
                 Element::new("c", Slot::TOP_RIGHT, ""),
             ],
+            ..Layout::default()
         };
         // To the end of another place.
         assert!(layout.move_element(0, Slot::TOP_RIGHT, None));

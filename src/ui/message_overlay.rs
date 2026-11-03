@@ -14,15 +14,14 @@ use std::time::Duration;
 use gtk::glib;
 use gtk::prelude::*;
 
-use super::media_overlay::{align_label, horizontal_align, style_css, unique_class, Sheet};
-use crate::overlay::{Element, Kind, Overflow, Slot, Style, DEFAULT_MAX_NOTIFICATIONS};
+use super::media_overlay::{set_edge_margins, align_label, horizontal_align, style_css, unique_class, Sheet};
+use crate::overlay::{Layout, DEFAULT_MARGIN, Element, Kind, Overflow, Slot, Style, DEFAULT_MAX_NOTIFICATIONS};
 
 /// How long a temporary message stays up unless it says otherwise.
 pub const DEFAULT_DURATION: Duration = Duration::from_secs(4);
 /// How long a message takes to fade in and out.
 const FADE: Duration = Duration::from_millis(200);
-/// The space between the edge of the window and the messages, and between one message and the next, in pixels.
-const MARGIN: i32 = 12;
+/// The space between one message and the next, in pixels.
 const SPACING: i32 = 6;
 /// The widest a message's text goes before it wraps, in characters.
 const WRAP_WIDTH: i32 = 60;
@@ -218,10 +217,7 @@ impl MessageOverlay {
                 let column = gtk::Box::new(gtk::Orientation::Vertical, SPACING);
                 column.set_halign(horizontal_align(slot.text_align()));
                 column.set_valign([gtk::Align::Start, gtk::Align::Center, gtk::Align::End][usize::from(slot.row)]);
-                column.set_margin_start(MARGIN);
-                column.set_margin_end(MARGIN);
-                column.set_margin_top(MARGIN);
-                column.set_margin_bottom(MARGIN);
+                set_edge_margins(&column, slot, DEFAULT_MARGIN);
                 overlay.add_overlay(&column);
                 (slot, column)
             })
@@ -257,6 +253,13 @@ impl MessageOverlay {
             Look { class, blur: element.style.blur, _sheet: Sheet::new(&css) }
         });
         self.inner.look.replace(look);
+    }
+
+    /// Keeps each place's messages as far from the edges as the layout says.
+    pub fn set_margins(&self, layout: &Layout) {
+        for (slot, column) in &self.inner.columns {
+            set_edge_margins(column, *slot, layout.margin(*slot));
+        }
     }
 
     /// Sets the most messages a stack shows at once, and whether one that comes to a full stack pushes the oldest out or
