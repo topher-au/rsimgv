@@ -317,6 +317,14 @@ mod imp {
             let obj = self.obj();
             obj.set_hexpand(true);
             obj.set_focusable(true);
+            // The scroller holds the grid in a viewport, which scrolls to whatever takes the focus. The grid is as tall as all
+            // its rows and is what takes the focus, so that would scroll to its top whenever the focus came back to it, such as
+            // when a dialog closes. The grid scrolls to the item selected itself.
+            obj.connect_realize(|grid| {
+                if let Some(viewport) = grid.scroller().and_then(|scroller| scroller.child()).and_downcast::<gtk::Viewport>() {
+                    viewport.set_scroll_to_focus(false);
+                }
+            });
             self.cell_size.set((128, 128));
 
             let click = gtk::GestureClick::new();
