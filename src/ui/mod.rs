@@ -21,6 +21,7 @@ mod header_bar;
 mod overlay_split_view;
 mod path_bar;
 mod playlist_panel;
+mod playlist_toolbar;
 mod navigation_bar;
 mod preferences;
 mod tight_layout;

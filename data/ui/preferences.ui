@@ -203,6 +203,21 @@
                                   </object>
                                 </child>
                                 <child>
+                                  <object class="AdwComboRow" id="playlist_window_headerbar_row">
+                                    <property name="title">Playlist window header</property>
+                                    <property name="subtitle">The header of the playlist when it is in its own window</property>
+                                    <property name="model">
+                                      <object class="GtkStringList">
+                                        <items>
+                                          <item>Full</item>
+                                          <item>Compact</item>
+                                          <item>None</item>
+                                        </items>
+                                      </object>
+                                    </property>
+                                  </object>
+                                </child>
+                                <child>
                                   <object class="AdwComboRow" id="default_sort_by_row">
                                     <property name="title">Default sorting</property>
                                     <property name="subtitle">How folders with no remembered sort are sorted</property>

@@ -31,6 +31,7 @@ style_partials = files(
   'data/style/_media_viewer.scss',
   'data/style/_messages.scss',
   'data/style/_path_bar.scss',
+  'data/style/_playlist.scss',
   'data/style/_resizable_split_view.scss',
   'data/style/_variables.scss',
 )

@@ -1,10 +1,11 @@
-//! The playlist panel: a heading, the items in a table of columns, and a toolbar of buttons that act on the list. The
+//! The playlist panel: the items in a table of columns, a search field, and a toolbar of buttons that act on the list. The
 //! columns can be resized and hidden, and their contents are ellipsized to fit. A click on a sortable column's heading
 //! sorts the playlist by it, and a right click on an item opens its menu. The panel is one widget, which sits beside the
 //! browse view or, when detached, in a window of its own. What the panel asks for, it asks of the window through its
 //! `win.playlist-*` actions.
 
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::path::Path;
 use std::rc::Rc;
 use std::time::UNIX_EPOCH;
@@ -14,6 +15,7 @@ use gtk::prelude::*;
 use gtk::{gdk, gio, glib};
 
 use super::drag;
+use super::playlist_toolbar::{Slot, Toolbar};
 use crate::fs::metadata::MediaInfo;
 use crate::playlist;
 use crate::scripts;
@@ -26,8 +28,8 @@ const CURRENT_MARK: &str = "▶";
 /// in pixels. The position column is -1 wide, which is as wide as its marker, and cannot be resized.
 pub const COLUMNS: [(&str, &str, &str, i32); 4] = [
     ("playlist-show-position", "Show position column", "#", -1),
-    ("playlist-show-name", "Show name column", "Name", 200),
-    ("playlist-show-length", "Show length column", "Length", 80),
+    ("playlist-show-name", "Show name column", "Name", -1),
+    ("playlist-show-length", "Show length column", "Length", -1),
     ("playlist-show-filename", "Show filename column", "Filename / URL", 300),
 ];
 
@@ -62,9 +64,6 @@ impl SortColumn {
 
 pub struct PlaylistPanel {
     content: gtk::Box,
-    /// The heading, which says how many items there are.
-    title: gtk::Label,
-    detach: gtk::Button,
     view: gtk::ColumnView,
     empty: gtk::Label,
     scroller: gtk::ScrolledWindow,
@@ -76,6 +75,11 @@ pub struct PlaylistPanel {
     current: Rc<Cell<Option<u32>>>,
     /// The number cells showing an item now.
     rows: Rc<RefCell<Vec<gtk::ListItem>>>,
+    /// The filter that keeps the items the search field matches, and the model it filters.
+    filter: gtk::CustomFilter,
+    filtered: gtk::FilterListModel,
+    /// Each item's path, with its title and file name in lower case, for the search to match against.
+    searchable: Rc<RefCell<HashMap<String, String>>>,
 }
 
 impl PlaylistPanel {
@@ -84,24 +88,44 @@ impl PlaylistPanel {
         let current = Rc::new(Cell::new(None));
         let rows = Rc::new(RefCell::new(Vec::new()));
         let paths = gtk::StringList::new(&[]);
-        let selection = gtk::SingleSelection::new(Some(paths.clone()));
+        let query = Rc::new(RefCell::new(String::new()));
+        let searchable: Rc<RefCell<HashMap<String, String>>> = Rc::new(RefCell::new(HashMap::new()));
+        let filter = gtk::CustomFilter::new({
+            let (query, searchable) = (query.clone(), searchable.clone());
+            move |object| {
+                let query = query.borrow();
+                if query.is_empty() {
+                    return true;
+                }
+                let Some(path) = object.downcast_ref::<gtk::StringObject>() else { return false };
+                searchable.borrow().get(path.string().as_str()).is_some_and(|text| text.contains(query.as_str()))
+            }
+        });
+        let filtered = gtk::FilterListModel::new(Some(paths.clone()), Some(filter.clone()));
+        let selection = gtk::SingleSelection::new(Some(filtered.clone()));
         selection.set_autoselect(false);
         selection.set_can_unselect(true);
         let view = gtk::ColumnView::new(Some(selection.clone()));
         view.add_css_class("data-table");
         view.connect_activate(|view, position| {
-            let _ = view.activate_action("win.playlist-play-index", Some(&position.to_variant()));
+            // The position is the row's in the view, which the search may have narrowed, so the item is found by its path.
+            let path = view.model().and_then(|model| model.item(position)).and_downcast::<gtk::StringObject>();
+            let Some(index) = path.and_then(|path| path_position(path.string().as_str())) else { return };
+            let _ = view.activate_action("win.playlist-play-index", Some(&index.to_variant()));
         });
 
         // The sorter of each sortable column compares nothing, so the view keeps the order the playlist is in. Clicking
         // a heading tells the window to sort the playlist instead.
         let mut sortable = Vec::new();
+        let saved_widths: Vec<i32> = settings.value("playlist-column-widths").get().unwrap_or_default();
         for (index, (key, _, title, width)) in COLUMNS.into_iter().enumerate() {
             let factory = cell_factory(index, settings, &current, &rows);
             let column = gtk::ColumnViewColumn::new(Some(title), Some(factory));
             column.set_resizable(width >= 0);
+            // The name fills the room between the position and the length, which are sized to their contents.
+            column.set_expand(index == 1);
             if width >= 0 {
-                column.set_fixed_width(width);
+                column.set_fixed_width(saved_widths.get(index).copied().filter(|saved| *saved > 0).unwrap_or(width));
             }
             settings.bind(key, &column, "visible").build();
             let sort = match index {
@@ -114,7 +138,22 @@ impl PlaylistPanel {
                 column.set_sorter(Some(&gtk::CustomSorter::new(|_, _| gtk::Ordering::Equal)));
                 sortable.push((sort, column.clone()));
             }
+            column.connect_fixed_width_notify({
+                let (view, settings) = (view.downgrade(), settings.clone());
+                move |_| {
+                    if let Some(view) = view.upgrade() {
+                        save_column_widths(&view, &settings);
+                    }
+                }
+            });
             view.append_column(&column);
+        }
+        // The sort the playlist was left in shows in its column's heading. The playlist is already in that order, so
+        // nothing is sorted again.
+        let (sort_name, descending): (String, bool) = settings.value("playlist-sort").get().unwrap_or_default();
+        if let Some((_, column)) = sortable.iter().find(|(sort, _)| sort.name() == sort_name) {
+            let order = if descending { gtk::SortType::Descending } else { gtk::SortType::Ascending };
+            view.sort_by_column(Some(column), order);
         }
         if let Some(sorter) = view.sorter() {
             let view_weak = view.downgrade();
@@ -144,28 +183,38 @@ impl PlaylistPanel {
         empty.add_css_class("caption");
         empty.add_css_class("dimmed");
 
-        let title = gtk::Label::new(None);
-        title.set_hexpand(true);
-        title.set_xalign(0.0);
-        title.add_css_class("caption-heading");
-        title.add_css_class("dimmed");
-        let detach = gtk::Button::from_icon_name("window-new-symbolic");
-        detach.set_action_name(Some("win.playlist-detach"));
-        detach.add_css_class("flat");
-        let heading = gtk::Box::new(gtk::Orientation::Horizontal, 2);
-        heading.set_margin_start(8);
-        heading.set_margin_end(2);
-        heading.append(&title);
-        heading.append(&detach);
+        let search = gtk::SearchBar::new();
+        search.set_show_close_button(true);
+        let entry = gtk::SearchEntry::new();
+        entry.set_placeholder_text(Some("Filter the playlist"));
+        search.set_child(Some(&entry));
+        search.connect_entry(&entry);
+        entry.connect_search_changed({
+            let (query, filter) = (query.clone(), filter.clone());
+            move |entry| {
+                *query.borrow_mut() = entry.text().to_lowercase();
+                filter.changed(gtk::FilterChange::Different);
+            }
+        });
+        // Closing the search shows every item again.
+        search.connect_search_mode_enabled_notify({
+            let entry = entry.clone();
+            move |search| {
+                if !search.is_search_mode() {
+                    entry.set_text("");
+                }
+            }
+        });
 
-        let toolbar = toolbar(&selection);
+        let toolbar = toolbar(&selection, &view, &search);
 
         let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
         content.set_width_request(PANEL_WIDTH);
-        content.append(&heading);
         content.append(&empty);
         content.append(&scroller);
-        content.append(&toolbar);
+        content.append(&search);
+        content.append(toolbar.widget());
+        content.set_vexpand(true);
 
         let drop = gtk::DropTarget::new(gdk::FileList::static_type(), gdk::DragAction::COPY);
         drop.connect_drop(|target, value, _, _| {
@@ -177,8 +226,6 @@ impl PlaylistPanel {
 
         let panel = Self {
             content,
-            title,
-            detach,
             view,
             empty,
             scroller,
@@ -186,6 +233,9 @@ impl PlaylistPanel {
             shown: RefCell::new(Vec::new()),
             current,
             rows,
+            filter,
+            filtered,
+            searchable,
         };
         panel.refresh();
         panel
@@ -196,16 +246,24 @@ impl PlaylistPanel {
         &self.content
     }
 
-    /// Says whether the panel is in a window of its own, which the detach button then offers to undo.
-    pub fn set_detached(&self, detached: bool) {
-        self.detach.set_tooltip_text(Some(if detached { "Put the playlist back beside the browse view" } else { "Show the playlist in its own window" }));
-    }
-
     /// Shows the playlist's items as they are now, in the order they are shown, with their titles and lengths. Only the
     /// items that changed are added and removed, so the list keeps its place. Every row is bound again, as titles and
     /// lengths may have changed.
     pub fn refresh(&self) {
-        let items: Vec<String> = playlist::with(|list| list.order().iter().map(|path| path.to_string_lossy().into_owned()).collect());
+        let (items, searchable) = playlist::with(|list| {
+            let items: Vec<String> = list.order().iter().map(|path| path.to_string_lossy().into_owned()).collect();
+            let searchable: HashMap<String, String> = list
+                .order()
+                .iter()
+                .map(|path| {
+                    let name = path.file_name().map_or_else(String::new, |name| name.to_string_lossy().into_owned());
+                    (path.to_string_lossy().into_owned(), format!("{} {name}", list.title(path)).to_lowercase())
+                })
+                .collect();
+            (items, searchable)
+        });
+        *self.searchable.borrow_mut() = searchable;
+        self.filter.changed(gtk::FilterChange::Different);
         let mut shown = self.shown.borrow_mut();
         let start = items.iter().zip(shown.iter()).take_while(|(item, row)| item == row).count();
         let most = items.len().min(shown.len()) - start;
@@ -214,7 +272,6 @@ impl PlaylistPanel {
         self.paths.splice(start as u32, (shown.len() - start - end) as u32, &added);
         self.paths.items_changed(0, items.len() as u32, items.len() as u32);
 
-        self.title.set_label(&if items.is_empty() { "Playlist".to_owned() } else { format!("Playlist ({})", items.len()) });
         self.empty.set_visible(items.is_empty());
         self.scroller.set_visible(!items.is_empty());
         *shown = items;
@@ -227,13 +284,21 @@ impl PlaylistPanel {
         let current = playlist::with(|list| list.current()).map(|index| index as u32);
         let moved = self.current.replace(current) != current;
         for item in self.rows.borrow().iter() {
-            if let Some(number) = item.child().and_downcast::<gtk::Label>() {
-                number.set_label(&number_text(item.position(), current == Some(item.position())));
+            if let (Some(number), Some(position)) = (item.child().and_downcast::<gtk::Label>(), playlist_position(item)) {
+                number.set_label(&number_text(position, current == Some(position)));
             }
         }
-        if let Some(current) = current.filter(|_| moved) {
-            self.view.scroll_to(current, None::<&gtk::ColumnViewColumn>, gtk::ListScrollFlags::NONE, None);
+        if let Some(row) = current.filter(|_| moved).and_then(|current| self.view_position(current)) {
+            self.view.scroll_to(row, None::<&gtk::ColumnViewColumn>, gtk::ListScrollFlags::NONE, None);
         }
+    }
+
+    /// Where the item at playlist position `index` is in the view, or nothing if the search leaves it out.
+    fn view_position(&self, index: u32) -> Option<u32> {
+        let path = playlist::with(|list| list.order().get(index as usize).map(|path| path.to_string_lossy().into_owned()))?;
+        (0..self.filtered.n_items()).find(|row| {
+            self.filtered.item(*row).and_downcast::<gtk::StringObject>().is_some_and(|item| item.string().as_str() == path)
+        })
     }
 
     /// The number of rows the panel has.
@@ -314,11 +379,10 @@ fn cell_factory(
     factory.connect_setup(move |_, item| {
         let Some(item) = item.downcast_ref::<gtk::ListItem>() else { return };
         let label = gtk::Label::new(None);
-        label.set_margin_start(6);
-        label.set_margin_end(6);
+        label.set_margin_start(3);
+        label.set_margin_end(3);
         label.set_xalign(match index {
-            0 => 0.5,
-            2 => 1.0,
+            0 | 2 => 1.0,
             _ => 0.0,
         });
         label.set_ellipsize(match index {
@@ -344,7 +408,9 @@ fn cell_factory(
         let path = Path::new(text.as_str());
         match index {
             0 => {
-                label.set_label(&number_text(item.position(), current.get() == Some(item.position())));
+                if let Some(position) = playlist_position(item) {
+                    label.set_label(&number_text(position, current.get() == Some(position)));
+                }
                 let mut bound = bound_rows.borrow_mut();
                 if !bound.contains(item) {
                     bound.push(item.clone());
@@ -371,18 +437,22 @@ fn attach_row_controls(label: &gtk::Label, item: &gtk::ListItem, settings: &gio:
     let source = gtk::DragSource::new();
     source.set_actions(gdk::DragAction::MOVE);
     let weak = item.downgrade();
-    source.connect_prepare(move |_, _, _| Some(gdk::ContentProvider::for_value(&weak.upgrade()?.position().to_value())));
+    source.connect_prepare(move |_, _, _| {
+        let position = playlist_position(&weak.upgrade()?)?;
+        Some(gdk::ContentProvider::for_value(&position.to_value()))
+    });
     label.add_controller(source);
 
     let target = gtk::DropTarget::new(u32::static_type(), gdk::DragAction::MOVE);
     let weak = item.downgrade();
     target.connect_drop(move |target, value, _, _| {
         let (Some(item), Some(widget), Ok(from)) = (weak.upgrade(), target.widget(), value.get::<u32>()) else { return false };
+        let Some(to) = playlist_position(&item) else { return false };
         // Moving items changes the order by hand, so the list is no longer sorted by any column.
         if let Some(view) = widget.ancestor(gtk::ColumnView::static_type()).and_downcast::<gtk::ColumnView>() {
             view.sort_by_column(None::<&gtk::ColumnViewColumn>, gtk::SortType::Ascending);
         }
-        widget.activate_action("win.playlist-move", Some(&(from, item.position()).to_variant())).is_ok()
+        widget.activate_action("win.playlist-move", Some(&(from, to).to_variant())).is_ok()
     });
     label.add_controller(target);
 
@@ -394,7 +464,8 @@ fn attach_row_controls(label: &gtk::Label, item: &gtk::ListItem, settings: &gio:
         let (Some(item), Some(widget)) = (weak.upgrade(), gesture.widget()) else { return };
         let Some(path) = item.item().and_downcast::<gtk::StringObject>() else { return };
         gesture.set_state(gtk::EventSequenceState::Claimed);
-        let menu = row_menu(&menu_settings, item.position(), &path.string());
+        let Some(position) = playlist_position(&item) else { return };
+        let menu = row_menu(&menu_settings, position, &path.string());
         popup_menu(&widget, &menu, x, y);
     });
     label.add_controller(click);
@@ -448,73 +519,148 @@ fn popup_menu(parent: &gtk::Widget, menu: &gio::Menu, x: f64, y: f64) {
     popover.popup();
 }
 
-/// The toolbar under the list: the buttons that act on the selected item, move through the playlist, and load, save
-/// and clear its file. The shuffle button is returned, so it can be marked while the playlist is shuffled.
-fn toolbar(selection: &gtk::SingleSelection) -> gtk::Box {
-    let bar = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    bar.set_margin_start(4);
-    bar.set_margin_end(4);
-    let button = |icon: &str, tooltip: &str| {
-        let button = gtk::Button::from_icon_name(icon);
-        button.set_tooltip_text(Some(tooltip));
-        button.add_css_class("flat");
-        bar.append(&button);
-        button
-    };
-    let action = |icon: &str, tooltip: &str, name: &str| {
-        let button = button(icon, tooltip);
-        button.set_action_name(Some(name));
-        button
-    };
 
-    action("document-open-symbolic", "Load a playlist file", "win.playlist-load");
-    let remove = button("list-remove-symbolic", "Remove the selected item");
-    let selection_for_remove = selection.clone();
-    remove.connect_clicked(move |button| {
-        if let Some(index) = selected(&selection_for_remove) {
-            let _ = button.activate_action("win.playlist-remove-index", Some(&index.to_variant()));
-        }
-    });
-    let play = button("media-playback-start-symbolic", "Play the selected item, or the playlist from where it was left");
-    let selection_for_play = selection.clone();
-    play.connect_clicked(move |button| match selected(&selection_for_play) {
-        Some(index) => {
-            let _ = button.activate_action("win.playlist-play-index", Some(&index.to_variant()));
-        }
-        None => {
-            let _ = button.activate_action("win.playlist-play", None);
-        }
-    });
-    action("media-skip-backward-symbolic", "Previous item", "win.playlist-previous");
-    action("media-skip-forward-symbolic", "Next item", "win.playlist-next");
-    // A toggle, shown pressed while the playlist is shuffled, as the action's state says.
-    let shuffle = gtk::ToggleButton::new();
-    shuffle.set_icon_name("media-playlist-shuffle-symbolic");
-    shuffle.set_tooltip_text(Some("Shuffle the playlist, keeping the order it was made in"));
-    shuffle.add_css_class("flat");
-    shuffle.set_action_name(Some("win.playlist-shuffle"));
-    bar.append(&shuffle);
-    let up = button("go-up-symbolic", "Move the selected item up");
-    let selection_for_up = selection.clone();
-    up.connect_clicked(move |button| {
-        if let Some(from) = selected(&selection_for_up).filter(|from| *from > 0) {
-            let _ = button.activate_action("win.playlist-move", Some(&(from, from - 1).to_variant()));
-        }
-    });
-    let down = button("go-down-symbolic", "Move the selected item down");
-    let selection_for_down = selection.clone();
-    down.connect_clicked(move |button| {
-        if let Some(from) = selected(&selection_for_down).filter(|from| *from + 1 < selection_for_down.n_items()) {
-            let _ = button.activate_action("win.playlist-move", Some(&(from, from + 1).to_variant()));
-        }
-    });
-    action("document-save-as-symbolic", "Save as a playlist file", "win.playlist-save");
-    action("edit-clear-all-symbolic", "Clear the playlist", "win.playlist-clear");
-    bar
+/// Keeps the widths of the playlist's columns, so they open as they were left.
+fn save_column_widths(view: &gtk::ColumnView, settings: &gio::Settings) {
+    let widths: Vec<i32> = view.columns().iter::<gtk::ColumnViewColumn>().flatten().map(|column| column.fixed_width()).collect();
+    let _ = settings.set_value("playlist-column-widths", &widths.to_variant());
 }
 
-/// The position of the selected item, if one is selected.
+/// The toolbar under the list. Its buttons act on the playlist, or on the selected item through the actions of the group
+/// `playlist`. The search toggle shows the search field above the list, and the buttons that do not fit are collapsed.
+fn toolbar(selection: &gtk::SingleSelection, view: &gtk::ColumnView, search: &gtk::SearchBar) -> Toolbar {
+    let search_toggle = gtk::ToggleButton::new();
+    search_toggle.set_icon_name("system-search-symbolic");
+    search_toggle.set_tooltip_text(Some("Search the playlist"));
+    search_toggle.add_css_class("flat");
+    search.bind_property("search-mode-enabled", &search_toggle, "active").bidirectional().sync_create().build();
+
+    let save = gio::Menu::new();
+    save.append(Some("Load"), Some("win.playlist-load"));
+    save.append(Some("Save"), Some("win.playlist-save-current"));
+    save.append(Some("Save as..."), Some("win.playlist-save"));
+    save.append(Some("Load from URL"), Some("win.playlist-load-url"));
+    let add = gio::Menu::new();
+    add.append(Some("Add current item"), Some("win.playlist-add-current"));
+    add.append(Some("Add file(s)"), Some("win.playlist-add-files"));
+    add.append(Some("Add directory"), Some("win.playlist-add-directory"));
+    let remove = gio::Menu::new();
+    remove.append(Some("Remove current item"), Some("win.playlist-remove-current"));
+    remove.append(Some("Remove selected"), Some("playlist.remove-selected"));
+    remove.append(Some("Remove all"), Some("win.playlist-clear"));
+
+    let slots = vec![
+        Slot::Menu { label: "Save / Load", icon: "document-save-symbolic", menu: save },
+        Slot::Menu { label: "Add item", icon: "list-add-symbolic", menu: add },
+        Slot::Menu { label: "Remove item", icon: "list-remove-symbolic", menu: remove },
+        Slot::Button { label: "Play", icon: "media-playback-start-symbolic", action: "playlist.play", toggle: false },
+        Slot::Button { label: "Pause", icon: "media-playback-pause-symbolic", action: "win.playlist-pause", toggle: false },
+        Slot::Button { label: "Previous Item", icon: "media-skip-backward-symbolic", action: "win.playlist-previous", toggle: false },
+        Slot::Button { label: "Next Item", icon: "media-skip-forward-symbolic", action: "win.playlist-next", toggle: false },
+        Slot::Button { label: "Repeat", icon: "media-playlist-repeat-symbolic", action: "win.playlist-repeat", toggle: true },
+        Slot::Button { label: "Shuffle", icon: "media-playlist-shuffle-symbolic", action: "win.playlist-shuffle", toggle: true },
+        Slot::Button { label: "Move item(s) up", icon: "go-up-symbolic", action: "playlist.move-up", toggle: false },
+        Slot::Button { label: "Move item(s) down", icon: "go-down-symbolic", action: "playlist.move-down", toggle: false },
+        Slot::Button { label: "Move to top", icon: "go-top-symbolic", action: "playlist.move-top", toggle: false },
+        Slot::Button { label: "Move to bottom", icon: "go-bottom-symbolic", action: "playlist.move-bottom", toggle: false },
+        Slot::Spacer,
+    ];
+    let toolbar = Toolbar::new(slots, &search_toggle);
+    toolbar.widget().insert_action_group("playlist", Some(&selection_actions(selection, view)));
+    toolbar
+}
+
+/// Runs a window action from `view`, which the toolbar's buttons are in.
+fn activate(view: &gtk::ColumnView, name: &str, parameter: Option<&glib::Variant>) {
+    let _ = view.activate_action(name, parameter);
+}
+
+/// The number of items in the playlist.
+fn playlist_len() -> u32 {
+    playlist::with(|list| list.len() as u32)
+}
+
+/// Whether a selection action is enabled, given the playlist position of the selected item, if any, and the playlist's length.
+type Needs = fn(Option<u32>, u32) -> bool;
+/// Runs a selection action, given the view it runs from, the selected item's position, and the playlist's length.
+type Runs = fn(&gtk::ColumnView, Option<u32>, u32);
+
+/// The actions on the selected item, in the group `playlist` that the toolbar's buttons and its menu run. Each is enabled
+/// only while there is something for it to act on.
+fn selection_actions(selection: &gtk::SingleSelection, view: &gtk::ColumnView) -> gio::SimpleActionGroup {
+    let specs: [(&str, Needs, Runs); 6] = [
+        ("play", |_, _| true, |view, index, _| match index {
+            Some(index) => activate(view, "win.playlist-play-index", Some(&index.to_variant())),
+            None => activate(view, "win.playlist-play", None),
+        }),
+        ("remove-selected", |index, _| index.is_some(), |view, index, _| {
+            if let Some(index) = index {
+                activate(view, "win.playlist-remove-index", Some(&index.to_variant()));
+            }
+        }),
+        ("move-up", |index, _| index.is_some_and(|from| from > 0), |view, index, _| {
+            if let Some(from) = index {
+                activate(view, "win.playlist-move", Some(&(from, from - 1).to_variant()));
+            }
+        }),
+        ("move-down", |index, len| index.is_some_and(|from| from + 1 < len), |view, index, _| {
+            if let Some(from) = index {
+                activate(view, "win.playlist-move", Some(&(from, from + 1).to_variant()));
+            }
+        }),
+        ("move-top", |index, _| index.is_some_and(|from| from > 0), |view, index, _| {
+            if let Some(from) = index {
+                activate(view, "win.playlist-move", Some(&(from, 0u32).to_variant()));
+            }
+        }),
+        ("move-bottom", |index, len| index.is_some_and(|from| from + 1 < len), |view, index, len| {
+            if let Some(from) = index {
+                activate(view, "win.playlist-move", Some(&(from, len - 1).to_variant()));
+            }
+        }),
+    ];
+    let group = gio::SimpleActionGroup::new();
+    let mut actions = Vec::new();
+    for (name, needs, runs) in specs {
+        let action = gio::SimpleAction::new(name, None);
+        action.connect_activate({
+            let (selection, view) = (selection.clone(), view.clone());
+            move |_, _| runs(&view, selected(&selection), playlist_len())
+        });
+        group.add_action(&action);
+        actions.push((action, needs));
+    }
+    let refresh: Rc<dyn Fn()> = Rc::new({
+        let selection = selection.clone();
+        move || {
+            let index = selected(&selection);
+            let len = playlist_len();
+            for (action, needs) in &actions {
+                action.set_enabled(needs(index, len));
+            }
+        }
+    });
+    refresh();
+    let on_items = refresh.clone();
+    selection.connect_selected_notify(move |_| refresh());
+    selection.connect_items_changed(move |_, _, _, _| on_items());
+    group
+}
+
+/// The playlist position of the item `list_item` shows. The search can leave items out of the view, so a row's own
+/// position there is not the item's.
+fn playlist_position(list_item: &gtk::ListItem) -> Option<u32> {
+    let path = list_item.item().and_downcast::<gtk::StringObject>()?.string();
+    path_position(path.as_str())
+}
+
+/// The playlist position of the item at `path`, if it is in the playlist.
+fn path_position(path: &str) -> Option<u32> {
+    playlist::with(|list| list.order().iter().position(|item| item.as_path() == Path::new(path))).map(|index| index as u32)
+}
+
+/// The playlist position of the selected item, if one is selected.
 fn selected(selection: &gtk::SingleSelection) -> Option<u32> {
-    let position = selection.selected();
-    (position < selection.n_items()).then_some(position)
+    let path = selection.selected_item().and_downcast::<gtk::StringObject>()?.string();
+    path_position(path.as_str())
 }

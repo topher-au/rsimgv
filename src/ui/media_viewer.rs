@@ -934,6 +934,11 @@ impl MediaViewer {
         self.imp().canvas.pan(dx, dy);
     }
 
+    /// Pauses the video shown, if there is one.
+    pub fn pause(&self) {
+        self.imp().controls.pause();
+    }
+
     /// Plays or pauses the video shown, if there is one.
     pub fn toggle_playback(&self) {
         self.imp().controls.toggle_playing();

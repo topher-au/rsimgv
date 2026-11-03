@@ -33,9 +33,21 @@ pub struct Playlist {
     current: Option<usize>,
     /// The titles given to items, where they differ from the item's file name. An item without one is shown by that.
     titles: HashMap<PathBuf, String>,
+    /// The file the playlist was last loaded from or saved to, which saving it again writes to.
+    source: Option<PathBuf>,
 }
 
 impl Playlist {
+    /// The file the playlist was last loaded from or saved to, if it was.
+    pub fn source(&self) -> Option<&Path> {
+        self.source.as_deref()
+    }
+
+    /// Sets the file the playlist was last loaded from or saved to.
+    pub fn set_source(&mut self, source: Option<PathBuf>) {
+        self.source = source;
+    }
+
     /// The title the item at `path` is shown by: the one it was given, else its file name.
     pub fn title(&self, path: &Path) -> String {
         self.titles.get(path).cloned().unwrap_or_else(|| format::default_title(path))
@@ -151,6 +163,7 @@ impl Playlist {
     }
 
     /// Makes the playlist `paths`, starting again from the first.
+    #[cfg(test)]
     pub fn replace(&mut self, paths: impl IntoIterator<Item = PathBuf>) {
         self.clear();
         self.add(paths);

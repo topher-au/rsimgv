@@ -269,6 +269,12 @@
                           </section>
                           <section>
                             <item>
+                              <attribute name="label">Detach Playlist</attribute>
+                              <attribute name="action">win.playlist-detach</attribute>
+                            </item>
+                          </section>
+                          <section>
+                            <item>
                               <attribute name="label">Preferences</attribute>
                               <attribute name="action">app.preferences</attribute>
                             </item>
