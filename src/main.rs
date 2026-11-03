@@ -93,7 +93,7 @@ fn main() -> glib::ExitCode {
 
     let app = adw::Application::builder()
         .application_id(APP_ID)
-        .resource_base_path("/au/topher/rimgv")
+        .resource_base_path("/au/topher/rsimgv")
         .flags(gio::ApplicationFlags::HANDLES_COMMAND_LINE)
         .build();
     app.add_main_option(
@@ -286,12 +286,12 @@ fn ipc_config(settings: &gio::Settings) -> ipc::Config {
 /// Adds the bundled hicolor icon theme to the default theme, so the app's own icons resolve.
 pub fn register_icons() {
     let Some(display) = gdk::Display::default() else { return };
-    gtk::IconTheme::for_display(&display).add_resource_path("/au/topher/rimgv/icons/hicolor");
+    gtk::IconTheme::for_display(&display).add_resource_path("/au/topher/rsimgv/icons/hicolor");
 }
 
 fn load_css() {
     let provider = gtk::CssProvider::new();
-    provider.load_from_resource("/au/topher/rimgv/style.css");
+    provider.load_from_resource("/au/topher/rsimgv/style.css");
     gtk::style_context_add_provider_for_display(
         &gdk::Display::default().expect("no display"),
         &provider,

@@ -317,7 +317,7 @@ mod imp {
     use super::*;
 
     #[derive(Default, gtk::CompositeTemplate)]
-    #[template(resource = "/au/topher/rimgv/ui/media_viewer.ui")]
+    #[template(resource = "/au/topher/rsimgv/ui/media_viewer.ui")]
     pub struct MediaViewer {
         #[template_child]
         pub pages: TemplateChild<gtk::Stack>,

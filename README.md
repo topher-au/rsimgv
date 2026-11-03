@@ -141,7 +141,7 @@ The file is nested by each setting's GSettings key path, and each setting record
 ```yaml
 au:
   topher:
-    rimgv:
+    rsimgv:
       window-width:
         type: i
         value: "960"
@@ -163,7 +163,7 @@ take effect straight away. A file that cannot be parsed makes the settings read-
 restarted, so it is never overwritten. The schema is `data/au.topher.rsimgv.gschema.xml`.
 
 Nesting goes by path: GSettings key names cannot contain `--`, so a setting nested below another is saved by opening a
-relocatable schema at the nested path, such as `/au/topher/rimgv/group/parent/`.
+relocatable schema at the nested path, such as `/au/topher/rsimgv/group/parent/`.
 
 ## Project layout
 

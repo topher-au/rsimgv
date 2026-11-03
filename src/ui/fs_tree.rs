@@ -66,7 +66,7 @@ mod imp {
 
     #[derive(Default, glib::Properties, gtk::CompositeTemplate)]
     #[properties(wrapper_type = super::FsTree)]
-    #[template(resource = "/au/topher/rimgv/ui/fs_tree.ui")]
+    #[template(resource = "/au/topher/rsimgv/ui/fs_tree.ui")]
     pub struct FsTree {
         #[template_child]
         pub scroller: TemplateChild<gtk::ScrolledWindow>,
@@ -148,7 +148,7 @@ mod imp {
             factory.connect_setup(|_, obj| {
                 let item = obj.downcast_ref::<gtk::ListItem>().expect("ListItem");
                 // Row layout lives in XML; the factory only wires it up.
-                let builder = gtk::Builder::from_resource("/au/topher/rimgv/ui/fs_tree_row.ui");
+                let builder = gtk::Builder::from_resource("/au/topher/rsimgv/ui/fs_tree_row.ui");
                 let expander: gtk::TreeExpander = builder
                     .object("expander")
                     .expect("fs_tree_row.ui defines `expander`");

@@ -18,7 +18,7 @@ mod imp {
     use super::*;
 
     #[derive(Default, gtk::CompositeTemplate)]
-    #[template(resource = "/au/topher/rimgv/ui/preferences.ui")]
+    #[template(resource = "/au/topher/rsimgv/ui/preferences.ui")]
     pub struct PreferencesDialog {
         #[template_child]
         pub show_hidden_row: TemplateChild<adw::SwitchRow>,
@@ -728,7 +728,7 @@ fn rebuild_info_list(settings: &gio::Settings, imp: &imp::PreferencesDialog) {
 /// One row of the info list: a drag handle, the field's name, and a remove button. Dropping another row
 /// onto it moves that field to this row's place.
 fn info_row(settings: &gio::Settings, index: usize, field: InfoField) -> gtk::Box {
-    let builder = gtk::Builder::from_resource("/au/topher/rimgv/ui/info_field_row.ui");
+    let builder = gtk::Builder::from_resource("/au/topher/rsimgv/ui/info_field_row.ui");
     let row: gtk::Box = builder.object("row").expect("info_field_row.ui defines `row`");
     let handle: gtk::Image = builder.object("handle").expect("info_field_row.ui defines `handle`");
     let title: gtk::Label = builder.object("title").expect("info_field_row.ui defines `title`");

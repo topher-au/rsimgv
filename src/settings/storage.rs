@@ -5,7 +5,7 @@
 //! ```yaml
 //! au:
 //!   topher:
-//!     rimgv:
+//!     rsimgv:
 //!       window-width:
 //!         type: i
 //!         value: "960"
@@ -228,12 +228,12 @@ mod tests {
     #[test]
     fn settings_nest_to_any_depth() {
         let mut document = Document::default();
-        document.values.insert("/au/topher/rimgv/window-width".to_owned(), 1200i32.to_variant());
+        document.values.insert("/au/topher/rsimgv/window-width".to_owned(), 1200i32.to_variant());
         document.values.insert("/a/b/c/d/e/deep".to_owned(), true.to_variant());
         document.values.insert("/top".to_owned(), "x".to_variant());
         let text = serialize(&document).unwrap();
         let root: Value = serde_yaml_ng::from_str(&text).unwrap();
-        assert_eq!(root["au"]["topher"]["rimgv"]["window-width"]["value"], Value::String("1200".into()));
+        assert_eq!(root["au"]["topher"]["rsimgv"]["window-width"]["value"], Value::String("1200".into()));
         assert_eq!(root["a"]["b"]["c"]["d"]["e"]["deep"]["type"], Value::String("b".into()));
         assert_eq!(parse(&text, &[]).unwrap().values, document.values);
     }

@@ -156,7 +156,7 @@ fn set_label_width(label: &gtk::Label, text: &str, is_current: bool) {
 
 /// Builds one segment: its separator (normal segments only), and its button with icon and label.
 fn build_segment(segment: &Segment, is_current: bool) -> gtk::Box {
-    let builder = gtk::Builder::from_resource("/au/topher/rimgv/ui/path_bar_segment.ui");
+    let builder = gtk::Builder::from_resource("/au/topher/rsimgv/ui/path_bar_segment.ui");
     let container: gtk::Box = builder.object("container").expect("container");
     let separator: gtk::Image = builder.object("separator").expect("separator");
     let button: gtk::Button = builder.object("button").expect("button");
@@ -309,7 +309,7 @@ mod imp {
     use super::*;
 
     #[derive(Default, gtk::CompositeTemplate)]
-    #[template(resource = "/au/topher/rimgv/ui/path_bar.ui")]
+    #[template(resource = "/au/topher/rsimgv/ui/path_bar.ui")]
     pub struct PathBar {
         #[template_child]
         pub scroller: TemplateChild<gtk::ScrolledWindow>,

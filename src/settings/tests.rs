@@ -14,9 +14,9 @@ use serde_yaml_ng::Value;
 
 use super::YamlSettingsBackend;
 
-/// A schema at `/test/rimgv/`, and a relocatable schema for settings nested below it.
+/// A schema at `/test/rsimgv/`, and a relocatable schema for settings nested below it.
 const SCHEMA_XML: &str = r#"<schemalist>
-  <schema id="test.rsimgv" path="/test/rimgv/">
+  <schema id="test.rsimgv" path="/test/rsimgv/">
     <key name="window-width" type="i"><default>960</default></key>
     <key name="show-hidden" type="b"><default>false</default></key>
     <key name="title" type="s"><default>"untitled"</default></key>
@@ -132,15 +132,15 @@ fn a_reset_returns_the_schema_default() {
 fn nested_paths_nest_in_the_file() {
     let fixture = Fixture::new("nested");
     let backend = YamlSettingsBackend::new(fixture.file()).unwrap();
-    let settings = backend.settings(&fixture.schema("test.rsimgv.nested"), Some("/test/rimgv/group/parent/"));
+    let settings = backend.settings(&fixture.schema("test.rsimgv.nested"), Some("/test/rsimgv/group/parent/"));
     settings.set_int("child", 8).unwrap();
 
     let root = saved(&fixture.file());
-    assert_eq!(root["test"]["rimgv"]["group"]["parent"]["child"]["value"], Value::String("8".into()));
-    assert_eq!(root["test"]["rimgv"]["group"]["parent"]["child"]["type"], Value::String("i".into()));
+    assert_eq!(root["test"]["rsimgv"]["group"]["parent"]["child"]["value"], Value::String("8".into()));
+    assert_eq!(root["test"]["rsimgv"]["group"]["parent"]["child"]["type"], Value::String("i".into()));
 
     let reopened = YamlSettingsBackend::new(fixture.file()).unwrap();
-    let settings = reopened.settings(&fixture.schema("test.rsimgv.nested"), Some("/test/rimgv/group/parent/"));
+    let settings = reopened.settings(&fixture.schema("test.rsimgv.nested"), Some("/test/rsimgv/group/parent/"));
     assert_eq!(settings.int("child"), 8);
 }
 
@@ -234,7 +234,7 @@ fn an_outside_edit_is_read_and_notified() {
 
     fs::write(
         fixture.file(),
-        "test:\n  rimgv:\n    window-width:\n      type: i\n      value: '1500'\n",
+        "test:\n  rsimgv:\n    window-width:\n      type: i\n      value: '1500'\n",
     )
     .unwrap();
     pump_until(|| *changed.borrow());
@@ -258,7 +258,7 @@ fn a_value_of_another_type_in_the_file_reads_as_the_default() {
     let fixture = Fixture::new("wrong-type");
     fs::write(
         fixture.file(),
-        "test:\n  rimgv:\n    window-width:\n      type: s\n      value: \"'wide'\"\n",
+        "test:\n  rsimgv:\n    window-width:\n      type: s\n      value: \"'wide'\"\n",
     )
     .unwrap();
     let backend = YamlSettingsBackend::new(fixture.file()).unwrap();

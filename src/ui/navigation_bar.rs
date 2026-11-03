@@ -27,7 +27,7 @@ mod imp {
     use super::*;
 
     #[derive(Default, gtk::CompositeTemplate)]
-    #[template(resource = "/au/topher/rimgv/ui/navigation_bar.ui")]
+    #[template(resource = "/au/topher/rsimgv/ui/navigation_bar.ui")]
     pub struct NavigationBar {
         #[template_child]
         pub back_button: TemplateChild<gtk::Button>,

@@ -30,7 +30,7 @@ mod imp {
     use super::*;
 
     #[derive(Default, gtk::CompositeTemplate)]
-    #[template(resource = "/au/topher/rimgv/ui/window.ui")]
+    #[template(resource = "/au/topher/rsimgv/ui/window.ui")]
     pub struct Window {
         #[template_child]
         pub tree: TemplateChild<FsTree>,

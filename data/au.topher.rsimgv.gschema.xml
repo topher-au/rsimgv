@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <schemalist>
-  <schema id="au.topher.rsimgv" path="/au/topher/rimgv/">
+  <schema id="au.topher.rsimgv" path="/au/topher/rsimgv/">
     <key name="show-hidden" type="b">
       <default>false</default>
       <summary>Show hidden files and folders</summary>
