@@ -92,6 +92,25 @@ mod imp {
             // Always shown, as a thin line the stylesheet keeps faint, rather than appearing only while scrolling.
             scroller.set_overlay_scrolling(false);
             scroller.add_css_class("thumbnail-bar-scroller");
+            // The wheel scrolls a row of thumbnails along it, as it does a column. A scrolled window leaves a vertical
+            // wheel alone when it only scrolls sideways, so it would reach the viewer, which would zoom or seek with it.
+            let wheel = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::VERTICAL);
+            wheel.connect_scroll({
+                let scroller = scroller.clone();
+                let list = list.clone();
+                move |_, _, dy| {
+                    if list.orientation() != gtk::Orientation::Horizontal {
+                        return glib::Propagation::Proceed;
+                    }
+                    let adjustment = scroller.hadjustment();
+                    // As far as a scrolled window moves for a notch.
+                    let step = adjustment.page_size().powf(2.0 / 3.0);
+                    let top = (adjustment.upper() - adjustment.page_size()).max(adjustment.lower());
+                    adjustment.set_value((adjustment.value() + dy * step).clamp(adjustment.lower(), top));
+                    glib::Propagation::Stop
+                }
+            });
+            scroller.add_controller(wheel);
             let pin_button = gtk::ToggleButton::builder()
                 .icon_name("view-pin-symbolic")
                 .tooltip_text("Keep the thumbnail bar shown")
