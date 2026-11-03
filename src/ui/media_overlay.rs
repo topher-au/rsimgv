@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use gtk::{gdk, gio};
 
+use super::media_viewer::MAX_VOLUME;
 use super::rotated_label::RotatedLabel;
 
 use crate::overlay::template::Template;
@@ -293,6 +294,9 @@ pub fn watch_preview(callback: impl Fn() + 'static) {
 /// How much of its own opacity an element keeps while another is being edited.
 const FADED: f64 = 0.2;
 
+/// How faint a volume display is for a video with no sound.
+const DIMMED_OPACITY: f64 = 0.4;
+
 /// What the overlay is drawn from.
 #[derive(Clone, Copy)]
 pub struct Frame<'a> {
@@ -303,8 +307,10 @@ pub struct Frame<'a> {
     pub is_video: bool,
     pub playing: bool,
     pub fullscreen: bool,
-    /// How far through the volume bar is, from 0 to 1.
+    /// The volume level the volume bar shows, from 0 to 2, where 1 is full volume and the rest is boost.
     pub volume_fraction: f64,
+    /// Whether the video has sound; the volume display is dimmed when it has none.
+    pub has_audio: bool,
     /// How long ago each change an element can wait for last happened, if it has since the item was shown.
     pub since_change: [Option<Duration>; TRIGGERS],
 }
@@ -337,6 +343,10 @@ struct Placed {
     /// The text last given to the label, as the template made it.
     shown: RefCell<String>,
     bar: Option<gtk::ProgressBar>,
+    /// A volume bar's darker bar under `bar`, which shows the boost above full volume.
+    boost_bar: Option<gtk::ProgressBar>,
+    /// What goes in the card for the bar: the bar itself, or the two bars of a volume display stacked.
+    bar_widget: Option<gtk::Widget>,
     /// A media status's state icon, and the filename under its text.
     icon: Option<gtk::Label>,
     filename: Option<gtk::Label>,
@@ -503,7 +513,19 @@ fn fill(item: &Placed, frame: &Frame) -> bool {
     }
     item.label.widget().set_visible(!text.is_empty());
     if let Some(bar) = &item.bar {
-        bar.set_fraction(if item.element.kind == Kind::Volume { frame.volume_fraction } else { frame.fraction });
+        if item.element.kind == Kind::Volume {
+            // The bar runs from silence to twice full volume; the part past full volume is the darker bar showing through.
+            let level = frame.volume_fraction.clamp(0.0, MAX_VOLUME);
+            bar.set_fraction(level.min(1.0) / MAX_VOLUME);
+            if let Some(boost) = &item.boost_bar {
+                boost.set_fraction(level / MAX_VOLUME);
+            }
+            if let Some(widget) = &item.bar_widget {
+                widget.set_opacity(if frame.has_audio { 1.0 } else { DIMMED_OPACITY });
+            }
+        } else {
+            bar.set_fraction(frame.fraction);
+        }
     }
     // An element with nothing to show does not show its background either.
     item.bar.is_some() || !text.trim().is_empty() || state_icon.is_some() || item.filename.as_ref().is_some_and(|label| !label.text().is_empty())
@@ -551,7 +573,7 @@ fn build(index: usize, element: &Element) -> Placed {
         card.set_orientation(gtk::Orientation::Horizontal);
     }
     let upright = element.bar_vertical;
-    let bar = (matches!(element.kind, Kind::Seek | Kind::Volume) && element.bar).then(|| {
+    let make_bar = || {
         let bar = gtk::ProgressBar::new();
         bar.add_css_class("seek-bar");
         if upright {
@@ -564,7 +586,17 @@ fn build(index: usize, element: &Element) -> Placed {
             bar.set_valign(gtk::Align::Center);
         }
         bar
+    };
+    let bar = (matches!(element.kind, Kind::Seek | Kind::Volume) && element.bar).then(make_bar);
+    // A volume bar has a second one under it, in a darker colour, which only shows past full volume.
+    let boost_bar = (element.kind == Kind::Volume && bar.is_some()).then(|| {
+        let boost = make_bar();
+        boost.add_css_class("boost-bar");
+        boost
     });
+    if let (Some(bar), Some(_)) = (&bar, &boost_bar) {
+        bar.add_css_class("volume-bar");
+    }
     // Unless the element says otherwise, a bar is centred and the text lines up by the element's place; otherwise both
     // line up across the way they are stacked as it says.
     let across = match element.child_align {
@@ -574,13 +606,25 @@ fn build(index: usize, element: &Element) -> Placed {
         ChildAlign::End => Some(gtk::Align::End),
         ChildAlign::Fill => Some(gtk::Align::Fill),
     };
-    if let (Some(bar), Some(across)) = (&bar, across) {
-        if beside {
-            bar.set_valign(across);
-        } else {
-            bar.set_halign(across);
+    for bar in bar.iter().chain(&boost_bar) {
+        if let Some(across) = across {
+            if beside {
+                bar.set_valign(across);
+            } else {
+                bar.set_halign(across);
+            }
         }
     }
+    let bar_widget: Option<gtk::Widget> = match (&bar, &boost_bar) {
+        (Some(bar), Some(boost)) => {
+            let stack = gtk::Overlay::new();
+            stack.set_child(Some(boost));
+            stack.add_overlay(bar);
+            Some(stack.upcast())
+        }
+        (Some(bar), None) => Some(bar.clone().upcast()),
+        _ => None,
+    };
     let label = TextLabel::new(element);
     label.widget().add_css_class("overlay-text");
     match &label {
@@ -594,10 +638,10 @@ fn build(index: usize, element: &Element) -> Placed {
     }
     // The text goes before the bar above it or to its left, and after it otherwise.
     let text_first = element.text_position.is_first();
-    if let (Some(bar), true) = (&bar, text_first) {
+    if let (Some(bar), true) = (&bar_widget, text_first) {
         card.append(&label.widget());
         card.append(bar);
-    } else if let Some(bar) = &bar {
+    } else if let Some(bar) = &bar_widget {
         card.append(bar);
         card.append(&label.widget());
     }
@@ -659,6 +703,8 @@ fn build(index: usize, element: &Element) -> Placed {
         label,
         shown: RefCell::new(String::new()),
         bar,
+        boost_bar,
+        bar_widget,
         icon,
         filename,
         filename_template: Template::parse(&element.filename_template),
@@ -673,7 +719,7 @@ mod tests {
     const SECOND: i64 = 1_000_000;
 
     fn frame<'a>(values: &'a dyn Fn(&str) -> Option<String>) -> Frame<'a> {
-        Frame { values, fraction: 0.0, volume_fraction: 0.0, is_video: true, playing: true, fullscreen: false, since_change: [None; TRIGGERS] }
+        Frame { values, fraction: 0.0, volume_fraction: 0.0, has_audio: true, is_video: true, playing: true, fullscreen: false, since_change: [None; TRIGGERS] }
     }
 
     #[test]

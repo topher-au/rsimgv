@@ -10,7 +10,7 @@ use gtk::prelude::*;
 use gtk::subclass::prelude::*;
 use gtk::glib;
 
-use super::media_viewer::VOLUME_STEP;
+use super::media_viewer::{MAX_VOLUME, VOLUME_STEP};
 
 /// How far a rewind or fast forward moves, in microseconds.
 pub const SEEK_STEP: i64 = 5_000_000;
@@ -110,12 +110,15 @@ mod imp {
 
             // The slider lives in the same widget tree as the volume button, rather than in a popover on its
             // own surface, so the pointer moving from the button onto the slider is not read as leaving.
-            let scale = gtk::Scale::with_range(gtk::Orientation::Vertical, 0.0, 1.0, 0.05);
+            let scale = gtk::Scale::with_range(gtk::Orientation::Vertical, 0.0, MAX_VOLUME, 0.05);
             // A vertical scale runs from its top down; inverted, loud is at the top, as a volume slider should be.
             scale.set_inverted(true);
             scale.set_draw_value(false);
             scale.set_size_request(-1, 120);
             scale.set_value(1.0);
+            // While muted, the knob sits at silence and the fill shows the volume that unmuting brings back.
+            scale.set_restrict_to_fill_level(false);
+            scale.set_fill_level(1.0);
             self.volume_slider_box.append(&scale);
             let _ = self.volume_scale.set(scale.clone());
 
@@ -348,7 +351,7 @@ impl MediaControls {
         }
     }
 
-    /// The volume, from 0 to 1, and whether the video is muted.
+    /// The volume, from 0 to 2 where 1 is full, and whether the video is muted.
     pub fn audio(&self) -> (f64, bool) {
         (self.imp().volume.get(), self.imp().muted.get())
     }
@@ -356,14 +359,14 @@ impl MediaControls {
     /// Sets the volume and mute state, to the video shown if there is one.
     pub fn set_audio(&self, volume: f64, muted: bool) {
         let imp = self.imp();
-        imp.volume.set(volume.clamp(0.0, 1.0));
+        imp.volume.set(volume.clamp(0.0, MAX_VOLUME));
         imp.muted.set(muted);
         self.apply_audio();
     }
 
-    /// Changes the volume by `delta`, kept between silence and full. Raising it above silence unmutes.
+    /// Changes the volume by `delta`, kept between silence and the loudest. Any change unmutes.
     pub fn adjust_volume(&self, delta: f64) {
-        self.set_volume_level((self.imp().volume.get() + delta).clamp(0.0, 1.0));
+        self.set_volume_level((self.imp().volume.get() + delta).clamp(0.0, MAX_VOLUME));
     }
 
     /// Mutes the video, or unmutes it.
@@ -373,13 +376,11 @@ impl MediaControls {
         self.apply_audio();
     }
 
-    /// Sets the volume from the slider. Raising it above silence unmutes.
+    /// Sets the volume, as the slider or a key does. Unmutes.
     fn set_volume_level(&self, volume: f64) {
         let imp = self.imp();
         imp.volume.set(volume);
-        if volume > 0.0 {
-            imp.muted.set(false);
-        }
+        imp.muted.set(false);
         self.apply_audio();
     }
 
@@ -387,7 +388,11 @@ impl MediaControls {
     fn apply_audio(&self) {
         let imp = self.imp();
         if let Some(media) = imp.media.borrow().as_ref() {
-            media.set_volume(imp.volume.get());
+            media.set_volume(imp.volume.get().min(1.0));
+            // The media's own volume stops at full; the stream goes on to the boost.
+            if let Some(stream) = media.downcast_ref::<crate::mpv::MpvStream>() {
+                stream.set_level(imp.volume.get());
+            }
             media.set_muted(imp.muted.get());
         }
         self.refresh();
@@ -421,9 +426,18 @@ impl MediaControls {
         let (volume, muted) = (imp.volume.get(), imp.muted.get());
         imp.volume_button.set_icon_name(volume_icon(volume, muted));
         imp.volume_button.set_tooltip_text(Some(if muted { "Unmute" } else { "Mute" }));
+        imp.volume_button.set_sensitive(media.as_ref().is_none_or(|media| media.has_audio()));
         if let Some(scale) = imp.volume_scale.get() {
-            if (scale.value() - volume).abs() > 0.001 {
-                scale.set_value(volume);
+            let shown = if muted { 0.0 } else { volume };
+            if (scale.value() - shown).abs() > 0.001 {
+                scale.set_value(shown);
+            }
+            scale.set_show_fill_level(muted);
+            scale.set_fill_level(volume);
+            if volume > 1.0 {
+                scale.add_css_class("boosted");
+            } else {
+                scale.remove_css_class("boosted");
             }
         }
     }
@@ -484,5 +498,6 @@ mod tests {
         assert_eq!(volume_icon(0.2, false), "audio-volume-low-symbolic");
         assert_eq!(volume_icon(0.5, false), "audio-volume-medium-symbolic");
         assert_eq!(volume_icon(1.0, false), "audio-volume-high-symbolic");
+        assert_eq!(volume_icon(2.0, false), "audio-volume-high-symbolic");
     }
 }

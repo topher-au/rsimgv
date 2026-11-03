@@ -103,6 +103,8 @@ mod imp {
         pub(super) orientation: Cell<Orientation>,
         /// Whether the player has loaded this stream's file, so events from the file before it are ignored.
         pub(super) loaded: Cell<bool>,
+        /// The volume the player is given, as a fraction of full, when it is above what the stream's own volume allows.
+        pub(super) level: Cell<Option<f64>>,
         /// The latest frame, and the video's size, which the frame's intrinsic size is.
         pub(super) frame: RefCell<Option<gdk::Texture>>,
         pub(super) frame_size: Cell<(i32, i32)>,
@@ -187,7 +189,7 @@ mod imp {
         fn update_audio(&self, muted: bool, volume: f64) {
             if let Some(player) = self.player.borrow().as_ref() {
                 player.set_flag("mute", muted);
-                player.set_double("volume", volume * 100.0);
+                player.set_double("volume", self.level.get().unwrap_or(volume) * 100.0);
             }
         }
     }
@@ -439,6 +441,15 @@ impl MpvStream {
         })
     }
 
+    /// Sets the volume as a fraction of full, which can go above 1 where the stream's own volume stops.
+    pub fn set_level(&self, level: f64) {
+        let imp = self.imp();
+        imp.level.set(Some(level));
+        if let Some(player) = imp.player.borrow().as_ref() {
+            player.set_double("volume", level * 100.0);
+        }
+    }
+
     /// Plays at `speed` times normal speed.
     pub fn set_speed(&self, speed: f64) {
         if let Some(player) = self.imp().player.borrow().as_ref() {
@@ -541,7 +552,7 @@ impl MpvStream {
                 if let Some(player) = imp.player.borrow().as_ref() {
                     player.set_string("loop-file", if self.is_loop() { "inf" } else { "no" });
                     player.set_flag("mute", self.is_muted());
-                    player.set_double("volume", self.volume() * 100.0);
+                    player.set_double("volume", imp.level.get().unwrap_or_else(|| self.volume()) * 100.0);
                     player.set_flag("pause", !self.is_playing());
                 }
             }

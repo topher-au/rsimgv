@@ -69,6 +69,9 @@ pub struct Playback {
 /// How much a volume key changes the volume, as a fraction of full.
 pub const VOLUME_STEP: f64 = 0.05;
 
+/// The loudest the volume goes, as a fraction of full: the scale runs to 200%.
+pub const MAX_VOLUME: f64 = 2.0;
+
 /// The share of the viewer's height, from its bottom edge, where a video's controls appear.
 const REVEAL_FRACTION: f64 = 0.2;
 
@@ -1098,6 +1101,10 @@ impl MediaViewer {
     /// Changes the volume of the video shown by `delta`.
     pub fn adjust_volume(&self, delta: f64) {
         self.imp().controls.adjust_volume(delta);
+        // The volume display comes up whether or not the volume moved, as it does at either end of the scale.
+        if self.imp().media.borrow().is_some() {
+            self.note_change(Trigger::Volume);
+        }
     }
 
     /// Changes the turn and mirror of the picture or video shown with `change`. A picture is redrawn from its pixels
@@ -1597,8 +1604,11 @@ impl MediaViewer {
             values.insert("speed-percent", format!("{:.0}", speed * 100.0));
             values.insert("speed", speed_text);
         }
-        values.insert("volume", format!("{:.0}", media.volume() * 100.0));
-        if media.is_muted() {
+        let (volume, muted) = imp.controls.audio();
+        values.insert("volume", format!("{:.0}", volume * 100.0));
+        if !media.has_audio() {
+            values.insert("no-audio", "yes".to_owned());
+        } else if muted {
             values.insert("mute", "muted".to_owned());
         }
         values
@@ -1630,6 +1640,7 @@ impl MediaViewer {
             playing: media.as_ref().is_some_and(|media| media.is_playing()),
             fullscreen: imp.fullscreen.get(),
             volume_fraction: if imp.controls.audio().1 { 0.0 } else { imp.controls.audio().0 },
+            has_audio: media.as_ref().is_none_or(|media| media.has_audio()),
             since_change: imp.changed_at.get().map(|when| when.map(|when| when.elapsed())),
         });
     }

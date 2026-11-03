@@ -1169,7 +1169,7 @@ pub(crate) mod tests {
     #[test]
     fn every_listed_property_has_a_sample_but_mute() {
         for (name, _) in PROPERTIES {
-            assert!(sample(name).is_some() || matches!(*name, "mute" | "loading" | "mirrored"), "{name} has no sample");
+            assert!(sample(name).is_some() || matches!(*name, "mute" | "no-audio" | "loading" | "mirrored"), "{name} has no sample");
         }
     }
 }

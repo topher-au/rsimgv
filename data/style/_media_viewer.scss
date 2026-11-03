@@ -23,6 +23,17 @@
     progress {
       min-height: 4px;
     }
+
+    // Past full volume the bar is a darker colour. That is a second bar under the first, which has no trough of its own.
+    &.volume-bar trough {
+      background: none;
+      border-color: transparent;
+      box-shadow: none;
+    }
+
+    &.boost-bar progress {
+      background-color: #{"shade(@accent_bg_color, 0.65)"};
+    }
   }
 }
 
@@ -110,4 +121,14 @@ thumbnail-bar.dragging {
   &.side-right {
     border-left: 3px solid #{"var(--accent-bg-color)"};
   }
+}
+
+// The volume slider in the video controls: past full volume it is a darker colour, and while muted the fill shows
+// the volume that unmuting brings back, with the knob at silence.
+scale.boosted trough highlight {
+  background-color: #{"shade(@accent_bg_color, 0.65)"};
+}
+
+scale trough fill {
+  background-color: #{"alpha(@accent_bg_color, 0.5)"};
 }

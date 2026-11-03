@@ -26,6 +26,7 @@ pub const PROPERTIES: &[(&str, &str)] = &[
     ("loading", "Loading..., until the video has loaded"),
     ("volume", "The volume, in percent"),
     ("mute", "muted, while the video is muted"),
+    ("no-audio", "yes, while the video has no sound"),
     ("fps", "The video's frame rate"),
     ("filename", "The name of the file"),
     ("path", "The full path of the file"),
@@ -451,8 +452,8 @@ pub fn rotation_name(degrees: u16) -> &'static str {
     }
 }
 
-/// The template that writes a volume display's text: the level, or that it is muted.
-const VOLUME_TEXT: &str = "${?mute:Muted}${!mute:${volume}%}";
+/// The template that writes a volume display's text: the level, that it is muted, or `---` for a video with no sound.
+const VOLUME_TEXT: &str = "${?no-audio:---}${!no-audio:${?mute:Muted}${!mute:${volume}%}}";
 
 /// The parts a media status element can show, in the order it writes them. The state is an icon and the filename a line
 /// under the text, so neither is in the text. The percent and the speed are written together, as `(20% @ 0.2x)`, or
@@ -471,7 +472,7 @@ const STATUS_TIME: &str = "${time-pos}${?duration: / ${duration}}";
 const STATUS_PERCENT: &str = "${?percent-pos:(${percent-pos}%)}";
 const STATUS_SPEED: &str = "${?speed-changed:(${speed-changed}x)}";
 const STATUS_PERCENT_AND_SPEED: &str = "${?percent-pos:${?speed-changed:(${percent-pos}% @ ${speed-changed}x)}${!speed-changed:(${percent-pos}%)}}${!percent-pos:${?speed-changed:(${speed-changed}x)}}";
-const STATUS_VOLUME: &str = "Vol ${volume}%${?mute: (muted)}";
+const STATUS_VOLUME: &str = "Vol ${?no-audio:---}${!no-audio:${volume}%${?mute: (muted)}}";
 
 /// How the filename of a media status fits in the space it has.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

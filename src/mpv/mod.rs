@@ -368,6 +368,8 @@ impl Player {
                 ("ytdl", "no"),
                 // The OSD keeps its size in device pixels, so resizing the window does not change it.
                 ("osd-scale-by-window", "no"),
+                // The volume goes up to 200%; mpv stops at 130% unless it is told otherwise.
+                ("volume-max", "200"),
             ] {
                 player.set_option(name, value)?;
             }
