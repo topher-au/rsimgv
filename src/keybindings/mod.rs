@@ -42,5 +42,5 @@ pub fn save() -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    crate::atomic_file::write(&path, text.as_bytes())
+    crate::storage::atomic_file::write(&path, text.as_bytes())
 }

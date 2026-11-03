@@ -1,23 +1,18 @@
 #![recursion_limit = "256"]
-mod atomic_file;
 mod fs;
-mod ipc;
-mod orientation;
 mod overlay;
-mod remote;
-mod resample;
-mod scripts;
-mod svp;
-mod bookmarks;
 mod playlist;
-mod file_settings;
-mod folder_sort;
+mod media;
+mod services;
+mod storage;
 mod keybindings;
 mod mpv;
 mod settings;
 mod ui;
 
 use adw::prelude::*;
+use services::{ipc, remote};
+use storage::bookmarks;
 use gtk::{gdk, gio};
 use gio::prelude::ApplicationCommandLineExt;
 use std::cell::RefCell;

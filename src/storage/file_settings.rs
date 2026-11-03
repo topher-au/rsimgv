@@ -157,7 +157,7 @@ impl FileSettings {
             std::fs::create_dir_all(parent)?;
         }
         let text = serde_yaml_ng::to_string(&Value::Mapping(merged)).map_err(std::io::Error::other)?;
-        crate::atomic_file::write(&self.file, text.as_bytes())
+        crate::storage::atomic_file::write(&self.file, text.as_bytes())
     }
 }
 

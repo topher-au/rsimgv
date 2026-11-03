@@ -3,6 +3,7 @@
 //! listens for mpv JSON IPC on `/tmp/rsimgv-mpv-<pid in hex>`. See `stream` for the GTK side.
 
 pub mod framing;
+pub mod svp;
 mod gl;
 mod render;
 mod stream;
@@ -26,7 +27,7 @@ use std::time::Duration;
 use gtk::gio;
 use gtk::gio::prelude::*;
 
-use crate::orientation::Orientation;
+use crate::media::orientation::Orientation;
 use render::{RenderGate, RenderThread};
 
 /// An event from the player, as `Player::next_event` reports it.

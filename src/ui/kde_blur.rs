@@ -1,5 +1,5 @@
 //! KDE Plasma's blur for the parts of the window that float over the item: KWin blurs behind the window's surface
-//! within the regions the window names, through the `org_kde_kwin_blur` protocol (the C side is in `kde_blur.c`).
+//! within the regions the window names, through the `org_kde_kwin_blur` protocol (the C side is in `native/kde_blur.c`).
 //! It is only available on Wayland under KWin; elsewhere nothing is sent.
 
 use std::cell::RefCell;

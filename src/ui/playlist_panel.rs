@@ -19,7 +19,7 @@ use super::media_viewer::is_video;
 use super::playlist_toolbar::{Slot, Toolbar};
 use crate::fs::metadata::{anonymous, MediaInfo};
 use crate::playlist;
-use crate::scripts;
+use crate::services::scripts;
 
 /// How wide the panel is, in pixels.
 const PANEL_WIDTH: i32 = 400;

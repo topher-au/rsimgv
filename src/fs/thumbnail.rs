@@ -1085,7 +1085,7 @@ fn png_text<'a>(data: &'a [u8], keyword: &str) -> Option<&'a str> {
 pub(super) fn write_atomically(file: &Path, data: &[u8]) -> std::io::Result<()> {
     let dir = file.parent().ok_or(std::io::ErrorKind::InvalidInput)?;
     DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
-    crate::atomic_file::write(file, data)
+    crate::storage::atomic_file::write(file, data)
 }
 
 #[cfg(test)]

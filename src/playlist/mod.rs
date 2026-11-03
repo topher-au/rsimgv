@@ -439,7 +439,7 @@ pub fn save() -> io::Result<()> {
     if let Some(parent) = file.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    crate::atomic_file::write(&file, text.as_bytes())
+    crate::storage::atomic_file::write(&file, text.as_bytes())
 }
 
 #[cfg(test)]

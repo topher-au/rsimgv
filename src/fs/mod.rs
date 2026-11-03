@@ -1,3 +1,4 @@
+pub mod folder_sort;
 mod entry;
 mod node;
 mod sort;

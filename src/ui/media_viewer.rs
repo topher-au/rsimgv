@@ -16,9 +16,9 @@ use gtk::{gdk, gio, glib};
 
 use super::drag;
 use super::image_canvas::{Fit, ImageCanvas, OriginalFocus, Placement, Scaling};
-use crate::file_settings::FileSettings;
+use crate::storage::file_settings::FileSettings;
 use crate::fs::thumbnail::Thumbnails;
-use crate::orientation::Orientation;
+use crate::media::orientation::Orientation;
 use crate::fs::metadata::MediaInfo;
 use crate::fs::thumbnail::Pixels;
 use super::media_controls::MediaControls;
@@ -466,7 +466,7 @@ mod imp {
         pub(super) zoom_settles: Cell<Option<std::time::Instant>>,
         pub(super) zoom_scale: Cell<f64>,
         /// The SVP frame interpolation settings, applied to the videos mpv plays.
-        pub(super) svp: RefCell<Option<crate::svp::Config>>,
+        pub(super) svp: RefCell<Option<crate::mpv::svp::Config>>,
         /// The filter that applies SVP to the video shown, while SVP is on for it.
         pub(super) svp_filter: RefCell<Option<String>>,
         /// What the notification says once that filter is in place.
@@ -1260,7 +1260,7 @@ impl MediaViewer {
     }
 
     /// Sets the SVP settings, and applies them to the video shown.
-    pub fn set_svp(&self, config: crate::svp::Config) {
+    pub fn set_svp(&self, config: crate::mpv::svp::Config) {
         // Every viewer setting's change arrives here, and only these need the video disturbed.
         if self.imp().svp.borrow().as_ref() == Some(&config) {
             return;
@@ -1276,7 +1276,7 @@ impl MediaViewer {
     /// Applies SVP to the video `stream` plays at `speed`, once mpv knows the video's frame rate. The filter left by the
     /// video before goes first, as this video's first frame would otherwise wait for it to load, only for it to be replaced.
     fn start_svp(&self, stream: &crate::mpv::MpvStream) {
-        if let Err(err) = stream.set_interpolation_filter(crate::svp::FILTER_LABEL, None) {
+        if let Err(err) = stream.set_interpolation_filter(crate::mpv::svp::FILTER_LABEL, None) {
             eprintln!("rsimgv: SVP could not be removed: {err}");
         }
         self.watch_seeks(stream);
@@ -1335,7 +1335,7 @@ impl MediaViewer {
         let delay = imp.svp.borrow().as_ref().filter(|config| config.enabled).and_then(|config| config.seek_bypass);
         let Some(delay) = delay else { return };
         imp.svp_held.set(true);
-        if let Err(err) = stream.set_interpolation_filter(crate::svp::FILTER_LABEL, None) {
+        if let Err(err) = stream.set_interpolation_filter(crate::mpv::svp::FILTER_LABEL, None) {
             eprintln!("rsimgv: SVP could not be removed: {err}");
         }
         self.arm_svp_timer(stream, delay);
@@ -1378,13 +1378,13 @@ impl MediaViewer {
             self.cancel_svp_timer();
             imp.svp_held.set(false);
             imp.svp_announcement.take();
-            if let Err(err) = stream.set_interpolation_filter(crate::svp::FILTER_LABEL, None) {
+            if let Err(err) = stream.set_interpolation_filter(crate::mpv::svp::FILTER_LABEL, None) {
                 eprintln!("rsimgv: SVP could not be removed: {err}");
             }
             imp.svp_filter.take();
             return;
         }
-        let plugins = match crate::svp::plugins() {
+        let plugins = match crate::mpv::svp::plugins() {
             Ok(plugins) => plugins,
             Err(err) => {
                 eprintln!("rsimgv: SVP plugins could not be written: {err}");
@@ -1393,12 +1393,12 @@ impl MediaViewer {
             }
         };
         let Some(source) = stream.fps() else { return };
-        let target = crate::svp::target_fps(&config.rate, source, speed, stream.display_fps());
-        let script = crate::svp::script(&plugins, source, target, config.nvof);
-        let directory = crate::svp::script_directory();
-        let path = directory.join(crate::svp::script_name(&script));
+        let target = crate::mpv::svp::target_fps(&config.rate, source, speed, stream.display_fps());
+        let script = crate::mpv::svp::script(&plugins, source, target, config.nvof);
+        let directory = crate::mpv::svp::script_directory();
+        let path = directory.join(crate::mpv::svp::script_name(&script));
         if std::fs::read_to_string(&path).ok().as_deref() != Some(script.as_str()) {
-            let written = crate::svp::create_private_directory(&directory)
+            let written = crate::mpv::svp::create_private_directory(&directory)
                 .and_then(|()| std::fs::write(&path, &script));
             if let Err(err) = written {
                 eprintln!("rsimgv: could not write the SVP script: {err}");
@@ -1413,7 +1413,7 @@ impl MediaViewer {
             crate::fs::metadata::format_fps(target),
             speed * 100.0
         );
-        let filter = crate::svp::filter(&path);
+        let filter = crate::mpv::svp::filter(&path);
         if imp.svp_filter.borrow().as_deref() == Some(filter.as_str()) {
             if speed_changed {
                 self.announce(&text, false);
@@ -1437,7 +1437,7 @@ impl MediaViewer {
     fn install_svp(&self, stream: &crate::mpv::MpvStream) {
         let imp = self.imp();
         let filter = imp.svp_filter.borrow().clone();
-        match stream.set_interpolation_filter(crate::svp::FILTER_LABEL, filter.as_deref()) {
+        match stream.set_interpolation_filter(crate::mpv::svp::FILTER_LABEL, filter.as_deref()) {
             Ok(()) => {
                 if let Some(text) = imp.svp_announcement.take() {
                     println!("rsimgv: SVP filter set: {}", filter.as_deref().unwrap_or_default());

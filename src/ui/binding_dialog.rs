@@ -12,7 +12,7 @@ use gtk::{gio, glib};
 use crate::keybindings::actions::{
     value_info, ActionInfo, Scope, DEFAULT_NOTIFICATION_SECONDS, MAX_NOTIFICATION_SECONDS, NOTIFICATION_LEVELS,
 };
-use crate::scripts::read_scripts;
+use crate::services::scripts::read_scripts;
 use crate::keybindings::{self, chord::Chord, Binding, Notification};
 use super::key_handler::chord_from_event;
 use super::keybind_label::KeybindLabel;

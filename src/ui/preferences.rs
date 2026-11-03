@@ -8,7 +8,7 @@ use adw::prelude::{ActionRowExt, AdwDialogExt, PreferencesGroupExt, PreferencesP
 use adw::subclass::prelude::*;
 
 use super::keybinding_list::KeybindingList;
-use crate::scripts::{read_scripts, write_scripts, Script};
+use crate::services::scripts::{read_scripts, write_scripts, Script};
 use super::tight_layout::TightLayout;
 use super::browse_view::InfoField;
 use gtk::prelude::*;

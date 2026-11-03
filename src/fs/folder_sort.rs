@@ -65,7 +65,7 @@ fn write_entry(file: &Path, folder: &Path, sort: &FolderSort) -> std::io::Result
         std::fs::create_dir_all(parent)?;
     }
     let text = serde_yaml_ng::to_string(&Value::Mapping(entries)).map_err(std::io::Error::other)?;
-    crate::atomic_file::write(file, text.as_bytes())
+    crate::storage::atomic_file::write(file, text.as_bytes())
 }
 
 #[cfg(test)]

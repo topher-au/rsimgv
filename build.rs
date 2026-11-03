@@ -1,4 +1,4 @@
-//! Compiles the GSettings backend's GObject subclass (src/settings/backend.c) into the crate, and KWin's blur
+//! Compiles the GSettings backend's GObject subclass (native/backend.c) into the crate, and KWin's blur
 //! protocol: its client code is generated from the protocol description, beside the blur's C wrapper.
 
 use std::env;
@@ -24,16 +24,16 @@ fn pkg_config_cflags(build: &mut cc::Build, package: &str) {
 }
 
 fn main() {
-    println!("cargo:rerun-if-changed=src/settings/backend.c");
+    println!("cargo:rerun-if-changed=native/backend.c");
 
     let mut build = cc::Build::new();
-    build.file("src/settings/backend.c");
+    build.file("native/backend.c");
     // The virtual methods take parameters they do not use, as GSettingsBackend defines them.
     build.warnings(false);
     pkg_config_cflags(&mut build, "gio-2.0");
     build.compile("rsimgv_settings_backend");
 
-    println!("cargo:rerun-if-changed=src/ui/kde_blur.c");
+    println!("cargo:rerun-if-changed=native/kde_blur.c");
     println!("cargo:rerun-if-changed=data/protocols/kde-blur.xml");
     let out = PathBuf::from(env::var("OUT_DIR").expect("cargo sets OUT_DIR"));
     let protocol = "data/protocols/kde-blur.xml";
@@ -46,7 +46,7 @@ fn main() {
         assert!(status.success(), "wayland-scanner failed on {protocol}");
     }
     let mut build = cc::Build::new();
-    build.file("src/ui/kde_blur.c").file(out.join("kde-blur-protocol.c")).include(&out);
+    build.file("native/kde_blur.c").file(out.join("kde-blur-protocol.c")).include(&out);
     pkg_config_cflags(&mut build, "wayland-client");
     build.compile("rsimgv_kde_blur");
     for flag in ["wayland-client"] {

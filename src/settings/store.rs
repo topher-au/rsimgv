@@ -309,7 +309,7 @@ fn save(file: &Path, values: &BTreeMap<String, Value>) -> std::io::Result<()> {
     if let Some(parent) = file.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    crate::atomic_file::write(file, text.as_bytes())
+    crate::storage::atomic_file::write(file, text.as_bytes())
 }
 
 /// A YAML value as the GVariant of type `ty`, if it fits that type.

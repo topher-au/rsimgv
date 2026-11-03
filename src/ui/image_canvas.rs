@@ -9,8 +9,8 @@ use gtk::prelude::*;
 use gtk::subclass::prelude::*;
 use gtk::{gdk, gio, glib, graphene, gsk};
 
-use crate::orientation::Orientation;
-use crate::resample::{self, Picture, Quality};
+use crate::media::orientation::Orientation;
+use crate::media::resample::{self, Picture, Quality};
 
 /// How much one zoom step changes the scale.
 const DEFAULT_ZOOM_STEP: f64 = 1.25;
@@ -172,7 +172,7 @@ impl Placement {
     }
 
     /// The placement saved in `settings`, if there is one.
-    pub fn from_settings(settings: &crate::file_settings::FileSettings) -> Option<Placement> {
+    pub fn from_settings(settings: &crate::storage::file_settings::FileSettings) -> Option<Placement> {
         let zoom = settings.get_f64("zoom")?;
         Some(Placement {
             fit: settings.get_str("fit").and_then(Fit::from_name),

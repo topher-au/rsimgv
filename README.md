@@ -152,11 +152,18 @@ straight away. The schema is `data/au.topher.rimgv.gschema.xml`.
 ```
 src/
   main.rs            application startup, actions, icon theme registration
-  fs/                directory entries, lazy tree nodes, natural sort
+  fs/                directory entries, lazy tree nodes, natural sort, folder sorting, thumbnails
+  keybindings/       keybinding table, chords and actions
+  media/             picture orientation and resampling
+  mpv/               libmpv player, video framing, and SVP frame interpolation
+  overlay/           on-screen overlay templates
   playlist/          the playlist and its file formats
-  settings/          GSettings backend (backend.c) and YAML storage (store.rs)
+  services/          IPC, the remote control server and user scripts
+  settings/          GSettings settings and YAML storage (store.rs)
+  storage/           atomic file writes, bookmarks and per-file settings
   ui/                widgets: window, folder tree, browse view, path bar,
                      navigation bar, header bar, preferences, split view
+native/              GObject subclass for GSettings (backend.c) and KWin blur (kde_blur.c)
 data/
   ui/                GTK XML templates for every window and widget
   style/             SCSS, compiled to CSS at build time
@@ -166,7 +173,7 @@ data/
 build-aux/           build helper that runs cargo from Meson
 ```
 
-The GObject subclass that connects GSettings to the YAML file is written in C (`src/settings/backend.c`),
+The GObject subclass that connects GSettings to the YAML file is written in C (`native/backend.c`),
 because the Rust bindings do not expose the trait needed to subclass `GSettingsBackend`.
 
 ## Application ID

@@ -10,7 +10,7 @@ use gtk::{gdk, gio, glib};
 
 use crate::keybindings::actions::{Scope, DEFAULT_NOTIFICATION_SECONDS, MAX_NOTIFICATION_SECONDS};
 use super::browse_view::{InfoField, ListedFile};
-use crate::bookmarks::{self, Bookmark};
+use crate::storage::bookmarks::{self, Bookmark};
 use crate::playlist::{self, format::{self, Format}};
 use super::image_canvas::{Fit, OriginalFocus, Scaling, PAN_STEP};
 use super::media_controls::SEEK_STEP;
@@ -23,7 +23,7 @@ use super::{Level, Message};
 use super::message_overlay::MessageId;
 use super::keybinds_overlay::KeybindsOverlay;
 use super::playlist_panel::{stamp, PlaylistPanel, SortColumn};
-use crate::orientation::Orientation;
+use crate::media::orientation::Orientation;
 use crate::fs::metadata::MediaInfo;
 
 mod imp {
@@ -887,7 +887,7 @@ impl Window {
         viewer.set_auto_hide_cursor(settings.boolean("auto-hide-cursor"));
         viewer.set_blurred_background(settings.boolean("viewer-blurred-background"));
         viewer.set_status_bar(settings.boolean("viewer-status-bar"));
-        viewer.set_svp(crate::svp::Config::from_settings(settings));
+        viewer.set_svp(crate::mpv::svp::Config::from_settings(settings));
         self.apply_folder_end();
         viewer.set_remember(super::media_viewer::Remember {
             enabled: settings.boolean("remember-file-settings"),
@@ -1968,7 +1968,7 @@ impl Window {
         glib::spawn_future_local(async move {
             let name = path.file_name().map_or_else(|| path.display().to_string(), |name| name.to_string_lossy().into_owned());
             let saved = path.clone();
-            let written = gio::spawn_blocking(move || crate::atomic_file::write(&path, text.as_bytes())).await;
+            let written = gio::spawn_blocking(move || crate::storage::atomic_file::write(&path, text.as_bytes())).await;
             let Some(window) = weak.upgrade() else { return };
             match written {
                 Ok(Ok(())) => {
@@ -2694,7 +2694,7 @@ impl Window {
     /// Runs the script called `name` on `target`, the item it runs on if it uses one. Otherwise as `run_script`.
     pub fn run_script_on(&self, name: &str, target: Option<PathBuf>) {
         let Some(settings) = self.imp().settings.get() else { return };
-        let Some(script) = crate::scripts::find_script(settings, name) else {
+        let Some(script) = crate::services::scripts::find_script(settings, name) else {
             self.report_script_problem(&format!("There is no script called {name}"));
             return;
         };
@@ -3317,7 +3317,7 @@ impl Window {
     /// the view is not sorting, so a change of sort does not first sort the folder it is leaving.
     fn apply_folder_sort(&self, browse: &BrowseView) {
         let Some(settings) = self.imp().settings.get() else { return };
-        let remembered = browse.path().filter(|_| settings.boolean("remember-folder-sort")).and_then(|path| crate::folder_sort::remembered(&path));
+        let remembered = browse.path().filter(|_| settings.boolean("remember-folder-sort")).and_then(|path| crate::fs::folder_sort::remembered(&path));
         let (by, order) = match remembered {
             Some(sort) => (sort.by, sort.order),
             None => (settings.string("sort-by").to_string(), settings.string("sort-order").to_string()),
@@ -3371,8 +3371,8 @@ impl Window {
             "sort-by" => browse.set_sort_by(value),
             _ => browse.set_sort_order(value),
         }
-        let sort = crate::folder_sort::FolderSort { by: browse.sort_by(), order: browse.sort_order() };
-        if let Err(err) = crate::folder_sort::remember(&path, &sort) {
+        let sort = crate::fs::folder_sort::FolderSort { by: browse.sort_by(), order: browse.sort_order() };
+        if let Err(err) = crate::fs::folder_sort::remember(&path, &sort) {
             eprintln!("rsimgv: could not remember the sort of {}: {err}", path.display());
         }
         self.sync_sort_actions();

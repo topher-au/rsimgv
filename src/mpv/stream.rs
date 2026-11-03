@@ -20,7 +20,7 @@ use gtk::{gdk, gio, glib};
 use super::framing::{self, Backdrop, CropMethod, CropRect, Framing};
 use super::render::FrameImage;
 use super::{config_generation, gl, Event, Player, RenderedFrame};
-use crate::orientation::Orientation;
+use crate::media::orientation::Orientation;
 
 /// The ids observed properties are reported under.
 const DURATION: u64 = 1;

@@ -57,8 +57,8 @@ use gtk::{gio, glib};
 use gtk::prelude::*;
 use serde_json::{json, Value};
 
-use crate::bookmarks;
-use crate::ipc::Error;
+use crate::storage::bookmarks;
+use crate::services::ipc::Error;
 use crate::keybindings::actions::{find, ACTIONS, DEFAULT_NOTIFICATION_SECONDS, NOTIFICATION_LEVELS};
 use crate::ui::{Level, Message, Window};
 use crate::ui::message_overlay::Position;
