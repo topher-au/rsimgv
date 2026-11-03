@@ -7,7 +7,8 @@
 //! button to close the bar at the other end.
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
@@ -74,6 +75,8 @@ mod imp {
         pub(super) images: Rc<RefCell<Vec<glib::WeakRef<gtk::Image>>>>,
         /// The stamp of each path shown, taken when the paths were set, so binding a row does not read the file.
         pub(super) stamps: Rc<RefCell<HashMap<PathBuf, i64>>>,
+        /// The positions of the videos whose thumbnails are asked for ahead of the ones in view.
+        pub(super) prefetched: RefCell<HashSet<usize>>,
     }
 
     impl Default for ThumbnailBar {
@@ -161,6 +164,7 @@ mod imp {
                 size,
                 images,
                 stamps,
+                prefetched: RefCell::new(HashSet::new()),
             }
         }
     }
@@ -223,6 +227,24 @@ mod imp {
                 }
             });
             obj.update_counter();
+
+            // Scrolling, resizing the list or changing the thumbnail aggression moves the range of videos to make ready.
+            for adjustment in [self.scroller.hadjustment(), self.scroller.vadjustment()] {
+                let weak = obj.downgrade();
+                adjustment.connect_notify_local(None, move |_, _| {
+                    if let Some(bar) = weak.upgrade() {
+                        bar.prefetch_videos();
+                    }
+                });
+            }
+            Thumbnails::shared().watch_aggression({
+                let weak = obj.downgrade();
+                move || {
+                    if let Some(bar) = weak.upgrade() {
+                        bar.prefetch_videos();
+                    }
+                }
+            });
 
             // A press that moves far enough becomes a drag of the whole bar; dropping it asks for the
             // side nearest the pointer. Claiming the drag cancels the list's click, so no item opens.
@@ -469,6 +491,72 @@ impl ThumbnailBar {
         let uris: Vec<String> = paths.iter().map(|path| uri_of(path)).collect();
         let uris: Vec<&str> = uris.iter().map(String::as_str).collect();
         imp.paths.splice(0, imp.paths.n_items(), &uris);
+        imp.prefetched.borrow_mut().clear();
+        self.prefetch_videos();
+    }
+
+    /// The positions in view, and the positions a page either side of them, for the aggression of the thumbnails: a
+    /// page is as many items as are in view at once. At the highest aggression, every position is in reach.
+    fn ranges(&self) -> (Range<i64>, Range<i64>) {
+        let imp = self.imp();
+        let items = i64::from(imp.paths.n_items());
+        let adjustment = if imp.list.orientation() == gtk::Orientation::Horizontal { imp.scroller.hadjustment() } else { imp.scroller.vadjustment() };
+        if items == 0 || adjustment.upper() <= 0.0 {
+            return (0..0, 0..0);
+        }
+        let share = adjustment.upper() / items as f64;
+        let start = (adjustment.value() / share).floor() as i64;
+        let end = (((adjustment.value() + adjustment.page_size()) / share).ceil() as i64).clamp(start, items);
+        let page = (end - start).max(1);
+        let reach = match Thumbnails::shared().aggression().pages() {
+            Some(pages) => {
+                let margin = (pages * page as f64) as i64;
+                (start - margin).max(0)..(end + margin).min(items)
+            }
+            None => 0..items,
+        };
+        (start..end, reach)
+    }
+
+    /// The path of the item at `position`.
+    fn path_at(&self, position: usize) -> Option<PathBuf> {
+        self.imp().paths.item(position as u32).and_downcast::<gtk::StringObject>().and_then(|object| path_of(&object))
+    }
+
+    /// Whether the item at `position`, shown as `path`, is still in reach for a prefetch of its thumbnail.
+    fn in_reach(&self, position: usize, path: &Path) -> bool {
+        let (_, reach) = self.ranges();
+        reach.contains(&(position as i64)) && self.path_at(position).as_deref() == Some(path)
+    }
+
+    /// Asks for the thumbnails of the videos in reach but not in view, so they are ready as the bar scrolls to them.
+    /// Those no longer in reach are dropped, and asked for again if they come back.
+    fn prefetch_videos(&self) {
+        let imp = self.imp();
+        let (view, reach) = self.ranges();
+        let mut asked = imp.prefetched.borrow_mut();
+        asked.retain(|position| reach.contains(&(*position as i64)));
+        for position in reach.clone() {
+            let index = position as usize;
+            if view.contains(&position) || asked.contains(&index) {
+                continue;
+            }
+            let Some(path) = self.path_at(index).filter(|path| is_video(path)) else { continue };
+            asked.insert(index);
+            let mtime = imp.stamps.borrow().get(&path).copied().unwrap_or_default();
+            let size = ThumbnailSize::for_pixels(imp.size.get() * self.scale_factor());
+            let (nearer, wanted) = (self.downgrade(), self.downgrade());
+            let wanted_path = path.clone();
+            Thumbnails::shared().prefetch_still(
+                &path,
+                mtime,
+                ThumbnailMedia::Video,
+                size,
+                move || nearer.upgrade().map_or(f64::MAX, |bar| distance_from(&bar.ranges().0, position)),
+                move || wanted.upgrade().is_some_and(|bar| bar.in_reach(index, &wanted_path)),
+                |_| {},
+            );
+        }
     }
 
     /// Selects the thumbnail at `index` and scrolls it into view.
@@ -587,6 +675,17 @@ impl ThumbnailBar {
             callback(&bar, position as usize);
             None
         })
+    }
+}
+
+/// How many positions `position` is outside `view`, or 0 if it is in it.
+fn distance_from(view: &Range<i64>, position: i64) -> f64 {
+    if position < view.start {
+        (view.start - position) as f64
+    } else if position >= view.end {
+        (position - view.end + 1) as f64
+    } else {
+        0.0
     }
 }
 
