@@ -18,6 +18,9 @@ use crate::overlay::{DEFAULT_MARGIN, plain_icon, sample, Element, FilenameWrap, 
 const SPACING: i32 = 6;
 /// How long an element takes to fade in and out, in milliseconds.
 const FADE: u32 = 150;
+/// The width of a media status's state icon, in characters, and the gap between it and the text, in pixels.
+const ICON_CHARS: i32 = 2;
+const ICON_GAP: i32 = 10;
 
 /// The layout the settings say: the one saved by the configuration page, or the older settings' while none is saved.
 pub fn layout_from_settings(settings: &gio::Settings) -> Layout {
@@ -475,6 +478,9 @@ fn build(index: usize, element: &Element) -> Placed {
         icon.add_css_class("overlay-text");
         icon.add_css_class("overlay-icon");
         icon.set_valign(gtk::Align::Start);
+        // Every state takes the same width, so the text does not move as the state changes.
+        icon.set_width_chars(ICON_CHARS);
+        icon.set_xalign(0.5);
         icon
     });
     let filename = (is_status && element.shows_part("filename")).then(|| {
@@ -486,7 +492,7 @@ fn build(index: usize, element: &Element) -> Placed {
         filename
     });
     if is_status {
-        let grid = gtk::Grid::builder().column_spacing(8).row_spacing(2).build();
+        let grid = gtk::Grid::builder().column_spacing(ICON_GAP).row_spacing(2).build();
         let column = i32::from(icon.is_some());
         if let Some(icon) = &icon {
             grid.attach(icon, 0, 0, 1, 1);

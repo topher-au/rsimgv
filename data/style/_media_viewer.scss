@@ -9,6 +9,8 @@
 
   .overlay-icon {
     font-family: monospace;
+    // Wide enough for any of the icons, so they all take the same room.
+    min-width: 1.8em;
   }
 
   .overlay-subtext {
