@@ -13,7 +13,7 @@ use super::media_overlay::{layout_from_settings, set_preview, Preview};
 use crate::overlay::template::Template;
 use crate::overlay::{
     sample, Element, FilenameWrap, IconStyle, Items, Kind, Layout, Overflow, Slot, Visibility, BAR_WIDTH_RANGE, FADE_RANGE, FILENAME_CHARS_RANGE, FONT_SIZE_RANGE, MARGIN_RANGE, SHADOW_BLUR_RANGE, SHADOW_OFFSET_RANGE, STROKE_RANGE, MAX_NOTIFICATIONS_RANGE, PADDING_RANGE, PROPERTIES, RADIUS_RANGE,
-    SECONDS_RANGE, STATUS_PARTS, TIME_FORMATS, RotationFormat, SpeedFormat,
+    SECONDS_RANGE, STATUS_PARTS, TIME_FORMATS, RotationFormat, SpeedFormat, TextPosition,
 };
 
 /// The element being edited, and where it goes back to.
@@ -456,73 +456,50 @@ impl Editor {
         page
     }
 
-    fn seek_tab(self: &Rc<Self>, element: &Element) -> adw::PreferencesPage {
-        let page = adw::PreferencesPage::new();
-        let group = adw::PreferencesGroup::new();
-        group.set_description(Some("A progress bar and the time, shown for a moment after the video is skipped through."));
-        let bar = adw::SwitchRow::builder().title("Progress bar").active(element.bar).build();
-        let width = adw::SpinRow::with_range(f64::from(BAR_WIDTH_RANGE.0), f64::from(BAR_WIDTH_RANGE.1), 20.0);
-        width.set_title("Bar width");
-        width.set_subtitle("In pixels");
-        width.set_value(f64::from(element.bar_width));
-        width.set_sensitive(element.bar);
-        bar.connect_active_notify({
-            let editor = self.clone();
-            let width = width.clone();
-            move |row| {
-                width.set_sensitive(row.is_active());
-                editor.edit(|element| element.bar = row.is_active());
-            }
-        });
-        width.connect_value_notify({
-            let editor = self.clone();
-            move |row| editor.edit(|element| element.bar_width = row.value() as i32)
-        });
-        let labels: Vec<&str> = TIME_FORMATS.iter().map(|(_, label)| *label).collect();
-        let format = adw::ComboRow::builder().title("Time").subtitle("How the time is written").model(&gtk::StringList::new(&labels)).build();
-        format.set_selected(TIME_FORMATS.iter().position(|(name, _)| *name == element.time_format).unwrap_or(0) as u32);
-        let (preview, update) = self.preview_row();
-        format.connect_selected_notify({
-            let editor = self.clone();
-            move |row| {
-                if let Some((name, _)) = TIME_FORMATS.get(row.selected() as usize) {
-                    editor.edit(|element| element.time_format = (*name).to_owned());
-                    update();
-                }
-            }
-        });
-        group.add(&bar);
-        group.add(&width);
-        group.add(&format);
-        group.add(&preview);
-        page.add(&group);
-        page
-    }
-
-    fn volume_tab(self: &Rc<Self>, element: &Element) -> adw::PreferencesPage {
-        let page = adw::PreferencesPage::new();
-        let group = adw::PreferencesGroup::new();
-        group.set_description(Some("The volume, shown for a moment after it changes."));
+    /// Adds to `group` the rows for a display with a bar and text: each can be turned off, the bar can stand upright, and
+    /// the text sits above, below or beside the bar.
+    fn add_bar_rows(self: &Rc<Self>, group: &adw::PreferencesGroup, element: &Element, update: Rc<dyn Fn()>) {
         let bar = adw::SwitchRow::builder().title("Bar").active(element.bar).build();
-        let upright = adw::ComboRow::builder()
-            .title("Bar direction")
-            .model(&gtk::StringList::new(&["Horizontal", "Vertical"]))
-            .build();
+        let upright = adw::ComboRow::builder().title("Bar direction").model(&gtk::StringList::new(&["Horizontal", "Vertical"])).build();
         upright.set_selected(u32::from(element.bar_vertical));
         let length = adw::SpinRow::with_range(f64::from(BAR_WIDTH_RANGE.0), f64::from(BAR_WIDTH_RANGE.1), 10.0);
         length.set_title("Bar length");
         length.set_subtitle("In pixels");
         length.set_value(f64::from(element.bar_width));
-        for row in [upright.upcast_ref::<gtk::Widget>(), length.upcast_ref()] {
-            row.set_sensitive(element.bar);
-        }
+        let text = adw::SwitchRow::builder().title("Text").active(element.show_text).build();
+        let titles: Vec<&str> = TextPosition::ALL.iter().map(|position| position.title()).collect();
+        let position = adw::ComboRow::builder().title("Text position").model(&gtk::StringList::new(&titles)).build();
+        position.set_selected(TextPosition::ALL.iter().position(|candidate| *candidate == element.text_position).unwrap_or(0) as u32);
+
+        // The bar's options mean nothing without the bar, and the text's place nothing without both.
+        let sensitivity: Rc<dyn Fn(bool, bool)> = Rc::new({
+            let (upright, length, position) = (upright.clone(), length.clone(), position.clone());
+            move |bar, text| {
+                upright.set_sensitive(bar);
+                length.set_sensitive(bar);
+                position.set_sensitive(bar && text);
+            }
+        });
+        sensitivity(element.bar, element.show_text);
+
         bar.connect_active_notify({
             let editor = self.clone();
-            let (upright, length) = (upright.clone(), length.clone());
+            let (sensitivity, update) = (sensitivity.clone(), update.clone());
             move |row| {
-                upright.set_sensitive(row.is_active());
-                length.set_sensitive(row.is_active());
                 editor.edit(|element| element.bar = row.is_active());
+                let show_text = editor.draft.borrow().as_ref().is_some_and(|draft| draft.element.show_text);
+                sensitivity(row.is_active(), show_text);
+                update();
+            }
+        });
+        text.connect_active_notify({
+            let editor = self.clone();
+            let (sensitivity, update) = (sensitivity.clone(), update.clone());
+            move |row| {
+                editor.edit(|element| element.show_text = row.is_active());
+                let has_bar = editor.draft.borrow().as_ref().is_some_and(|draft| draft.element.bar);
+                sensitivity(has_bar, row.is_active());
+                update();
             }
         });
         upright.connect_selected_notify({
@@ -533,19 +510,51 @@ impl Editor {
             let editor = self.clone();
             move |row| editor.edit(|element| element.bar_width = row.value() as i32)
         });
-        let text = adw::SwitchRow::builder().title("Text").subtitle("The level in percent, or Muted").active(element.show_text).build();
-        let (preview, update) = self.preview_row();
-        text.connect_active_notify({
+        position.connect_selected_notify({
             let editor = self.clone();
             move |row| {
-                editor.edit(|element| element.show_text = row.is_active());
-                update();
+                if let Some(&position) = TextPosition::ALL.get(row.selected() as usize) {
+                    editor.edit(|element| element.text_position = position);
+                }
             }
         });
         group.add(&bar);
         group.add(&upright);
         group.add(&length);
         group.add(&text);
+        group.add(&position);
+    }
+
+    fn seek_tab(self: &Rc<Self>, element: &Element) -> adw::PreferencesPage {
+        let page = adw::PreferencesPage::new();
+        let group = adw::PreferencesGroup::new();
+        group.set_description(Some("A progress bar and the time, shown for a moment after the video is skipped through."));
+        let (preview, update) = self.preview_row();
+        self.add_bar_rows(&group, element, update.clone());
+        let labels: Vec<&str> = TIME_FORMATS.iter().map(|(_, label)| *label).collect();
+        let format = adw::ComboRow::builder().title("Time").subtitle("How the time is written").model(&gtk::StringList::new(&labels)).build();
+        format.set_selected(TIME_FORMATS.iter().position(|(name, _)| *name == element.time_format).unwrap_or(0) as u32);
+        format.connect_selected_notify({
+            let editor = self.clone();
+            move |row| {
+                if let Some((name, _)) = TIME_FORMATS.get(row.selected() as usize) {
+                    editor.edit(|element| element.time_format = (*name).to_owned());
+                    update();
+                }
+            }
+        });
+        group.add(&format);
+        group.add(&preview);
+        page.add(&group);
+        page
+    }
+
+    fn volume_tab(self: &Rc<Self>, element: &Element) -> adw::PreferencesPage {
+        let page = adw::PreferencesPage::new();
+        let group = adw::PreferencesGroup::new();
+        group.set_description(Some("The volume, shown for a moment after it changes."));
+        let (preview, update) = self.preview_row();
+        self.add_bar_rows(&group, element, update);
         group.add(&preview);
         page.add(&group);
         page
@@ -861,7 +870,10 @@ impl Editor {
         });
         text.add(&text_opacity);
 
-        boxed.add(&self.color_row("Background colour", &style.background, |element, color| element.style.background = color));
+        let background_on = adw::SwitchRow::builder().title("Show a background").active(style.background_on).build();
+        boxed.add(&background_on);
+        let background_color = self.color_row("Background colour", &style.background, |element, color| element.style.background = color);
+        boxed.add(&background_color);
         let background_opacity = percent("Background opacity", "In percent", style.background_opacity);
         background_opacity.connect_value_notify({
             let editor = self.clone();
@@ -878,6 +890,19 @@ impl Editor {
             move |row| editor.edit(|element| element.style.blur = row.is_active())
         });
         boxed.add(&blur);
+        let background_rows = [background_color.upcast::<gtk::Widget>(), background_opacity.clone().upcast(), blur.clone().upcast()];
+        for row in &background_rows {
+            row.set_sensitive(style.background_on);
+        }
+        background_on.connect_active_notify({
+            let editor = self.clone();
+            move |row| {
+                for widget in &background_rows {
+                    widget.set_sensitive(row.is_active());
+                }
+                editor.edit(|element| element.style.background_on = row.is_active());
+            }
+        });
         let radius = spin("Corner radius", "In pixels", (f64::from(RADIUS_RANGE.0), f64::from(RADIUS_RANGE.1)), 1.0, f64::from(style.radius));
         radius.connect_value_notify({
             let editor = self.clone();
@@ -919,14 +944,32 @@ impl Editor {
         // The outline round the letters, and the shadows under the text and the background.
         let effects = adw::PreferencesGroup::new();
         effects.set_title("Stroke and shadow");
-        let stroke = spin("Text stroke", "The width of an outline round the letters, in pixels; 0 for none", STROKE_RANGE, 0.5, style.stroke_width);
+        let stroke_on = adw::SwitchRow::builder().title("Stroke").subtitle("An outline round the letters").active(style.stroke_on).build();
+        effects.add(&stroke_on);
+        let stroke = spin("Stroke width", "In pixels", STROKE_RANGE, 0.5, style.stroke_width);
         stroke.set_digits(1);
         stroke.connect_value_notify({
             let editor = self.clone();
             move |row| editor.edit(|element| element.style.stroke_width = row.value())
         });
         effects.add(&stroke);
-        effects.add(&self.color_row("Stroke colour", &style.stroke_color, |element, color| element.style.stroke_color = color));
+        let stroke_color = self.color_row("Stroke colour", &style.stroke_color, |element, color| element.style.stroke_color = color);
+        effects.add(&stroke_color);
+        let stroke_rows = [stroke.clone().upcast::<gtk::Widget>(), stroke_color.upcast()];
+        for row in &stroke_rows {
+            row.set_sensitive(style.stroke_on);
+        }
+        stroke_on.connect_active_notify({
+            let editor = self.clone();
+            move |row| {
+                for widget in &stroke_rows {
+                    widget.set_sensitive(row.is_active());
+                }
+                editor.edit(|element| element.style.stroke_on = row.is_active());
+            }
+        });
+        let shadow_on = adw::SwitchRow::builder().title("Shadow").subtitle("A drop shadow under the text and the background").active(style.shadow_on).build();
+        effects.add(&shadow_on);
 
         let text_shadow = adw::SwitchRow::builder().title("Shadow under the text").active(style.text_shadow).build();
         text_shadow.connect_active_notify({
@@ -958,13 +1001,35 @@ impl Editor {
             move |row| editor.edit(|element| element.style.shadow_blur = row.value())
         });
         effects.add(&shadow_blur);
-        effects.add(&self.color_row("Shadow colour", &style.shadow_color, |element, color| element.style.shadow_color = color));
+        let shadow_color = self.color_row("Shadow colour", &style.shadow_color, |element, color| element.style.shadow_color = color);
+        effects.add(&shadow_color);
         let shadow_opacity = percent("Shadow opacity", "In percent", style.shadow_opacity);
         shadow_opacity.connect_value_notify({
             let editor = self.clone();
             move |row| editor.edit(|element| element.style.shadow_opacity = row.value() / 100.0)
         });
         effects.add(&shadow_opacity);
+        let shadow_rows = [
+            text_shadow.clone().upcast::<gtk::Widget>(),
+            box_shadow.clone().upcast(),
+            shadow_x.clone().upcast(),
+            shadow_y.clone().upcast(),
+            shadow_blur.clone().upcast(),
+            shadow_color.upcast(),
+            shadow_opacity.clone().upcast(),
+        ];
+        for row in &shadow_rows {
+            row.set_sensitive(style.shadow_on);
+        }
+        shadow_on.connect_active_notify({
+            let editor = self.clone();
+            move |row| {
+                for widget in &shadow_rows {
+                    widget.set_sensitive(row.is_active());
+                }
+                editor.edit(|element| element.style.shadow_on = row.is_active());
+            }
+        });
 
         page.add(&text);
         page.add(&boxed);

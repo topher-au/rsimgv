@@ -89,7 +89,7 @@ pub fn style_css(selector: &str, style: &Style) -> String {
         style.font_size,
         style.padding,
         style.radius,
-        color(&style.background, style.background_opacity).unwrap_or_else(|| "transparent".to_owned()),
+        if style.background_on { color(&style.background, style.background_opacity) } else { None }.unwrap_or_else(|| "transparent".to_owned()),
     );
     if let Some(color) = color(&style.text_color, style.text_opacity) {
         css.push_str(&format!(" color: {color};"));
@@ -114,7 +114,7 @@ pub fn effects_css(box_selector: &str, text_selector: &str, style: &Style) -> St
         })
     };
     let mut text_shadows = Vec::new();
-    if style.stroke_width > 0.0 {
+    if style.stroke_on && style.stroke_width > 0.0 {
         if let Some(stroke) = color(&style.stroke_color, 1.0) {
             // Copies all the way round, closer together the wider the stroke, so it has no gaps.
             let copies = if style.stroke_width > 2.0 { 24 } else { 12 };
@@ -125,11 +125,12 @@ pub fn effects_css(box_selector: &str, text_selector: &str, style: &Style) -> St
         }
     }
     let shadow = color(&style.shadow_color, style.shadow_opacity).map(|color| format!("{}px {}px {}px {color}", style.shadow_x, style.shadow_y, style.shadow_blur));
-    if let (true, Some(shadow)) = (style.text_shadow, &shadow) {
+    if let (true, Some(shadow)) = (style.shadow_on && style.text_shadow, &shadow) {
         text_shadows.push(shadow.clone());
     }
     let text_shadow = if text_shadows.is_empty() { "none".to_owned() } else { text_shadows.join(", ") };
-    let box_shadow = match (style.box_shadow, shadow) {
+    // A shadow under a background that is not there would only show round nothing.
+    let box_shadow = match (style.shadow_on && style.box_shadow && style.background_on, shadow) {
         (true, Some(shadow)) => shadow,
         _ => "none".to_owned(),
     };
@@ -466,11 +467,12 @@ fn build(index: usize, element: &Element) -> Placed {
     let card = gtk::Box::new(gtk::Orientation::Vertical, 4);
     card.add_css_class("overlay-element");
     card.add_css_class(&class);
-    // A volume bar can stand upright, with its text beside it rather than under it.
-    let upright = element.kind == Kind::Volume && element.bar_vertical;
-    if upright {
+    // A bar can stand upright, and its text sits above, below or beside it.
+    let beside = element.text_position.is_beside();
+    if matches!(element.kind, Kind::Seek | Kind::Volume) && beside {
         card.set_orientation(gtk::Orientation::Horizontal);
     }
+    let upright = element.bar_vertical;
     let bar = (matches!(element.kind, Kind::Seek | Kind::Volume) && element.bar).then(|| {
         let bar = gtk::ProgressBar::new();
         bar.add_css_class("seek-bar");
@@ -478,15 +480,28 @@ fn build(index: usize, element: &Element) -> Placed {
             bar.set_orientation(gtk::Orientation::Vertical);
             bar.set_inverted(true);
             bar.set_size_request(-1, element.bar_width);
+            bar.set_halign(gtk::Align::Center);
         } else {
             bar.set_size_request(element.bar_width, -1);
+            bar.set_valign(gtk::Align::Center);
         }
-        card.append(&bar);
         bar
     });
     let label = gtk::Label::new(None);
     label.add_css_class("overlay-text");
     align_label(&label, align);
+    if beside {
+        label.set_valign(gtk::Align::Center);
+    }
+    // The text goes before the bar above it or to its left, and after it otherwise.
+    let text_first = element.text_position.is_first();
+    if let (Some(bar), true) = (&bar, text_first) {
+        card.append(&label);
+        card.append(bar);
+    } else if let Some(bar) = &bar {
+        card.append(bar);
+        card.append(&label);
+    }
 
     // A media status has an icon beside its text, and the filename under the text, lined up with it.
     let is_status = element.kind == Kind::Status;
@@ -521,7 +536,7 @@ fn build(index: usize, element: &Element) -> Placed {
             grid.attach(filename, column, 1, 1, 1);
         }
         card.append(&grid);
-    } else {
+    } else if bar.is_none() {
         card.append(&label);
     }
 

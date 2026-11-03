@@ -206,6 +206,52 @@ impl Kind {
     }
 }
 
+/// Where the text of a bar display sits beside its bar.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum TextPosition {
+    Top,
+    #[default]
+    Bottom,
+    Left,
+    Right,
+}
+
+impl TextPosition {
+    pub const ALL: [TextPosition; 4] = [TextPosition::Top, TextPosition::Bottom, TextPosition::Left, TextPosition::Right];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            TextPosition::Top => "top",
+            TextPosition::Bottom => "bottom",
+            TextPosition::Left => "left",
+            TextPosition::Right => "right",
+        }
+    }
+
+    pub fn title(self) -> &'static str {
+        match self {
+            TextPosition::Top => "Above the bar",
+            TextPosition::Bottom => "Below the bar",
+            TextPosition::Left => "Left of the bar",
+            TextPosition::Right => "Right of the bar",
+        }
+    }
+
+    fn from_name(name: &str) -> Self {
+        Self::ALL.into_iter().find(|position| position.name() == name).unwrap_or_default()
+    }
+
+    /// Whether the text and the bar are side by side rather than one above the other.
+    pub fn is_beside(self) -> bool {
+        matches!(self, TextPosition::Left | TextPosition::Right)
+    }
+
+    /// Whether the text comes before the bar.
+    pub fn is_first(self) -> bool {
+        matches!(self, TextPosition::Top | TextPosition::Left)
+    }
+}
+
 /// How a speed display writes the speed.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum SpeedFormat {
@@ -420,7 +466,6 @@ pub const TIME_FORMATS: &[(&str, &str)] = &[
     ("remaining-total", "Remaining / total"),
     ("elapsed", "Elapsed"),
     ("remaining", "Remaining"),
-    ("none", "None"),
 ];
 
 /// When an element is up.
@@ -456,9 +501,11 @@ pub struct Element {
     pub time_format: String,
     /// The width of a seek display's bar, or the length of a volume display's, in pixels.
     pub bar_width: i32,
-    /// For a volume display: whether the bar stands upright, and whether it has text as well as the bar.
+    /// For a seek or volume display: whether the bar stands upright, whether it has text as well as the bar, and where the
+    /// text sits beside it.
     pub bar_vertical: bool,
     pub show_text: bool,
+    pub text_position: TextPosition,
     pub speed_format: SpeedFormat,
     pub rotation_format: RotationFormat,
     /// What a media status shows, from `STATUS_PARTS`.
@@ -506,6 +553,10 @@ pub struct Style {
     pub padding: i32,
     /// How opaque the element as a whole is, from 0 to 1.
     pub opacity: f64,
+    /// Whether the element has a background, an outline round its letters, and a drop shadow, each in the way set below.
+    pub background_on: bool,
+    pub stroke_on: bool,
+    pub shadow_on: bool,
     /// An outline round the letters: how thick, in pixels (0 for none), and its colour.
     pub stroke_width: f64,
     pub stroke_color: String,
@@ -533,7 +584,10 @@ impl Default for Style {
             radius: 10,
             padding: 8,
             opacity: 1.0,
-            stroke_width: 0.0,
+            background_on: true,
+            stroke_on: false,
+            shadow_on: true,
+            stroke_width: 1.0,
             stroke_color: "rgb(0, 0, 0)".to_owned(),
             text_shadow: true,
             box_shadow: false,
@@ -549,7 +603,7 @@ impl Default for Style {
 pub const FONT_SIZE_RANGE: (f64, f64) = (6.0, 96.0);
 pub const RADIUS_RANGE: (i32, i32) = (0, 40);
 pub const PADDING_RANGE: (i32, i32) = (0, 60);
-pub const STROKE_RANGE: (f64, f64) = (0.0, 8.0);
+pub const STROKE_RANGE: (f64, f64) = (0.5, 8.0);
 pub const SHADOW_OFFSET_RANGE: (f64, f64) = (-30.0, 30.0);
 pub const SHADOW_BLUR_RANGE: (f64, f64) = (0.0, 30.0);
 pub const BAR_WIDTH_RANGE: (i32, i32) = (60, 1200);
@@ -587,6 +641,7 @@ impl Element {
             bar_width: 360,
             bar_vertical: false,
             show_text: true,
+            text_position: TextPosition::default(),
             speed_format: SpeedFormat::default(),
             rotation_format: RotationFormat::default(),
             parts: ["state", "time", "percent"].map(str::to_owned).to_vec(),
@@ -643,7 +698,7 @@ impl Element {
     pub fn text_template(&self) -> String {
         match self.kind {
             Kind::Template => self.template.clone(),
-            Kind::Seek => time_template(&self.time_format).to_owned(),
+            Kind::Seek => if self.show_text { time_template(&self.time_format).to_owned() } else { String::new() },
             Kind::Volume => if self.show_text { VOLUME_TEXT.to_owned() } else { String::new() },
             Kind::Speed => self.speed_format.template().to_owned(),
             Kind::Rotation => self.rotation_format.template().to_owned(),
@@ -686,6 +741,7 @@ impl Element {
             "bar-width": self.bar_width,
             "bar-vertical": self.bar_vertical,
             "show-text": self.show_text,
+            "text-position": self.text_position.name(),
             "speed-format": self.speed_format.name(),
             "rotation-format": self.rotation_format.name(),
             "parts": self.parts,
@@ -714,6 +770,9 @@ impl Element {
             "radius": self.style.radius,
             "padding": self.style.padding,
             "opacity": self.style.opacity,
+            "background-on": self.style.background_on,
+            "stroke-on": self.style.stroke_on,
+            "shadow-on": self.style.shadow_on,
             "stroke-width": self.style.stroke_width,
             "stroke-color": self.style.stroke_color,
             "text-shadow": self.style.text_shadow,
@@ -754,6 +813,13 @@ impl Element {
         element.bar_width = whole("bar-width", element.bar_width, BAR_WIDTH_RANGE);
         element.bar_vertical = flag("bar-vertical", element.bar_vertical);
         element.show_text = flag("show-text", element.show_text);
+        if let Some(position) = text("text-position") {
+            element.text_position = TextPosition::from_name(position);
+        }
+        // The first layouts hid a seek display's text with a time format of none.
+        if text("time-format") == Some("none") {
+            element.show_text = false;
+        }
         if let Some(format) = text("speed-format") {
             element.speed_format = SpeedFormat::from_name(format);
         }
@@ -817,7 +883,12 @@ impl Element {
         style.radius = whole("radius", style.radius, RADIUS_RANGE);
         style.padding = whole("padding", style.padding, PADDING_RANGE);
         style.opacity = number("opacity", style.opacity, (0.1, 1.0));
-        style.stroke_width = number("stroke-width", style.stroke_width, STROKE_RANGE);
+        style.background_on = flag("background-on", style.background_on);
+        // The first layouts had a stroke when it had a width.
+        let had_stroke = object.get("stroke-width").and_then(Value::as_f64).is_some_and(|width| width > 0.0);
+        style.stroke_on = flag("stroke-on", had_stroke);
+        style.shadow_on = flag("shadow-on", style.shadow_on);
+        style.stroke_width = number("stroke-width", style.stroke_width, (0.5, STROKE_RANGE.1)).max(0.5);
         if let Some(color) = text("stroke-color") {
             style.stroke_color = color.to_owned();
         }
@@ -888,7 +959,8 @@ impl Layout {
         seek.enabled = legacy.seek_enabled;
         seek.name = "Seek display".to_owned();
         seek.bar = legacy.seek_bar;
-        seek.time_format = if legacy.seek_time { legacy.seek_time_format.clone() } else { "none".to_owned() };
+        seek.time_format = legacy.seek_time_format.clone();
+        seek.show_text = legacy.seek_time;
         seek.visibility = if legacy.seek_always { Visibility::Always } else { Visibility::Seek };
         seek.seconds = legacy.seek_seconds.clamp(SECONDS_RANGE.0, SECONDS_RANGE.1);
         seek.bar_width = legacy.seek_width.clamp(BAR_WIDTH_RANGE.0, BAR_WIDTH_RANGE.1);
@@ -1043,6 +1115,21 @@ mod tests {
     }
 
     #[test]
+    fn a_bar_display_places_its_text_and_keeps_its_toggles() {
+        let layout = Layout::from_json(r#"{"elements":[{"kind":"seek","text-position":"left","show-text":false,"bar-vertical":true,"background-on":false,"shadow-on":false}]}"#).unwrap();
+        let element = &layout.elements[0];
+        assert!(element.text_position.is_beside() && element.text_position.is_first());
+        assert_eq!(element.text_template(), "", "without text there is none to write");
+        assert!(element.bar_vertical && !element.style.background_on && !element.style.shadow_on);
+        assert_eq!(Layout::from_json(&layout.to_json()), Some(layout));
+        assert!(TextPosition::Right.is_beside() && !TextPosition::Right.is_first());
+        assert!(!TextPosition::Bottom.is_beside());
+        // The first layouts hid the text with a time format of none.
+        let old = Layout::from_json(r#"{"elements":[{"kind":"seek","time-format":"none"}]}"#).unwrap();
+        assert!(!old.elements[0].show_text);
+    }
+
+    #[test]
     fn speeds_are_written_as_fractions() {
         assert_eq!(speed_fraction(1.0), "1");
         assert_eq!(speed_fraction(0.5), "1/2");
@@ -1122,10 +1209,11 @@ mod tests {
     #[test]
     fn the_stroke_and_shadows_are_kept_and_held_in_range() {
         let layout = Layout::from_json(r#"{"elements":[{"stroke-width":99,"box-shadow":true,"shadow-x":-99,"text-shadow":false}]}"#).unwrap();
+        assert!(layout.elements[0].style.stroke_on, "a stroke with a width is on");
         let style = &layout.elements[0].style;
         assert_eq!((style.stroke_width, style.box_shadow, style.shadow_x, style.text_shadow), (STROKE_RANGE.1, true, SHADOW_OFFSET_RANGE.0, false));
         assert_eq!(Layout::from_json(&layout.to_json()), Some(layout));
-        assert!(Style::default().text_shadow && !Style::default().box_shadow && Style::default().stroke_width == 0.0);
+        assert!(Style::default().text_shadow && !Style::default().box_shadow && !Style::default().stroke_on && Style::default().background_on);
     }
 
     #[test]
