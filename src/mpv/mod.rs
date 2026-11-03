@@ -398,8 +398,9 @@ impl Player {
             let mut player = Self { id: NEXT_PLAYER_ID.fetch_add(1, Ordering::Relaxed), handle, render: std::ptr::null_mut(), gl, gl_backdrop: RefCell::default(), renderer: None, wakeup: None, rotation: Cell::new(0), orientation: Cell::new(Orientation::default()), interpolation: Default::default(), crop: Cell::new(None), detector: Cell::new(false), gate: Arc::default(), rotation_checks: Cell::new(0) };
             for (name, value) in [
                 ("vo", "libmpv"),
-                // The software renderer has no way to share a hardware decoder's surfaces, so decoding in hardware means copying
-                // each frame back to memory. `auto-safe` would try the decoders that cannot copy first, and fall back to the CPU.
+                // The software renderer has no way to share a hardware decoder's surfaces, and the turn, crop and interpolation
+                // filters run on the CPU whichever renderer is used and fail on them, so decoding in hardware means copying each
+                // frame back to memory. `auto-safe` would try the decoders that cannot copy first, and fall back to the CPU.
                 ("hwdec", "auto-copy-safe"),
                 ("keep-open", "yes"),
                 ("idle", "yes"),
@@ -422,9 +423,8 @@ impl Player {
                 player.set_option(name, value)?;
             }
             if player.gl.is_some() {
-                // With OpenGL, a hardware decoder's surfaces can be shared, so frames need not be copied back. The backdrop
-                // shader mixes the scaled picture with a copy that is not in linear light, so the picture must not be either.
-                player.set_option("hwdec", "auto-safe")?;
+                // The backdrop shader mixes the scaled picture with a copy that is not in linear light, so the picture must not
+                // be either.
                 player.set_option("linear-downscaling", "no")?;
                 // Upscaling is in linear light by default too, for sigmoidizing, and it would brighten the backdrop.
                 player.set_option("sigmoid-upscaling", "no")?;
