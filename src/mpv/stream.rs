@@ -280,7 +280,20 @@ mod imp {
                 snapshot.append_color(&gdk::RGBA::BLACK, &gtk::graphene::Rect::new(0.0, 0.0, width as f32, height as f32));
             }
             let (frame_width, frame_height) = (f64::from(frame.width()), f64::from(frame.height()));
-            let (x, y, shown_width, shown_height) = if self.frame_fills.get() { (0.0, 0.0, width, height) } else { framing::fitted(width, height, frame_width, frame_height) };
+            if self.frame_fills.get() {
+                // The frame has the backdrop drawn into it. While one at the new size is on its way after a resize, stretched it
+                // only fills the edges, which are a blur, and the picture in it is laid over that at its right shape and place.
+                let whole = gtk::graphene::Rect::new(0.0, 0.0, width as f32, height as f32);
+                snapshot.append_texture(&frame, &whole);
+                let (video_width, video_height) = self.frame_size.get();
+                if let Some((x, y, shown_width, shown_height)) = framing::resized_frame((width, height), (frame_width, frame_height), (f64::from(video_width), f64::from(video_height))) {
+                    snapshot.push_clip(&whole);
+                    snapshot.append_texture(&frame, &gtk::graphene::Rect::new(x as f32, y as f32, shown_width as f32, shown_height as f32));
+                    snapshot.pop();
+                }
+                return;
+            }
+            let (x, y, shown_width, shown_height) = framing::fitted(width, height, frame_width, frame_height);
             let strips = framing::bars(width, height, (x, y, shown_width, shown_height));
             for (piece, (strip_x, strip_y, strip_width, strip_height)) in self.backdrop.borrow().iter().zip(strips) {
                 let strip = gtk::graphene::Rect::new(strip_x as f32, strip_y as f32, strip_width as f32, strip_height as f32);
@@ -853,7 +866,9 @@ impl MpvStream {
         if area_changed {
             self.update_backdrop();
         }
-        let settling = imp.frame.borrow().is_some() && imp.resized_at.get().is_some_and(|at| at.elapsed() < RESIZE_SETTLE);
+        // Rendering with OpenGL costs too little to wait for the size to settle.
+        let uses_gl = imp.player.borrow().as_ref().is_some_and(|player| player.uses_gl());
+        let settling = !uses_gl && imp.frame.borrow().is_some() && imp.resized_at.get().is_some_and(|at| at.elapsed() < RESIZE_SETTLE);
         if !settling {
             self.render_wanted();
             return;

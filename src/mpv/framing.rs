@@ -113,6 +113,19 @@ pub fn covering(area_width: f64, area_height: f64, width: f64, height: f64, zoom
     ((area_width - covered_width) / 2.0, (area_height - covered_height) / 2.0, covered_width, covered_height)
 }
 
+/// Where to draw a frame of the size `frame`, with a picture of the video's shape `video` fitted inside it, so that picture has its
+/// right shape and place in an area of the size `area`. `None` when the frame has the area's shape, so filling the area does that.
+pub fn resized_frame(area: (f64, f64), frame: (f64, f64), video: (f64, f64)) -> Option<(f64, f64, f64, f64)> {
+    if video.0 <= 0.0 || video.1 <= 0.0 || frame.0 <= 0.0 || frame.1 <= 0.0 || (area.0 * frame.1 - area.1 * frame.0).abs() <= frame.0.max(frame.1) {
+        return None;
+    }
+    let (_, _, in_frame, _) = fitted(frame.0, frame.1, video.0, video.1);
+    let (_, _, in_area, _) = fitted(area.0, area.1, video.0, video.1);
+    let scale = in_area / in_frame;
+    let (width, height) = (frame.0 * scale, frame.1 * scale);
+    Some(((area.0 - width) / 2.0, (area.1 - height) / 2.0, width, height))
+}
+
 /// The strips of an `area_width` by `area_height` area that a picture at `fitted` (as `fitted` returns it) leaves bare, as
 /// (x, y, width, height): at the sides, or above and below.
 pub fn bars(area_width: f64, area_height: f64, fitted: (f64, f64, f64, f64)) -> Vec<(f64, f64, f64, f64)> {
@@ -527,6 +540,16 @@ mod tests {
             }
         }
         to
+    }
+
+    #[test]
+    fn a_frame_of_another_shape_keeps_its_picture_right_until_the_next_comes() {
+        // A square video in a 200 by 100 frame, in an area that is now 400 by 100: the picture stays 100 by 100, and centred.
+        assert_eq!(resized_frame((400.0, 100.0), (200.0, 100.0), (100.0, 100.0)), Some((100.0, 0.0, 200.0, 100.0)));
+        // In an area half the size again, tall: the picture is 50 by 50, so the frame is halved.
+        assert_eq!(resized_frame((50.0, 100.0), (200.0, 100.0), (100.0, 100.0)), Some((-25.0, 25.0, 100.0, 50.0)));
+        // The frame already has the area's shape.
+        assert_eq!(resized_frame((400.0, 200.0), (200.0, 100.0), (100.0, 100.0)), None);
     }
 
     #[test]

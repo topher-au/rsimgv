@@ -180,7 +180,8 @@ unsafe impl Send for GlFrame {}
 impl GlFrame {
     /// A GDK texture of the frame.
     pub fn into_texture(mut self) -> gdk::Texture {
-        let builder = gdk::GLTextureBuilder::new().set_context(Some(&self.context)).set_id(self.texture.id).set_width(self.texture.width).set_height(self.texture.height).set_sync(Some(self.sync));
+        // Opaque, as the software path's frames are.
+        let builder = gdk::GLTextureBuilder::new().set_context(Some(&self.context)).set_id(self.texture.id).set_width(self.texture.width).set_height(self.texture.height).set_format(gdk::MemoryFormat::R8g8b8x8).set_sync(Some(self.sync));
         let (texture, sync, finished) = (self.texture, self.sync as usize, self.finished.take());
         // SAFETY: the texture holds this size of this context's texture, and is not rendered into until the function below is called.
         unsafe {
