@@ -136,6 +136,19 @@ impl RowTable {
     }
 }
 
+/// How far row `row` of `table` is from the part of the grid `top` pixels down and `page` tall, or 0 if any of it is in view.
+fn row_distance(table: &RowTable, row: usize, top: f64, page: f64) -> f64 {
+    let Some(&height) = table.heights.get(row) else { return f64::MAX };
+    let (row_top, row_bottom) = (f64::from(table.tops[row]), f64::from(table.tops[row] + height));
+    if row_bottom < top {
+        top - row_bottom
+    } else if row_top > top + page {
+        row_top - (top + page)
+    } else {
+        0.0
+    }
+}
+
 /// Where the view stands: an item, and how far the item's row starts below the top of the view (negative for a row that
 /// starts above it). Kept so the item holds its place when the rows are laid out again.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -367,6 +380,7 @@ mod imp {
                         .param_types([u32::static_type()])
                         .build(),
                     glib::subclass::Signal::builder("marks-changed").build(),
+                    glib::subclass::Signal::builder("view-moved").build(),
                 ]
             });
             SIGNALS.as_ref()
@@ -763,6 +777,52 @@ impl ItemGrid {
         })
     }
 
+    /// Calls `callback` when the part of the grid in view changes, by a scroll or by the view being resized.
+    pub fn connect_view_moved<F: Fn(&Self) + 'static>(&self, callback: F) -> glib::SignalHandlerId {
+        self.connect_local("view-moved", false, move |values| {
+            callback(&values[0].get::<ItemGrid>().expect("grid argument"));
+            None
+        })
+    }
+
+    /// The height of the part of the grid in view, in pixels.
+    pub fn page_pixels(&self) -> f64 {
+        self.page_height()
+    }
+
+    /// How far the row holding the item at `position` is from the part of the grid in view, in pixels: 0 for a row that is
+    /// in view even in part.
+    pub fn distance_from_view(&self, position: u32) -> f64 {
+        let Some(scroller) = self.scroller() else { return 0.0 };
+        let adjustment = scroller.vadjustment();
+        let table = self.table(self.width());
+        let columns = self.columns(self.width()).count.max(1) as usize;
+        row_distance(&table, position as usize / columns, adjustment.value(), adjustment.page_size())
+    }
+
+    /// The items within `reach` pixels of the part of the grid in view (all of them for `None`), each with how far it is, the
+    /// nearest first.
+    pub fn positions_near(&self, reach: Option<f64>) -> Vec<(u32, f64)> {
+        let Some(scroller) = self.scroller() else { return Vec::new() };
+        let adjustment = scroller.vadjustment();
+        let width = self.width();
+        let table = self.table(width);
+        let columns = self.columns(width).count.max(1) as usize;
+        let count = self.item_count();
+        let mut found = Vec::new();
+        for row in 0..table.heights.len() {
+            let distance = row_distance(&table, row, adjustment.value(), adjustment.page_size());
+            if reach.is_some_and(|reach| distance > reach) {
+                continue;
+            }
+            for position in (row * columns..(row + 1) * columns).map(|position| position as u32).filter(|position| *position < count) {
+                found.push((position, distance));
+            }
+        }
+        found.sort_by(|a, b| a.1.total_cmp(&b.1));
+        found
+    }
+
     /// The scroller this grid is in.
     fn scroller(&self) -> Option<gtk::ScrolledWindow> {
         self.ancestor(gtk::ScrolledWindow::static_type()).and_downcast()
@@ -1005,6 +1065,7 @@ impl ItemGrid {
         let relayout = move |_: &gtk::Adjustment| {
             if let Some(grid) = grid.upgrade() {
                 grid.queue_allocate();
+                grid.emit_by_name::<()>("view-moved", &[]);
             }
         };
         if let Some((weak, handler)) = self.imp().adjustment.take() {
@@ -1020,7 +1081,7 @@ impl ItemGrid {
 
 #[cfg(test)]
 mod tests {
-    use super::{anchor_for, target_position, value_for, Columns, RowTable, ViewAnchor};
+    use super::{anchor_for, row_distance, target_position, value_for, Columns, RowTable, ViewAnchor};
 
     fn table(columns: i32, items: u32) -> (Columns, RowTable) {
         let columns = Columns { cell_w: 100, count: columns };
@@ -1066,6 +1127,18 @@ mod tests {
         let (columns, rows) = table(4, 10);
         let value = value_for(&rows, columns.count, 10, ViewAnchor { position: 50, offset: 0.0 }).unwrap();
         assert_eq!(value, f64::from(rows.tops[2]));
+    }
+
+    #[test]
+    fn a_row_is_as_far_as_the_gap_between_it_and_the_view() {
+        let (columns, table) = table(2, 20);
+        let _ = columns;
+        let (top, page) = (f64::from(table.tops[3]) + 1.0, 100.0);
+        assert_eq!(row_distance(&table, 3, top, page), 0.0, "a row in view, even in part");
+        let above = row_distance(&table, 0, top, page);
+        let further = row_distance(&table, 9, top, page);
+        assert!(above > 0.0 && further > 0.0);
+        assert_eq!(row_distance(&table, 99, top, page), f64::MAX, "a row that is not there is never near");
     }
 
     #[test]

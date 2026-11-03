@@ -30,7 +30,7 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 /// The settings about making thumbnails.
-const THUMBNAIL_KEYS: [&str; 3] = ["thumbnail-threads", "thumbnail-cache", "thumbnail-unload-offscreen"];
+const THUMBNAIL_KEYS: [&str; 4] = ["thumbnail-threads", "thumbnail-cache", "thumbnail-unload-offscreen", "thumbnail-aggression"];
 
 /// Gives the thumbnails what the settings say about making them.
 fn apply_thumbnail_settings(settings: &gio::Settings) {
@@ -38,6 +38,7 @@ fn apply_thumbnail_settings(settings: &gio::Settings) {
     thumbnails.set_thread_count(settings.int("thumbnail-threads").max(1) as usize);
     thumbnails.set_disk_cache(settings.boolean("thumbnail-cache"));
     thumbnails.set_unload_offscreen(settings.boolean("thumbnail-unload-offscreen"));
+    thumbnails.set_aggression(fs::thumbnail::Aggression::from_name(&settings.string("thumbnail-aggression")));
 }
 
 /// The settings that decide which IPC transports run, and on which ports.

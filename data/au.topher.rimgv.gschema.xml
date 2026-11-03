@@ -110,6 +110,17 @@
       <default>true</default>
       <summary>Keep thumbnails on disk, so they are not made again the next time they are shown</summary>
     </key>
+    <key name="thumbnail-aggression" type="s">
+      <choices>
+        <choice value="low"/>
+        <choice value="standard"/>
+        <choice value="increased"/>
+        <choice value="high"/>
+        <choice value="extreme"/>
+      </choices>
+      <default>'standard'</default>
+      <summary>How eagerly thumbnails are made for items off screen: only those on screen, or those up to one, two or four pages away, or the whole folder</summary>
+    </key>
     <key name="thumbnail-unload-offscreen" type="b">
       <default>true</default>
       <summary>Free the memory of thumbnails scrolled out of view, and load them again when they come back</summary>

@@ -93,6 +93,7 @@ const LAYOUT: &[(&str, &str, &str)] = &[
     ("image-preloading", "viewer", "image-preloading"),
     ("thumbnail-threads", "thumbnails", "threads"),
     ("thumbnail-cache", "thumbnails", "cache"),
+    ("thumbnail-aggression", "thumbnails", "aggression"),
     ("thumbnail-unload-offscreen", "thumbnails", "unload-offscreen"),
     ("viewer-blurred-background", "viewer", "blurred-background"),
     ("viewer-thumbnail-bar", "viewer", "thumbnail-bar.side"),

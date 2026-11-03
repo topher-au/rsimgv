@@ -8,7 +8,9 @@
 //! and `ffprobe` programs; without them, videos keep their icon.
 //!
 //! Like Nautilus's thumbnailer, only a few are made at a time, and a request that no item on screen
-//! wants any more is dropped before it runs. A thumbnail no item on screen shows any more can be let go from
+//! wants any more is dropped before it runs, or stopped if it already runs. How far from the screen items are still
+//! wanted is set by the `Aggression` level: from only the items on screen, to the whole folder. Items off screen are asked
+//! for with `prefetch_still` and wait for everything on screen, which can stop one of them to start at once. A thumbnail no item on screen shows any more can be let go from
 //! memory too, and is read back when it is next wanted. They are made on a thread pool of their own, so however many
 //! run, they leave GIO's few worker threads to folder listings.
 
@@ -22,6 +24,8 @@ use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use gtk::glib::object::Cast;
 use gtk::prelude::PaintableExt;
@@ -59,6 +63,57 @@ impl Size {
     }
 }
 
+/// How eagerly thumbnails are made for items that are not on screen.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Default)]
+pub enum Aggression {
+    /// Only the items on screen. A job whose item scrolls out of view is dropped, and stopped if it is running.
+    Low,
+    /// Also the items up to a page away from those on screen.
+    #[default]
+    Standard,
+    /// Items up to two pages away, and making thumbnails goes on while a video plays.
+    Increased,
+    /// Items up to four pages away.
+    High,
+    /// Every item in the folder shown. What comes into view is made first, ahead of the rest.
+    Extreme,
+}
+
+impl Aggression {
+    pub const ALL: [Aggression; 5] = [Aggression::Low, Aggression::Standard, Aggression::Increased, Aggression::High, Aggression::Extreme];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Aggression::Low => "low",
+            Aggression::Standard => "standard",
+            Aggression::Increased => "increased",
+            Aggression::High => "high",
+            Aggression::Extreme => "extreme",
+        }
+    }
+
+    /// The level a setting value names, or the standard one for any other.
+    pub fn from_name(name: &str) -> Self {
+        Self::ALL.into_iter().find(|level| level.name() == name).unwrap_or_default()
+    }
+
+    /// How many pages away from the items on screen thumbnails are made for, or `None` for the whole folder.
+    pub fn pages(self) -> Option<f64> {
+        match self {
+            Aggression::Low => Some(0.0),
+            Aggression::Standard => Some(1.0),
+            Aggression::Increased => Some(2.0),
+            Aggression::High => Some(4.0),
+            Aggression::Extreme => None,
+        }
+    }
+
+    /// Whether making thumbnails goes on while a video plays, which can slow the video.
+    pub fn works_during_playback(self) -> bool {
+        self >= Aggression::Increased
+    }
+}
+
 /// What a thumbnail is of.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Media {
@@ -91,6 +146,10 @@ type Wanted = Rc<dyn Fn() -> bool>;
 /// A request for a thumbnail. `wanted` says whether it is still needed.
 struct Waiter {
     wanted: Wanted,
+    /// Whether it is for something on screen, which is made ahead of what is only being made ready.
+    urgent: bool,
+    /// For what is only being made ready: how far the item is from the screen now, the nearest being made first.
+    rank: Option<Rc<dyn Fn() -> f64>>,
     on_ready: Box<OnReady>,
 }
 
@@ -116,8 +175,19 @@ struct Inner {
     /// Jobs waiting to be made, newest last, each with its stamp. `queued` holds the stamp that is current for each,
     /// so asking for a queued job again moves it to the newest end without searching the queue.
     queue: RefCell<VecDeque<(Key, u64)>>,
+    /// The same for jobs that are only being made ready for items that are not on screen, which wait for all the others.
+    queue_low: RefCell<Vec<(Key, u64)>>,
     queued: RefCell<HashMap<Key, u64>>,
     running: Cell<usize>,
+    /// The running jobs, each with the flag that stops it.
+    cancels: RefCell<HashMap<Key, Arc<AtomicBool>>>,
+    /// How eagerly thumbnails are made for items off screen, and whether a video is playing.
+    aggression: Cell<Aggression>,
+    playing: Cell<bool>,
+    /// Whether the timer that stops jobs nothing wants is running.
+    watching: Cell<bool>,
+    /// What to call when the level is set.
+    aggression_watchers: RefCell<Vec<Rc<dyn Fn()>>>,
     /// How many jobs may run at the same time.
     max_jobs: Cell<usize>,
     /// The threads that make the jobs.
@@ -212,6 +282,76 @@ impl Thumbnails {
     pub fn set_thread_count(&self, threads: usize) {
         self.inner.max_jobs.set(threads.clamp(1, thread_limit()));
         self.start_jobs();
+    }
+
+    /// Sets how eagerly thumbnails are made for items that are not on screen. Jobs nothing wants any more are stopped, and
+    /// the others go on.
+    pub fn set_aggression(&self, level: Aggression) {
+        let changed = self.inner.aggression.replace(level) != level;
+        self.stop_unwanted();
+        self.start_jobs();
+        if changed {
+            let watchers = self.inner.aggression_watchers.borrow().clone();
+            for watcher in watchers {
+                watcher();
+            }
+        }
+    }
+
+    /// Calls `callback` whenever the level is set, so what asks for thumbnails ahead of time can ask again.
+    pub fn watch_aggression(&self, callback: impl Fn() + 'static) {
+        self.inner.aggression_watchers.borrow_mut().push(Rc::new(callback));
+    }
+
+    pub fn aggression(&self) -> Aggression {
+        self.inner.aggression.get()
+    }
+
+    /// Notes whether a video is playing. Below `Increased`, nothing is made then, and what is running is stopped and put
+    /// back in the queue.
+    pub fn set_media_playing(&self, playing: bool) {
+        self.inner.playing.set(playing);
+        self.stop_unwanted();
+        self.start_jobs();
+    }
+
+    /// Whether making thumbnails waits, because a video is playing.
+    fn paused(&self) -> bool {
+        self.inner.playing.get() && !self.inner.aggression.get().works_during_playback()
+    }
+
+    /// Stops the running jobs that nothing wants any more, or all of them while making thumbnails is paused. A stopped job
+    /// that something still wants goes back in the queue.
+    fn stop_unwanted(&self) {
+        let paused = self.paused();
+        let stop: Vec<Arc<AtomicBool>> = {
+            let cancels = self.inner.cancels.borrow();
+            let waiters = self.inner.waiters.borrow();
+            cancels
+                .iter()
+                .filter(|(key, _)| paused || !waiters.get(*key).is_some_and(|list| list.iter().any(|waiter| (waiter.wanted)())))
+                .map(|(_, flag)| flag.clone())
+                .collect()
+        };
+        for flag in stop {
+            flag.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// Looks every moment for running jobs that nothing wants any more, while any run, and stops them.
+    fn watch_running(&self) {
+        if self.inner.watching.replace(true) {
+            return;
+        }
+        let thumbnails = self.clone();
+        glib::timeout_add_local(Duration::from_millis(100), move || {
+            if thumbnails.inner.running.get() == 0 {
+                thumbnails.inner.watching.set(false);
+                return glib::ControlFlow::Break;
+            }
+            thumbnails.stop_unwanted();
+            glib::ControlFlow::Continue
+        });
     }
 
     /// Sets whether thumbnails are read from and written to the disk. What is already there is left alone: it is
@@ -322,7 +462,27 @@ impl Thumbnails {
         on_done: impl FnOnce(Option<&gdk::Texture>) + 'static,
     ) {
         let key = key(path, mtime, size, Job::Still(media));
-        self.request(key, wanted, move |textures| on_done(textures.first()));
+        self.request(key, None, wanted, move |textures| on_done(textures.first()));
+    }
+
+    /// Makes the still thumbnail of the file at `path` ready, for an item that is not on screen. It waits for every
+    /// request from something on screen, and is stopped and dropped once `wanted` says no.
+    /// `rank` says how far the item is from the screen now: the nearest is made first.
+    pub fn prefetch_still(
+        &self,
+        path: &Path,
+        mtime: i64,
+        media: Media,
+        size: Size,
+        rank: impl Fn() -> f64 + 'static,
+        wanted: impl Fn() -> bool + 'static,
+        on_ready: impl FnOnce(&gdk::Texture) + 'static,
+    ) {
+        self.request(key(path, mtime, size, Job::Still(media)), Some(Rc::new(rank)), wanted, move |textures| {
+            if let Some(texture) = textures.first() {
+                on_ready(texture);
+            }
+        });
     }
 
     /// Calls `on_ready` with the frames of the video at `path`, spread through it, once they are made.
@@ -334,10 +494,10 @@ impl Thumbnails {
         wanted: impl Fn() -> bool + 'static,
         on_ready: impl FnOnce(&[gdk::Texture]) + 'static,
     ) {
-        self.request(key(path, mtime, size, Job::Frames), wanted, on_ready);
+        self.request(key(path, mtime, size, Job::Frames), None, wanted, on_ready);
     }
 
-    fn request(&self, key: Key, wanted: impl Fn() -> bool + 'static, on_ready: impl FnOnce(&[gdk::Texture]) + 'static) {
+    fn request(&self, key: Key, rank: Option<Rc<dyn Fn() -> f64>>, wanted: impl Fn() -> bool + 'static, on_ready: impl FnOnce(&[gdk::Texture]) + 'static) {
         let wanted: Wanted = Rc::new(wanted);
         let cached = self.inner.textures.borrow().get(&key).cloned();
         if let Some(textures) = cached {
@@ -352,6 +512,8 @@ impl Thumbnails {
         }
         let waiter = Waiter {
             wanted,
+            urgent: rank.is_none(),
+            rank,
             on_ready: Box::new(on_ready),
         };
         let mut waiters = self.inner.waiters.borrow_mut();
@@ -359,30 +521,73 @@ impl Thumbnails {
             // Requests that no longer want it are dropped first, so the list does not grow each time a cell asks again.
             list.retain(|waiter| (waiter.wanted)());
             list.push(waiter);
+            let urgent = list.iter().any(|waiter| waiter.urgent);
             drop(waiters);
             // Asked for again while queued, so it is wanted now: it moves to the front of the queue.
             if self.inner.queued.borrow().contains_key(&key) {
-                self.enqueue(key);
+                self.enqueue(key, urgent);
+                self.make_room_for(urgent);
             }
             return;
         }
+        let urgent = waiter.urgent;
         waiters.insert(key.clone(), vec![waiter]);
         drop(waiters);
-        self.enqueue(key);
+        self.enqueue(key, urgent);
+        self.make_room_for(urgent);
         self.start_jobs();
     }
 
-    /// Puts `key` at the newest end of the queue.
-    fn enqueue(&self, key: Key) {
+    /// When something on screen is waiting and every job slot is taken, stops a job that is only making something ready
+    /// for an item off screen, so the one on screen starts at once. The stopped job goes back in the queue.
+    fn make_room_for(&self, urgent: bool) {
+        if !urgent || self.inner.running.get() < self.inner.max_jobs.get() {
+            return;
+        }
+        let victim = {
+            let waiters = self.inner.waiters.borrow();
+            let cancels = self.inner.cancels.borrow();
+            cancels.iter().find(|(key, _)| waiters.get(*key).is_none_or(|list| list.iter().all(|waiter| !waiter.urgent))).map(|(_, flag)| flag.clone())
+        };
+        if let Some(flag) = victim {
+            flag.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// Puts `key` at the newest end of the queue for jobs for things on screen, or in the queue for the rest.
+    fn enqueue(&self, key: Key, urgent: bool) {
         let stamp = self.next_stamp();
         self.inner.queued.borrow_mut().insert(key.clone(), stamp);
-        let mut queue = self.inner.queue.borrow_mut();
-        queue.push_back((key, stamp));
-        // Moved jobs leave stale entries behind; they are cleared out once they outnumber the live ones.
-        if queue.len() > 2 * self.inner.queued.borrow().len() + 64 {
-            let queued = self.inner.queued.borrow();
-            queue.retain(|(key, stamp)| queued.get(key) == Some(stamp));
+        let live = self.inner.queued.borrow().len();
+        if urgent {
+            let mut queue = self.inner.queue.borrow_mut();
+            queue.push_back((key, stamp));
+            // Moved jobs leave stale entries behind; they are cleared out once they outnumber the live ones.
+            if queue.len() > 2 * live + 64 {
+                let queued = self.inner.queued.borrow();
+                queue.retain(|(key, stamp)| queued.get(key) == Some(stamp));
+            }
+        } else {
+            let mut queue = self.inner.queue_low.borrow_mut();
+            queue.push((key, stamp));
+            if queue.len() > 2 * live + 64 {
+                let queued = self.inner.queued.borrow();
+                queue.retain(|(key, stamp)| queued.get(key) == Some(stamp));
+            }
         }
+    }
+
+    /// How far from the screen the item of the queued job `key` is now: the nearest of those waiting for it.
+    fn rank_of(&self, key: &Key) -> f64 {
+        let waiters = self.inner.waiters.borrow();
+        waiters
+            .get(key)
+            .into_iter()
+            .flatten()
+            .filter(|waiter| (waiter.wanted)())
+            .filter_map(|waiter| waiter.rank.as_ref().map(|rank| rank()))
+            .min_by(f64::total_cmp)
+            .unwrap_or(f64::MAX)
     }
 
     fn next_stamp(&self) -> u64 {
@@ -391,14 +596,22 @@ impl Thumbnails {
         stamp
     }
 
-    /// The newest queued job with its stamp, skipping stale entries.
+    /// The newest queued job for something on screen with its stamp, or else the one for the item nearest the screen, skipping
+    /// stale entries.
     fn pop_newest(&self) -> Option<(Key, u64)> {
         loop {
-            let (key, stamp) = self.inner.queue.borrow_mut().pop_back()?;
+            let Some((key, stamp)) = self.inner.queue.borrow_mut().pop_back() else { break };
             if self.inner.queued.borrow().get(&key) == Some(&stamp) {
                 return Some((key, stamp));
             }
         }
+        let mut queue = self.inner.queue_low.borrow_mut();
+        {
+            let queued = self.inner.queued.borrow();
+            queue.retain(|(key, stamp)| queued.get(key) == Some(stamp));
+        }
+        let nearest = queue.iter().enumerate().min_by(|a, b| self.rank_of(&a.1 .0).total_cmp(&self.rank_of(&b.1 .0))).map(|(index, _)| index)?;
+        Some(queue.swap_remove(nearest))
     }
 
     /// Marks the cached thing `key` as the most recently used.
@@ -415,13 +628,16 @@ impl Thumbnails {
 
     /// Starts queued jobs while there is room for them.
     fn start_jobs(&self) {
-        while self.inner.running.get() < self.inner.max_jobs.get() {
+        while self.inner.running.get() < self.inner.max_jobs.get() && !self.paused() {
             let Some(key) = self.next_wanted() else { return };
             self.inner.running.set(self.inner.running.get() + 1);
             if key.job == Job::Frames {
                 self.inner.running_frames.set(self.inner.running_frames.get() + 1);
             }
-            glib::spawn_future_local(run(self.clone(), key));
+            let cancel = Arc::new(AtomicBool::new(false));
+            self.inner.cancels.borrow_mut().insert(key.clone(), cancel.clone());
+            self.watch_running();
+            glib::spawn_future_local(run(self.clone(), key, cancel));
         }
     }
 
@@ -460,10 +676,26 @@ impl Thumbnails {
 
     /// Hands what was made to the requests that still want it. A job that could not be made is remembered, so
     /// it is not tried again, and its requests are told there is nothing.
-    fn finish(&self, key: Key, made: Option<Vec<Pixels>>) {
+    fn finish(&self, key: Key, made: Option<Vec<Pixels>>, stopped: bool) {
         self.inner.running.set(self.inner.running.get() - 1);
+        self.inner.cancels.borrow_mut().remove(&key);
         if key.job == Job::Frames {
             self.inner.running_frames.set(self.inner.running_frames.get() - 1);
+        }
+        if stopped {
+            // A job that was stopped made nothing, which is no failure. If something still wants it, it waits its turn again.
+            let urgent = {
+                let waiters = self.inner.waiters.borrow();
+                waiters.get(&key).filter(|list| list.iter().any(|waiter| (waiter.wanted)())).map(|list| list.iter().any(|waiter| waiter.urgent))
+            };
+            match urgent {
+                Some(urgent) => self.enqueue(key, urgent),
+                None => {
+                    self.inner.waiters.borrow_mut().remove(&key);
+                }
+            }
+            self.start_jobs();
+            return;
         }
         let waiters = self.inner.waiters.borrow_mut().remove(&key).unwrap_or_default();
         let textures: Vec<gdk::Texture> = match made {
@@ -577,11 +809,13 @@ impl Pixels {
     }
 }
 
-/// Makes one job on a worker thread, then shows it on the main loop.
-async fn run(thumbnails: Thumbnails, key: Key) {
+/// Makes one job on a worker thread, then shows it on the main loop. `cancel` stops it: a program it runs is killed, and
+/// what was made, if anything, is let go.
+async fn run(thumbnails: Thumbnails, key: Key, cancel: Arc<AtomicBool>) {
     let root = thumbnails.inner.disk_cache.get().then(|| thumbnails.inner.root.clone());
     let work = key.clone();
-    let made = match thumbnails.inner.pool.as_ref().map(|pool| pool.push_future(move || make(root.as_deref(), &work))) {
+    let flag = cancel.clone();
+    let made = match thumbnails.inner.pool.as_ref().map(|pool| pool.push_future(move || make_cancellable(root.as_deref(), &work, flag))) {
         Some(Ok(made)) => made.await.ok().flatten(),
         Some(Err(error)) => {
             eprintln!("rsimgv: cannot start a thumbnail thread: {error}");
@@ -589,7 +823,24 @@ async fn run(thumbnails: Thumbnails, key: Key) {
         }
         None => None,
     };
-    thumbnails.finish(key, made);
+    let stopped = cancel.load(Ordering::Relaxed);
+    thumbnails.finish(key, if stopped { None } else { made }, stopped);
+}
+
+thread_local! {
+    /// The flag that stops the job the thread is making, for the programs it runs to look at.
+    static CANCEL: RefCell<Option<Arc<AtomicBool>>> = const { RefCell::new(None) };
+}
+
+/// `make`, with `cancel` set where the programs it runs can see it.
+fn make_cancellable(root: Option<&Path>, key: &Key, cancel: Arc<AtomicBool>) -> Option<Vec<Pixels>> {
+    if cancel.load(Ordering::Relaxed) {
+        return None;
+    }
+    CANCEL.with(|current| *current.borrow_mut() = Some(cancel));
+    let made = make(root, key);
+    CANCEL.with(|current| *current.borrow_mut() = None);
+    made
 }
 
 /// The pixels of a job: from the cache under `root` where they are current, or made and cached now. With no `root`,
@@ -718,6 +969,12 @@ fn run_within(command: &mut Command, timeout: Duration) -> std::io::Result<Optio
             let _ = child.kill();
             let _ = child.wait();
             return Err(std::io::ErrorKind::TimedOut.into());
+        }
+        // A job that was stopped does not wait for its program, which is killed.
+        if CANCEL.with(|current| current.borrow().as_ref().is_some_and(|flag| flag.load(Ordering::Relaxed))) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(std::io::ErrorKind::Interrupted.into());
         }
         std::thread::sleep(Duration::from_millis(20));
     };
@@ -880,8 +1137,8 @@ mod tests {
         let again = thumbnails.clone();
         let seen = Rc::new(Cell::new(0));
         let counted = seen.clone();
-        thumbnails.request(key.clone(), || true, move |_| {
-            again.request(key.clone(), || true, move |textures| counted.set(textures.len()));
+        thumbnails.request(key.clone(), None, || true, move |_| {
+            again.request(key.clone(), None, || true, move |textures| counted.set(textures.len()));
         });
         assert_eq!(seen.get(), 1);
     }
@@ -892,6 +1149,8 @@ mod tests {
         let job = |name: &str| key(Path::new(name), 1, Size::for_pixels(128), Job::Still(Media::Picture));
         let waiter = |wanted: bool| Waiter {
             wanted: Rc::new(move || wanted),
+            urgent: true,
+            rank: None,
             on_ready: Box::new(|_| {}),
         };
         let (old, scrolled_away, newest) = (job("old.png"), job("away.png"), job("new.png"));
@@ -902,7 +1161,7 @@ mod tests {
             waiters.insert(newest.clone(), vec![waiter(true)]);
         }
         for job in [old.clone(), scrolled_away.clone(), newest.clone()] {
-            thumbnails.enqueue(job);
+            thumbnails.enqueue(job, true);
         }
 
         assert!(thumbnails.next_wanted() == Some(newest));
@@ -912,16 +1171,53 @@ mod tests {
     }
 
     #[test]
+    fn jobs_for_things_on_screen_go_before_the_rest_whatever_the_order() {
+        let thumbnails = Thumbnails::with_root(PathBuf::new());
+        let job = |name: &str| key(Path::new(name), 1, Size::for_pixels(128), Job::Still(Media::Picture));
+        let waiter = |urgent: bool| Waiter { wanted: Rc::new(|| true), urgent, rank: None, on_ready: Box::new(|_| {}) };
+        let (visible, near, far) = (job("visible.png"), job("near.png"), job("far.png"));
+        {
+            let mut waiters = thumbnails.inner.waiters.borrow_mut();
+            waiters.insert(visible.clone(), vec![waiter(true)]);
+            let ranked = |distance: f64| Waiter { wanted: Rc::new(|| true), urgent: false, rank: Some(Rc::new(move || distance)), on_ready: Box::new(|_| {}) };
+            waiters.insert(near.clone(), vec![ranked(1.0)]);
+            waiters.insert(far.clone(), vec![ranked(9.0)]);
+        }
+        // The far one is asked for first, then the near one, then the one on screen, so they come out near-first after it.
+        thumbnails.enqueue(far.clone(), false);
+        thumbnails.enqueue(near.clone(), false);
+        thumbnails.enqueue(visible.clone(), true);
+        assert!(thumbnails.next_wanted() == Some(visible));
+        assert!(thumbnails.next_wanted() == Some(near.clone()), "the nearest of the rest goes next, whatever the order asked");
+        // Asked for again from the screen, the far one jumps ahead of anything left waiting.
+        thumbnails.enqueue(job("later.png"), false);
+        thumbnails.enqueue(far.clone(), true);
+        assert!(thumbnails.next_wanted() == Some(far));
+    }
+
+    #[test]
+    fn the_levels_reach_further_and_wake_up_for_playback() {
+        let pages: Vec<Option<f64>> = Aggression::ALL.iter().map(|level| level.pages()).collect();
+        assert_eq!(pages, [Some(0.0), Some(1.0), Some(2.0), Some(4.0), None]);
+        assert!(!Aggression::Standard.works_during_playback() && Aggression::Increased.works_during_playback() && Aggression::Extreme.works_during_playback());
+        assert_eq!(Aggression::from_name("high"), Aggression::High);
+        assert_eq!(Aggression::from_name("nonsense"), Aggression::Standard);
+        assert!(Aggression::ALL.iter().all(|level| Aggression::from_name(level.name()) == *level));
+    }
+
+    #[test]
     fn asking_again_drops_the_requests_that_no_longer_want_it() {
         let thumbnails = Thumbnails::with_root(PathBuf::new());
         let job = key(Path::new("picture.png"), 1, Size::for_pixels(128), Job::Still(Media::Picture));
         let waiter = |wanted: bool| Waiter {
             wanted: Rc::new(move || wanted),
+            urgent: true,
+            rank: None,
             on_ready: Box::new(|_| {}),
         };
         thumbnails.inner.waiters.borrow_mut().insert(job.clone(), vec![waiter(false), waiter(true), waiter(false)]);
 
-        thumbnails.request(job.clone(), || true, |_| {});
+        thumbnails.request(job.clone(), None, || true, |_| {});
 
         assert_eq!(thumbnails.inner.waiters.borrow()[&job].len(), 2);
     }
@@ -960,6 +1256,7 @@ mod tests {
                 for index in 0..3 {
                     thumbnails.request(
                         key(&dir.join(format!("missing-{index}.png")), 1, Size::for_pixels(128), Job::Still(Media::Picture)),
+                        None,
                         || true,
                         |_| {},
                     );
@@ -984,7 +1281,7 @@ mod tests {
         thumbnails.remember(job.clone(), vec![Pixels::from_file(&path).expect("read").texture()]);
         let on_screen = Rc::new(Cell::new(true));
         let flag = on_screen.clone();
-        thumbnails.request(job, move || flag.get(), |_| {});
+        thumbnails.request(job, None, move || flag.get(), |_| {});
         (thumbnails, path, on_screen)
     }
 
@@ -1006,7 +1303,7 @@ mod tests {
         let (thumbnails, path, _on_screen) = loaded("holders");
         let job = key(&path, 1, Size::for_pixels(128), Job::Still(Media::Picture));
         for _ in 0..3 * MAX_HOLDERS {
-            thumbnails.request(job.clone(), || true, |_| {});
+            thumbnails.request(job.clone(), None, || true, |_| {});
         }
         assert_eq!(thumbnails.inner.holders.borrow()[&job].len(), MAX_HOLDERS);
     }

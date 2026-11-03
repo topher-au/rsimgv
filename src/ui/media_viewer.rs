@@ -17,6 +17,7 @@ use gtk::{gdk, gio, glib};
 use super::drag;
 use super::image_canvas::{Fit, ImageCanvas, OriginalFocus, Placement, Scaling};
 use crate::file_settings::FileSettings;
+use crate::fs::thumbnail::Thumbnails;
 use crate::orientation::Orientation;
 use crate::fs::metadata::MediaInfo;
 use crate::fs::thumbnail::Pixels;
@@ -2087,6 +2088,8 @@ impl MediaViewer {
                 }
             });
             media.set_loop(imp.repeat.get());
+            // Below the thumbnail generator's higher levels, nothing is made while a video plays.
+            media.connect_playing_notify(|media| Thumbnails::shared().set_media_playing(media.is_playing()));
             media.connect_error_notify(|media| {
                 if let Some(err) = media.error() {
                     eprintln!("rsimgv: {err}");
@@ -2266,6 +2269,7 @@ impl MediaViewer {
                 }
             });
         }
+        Thumbnails::shared().set_media_playing(false);
         if let Some(media) = media {
             media.set_playing(false);
             // The video is stopped now, rather than when the stream is finally freed.

@@ -287,11 +287,18 @@ fn bind_generation(view: &BrowseView, cell: &gtk::Box) -> u64 {
     view.imp().bind_generations.borrow().get(&position).copied().unwrap_or_default()
 }
 
-/// Whether a thumbnail requested at item size `size` for the item at `path` is still wanted: as `wanted_for`, and the
-/// items are still that size. A thumbnail made for an earlier size would otherwise be shown over the new one.
+/// Whether a thumbnail requested at item size `size` for the item at `path` is still wanted: as `wanted_for`, the items are
+/// still that size, and the item is near enough to the ones in view for the thumbnail generator's aggressiveness. A thumbnail made for an earlier size would otherwise be shown over the new one.
 fn wanted_at(view: &BrowseView, cell: &gtk::Box, path: &Path, size: i32) -> impl Fn() -> bool + 'static {
-    let (view_weak, wanted) = (view.downgrade(), wanted_for(view, cell, path));
-    move || wanted() && view_weak.upgrade().is_some_and(|view| view.item_size() == size)
+    let (view_weak, cell_weak, wanted) = (view.downgrade(), cell.downgrade(), wanted_for(view, cell, path));
+    move || {
+        wanted()
+            && view_weak.upgrade().is_some_and(|view| {
+                // As far from the items in view as the thumbnail generator's aggressiveness reaches.
+                let near = cell_weak.upgrade().and_then(|cell| cell.widget_name().parse::<u32>().ok()).is_some_and(|position| view.thumbnail_wanted(position));
+                view.item_size() == size && near
+            })
+    }
 }
 
 /// The image in a cell's visual part.
@@ -330,6 +337,10 @@ fn request_thumbnail(
         },
     );
 }
+
+/// How long after the items or the view change the thumbnails to make ahead are worked out, and how many are asked for at a time.
+const PREFETCH_DELAY: std::time::Duration = std::time::Duration::from_millis(150);
+const PREFETCH_BATCH: usize = 200;
 
 /// The most entries of a folder looked at to find its pictures, so a huge folder does not hold up the view.
 const SCATTER_SCAN: usize = 500;
@@ -886,6 +897,16 @@ mod imp {
         pub(super) keyboard_timer: RefCell<Option<glib::SourceId>>,
         /// Whether this is the active tab, or the tab whose viewer is open. Only the active view watches its folder.
         pub(super) active: Cell<bool>,
+        /// Whether the viewer is open over the browser, so that no item in it is on screen.
+        pub(super) covered: Cell<bool>,
+        /// Bumped when what thumbnails are made ahead of time for changes, so the older requests are no longer wanted.
+        pub(super) prefetch_generation: Cell<u64>,
+        /// The positions already asked for in this generation, the timer that asks for more, and those still to ask for.
+        pub(super) prefetched: RefCell<std::collections::HashSet<u32>>,
+        pub(super) prefetch_timer: RefCell<Option<glib::SourceId>>,
+        pub(super) prefetch_todo: RefCell<VecDeque<u32>>,
+        /// When each file was last modified, as thumbnails are asked for, so they are not read from the disk each time.
+        pub(super) prefetch_stamps: RefCell<HashMap<PathBuf, i64>>,
         /// Watches the folder shown, while the view is active.
         pub(super) monitor: RefCell<Option<gio::FileMonitor>>,
         /// The timer that lists the folder again after its changes have settled.
@@ -1035,6 +1056,32 @@ mod imp {
             let selection = gtk::SingleSelection::new(Some(visible));
             selection.set_autoselect(false);
             self.grid.set_model(Some(&selection));
+            // Thumbnails are made ahead of time for the items near the ones in view, so what is near changes with the items
+            // and with the view.
+            selection.connect_items_changed({
+                let view = obj.downgrade();
+                move |_, _, _, _| {
+                    if let Some(view) = view.upgrade() {
+                        view.restart_prefetch();
+                    }
+                }
+            });
+            self.grid.connect_view_moved({
+                let view = obj.downgrade();
+                move |_| {
+                    if let Some(view) = view.upgrade() {
+                        view.schedule_prefetch();
+                    }
+                }
+            });
+            Thumbnails::shared().watch_aggression({
+                let view = obj.downgrade();
+                move || {
+                    if let Some(view) = view.upgrade() {
+                        view.restart_prefetch();
+                    }
+                }
+            });
             selection.connect_selection_changed({
                 let view = obj.downgrade();
                 move |_, _, _| {
@@ -1543,6 +1590,145 @@ impl BrowseView {
         self.update_monitor();
     }
 
+    /// Notes whether the viewer is open over the browser. Its items are then not on screen, so thumbnails are no longer
+    /// wanted for them, except at the highest aggressiveness, which makes them for the whole folder.
+    pub fn set_covered(&self, covered: bool) {
+        if self.imp().covered.replace(covered) != covered {
+            self.restart_prefetch();
+        }
+    }
+
+    /// Whether a thumbnail is wanted for the item at `position`: it is near enough to the items in view for the
+    /// aggressiveness of the thumbnail generator, which is the whole folder at the highest, while the view is the one shown.
+    fn thumbnail_wanted(&self, position: u32) -> bool {
+        let imp = self.imp();
+        let Some(pages) = Thumbnails::shared().aggression().pages() else { return imp.active.get() };
+        if imp.covered.get() {
+            return false;
+        }
+        let page = imp.grid.page_pixels();
+        // A view that has not been laid out yet has nothing to be near to, so nothing is turned away from it.
+        page <= 1.0 || imp.grid.distance_from_view(position) <= pages * page + 1.0
+    }
+
+    /// Starts asking for thumbnails again, as what they are for changed: the older requests are no longer wanted.
+    fn restart_prefetch(&self) {
+        let imp = self.imp();
+        imp.prefetch_generation.set(imp.prefetch_generation.get() + 1);
+        imp.prefetched.borrow_mut().clear();
+        imp.prefetch_todo.borrow_mut().clear();
+        imp.prefetch_stamps.borrow_mut().clear();
+        self.schedule_prefetch();
+    }
+
+    /// Asks, in a moment, for the thumbnails of the items near the ones in view that have not been asked for.
+    fn schedule_prefetch(&self) {
+        let imp = self.imp();
+        if imp.prefetch_timer.borrow().is_some() {
+            return;
+        }
+        let view = self.downgrade();
+        let timer = glib::timeout_add_local_once(PREFETCH_DELAY, move || {
+            if let Some(view) = view.upgrade() {
+                view.imp().prefetch_timer.take();
+                view.plan_prefetch();
+            }
+        });
+        imp.prefetch_timer.replace(Some(timer));
+    }
+
+    /// Works out which items near the ones in view still need their thumbnails asked for, nearest first.
+    fn plan_prefetch(&self) {
+        let imp = self.imp();
+        let level = Thumbnails::shared().aggression();
+        let nobody_sees = match level.pages() {
+            None => !imp.active.get(),
+            Some(_) => imp.covered.get(),
+        };
+        let near: Vec<(u32, f64)> = if nobody_sees || imp.grid.model().is_none() {
+            Vec::new()
+        } else {
+            match level.pages() {
+                Some(pages) => imp.grid.positions_near(Some(pages * imp.grid.page_pixels() + 1.0)),
+                None => imp.grid.positions_near(None),
+            }
+        };
+        // What left the reach is forgotten, so it is asked for again if it comes back.
+        let reach: std::collections::HashSet<u32> = near.iter().map(|(position, _)| *position).collect();
+        let mut asked = imp.prefetched.borrow_mut();
+        asked.retain(|position| reach.contains(position));
+        let mut todo = imp.prefetch_todo.borrow_mut();
+        todo.clear();
+        for (position, _) in near {
+            if asked.insert(position) {
+                todo.push_back(position);
+            }
+        }
+        let waiting = !todo.is_empty();
+        drop((asked, todo));
+        if waiting {
+            self.continue_prefetch();
+        }
+    }
+
+    /// Asks for the thumbnails of the next few items to ask for, then for more when the main loop is idle, so a large folder
+    /// does not hold up the window.
+    fn continue_prefetch(&self) {
+        let imp = self.imp();
+        let generation = imp.prefetch_generation.get();
+        for _ in 0..PREFETCH_BATCH {
+            let Some(position) = imp.prefetch_todo.borrow_mut().pop_front() else { return };
+            self.prefetch_item(position, generation);
+        }
+        let view = self.downgrade();
+        glib::idle_add_local_once(move || {
+            if let Some(view) = view.upgrade().filter(|view| view.imp().prefetch_generation.get() == generation) {
+                view.continue_prefetch();
+            }
+        });
+    }
+
+    /// Asks for the thumbnail of the item at `position`, for when its cell is shown, or just to have it ready.
+    fn prefetch_item(&self, position: u32, generation: u64) {
+        let imp = self.imp();
+        let Some(entry) = imp.grid.model().and_then(|model| model.item(position)).and_downcast::<FileEntry>() else { return };
+        let Some(media) = thumbnail_media(&entry) else { return };
+        let path = entry.path().to_path_buf();
+        let stamp = *imp.prefetch_stamps.borrow_mut().entry(path.clone()).or_insert_with(|| crate::fs::thumbnail::stamp(&path));
+        let size = self.item_size();
+        let (rank_view, wanted_view, shown_view) = (self.downgrade(), self.downgrade(), self.downgrade());
+        let (wanted_path, shown_path) = (path.clone(), path.clone());
+        Thumbnails::shared().prefetch_still(
+            &path,
+            stamp,
+            media,
+            ThumbnailSize::for_pixels(size * self.scale_factor()),
+            move || rank_view.upgrade().map_or(f64::MAX, |view| view.imp().grid.distance_from_view(position)),
+            move || {
+                wanted_view.upgrade().is_some_and(|view| {
+                    let imp = view.imp();
+                    imp.prefetch_generation.get() == generation
+                        && imp.grid.model().and_then(|model| model.item(position)).and_downcast::<FileEntry>().is_some_and(|entry| entry.path() == wanted_path)
+                        && view.thumbnail_wanted(position)
+                })
+            },
+            move |texture| {
+                // An item that has its cell by now shows the thumbnail that was made ahead.
+                let Some(view) = shown_view.upgrade() else { return };
+                let Some(cell) = view.imp().grid.cell_at(position).and_downcast::<gtk::Box>() else { return };
+                if !shows(&view, &cell, &shown_path) || view.item_size() != size {
+                    return;
+                }
+                let Some(icon) = icon_of(&cell) else { return };
+                icon.set_pixel_size(size);
+                icon.set_paintable(Some(&picture_paintable(texture, view.thumbnail_crop(), media == ThumbnailMedia::Video)));
+                if let Some(visual) = icon.parent() {
+                    visual.add_css_class("has-thumbnail");
+                }
+            },
+        );
+    }
+
     /// Makes this the active view, which watches its folder for changes, or an inactive one, which does not.
     /// An activated view lists its folder again, since it may have changed while it was not watched.
     pub fn set_active(&self, active: bool) {
@@ -1550,6 +1736,7 @@ impl BrowseView {
         if imp.active.replace(active) == active {
             return;
         }
+        self.restart_prefetch();
         self.update_monitor();
         if active {
             self.refresh();
@@ -2514,6 +2701,7 @@ impl BrowseView {
         let anchor = top_item_anchor(&imp.grid);
         imp.grid.set_cell_size(self.item_size(), self.cell_height());
         imp.grid.refresh();
+        self.restart_prefetch();
         if let Some(anchor) = anchor {
             restore_top_item_after_layout(&imp.grid, anchor);
         }

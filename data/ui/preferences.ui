@@ -1199,6 +1199,23 @@
                           <object class="AdwPreferencesGroup">
                             <property name="title">Thumbnail generator</property>
                             <child>
+                              <object class="AdwComboRow" id="thumbnail_aggression_row">
+                                <property name="title">Aggressiveness</property>
+                                <property name="subtitle">How far from the items on screen thumbnails are made, and whether they go on while a video plays</property>
+                                <property name="model">
+                                  <object class="GtkStringList">
+                                    <items>
+                                      <item>Low: only the items on screen</item>
+                                      <item>Standard: up to a page away</item>
+                                      <item>Increased: up to two pages away, and while a video plays</item>
+                                      <item>High: up to four pages away</item>
+                                      <item>Extreme: every item in the folder</item>
+                                    </items>
+                                  </object>
+                                </property>
+                              </object>
+                            </child>
+                            <child>
                               <object class="AdwSpinRow" id="thumbnail_threads_row">
                                 <property name="title">Thread count</property>
                                 <property name="subtitle">How many thumbnails are made at the same time</property>

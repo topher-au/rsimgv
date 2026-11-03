@@ -95,6 +95,8 @@ mod imp {
         #[template_child]
         pub thumbnail_unload_offscreen_row: TemplateChild<adw::SwitchRow>,
         #[template_child]
+        pub thumbnail_aggression_row: TemplateChild<adw::ComboRow>,
+        #[template_child]
         pub thumbnail_crop_row: TemplateChild<adw::SwitchRow>,
         #[template_child]
         pub video_frame_previews_row: TemplateChild<adw::SwitchRow>,
@@ -628,7 +630,8 @@ fn bind_switches(settings: &gio::Settings, imp: &imp::PreferencesDialog) {
 
 /// Binds each combo row to a string setting whose value is one of `choices`, by position in the row.
 fn bind_choices(settings: &gio::Settings, imp: &imp::PreferencesDialog) {
-    let combos: [(&str, &glib::Object, &[&str]); 19] = [
+    let combos: [(&str, &glib::Object, &[&str]); 20] = [
+        ("thumbnail-aggression", imp.thumbnail_aggression_row.upcast_ref(), &["low", "standard", "increased", "high", "extreme"]),
         ("folder-end", imp.folder_end_row.upcast_ref(), &["stop", "loop", "next-folder"]),
         ("sort-by", imp.default_sort_by_row.upcast_ref(), &["name", "modified", "size", "type"]),
         ("sort-order", imp.default_sort_order_row.upcast_ref(), &["ascending", "descending"]),

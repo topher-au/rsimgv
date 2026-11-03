@@ -817,6 +817,7 @@ impl Window {
         self.apply_folder_end();
         imp.viewer.show(paths, index);
         imp.viewer_open.set(true);
+        self.cover_browsers(true);
         self.place_playlist();
         self.refresh_message_host();
         self.refresh_keybinds_overlay();
@@ -852,6 +853,7 @@ impl Window {
         let imp = self.imp();
         imp.viewer.close();
         imp.viewer_open.set(false);
+        self.cover_browsers(false);
         self.place_playlist();
         imp.playlist_playing.set(false);
         self.apply_folder_end();
@@ -2614,6 +2616,16 @@ impl Window {
     fn keybinds_host(&self) -> gtk::Overlay {
         let imp = self.imp();
         if self.viewer_is_open() { imp.viewer.overlay() } else { (*imp.message_layer).clone() }
+    }
+
+    /// Tells every browser whether the viewer is open over it, so its items are not counted as on screen.
+    fn cover_browsers(&self, covered: bool) {
+        let tabs = &self.imp().tab_view;
+        for index in 0..tabs.n_pages() {
+            if let Ok(view) = tabs.nth_page(index).child().downcast::<BrowseView>() {
+                view.set_covered(covered);
+            }
+        }
     }
 
     /// Puts the notifications over the viewer's frame while the viewer is open, so they stay clear of the status bar,
