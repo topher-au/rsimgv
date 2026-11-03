@@ -72,9 +72,11 @@ mod imp {
         pub(super) resizing: Cell<Option<i32>>,
         /// The side of the viewer the bar is on, so which of its edges faces the picture.
         pub(super) side: Cell<gtk::PositionType>,
-        /// The thumbnail size, shared with the factory, and the images it made, to resize them.
+        /// The thumbnail size, shared with the factory, and the rows it made, to resize their images and mark the one shown.
         pub(super) size: Rc<Cell<i32>>,
-        pub(super) images: Rc<RefCell<Vec<glib::WeakRef<gtk::Image>>>>,
+        pub(super) rows: Rc<RefCell<Vec<glib::WeakRef<gtk::ListItem>>>>,
+        /// The position of the item shown in the viewer, shared with the factory, so its thumbnail is marked as it is bound.
+        pub(super) shown: Rc<Cell<Option<u32>>>,
         /// The stamp of each path shown, taken when the paths were set, so binding a row does not read the file.
         pub(super) stamps: Rc<RefCell<HashMap<PathBuf, i64>>>,
         /// The positions of the videos whose thumbnails are asked for ahead of the ones in view.
@@ -88,9 +90,10 @@ mod imp {
             selection.set_autoselect(false);
             selection.set_can_unselect(true);
             let size = Rc::new(Cell::new(THUMBNAIL_PIXELS));
-            let images = Rc::new(RefCell::new(Vec::new()));
+            let rows = Rc::new(RefCell::new(Vec::new()));
+            let shown = Rc::new(Cell::new(None));
             let stamps = Rc::new(RefCell::new(HashMap::new()));
-            let list = gtk::ListView::new(Some(selection.clone()), Some(factory(size.clone(), images.clone(), stamps.clone())));
+            let list = gtk::ListView::new(Some(selection.clone()), Some(factory(size.clone(), rows.clone(), shown.clone(), stamps.clone())));
             list.set_single_click_activate(true);
             list.add_css_class("thumbnail-bar-list");
             let scroller = gtk::ScrolledWindow::builder().child(&list).hexpand(true).vexpand(true).build();
@@ -164,7 +167,8 @@ mod imp {
                 resizing: Cell::new(None),
                 side: Cell::new(gtk::PositionType::Bottom),
                 size,
-                images,
+                rows,
+                shown,
                 stamps,
                 prefetched: RefCell::new(HashSet::new()),
             }
@@ -419,8 +423,8 @@ impl ThumbnailBar {
         // The thumbnail at the start of the strip is kept in view as the list lays out at the new size.
         let start = self.scroll_position();
         imp.size.set(size);
-        imp.images.borrow_mut().retain(|image| {
-            let Some(image) = image.upgrade() else { return false };
+        imp.rows.borrow_mut().retain(|row| {
+            let Some(image) = row.upgrade().and_then(|row| row.child()).and_downcast::<gtk::Image>() else { return false };
             image.set_pixel_size(size);
             image.set_size_request(size, size);
             true
@@ -490,11 +494,24 @@ impl ThumbnailBar {
         if imp.list.orientation() == gtk::Orientation::Horizontal { imp.scroller.hadjustment() } else { imp.scroller.vadjustment() }
     }
 
+    /// Marks the thumbnail of the item shown, and unmarks the rest, so the one in the viewer stands out from the others.
+    fn mark_shown(&self) {
+        let imp = self.imp();
+        let shown = imp.shown.get();
+        imp.rows.borrow_mut().retain(|row| {
+            let Some(row) = row.upgrade() else { return false };
+            if let Some(image) = row.child().and_downcast::<gtk::Image>() {
+                mark_shown_image(&image, shown == Some(row.position()));
+            }
+            true
+        });
+    }
+
     /// Asks again for the thumbnails shown, at the size they are now.
     fn refresh_thumbnails(&self) {
         let imp = self.imp();
-        imp.images.borrow_mut().clear();
-        imp.list.set_factory(Some(&factory(imp.size.clone(), imp.images.clone(), imp.stamps.clone())));
+        imp.rows.borrow_mut().clear();
+        imp.list.set_factory(Some(&factory(imp.size.clone(), imp.rows.clone(), imp.shown.clone(), imp.stamps.clone())));
         if let Some(position) = (imp.selection.selected() != gtk::INVALID_LIST_POSITION).then(|| imp.selection.selected()) {
             imp.list.scroll_to(position, gtk::ListScrollFlags::NONE, None);
         }
@@ -637,6 +654,8 @@ impl ThumbnailBar {
             return;
         }
         imp.selection.set_selected(position);
+        imp.shown.set(Some(position));
+        self.mark_shown();
         // The thumbnail is made first, then put in the middle of the bar once the list has laid out its range, or as near
         // the middle as the ends of the list allow.
         imp.list.scroll_to(position, gtk::ListScrollFlags::NONE, None);
@@ -748,6 +767,15 @@ impl ThumbnailBar {
     }
 }
 
+/// Gives `image`, the thumbnail of the item shown in the viewer, the `shown` class while `shown`, so it can be styled.
+fn mark_shown_image(image: &gtk::Image, shown: bool) {
+    if shown {
+        image.add_css_class("shown");
+    } else {
+        image.remove_css_class("shown");
+    }
+}
+
 /// How many positions `position` is outside `view`, or 0 if it is in it.
 fn distance_from(view: &Range<i64>, position: i64) -> f64 {
     if position < view.start {
@@ -760,10 +788,11 @@ fn distance_from(view: &Range<i64>, position: i64) -> f64 {
 }
 
 /// Makes each row an image of `size`, which asks for its item's thumbnail when bound, and keeps the
-/// images in `images`.
+/// rows in `rows`. The image of the item at `shown` is marked, so it can be styled as the one in the viewer.
 fn factory(
     size: Rc<Cell<i32>>,
-    images: Rc<RefCell<Vec<glib::WeakRef<gtk::Image>>>>,
+    rows: Rc<RefCell<Vec<glib::WeakRef<gtk::ListItem>>>>,
+    shown: Rc<Cell<Option<u32>>>,
     stamps: Rc<RefCell<HashMap<PathBuf, i64>>>,
 ) -> gtk::SignalListItemFactory {
     let factory = gtk::SignalListItemFactory::new();
@@ -778,7 +807,7 @@ fn factory(
             .height_request(pixels)
             .build();
         image.add_css_class("thumbnail");
-        images.borrow_mut().push(image.downgrade());
+        rows.borrow_mut().push(item.downgrade());
         item.set_child(Some(&image));
     });
     factory.connect_bind(move |_, item| {
@@ -789,6 +818,7 @@ fn factory(
         ) else {
             return;
         };
+        mark_shown_image(&image, shown.get() == Some(item.position()));
         let video = is_video(&path);
         image.set_icon_name(Some(if video { "video-x-generic-symbolic" } else { "image-x-generic-symbolic" }));
         image.set_tooltip_text(path.file_name().and_then(|name| name.to_str()));
