@@ -111,7 +111,7 @@ mod imp {
             close_button.add_css_class("flat");
             close_button.add_css_class("circular");
             let counter = gtk::Label::new(None);
-            counter.add_css_class("caption");
+            counter.add_css_class("title-3");
             counter.add_css_class("numeric");
             counter.set_tooltip_text(Some("Position in the folder"));
             header.set_center_widget(Some(&counter));
@@ -389,8 +389,11 @@ impl ThumbnailBar {
         let header_orientation = if horizontal { gtk::Orientation::Vertical } else { gtk::Orientation::Horizontal };
         imp.header.set_orientation(header_orientation);
         imp.toggles.set_orientation(header_orientation);
-        imp.header.set_valign(if horizontal { gtk::Align::Fill } else { gtk::Align::Center });
-        imp.header.set_halign(if horizontal { gtk::Align::Fill } else { gtk::Align::Center });
+        // The header spans the bar's width in a row, or its height in a column, and is only as thick as it needs.
+        imp.header.set_hexpand(!horizontal);
+        imp.header.set_vexpand(horizontal);
+        imp.header.set_halign(gtk::Align::Fill);
+        imp.header.set_valign(gtk::Align::Fill);
         imp.list.set_orientation(orientation);
         let (h, v) = match orientation {
             gtk::Orientation::Horizontal => (gtk::PolicyType::Automatic, gtk::PolicyType::Never),
