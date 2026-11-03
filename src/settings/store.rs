@@ -119,6 +119,7 @@ const LAYOUT: &[(&str, &str, &str)] = &[
     ("video-backend", "video", "backend"),
     ("video-start-delay", "video", "start-delay"),
     ("mpv-args", "video", "mpv-args"),
+    ("overlay-layout", "viewer", "overlay-layout"),
     ("seek-overlay", "video", "seek-overlay"),
     ("seek-overlay-bar", "video", "seek-overlay-bar"),
     ("seek-overlay-time", "video", "seek-overlay-time"),

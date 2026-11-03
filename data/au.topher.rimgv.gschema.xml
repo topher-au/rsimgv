@@ -339,6 +339,10 @@
       <default>'mpv'</default>
       <summary>What plays videos: libmpv, or GStreamer through GTK's own media backend</summary>
     </key>
+    <key name="overlay-layout" type="s">
+      <default>""</default>
+      <summary>The elements of the media overlay and where they sit, as JSON. While empty, the older seek overlay and status overlay settings make the layout</summary>
+    </key>
     <key name="seek-overlay" type="b">
       <default>true</default>
       <summary>Show a progress bar and the time over a video when it is skipped through</summary>

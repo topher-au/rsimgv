@@ -530,25 +530,7 @@
                             <child>
                               <object class="AdwSwitchRow" id="viewer_status_bar_row">
                                 <property name="title">Status bar</property>
-                                <property name="subtitle">Shows the item's position, name, resolution, frame rate and file size under it</property>
-                              </object>
-                            </child>
-                            <child>
-                              <object class="AdwComboRow" id="status_overlay_position_row">
-                                <property name="title">Status overlay position</property>
-                                <property name="subtitle">Where the status bar floats over the item in fullscreen</property>
-                                <property name="model">
-                                  <object class="GtkStringList">
-                                    <items>
-                                      <item>Top left</item>
-                                      <item>Top middle</item>
-                                      <item>Top right</item>
-                                      <item>Bottom left</item>
-                                      <item>Bottom middle</item>
-                                      <item>Bottom right</item>
-                                    </items>
-                                  </object>
-                                </property>
+                                <property name="subtitle">Shows the item's position, name, resolution, frame rate and file size under it. In fullscreen the overlay's Status element shows it instead</property>
                               </object>
                             </child>
                           </object>
@@ -941,95 +923,8 @@
                             <property name="title">Overlay</property>
                             <property name="icon-name">view-reveal-symbolic</property>
                             <child>
-                              <object class="AdwPreferencesGroup">
-                                <property name="title">Seek overlay</property>
-                                <property name="description">A progress bar and the time over the video.</property>
-                                <child>
-                                  <object class="AdwSwitchRow" id="seek_overlay_row">
-                                    <property name="title">Show an overlay when skipping</property>
-                                    <property name="subtitle">Shows how far into the video you are when you skip through it with the keyboard or the mouse wheel</property>
-                                  </object>
-                                </child>
-                                <child>
-                                  <object class="AdwComboRow" id="seek_overlay_position_row">
-                                    <property name="title">Position</property>
-                                    <property name="subtitle">Where the overlay sits over the video</property>
-                                    <property name="model">
-                                      <object class="GtkStringList">
-                                        <items>
-                                          <item>Top left</item>
-                                          <item>Top middle</item>
-                                          <item>Top right</item>
-                                          <item>Bottom left</item>
-                                          <item>Bottom middle</item>
-                                          <item>Bottom right</item>
-                                        </items>
-                                      </object>
-                                    </property>
-                                  </object>
-                                </child>
-                                <child>
-                                  <object class="AdwSwitchRow" id="seek_overlay_bar_row">
-                                    <property name="title">Progress bar</property>
-                                    <property name="subtitle">Shows how far through the video you are</property>
-                                  </object>
-                                </child>
-                                <child>
-                                  <object class="AdwSpinRow" id="seek_overlay_width_row">
-                                    <property name="title">Progress bar width</property>
-                                    <property name="subtitle">In pixels</property>
-                                    <property name="digits">0</property>
-                                    <property name="adjustment">
-                                      <object class="GtkAdjustment">
-                                        <property name="lower">120</property>
-                                        <property name="upper">1200</property>
-                                        <property name="step-increment">20</property>
-                                      </object>
-                                    </property>
-                                  </object>
-                                </child>
-                                <child>
-                                  <object class="AdwSwitchRow" id="seek_overlay_time_row">
-                                    <property name="title">Time</property>
-                                    <property name="subtitle">Shows the time in the video</property>
-                                  </object>
-                                </child>
-                                <child>
-                                  <object class="AdwComboRow" id="seek_overlay_time_format_row">
-                                    <property name="title">Time format</property>
-                                    <property name="subtitle">How the time is written</property>
-                                    <property name="model">
-                                      <object class="GtkStringList">
-                                        <items>
-                                          <item>Elapsed / total</item>
-                                          <item>Remaining / total</item>
-                                          <item>Elapsed</item>
-                                          <item>Remaining</item>
-                                        </items>
-                                      </object>
-                                    </property>
-                                  </object>
-                                </child>
-                                <child>
-                                  <object class="AdwSpinRow" id="seek_overlay_seconds_row">
-                                    <property name="title">Time shown</property>
-                                    <property name="subtitle">How long the overlay stays up after a skip, in seconds</property>
-                                    <property name="digits">1</property>
-                                    <property name="adjustment">
-                                      <object class="GtkAdjustment">
-                                        <property name="lower">0.5</property>
-                                        <property name="upper">10</property>
-                                        <property name="step-increment">0.5</property>
-                                      </object>
-                                    </property>
-                                  </object>
-                                </child>
-                                <child>
-                                  <object class="AdwSwitchRow" id="seek_overlay_always_row">
-                                    <property name="title">Always show while playing</property>
-                                    <property name="subtitle">Keeps the overlay up for as long as a video plays, rather than only after a skip</property>
-                                  </object>
-                                </child>
+                              <object class="AdwPreferencesGroup" id="overlay_group">
+                                <property name="description">Text, status and a progress bar floating over the picture or video.</property>
                               </object>
                             </child>
                           </object>

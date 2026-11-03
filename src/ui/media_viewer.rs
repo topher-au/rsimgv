@@ -22,7 +22,8 @@ use crate::fs::metadata::MediaInfo;
 use crate::fs::thumbnail::Pixels;
 use super::media_controls::MediaControls;
 use super::overlay_split_view::OverlaySplitView;
-use super::seek_overlay::{SeekOptions, SeekOverlay};
+use super::media_overlay::{clock, fraction, Frame, MediaOverlay};
+use crate::overlay::Layout;
 use super::thumbnail_bar::ThumbnailBar;
 
 const MICROS: f64 = 1_000_000.0;
@@ -72,20 +73,7 @@ const REVEAL_FRACTION: f64 = 0.2;
 /// How near, in seconds, a video's start or end its position must be to start it from the beginning next time.
 const POSITION_MARGIN: f64 = 2.0;
 
-/// The horizontal and vertical alignment of a status overlay at `position`, such as `top-left` or `bottom-middle`.
-pub(super) fn overlay_alignment(position: &str) -> (gtk::Align, gtk::Align) {
-    let vertical = if position.starts_with("top") { gtk::Align::Start } else { gtk::Align::End };
-    let horizontal = if position.ends_with("left") {
-        gtk::Align::Start
-    } else if position.ends_with("right") {
-        gtk::Align::End
-    } else {
-        gtk::Align::Center
-    };
-    (horizontal, vertical)
-}
-
-/// How long after a skip the seek overlay shows where it went, rather than where the video is, which lags behind it.
+/// How long after a skip the overlay shows where it went, rather than where the video is, which lags behind it.
 const SEEK_SETTLE: std::time::Duration = std::time::Duration::from_millis(400);
 /// How long the playback speed has to stay put before SVP is rebuilt for it, as each rebuild holds up the video.
 const SVP_SPEED_SETTLE: std::time::Duration = std::time::Duration::from_millis(300);
@@ -340,16 +328,14 @@ mod imp {
         pub(super) cursor_hide: RefCell<Option<glib::SourceId>>,
         /// Whether the status bar under the item is shown.
         pub(super) status_shown: Cell<bool>,
-        /// Where the status bar floats over the item in fullscreen, such as `bottom-middle`.
-        pub(super) status_overlay_position: RefCell<String>,
-        /// The overlay that shows how far into a video the viewer is, made when it is first wanted, and how it is set up.
-        pub(super) seek_overlay: OnceCell<SeekOverlay>,
-        pub(super) seek_options: RefCell<SeekOptions>,
-        /// The timer that hides the seek overlay after a skip, and the one that keeps it up to date while it is shown.
-        pub(super) seek_hide: RefCell<Option<glib::SourceId>>,
-        pub(super) seek_tick: RefCell<Option<glib::SourceId>>,
+        /// The overlay of elements over the item, made when it is first wanted.
+        pub(super) media_overlay: OnceCell<MediaOverlay>,
+        /// The timer that keeps the overlay up to date while any element is on.
+        pub(super) overlay_tick: RefCell<Option<glib::SourceId>>,
         /// Where the last skip went and when, so the overlay shows that while the video catches up with it.
         pub(super) seek_landing: Cell<Option<(i64, std::time::Instant)>>,
+        /// When the video was last skipped through, for the elements that show for a while after a skip.
+        pub(super) last_seek: Cell<Option<std::time::Instant>>,
         /// The SVP frame interpolation settings, applied to the videos mpv plays.
         pub(super) svp: RefCell<Option<crate::svp::Config>>,
         /// The filter that applies SVP to the video shown, while SVP is on for it.
@@ -848,6 +834,7 @@ impl MediaViewer {
         self.imp().fullscreen.set(fullscreen);
         self.place_header();
         self.place_status_bar();
+        self.refresh_overlay();
     }
 
     /// Floats the header over the picture, sliding down only while the pointer is near the top, when the
@@ -1252,110 +1239,127 @@ impl MediaViewer {
         let seeking = self.imp().media.borrow().as_ref().is_some_and(|media| media.is_seeking());
         let from = self.imp().seek_landing.get().filter(|_| seeking).map(|(target, _)| target);
         if let Some(target) = self.imp().controls.seek_by(from, micros) {
-            self.imp().seek_landing.set(Some((target, std::time::Instant::now())));
-            self.flash_seek_overlay();
+            let now = std::time::Instant::now();
+            self.imp().seek_landing.set(Some((target, now)));
+            self.imp().last_seek.set(Some(now));
+            self.refresh_overlay();
         }
     }
 
-    /// Sets how the overlay that shows a video's progress is set up.
-    pub fn set_seek_options(&self, options: SeekOptions) {
+    /// Sets the layout of the overlay over the item.
+    pub fn set_overlay_layout(&self, layout: Layout) {
         let imp = self.imp();
-        if *imp.seek_options.borrow() == options {
+        let overlay = self.media_overlay();
+        if overlay.has_layout(&layout) {
             return;
         }
-        self.seek_overlay().apply(&options);
-        imp.seek_options.replace(options);
-        self.sync_seek_overlay();
-    }
-
-    fn seek_overlay(&self) -> &SeekOverlay {
-        let imp = self.imp();
-        imp.seek_overlay.get_or_init(|| {
-            let overlay = SeekOverlay::new(&imp.overlay);
-            overlay.apply(&imp.seek_options.borrow());
-            overlay
-        })
-    }
-
-    /// Brings the seek overlay up for the options' time after a skip, or leaves it up if it stays up anyway.
-    fn flash_seek_overlay(&self) {
-        let imp = self.imp();
-        let options = imp.seek_options.borrow().clone();
-        if !options.enabled || !self.shows_video() {
-            return;
-        }
-        self.reveal_seek_overlay();
-        if let Some(hide) = imp.seek_hide.take() {
-            hide.remove();
-        }
-        if options.always {
-            return;
-        }
-        let weak = self.downgrade();
-        let hide = glib::timeout_add_local_once(std::time::Duration::from_secs_f64(options.seconds), move || {
-            let Some(viewer) = weak.upgrade() else { return };
-            // The timer has fired, so there is nothing left to cancel.
-            viewer.imp().seek_hide.take();
-            viewer.seek_overlay().set_shown(false);
-        });
-        imp.seek_hide.replace(Some(hide));
-    }
-
-    /// Shows the seek overlay, and keeps its bar and time up to date for as long as it is shown.
-    fn reveal_seek_overlay(&self) {
-        let imp = self.imp();
-        self.refresh_seek_overlay();
-        self.seek_overlay().set_shown(true);
-        if imp.seek_tick.borrow().is_some() {
-            return;
-        }
-        let weak = self.downgrade();
-        let tick = glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
-            let Some(viewer) = weak.upgrade() else { return glib::ControlFlow::Break };
-            if !viewer.seek_overlay().is_shown() || !viewer.shows_video() {
-                // Ended on its own, so there is nothing to cancel.
-                viewer.imp().seek_tick.take();
-                return glib::ControlFlow::Break;
+        overlay.set_layout(&layout);
+        // What an element shows of the file is read only while an element is on.
+        self.refresh_status();
+        self.refresh_overlay();
+        if !overlay.any_enabled() {
+            if let Some(tick) = imp.overlay_tick.take() {
+                tick.remove();
             }
-            viewer.refresh_seek_overlay();
-            glib::ControlFlow::Continue
-        });
-        imp.seek_tick.replace(Some(tick));
+        } else if imp.overlay_tick.borrow().is_none() {
+            let weak = self.downgrade();
+            let tick = glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
+                let Some(viewer) = weak.upgrade() else { return glib::ControlFlow::Break };
+                if !viewer.media_overlay().any_enabled() {
+                    // Ended on its own, so there is nothing to cancel.
+                    viewer.imp().overlay_tick.take();
+                    return glib::ControlFlow::Break;
+                }
+                viewer.refresh_overlay();
+                glib::ControlFlow::Continue
+            });
+            imp.overlay_tick.replace(Some(tick));
+        }
     }
 
-    /// Puts the video's position and length in the seek overlay. For a moment after a skip, the position is where the
-    /// skip went, as the video takes a little while to get there.
-    fn refresh_seek_overlay(&self) {
+    fn media_overlay(&self) -> &MediaOverlay {
         let imp = self.imp();
-        let Some(media) = imp.media.borrow().clone() else { return };
+        imp.media_overlay.get_or_init(|| MediaOverlay::new(&imp.overlay))
+    }
+
+    /// The value of each property a template can read, for the item shown. A property the item has no value for is left
+    /// out. For a moment after a skip, the position is where the skip went, as the video takes a little while to get
+    /// there.
+    fn overlay_values(&self) -> std::collections::HashMap<&'static str, String> {
+        let imp = self.imp();
+        let mut values = std::collections::HashMap::new();
+        let Some(path) = self.shown_path() else { return values };
+        values.insert("path", path.to_string_lossy().into_owned());
+        values.insert("playlist-pos", (imp.index.get() + 1).to_string());
+        values.insert("playlist-count", imp.paths.borrow().len().to_string());
+        for (name, label) in [
+            ("filename", &imp.status_name),
+            ("resolution", &imp.status_resolution),
+            ("fps", &imp.status_fps),
+            ("file-size", &imp.status_size),
+        ] {
+            values.insert(name, label.label().to_string());
+        }
+        let Some(media) = imp.media.borrow().clone() else { return values };
         let landing = imp.seek_landing.get().filter(|(_, when)| when.elapsed() < SEEK_SETTLE);
         let position = landing.map_or_else(|| media.timestamp(), |(target, _)| target);
-        self.seek_overlay().update(&imp.seek_options.borrow(), position, media.duration());
+        let duration = media.duration();
+        values.insert("state", if media.is_ended() { "Ended" } else if media.is_playing() { "Playing" } else { "Paused" }.to_owned());
+        values.insert("time-pos", clock(position));
+        if duration > 0 {
+            values.insert("duration", clock(duration));
+            values.insert("time-remaining", clock(duration - position.clamp(0, duration)));
+            values.insert("percent-pos", format!("{:.0}", fraction(position, duration) * 100.0));
+        }
+        let speed = match media.downcast_ref::<crate::mpv::MpvStream>() {
+            Some(stream) => stream.speed(),
+            None => Some(1.0),
+        };
+        if let Some(speed) = speed {
+            values.insert("speed", format!("{speed:.2}").trim_end_matches('0').trim_end_matches('.').to_owned());
+        }
+        values.insert("volume", format!("{:.0}", media.volume() * 100.0));
+        if media.is_muted() {
+            values.insert("mute", "muted".to_owned());
+        }
+        values
     }
 
-    /// Hides the seek overlay now, or shows it for good if the options keep it up while a video plays.
-    fn sync_seek_overlay(&self) {
+    /// Brings the overlay's elements up or down for the item shown, and writes their text.
+    fn refresh_overlay(&self) {
         let imp = self.imp();
-        let options = imp.seek_options.borrow().clone();
-        if options.enabled && options.always && self.shows_video() {
-            if let Some(hide) = imp.seek_hide.take() {
-                hide.remove();
-            }
-            self.reveal_seek_overlay();
-        } else if !options.enabled || imp.seek_hide.borrow().is_none() {
-            self.seek_overlay().set_shown(false);
+        let overlay = self.media_overlay();
+        if !overlay.any_enabled() {
+            return;
         }
+        if self.shown_path().is_none() {
+            overlay.hide_all();
+            return;
+        }
+        let values = self.overlay_values();
+        let media = imp.media.borrow().clone();
+        let position_fraction = media.as_ref().map_or(0.0, |media| {
+            let landing = imp.seek_landing.get().filter(|(_, when)| when.elapsed() < SEEK_SETTLE);
+            fraction(landing.map_or_else(|| media.timestamp(), |(target, _)| target), media.duration())
+        });
+        let lookup = |name: &str| values.get(name).cloned();
+        overlay.update(&Frame {
+            values: &lookup,
+            fraction: position_fraction,
+            is_video: media.is_some(),
+            playing: media.as_ref().is_some_and(|media| media.is_playing()),
+            fullscreen: imp.fullscreen.get(),
+            since_seek: imp.last_seek.get().map(|when| when.elapsed()),
+        });
     }
 
-    /// Takes the seek overlay down, as the video it showed is gone.
-    fn hide_seek_overlay(&self) {
+    /// Takes the overlay's elements down, as the item they showed is gone.
+    fn hide_overlay(&self) {
         let imp = self.imp();
-        if let Some(hide) = imp.seek_hide.take() {
-            hide.remove();
-        }
         imp.seek_landing.take();
-        if let Some(overlay) = imp.seek_overlay.get() {
-            overlay.set_shown(false);
+        imp.last_seek.take();
+        if let Some(overlay) = imp.media_overlay.get() {
+            overlay.hide_all();
         }
     }
 
@@ -1436,15 +1440,12 @@ impl MediaViewer {
         self.refresh_status();
     }
 
-    /// The parts of the viewer that float over the item, which KDE's blur is drawn behind: the status overlay and the
+    /// The parts of the viewer that float over the item, which KDE's blur is drawn behind: the
     /// header in fullscreen (unless pinned), the video controls, and the thumbnail bar when it floats.
     pub fn floating_widgets(&self) -> Vec<gtk::Widget> {
         let imp = self.imp();
         let mut widgets = Vec::new();
         if imp.fullscreen.get() {
-            if imp.status_bar.is_visible() {
-                widgets.push(imp.status_bar.clone().upcast());
-            }
             if !imp.pinned.get() && imp.header.reveals_child() {
                 widgets.push(imp.header.clone().upcast());
             }
@@ -1458,14 +1459,8 @@ impl MediaViewer {
         widgets
     }
 
-    /// Sets where the status bar floats in fullscreen, such as `top-left` or `bottom-middle`.
-    pub fn set_status_overlay_position(&self, position: &str) {
-        self.imp().status_overlay_position.replace(position.to_owned());
-        self.place_status_bar();
-    }
-
-    /// Puts the status bar under the item. In fullscreen it floats over the item instead, at the chosen position,
-    /// without its expander, and lets pointer events through so the picture stays usable beneath it.
+    /// Puts the status bar under the item. In fullscreen it is left out, as the overlay's status element is there
+    /// in its place.
     fn place_status_bar(&self) {
         let imp = self.imp();
         let bar: &gtk::Box = &imp.status_bar;
@@ -1473,37 +1468,17 @@ impl MediaViewer {
             bar.unparent();
         }
         if imp.fullscreen.get() {
-            let (halign, valign) = overlay_alignment(&imp.status_overlay_position.borrow());
-            bar.set_halign(halign);
-            bar.set_valign(valign);
-            bar.set_margin_start(14);
-            bar.set_margin_end(14);
-            bar.set_margin_top(14);
-            bar.set_margin_bottom(14);
-            bar.set_can_target(false);
-            bar.add_css_class("status-overlay");
-            imp.status_expander.set_visible(false);
-            imp.overlay.add_overlay(bar);
+            return;
+        }
+        // Beside a thumbnail bar at the left or right, the status bar shrinks to the picture, as it does beside
+        // the playlist.
+        let beside = imp.bar_shown.get()
+            && !imp.bar_overlay.get()
+            && matches!(imp.bar_side.get(), Some(gtk::PositionType::Left | gtk::PositionType::Right));
+        if beside {
+            imp.picture_column.append(bar);
         } else {
-            bar.set_halign(gtk::Align::Fill);
-            bar.set_valign(gtk::Align::Fill);
-            bar.set_margin_start(0);
-            bar.set_margin_end(0);
-            bar.set_margin_top(0);
-            bar.set_margin_bottom(0);
-            bar.set_can_target(true);
-            bar.remove_css_class("status-overlay");
-            imp.status_expander.set_visible(true);
-            // Beside a thumbnail bar at the left or right, the status bar shrinks to the picture, as it does beside
-            // the playlist.
-            let beside = imp.bar_shown.get()
-                && !imp.bar_overlay.get()
-                && matches!(imp.bar_side.get(), Some(gtk::PositionType::Left | gtk::PositionType::Right));
-            if beside {
-                imp.picture_column.append(bar);
-            } else {
-                imp.content_column.append(bar);
-            }
+            imp.content_column.append(bar);
         }
     }
 
@@ -1517,7 +1492,8 @@ impl MediaViewer {
     /// the background the first time; the bar is filled again once it is.
     fn refresh_status(&self) {
         let imp = self.imp();
-        if !imp.status_shown.get() {
+        let overlay_wants_it = imp.media_overlay.get().is_some_and(MediaOverlay::any_enabled);
+        if !imp.status_shown.get() && !overlay_wants_it {
             return;
         }
         let Some(path) = self.shown_path() else { return };
@@ -1685,7 +1661,7 @@ impl MediaViewer {
                 media.play();
             });
             imp.media.replace(Some(media));
-            self.sync_seek_overlay();
+            self.refresh_overlay();
         } else {
             imp.pages.set_visible_child(&*imp.canvas);
             let placement = settings.as_ref().and_then(Placement::from_settings);
@@ -1771,7 +1747,7 @@ impl MediaViewer {
         if let Some(source) = imp.video_start.take() {
             source.remove();
         }
-        self.hide_seek_overlay();
+        self.hide_overlay();
         self.cancel_svp_timer();
         imp.svp_held.set(false);
         imp.svp_filter.take();

@@ -65,8 +65,6 @@ mod imp {
         #[template_child]
         pub viewer_status_bar_row: TemplateChild<adw::SwitchRow>,
         #[template_child]
-        pub status_overlay_position_row: TemplateChild<adw::ComboRow>,
-        #[template_child]
         pub ipc_tcp_row: TemplateChild<adw::SpinRow>,
         #[template_child]
         pub ipc_http_row: TemplateChild<adw::SpinRow>,
@@ -159,21 +157,7 @@ mod imp {
         #[template_child]
         pub svp_group: TemplateChild<adw::PreferencesGroup>,
         #[template_child]
-        pub seek_overlay_row: TemplateChild<adw::SwitchRow>,
-        #[template_child]
-        pub seek_overlay_position_row: TemplateChild<adw::ComboRow>,
-        #[template_child]
-        pub seek_overlay_bar_row: TemplateChild<adw::SwitchRow>,
-        #[template_child]
-        pub seek_overlay_width_row: TemplateChild<adw::SpinRow>,
-        #[template_child]
-        pub seek_overlay_time_row: TemplateChild<adw::SwitchRow>,
-        #[template_child]
-        pub seek_overlay_time_format_row: TemplateChild<adw::ComboRow>,
-        #[template_child]
-        pub seek_overlay_seconds_row: TemplateChild<adw::SpinRow>,
-        #[template_child]
-        pub seek_overlay_always_row: TemplateChild<adw::SwitchRow>,
+        pub overlay_group: TemplateChild<adw::PreferencesGroup>,
         #[template_child]
         pub svp_banner: TemplateChild<adw::Banner>,
         #[template_child]
@@ -378,8 +362,6 @@ impl PreferencesDialog {
         settings.bind("viewer-status-bar", &*imp.viewer_status_bar_row, "active").build();
         bind_port(settings, &imp.zoom_step_row, "zoom-step");
         bind_port(settings, &imp.video_start_delay_row, "video-start-delay");
-        bind_port(settings, &imp.seek_overlay_width_row, "seek-overlay-width");
-        settings.bind("seek-overlay-seconds", &*imp.seek_overlay_seconds_row, "value").build();
         bind_port(settings, &imp.scroll_speed_row, "scroll-speed");
         bind_port(settings, &imp.thumbnail_bar_size_row, "viewer-thumbnail-bar-size");
         dialog.bind_video_backend(settings);
@@ -388,19 +370,6 @@ impl PreferencesDialog {
 
         bind_switches(settings, dialog.imp());
         bind_choices(settings, dialog.imp());
-        // The overlay's other options mean nothing while it is off. This comes after the rows' own bindings, as a
-        // two-way binding takes over its row's "sensitive" and would replace this one.
-        for row in [
-            imp.seek_overlay_position_row.upcast_ref::<gtk::Widget>(),
-            imp.seek_overlay_bar_row.upcast_ref(),
-            imp.seek_overlay_width_row.upcast_ref(),
-            imp.seek_overlay_time_row.upcast_ref(),
-            imp.seek_overlay_time_format_row.upcast_ref(),
-            imp.seek_overlay_seconds_row.upcast_ref(),
-            imp.seek_overlay_always_row.upcast_ref(),
-        ] {
-            settings.bind("seek-overlay", row, "sensitive").get_only().build();
-        }
         dialog.bind_start_directory(settings);
         bind_info_fields(settings, &dialog);
         // The scale steps through no limit, shown as "-", then 1x to 4x, with a mark at each.
@@ -603,10 +572,6 @@ fn bind_switches(settings: &gio::Settings, imp: &imp::PreferencesDialog) {
     let switches = [
         ("remember-folder-sort", &imp.remember_folder_sort_row),
         ("playlist-fetch-in-background", &imp.playlist_fetch_row),
-        ("seek-overlay", &imp.seek_overlay_row),
-        ("seek-overlay-bar", &imp.seek_overlay_bar_row),
-        ("seek-overlay-time", &imp.seek_overlay_time_row),
-        ("seek-overlay-always", &imp.seek_overlay_always_row),
         ("open-fullscreen", &imp.open_fullscreen_row),
         ("auto-hide-cursor", &imp.auto_hide_cursor_row),
         ("smooth-scrolling", &imp.smooth_scrolling_row),
@@ -625,13 +590,7 @@ fn bind_switches(settings: &gio::Settings, imp: &imp::PreferencesDialog) {
 
 /// Binds each combo row to a string setting whose value is one of `choices`, by position in the row.
 fn bind_choices(settings: &gio::Settings, imp: &imp::PreferencesDialog) {
-    let combos: [(&str, &glib::Object, &[&str]); 22] = [
-        ("seek-overlay-time-format", imp.seek_overlay_time_format_row.upcast_ref(), &["elapsed-total", "remaining-total", "elapsed", "remaining"]),
-        (
-            "seek-overlay-position",
-            imp.seek_overlay_position_row.upcast_ref(),
-            &["top-left", "top-middle", "top-right", "bottom-left", "bottom-middle", "bottom-right"],
-        ),
+    let combos: [(&str, &glib::Object, &[&str]); 19] = [
         ("folder-end", imp.folder_end_row.upcast_ref(), &["stop", "loop", "next-folder"]),
         ("sort-by", imp.default_sort_by_row.upcast_ref(), &["name", "modified", "size", "type"]),
         ("sort-order", imp.default_sort_order_row.upcast_ref(), &["ascending", "descending"]),
@@ -651,11 +610,6 @@ fn bind_choices(settings: &gio::Settings, imp: &imp::PreferencesDialog) {
         ("info-layout", imp.info_layout_dropdown.upcast_ref(), &["disabled", "stacked", "inline"]),
         ("svp-fps-mode", imp.svp_fps_mode_row.upcast_ref(), &["default", "fixed", "variable", "display"]),
         ("playlist-window-headerbar", imp.playlist_window_headerbar_row.upcast_ref(), &["full", "compact", "none"]),
-        (
-            "viewer-status-overlay-position",
-            imp.status_overlay_position_row.upcast_ref(),
-            &["top-left", "top-middle", "top-right", "bottom-left", "bottom-middle", "bottom-right"],
-        ),
     ];
     for (key, object, choices) in combos {
         let choices: &'static [&'static str] = choices;
@@ -827,16 +781,6 @@ pub(crate) mod tests {
         let bodies = group_bodies(imp.section_stack.upcast_ref());
         assert!(bodies.len() >= 8, "a body for each group: {}", bodies.len());
         assert!(bodies.iter().all(|body| body.layout_manager().is_some_and(|layout| layout.is::<TightLayout>())));
-
-        // The seek overlay's options are insensitive while it is off.
-        assert!(imp.seek_overlay_position_row.is_sensitive() && imp.seek_overlay_always_row.is_sensitive());
-        imp.seek_overlay_row.set_active(false);
-        assert!(!settings.boolean("seek-overlay"));
-        assert!(!imp.seek_overlay_position_row.is_sensitive() && !imp.seek_overlay_always_row.is_sensitive());
-        settings.reset("seek-overlay");
-        imp.seek_overlay_time_format_row.set_selected(2);
-        assert_eq!(settings.string("seek-overlay-time-format"), "elapsed");
-        settings.reset("seek-overlay-time-format");
 
         // The image rows are bound to their settings.
         imp.image_fit_row.set_selected(3);

@@ -827,10 +827,9 @@ impl Window {
         viewer.set_auto_hide_cursor(settings.boolean("auto-hide-cursor"));
         viewer.set_blurred_background(settings.boolean("viewer-blurred-background"));
         viewer.set_status_bar(settings.boolean("viewer-status-bar"));
-        viewer.set_status_overlay_position(&settings.string("viewer-status-overlay-position"));
         viewer.set_svp(crate::svp::Config::from_settings(settings));
         self.apply_folder_end();
-        viewer.set_seek_options(super::seek_overlay::SeekOptions::from_settings(settings));
+        viewer.set_overlay_layout(super::media_overlay::layout_from_settings(settings));
         self.update_title();
     }
 
@@ -3388,7 +3387,8 @@ const WHEEL_VOLUME_STEP: f64 = 5.0;
 const WHEEL_SEEK_STEP: f64 = 5.0;
 
 /// The settings the viewer and the window title are set from, applied again whenever one changes.
-const VIEWER_SETTINGS: [&str; 34] = [
+const VIEWER_SETTINGS: [&str; 35] = [
+    "overlay-layout",
     "seek-overlay",
     "seek-overlay-bar",
     "seek-overlay-time",

@@ -1,0 +1,265 @@
+//! The media overlay: the elements of the layout (see `crate::overlay`) drawn over the viewer's item. Each place on the
+//! item has a column, and an element is a revealer in the column of its place, so it fades in and out as it comes and
+//! goes. The overlay only shows things, so the item under it takes the clicks.
+
+use std::cell::RefCell;
+use std::time::Duration;
+
+use gtk::prelude::*;
+use gtk::{gio, pango};
+
+use crate::overlay::template::Template;
+use crate::overlay::{Element, Items, Kind, Layout, Legacy, Slot, Visibility};
+
+/// The space between the edge of the item and the elements, and between one element and the next, in pixels.
+const MARGIN: i32 = 12;
+const SPACING: i32 = 6;
+/// How long an element takes to fade in and out, in milliseconds.
+const FADE: u32 = 150;
+
+/// The layout the settings say: the one saved by the configuration page, or the older settings' while none is saved.
+pub fn layout_from_settings(settings: &gio::Settings) -> Layout {
+    let saved = settings.string("overlay-layout");
+    if let Some(layout) = Layout::from_json(&saved) {
+        return layout;
+    }
+    Layout::from_legacy(&Legacy {
+        seek_enabled: settings.boolean("seek-overlay"),
+        seek_bar: settings.boolean("seek-overlay-bar"),
+        seek_time: settings.boolean("seek-overlay-time"),
+        seek_time_format: settings.string("seek-overlay-time-format").to_string(),
+        seek_position: settings.string("seek-overlay-position").to_string(),
+        seek_seconds: settings.double("seek-overlay-seconds"),
+        seek_width: settings.int("seek-overlay-width"),
+        seek_always: settings.boolean("seek-overlay-always"),
+        status_enabled: settings.boolean("viewer-status-bar"),
+        status_position: settings.string("viewer-status-overlay-position").to_string(),
+    })
+}
+
+/// How the time `micros` into a video is written: `1:23`, or `1:02:05` from an hour in.
+pub fn clock(micros: i64) -> String {
+    let total = micros.max(0) / 1_000_000;
+    let (hours, minutes, seconds) = (total / 3600, total % 3600 / 60, total % 60);
+    if hours > 0 {
+        format!("{hours}:{minutes:02}:{seconds:02}")
+    } else {
+        format!("{minutes}:{seconds:02}")
+    }
+}
+
+/// How far through the video `position` is, from 0 to 1, or 0 while the duration is unknown.
+pub fn fraction(position: i64, duration: i64) -> f64 {
+    if duration <= 0 {
+        return 0.0;
+    }
+    (position as f64 / duration as f64).clamp(0.0, 1.0)
+}
+
+/// What the overlay is drawn from.
+pub struct Frame<'a> {
+    /// The value of each property a template reads, or `None` while it has none.
+    pub values: &'a dyn Fn(&str) -> Option<String>,
+    /// How far through the video it is, for a progress element's bar.
+    pub fraction: f64,
+    pub is_video: bool,
+    pub playing: bool,
+    pub fullscreen: bool,
+    /// How long ago the video was skipped through, if it has been since it was shown.
+    pub since_seek: Option<Duration>,
+}
+
+impl Element {
+    /// Whether the element is up for `frame`, before its text is known.
+    fn is_up(&self, frame: &Frame) -> bool {
+        let over = match self.items {
+            Items::All => true,
+            Items::Videos => frame.is_video,
+            Items::Pictures => !frame.is_video,
+        };
+        let when = match self.visibility {
+            Visibility::Always => true,
+            Visibility::Seek => frame.since_seek.is_some_and(|since| since.as_secs_f64() < self.seconds),
+            Visibility::Paused => frame.is_video && !frame.playing,
+        };
+        self.enabled && over && when && (!self.fullscreen_only || frame.fullscreen)
+    }
+}
+
+/// An element that is on the item.
+struct Placed {
+    element: Element,
+    template: Template,
+    revealer: gtk::Revealer,
+    label: gtk::Label,
+    bar: Option<gtk::ProgressBar>,
+}
+
+/// The widgets of the overlay, added to the viewer's `gtk::Overlay`.
+pub struct MediaOverlay {
+    columns: Vec<(Slot, gtk::Box)>,
+    placed: RefCell<Vec<Placed>>,
+    layout: RefCell<Layout>,
+}
+
+impl MediaOverlay {
+    /// The overlay, over what `overlay` holds, with nothing in it.
+    pub fn new(overlay: &gtk::Overlay) -> Self {
+        let columns = Slot::all()
+            .map(|slot| {
+                let column = gtk::Box::new(gtk::Orientation::Vertical, SPACING);
+                column.set_halign([gtk::Align::Start, gtk::Align::Center, gtk::Align::End][usize::from(slot.column)]);
+                column.set_valign([gtk::Align::Start, gtk::Align::Center, gtk::Align::End][usize::from(slot.row)]);
+                column.set_margin_start(MARGIN);
+                column.set_margin_end(MARGIN);
+                column.set_margin_top(MARGIN);
+                column.set_margin_bottom(MARGIN);
+                column.set_can_target(false);
+                overlay.add_overlay(&column);
+                (slot, column)
+            })
+            .collect();
+        Self { columns, placed: RefCell::new(Vec::new()), layout: RefCell::new(Layout::default()) }
+    }
+
+    /// Whether the overlay is set to a layout, so it has this one already.
+    pub fn has_layout(&self, layout: &Layout) -> bool {
+        *self.layout.borrow() == *layout
+    }
+
+    /// Whether any element is on, which is whether it needs updating as the video plays.
+    pub fn any_enabled(&self) -> bool {
+        self.layout.borrow().any_enabled()
+    }
+
+    /// Replaces the elements with those of `layout`, all hidden until the next update.
+    pub fn set_layout(&self, layout: &Layout) {
+        for placed in self.placed.borrow_mut().drain(..) {
+            if let Some(column) = placed.revealer.parent().and_downcast::<gtk::Box>() {
+                column.remove(&placed.revealer);
+            }
+        }
+        let mut placed = self.placed.borrow_mut();
+        for element in layout.elements.iter().filter(|element| element.enabled) {
+            let Some((_, column)) = self.columns.iter().find(|(slot, _)| *slot == element.slot) else { continue };
+            let item = build(element);
+            column.append(&item.revealer);
+            placed.push(item);
+        }
+        self.layout.replace(layout.clone());
+    }
+
+    /// Brings each element up or down for `frame`, and writes the text of those that are up.
+    pub fn update(&self, frame: &Frame) {
+        for item in self.placed.borrow().iter() {
+            let mut up = item.element.is_up(frame);
+            if up {
+                let text = item.template.render(frame.values);
+                // A text element with no text has nothing to show, so it does not show its card either.
+                up = item.element.kind == Kind::Progress || !text.trim().is_empty();
+                if item.label.text() != text {
+                    item.label.set_text(&text);
+                }
+                item.label.set_visible(!text.is_empty());
+                if let Some(bar) = &item.bar {
+                    bar.set_fraction(frame.fraction);
+                }
+            }
+            if item.revealer.reveals_child() != up {
+                item.revealer.set_reveal_child(up);
+            }
+        }
+    }
+
+    /// Takes every element down now, as the item they were over is gone.
+    pub fn hide_all(&self) {
+        for item in self.placed.borrow().iter() {
+            item.revealer.set_reveal_child(false);
+        }
+    }
+}
+
+fn build(element: &Element) -> Placed {
+    let card = gtk::Box::new(gtk::Orientation::Vertical, 4);
+    card.add_css_class("overlay-element");
+    if element.card {
+        card.add_css_class("overlay-card");
+    }
+    let bar = (element.kind == Kind::Progress).then(|| {
+        let bar = gtk::ProgressBar::new();
+        bar.add_css_class("seek-bar");
+        bar.set_size_request(element.bar_width, -1);
+        card.append(&bar);
+        bar
+    });
+    let label = gtk::Label::new(None);
+    label.add_css_class("overlay-text");
+    label.set_halign(if bar.is_some() { gtk::Align::Center } else { gtk::Align::Start });
+    label.set_xalign(0.0);
+    let attributes = pango::AttrList::new();
+    attributes.insert(pango::AttrFloat::new_scale(element.scale));
+    label.set_attributes(Some(&attributes));
+    card.append(&label);
+
+    let revealer = gtk::Revealer::new();
+    revealer.set_transition_type(gtk::RevealerTransitionType::Crossfade);
+    revealer.set_transition_duration(FADE);
+    revealer.set_child(Some(&card));
+    revealer.set_opacity(element.opacity);
+    revealer.set_can_target(false);
+    Placed { element: element.clone(), template: Template::parse(&element.template), revealer, label, bar }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SECOND: i64 = 1_000_000;
+
+    fn frame<'a>(values: &'a dyn Fn(&str) -> Option<String>) -> Frame<'a> {
+        Frame { values, fraction: 0.0, is_video: true, playing: true, fullscreen: false, since_seek: None }
+    }
+
+    #[test]
+    fn the_clock_reads_minutes_and_from_an_hour_hours() {
+        assert_eq!(clock(83 * SECOND), "1:23");
+        assert_eq!(clock(3_725 * SECOND), "1:02:05");
+        assert_eq!(clock(-SECOND), "0:00");
+    }
+
+    #[test]
+    fn a_position_past_the_ends_is_held_within_the_video() {
+        assert_eq!(fraction(400 * SECOND, 296 * SECOND), 1.0);
+        assert_eq!(fraction(-SECOND, 296 * SECOND), 0.0);
+        assert_eq!(fraction(148 * SECOND, 296 * SECOND), 0.5);
+        assert_eq!(fraction(5 * SECOND, 0), 0.0);
+    }
+
+    #[test]
+    fn an_element_is_up_when_everything_it_asks_for_holds() {
+        let none = |_: &str| None;
+        let mut element = Element::new("Speed", Slot::TOP_RIGHT, "${speed}");
+        assert!(element.is_up(&frame(&none)));
+
+        element.items = Items::Pictures;
+        assert!(!element.is_up(&frame(&none)));
+        element.items = Items::Videos;
+
+        element.visibility = Visibility::Paused;
+        assert!(!element.is_up(&frame(&none)));
+        assert!(element.is_up(&Frame { playing: false, ..frame(&none) }));
+
+        element.visibility = Visibility::Seek;
+        assert!(!element.is_up(&frame(&none)));
+        assert!(element.is_up(&Frame { since_seek: Some(Duration::from_secs(1)), ..frame(&none) }));
+        assert!(!element.is_up(&Frame { since_seek: Some(Duration::from_secs(3)), ..frame(&none) }));
+
+        element.visibility = Visibility::Always;
+        element.fullscreen_only = true;
+        assert!(!element.is_up(&frame(&none)));
+        assert!(element.is_up(&Frame { fullscreen: true, ..frame(&none) }));
+
+        element.enabled = false;
+        assert!(!element.is_up(&Frame { fullscreen: true, ..frame(&none) }));
+    }
+}

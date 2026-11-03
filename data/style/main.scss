@@ -99,13 +99,6 @@ keybind {
   padding: 4px 12px;
 }
 
-// In fullscreen the status bar floats over the item: a translucent, rounded panel.
-.status-bar.status-overlay {
-  background-color: rgba(0, 0, 0, 0.45);
-  border-radius: 10px;
-  padding: 6px 12px;
-}
-
 // The video controls: a translucent, rounded panel that fades in and out over the video. Under KDE effects it is
 // blurred behind.
 .media-controls {
@@ -139,4 +132,17 @@ viewswitcher.single-tab button {
   margin-bottom: 0;
   padding-top: 0;
   padding-bottom: 0;
+}
+
+// The overlay's page in the preferences: a map of the item, with a place in each cell for the elements sitting there.
+.overlay-map {
+  padding: 8px;
+  background-color: #{"alpha(currentColor, 0.05)"};
+
+  .overlay-map-cell {
+    padding: 4px;
+    min-width: 120px;
+    border: 1px dashed #{"alpha(currentColor, 0.25)"};
+    border-radius: 8px;
+  }
 }

@@ -150,32 +150,6 @@ impl Template {
             }
         }
     }
-
-    /// The names of the properties the template reads, each once, in the order they first appear.
-    pub fn properties(&self) -> Vec<String> {
-        fn collect(template: &Template, names: &mut Vec<String>) {
-            for node in &template.0 {
-                match node {
-                    Node::Text(_) => {}
-                    Node::Value { name, fallback } => {
-                        if !names.contains(name) {
-                            names.push(name.clone());
-                        }
-                        collect(fallback, names);
-                    }
-                    Node::Condition { name, body, .. } => {
-                        if !names.contains(name) {
-                            names.push(name.clone());
-                        }
-                        collect(body, names);
-                    }
-                }
-            }
-        }
-        let mut names = Vec::new();
-        collect(self, &mut names);
-        names
-    }
 }
 
 #[cfg(test)]
@@ -225,11 +199,5 @@ mod tests {
     fn an_unclosed_property_is_text() {
         assert_eq!(render("${time"), "${time");
         assert_eq!(render("${?missing:text ${time}"), "${?missing:text 1:23");
-    }
-
-    #[test]
-    fn the_properties_a_template_reads_are_listed_once() {
-        let template = Template::parse("${time} ${?speed:${speed}x ${time}}${!missing:-}");
-        assert_eq!(template.properties(), ["time", "speed", "missing"]);
     }
 }
