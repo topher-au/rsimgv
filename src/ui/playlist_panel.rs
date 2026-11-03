@@ -473,7 +473,7 @@ fn cell_factory(
             _ => EllipsizeMode::End,
         });
         label.set_hexpand(index != 0);
-        attach_row_controls(&label, item, &setup_settings);
+        attach_row_controls(&label, item);
         if index == 0 {
             let (weak, current) = (item.downgrade(), mapped_current.clone());
             label.connect_map(move |_| {
@@ -484,6 +484,19 @@ fn cell_factory(
             });
         }
         item.set_child(Some(&label));
+        // The menu listens on the whole row, so a click anywhere on it, padding included, opens it.
+        let (weak, menu_settings) = (item.downgrade(), setup_settings.clone());
+        label.connect_realize(move |label| {
+            let Some(item) = weak.upgrade() else { return };
+            // The row spans every column, so only its first cell attaches the menu.
+            if index != 0 {
+                return;
+            }
+            let row = std::iter::successors(label.parent(), |widget| widget.parent()).find(|widget| widget.css_name() == "row");
+            if let Some(row) = row {
+                attach_row_menu(&row, &item, &menu_settings);
+            }
+        });
     });
 
     let current = current.clone();
@@ -546,8 +559,8 @@ fn cell_factory(
     factory
 }
 
-/// Gives a cell's label the drag, drop and menu behaviour of its item.
-fn attach_row_controls(label: &gtk::Label, item: &gtk::ListItem, settings: &gio::Settings) {
+/// Gives a cell's label the drag and drop behaviour of its item.
+fn attach_row_controls(label: &gtk::Label, item: &gtk::ListItem) {
     let source = gtk::DragSource::new();
     source.set_actions(gdk::DragAction::MOVE);
     let weak = item.downgrade();
@@ -571,9 +584,14 @@ fn attach_row_controls(label: &gtk::Label, item: &gtk::ListItem, settings: &gio:
         widget.activate_action("win.playlist-move", Some(&(from, to).to_variant())).is_ok()
     });
     label.add_controller(target);
+}
 
+/// Gives a row the menu of its item.
+fn attach_row_menu(row: &gtk::Widget, item: &gtk::ListItem, settings: &gio::Settings) {
     let click = gtk::GestureClick::new();
     click.set_button(gdk::BUTTON_SECONDARY);
+    // The cell's own selection gesture would otherwise get the press first.
+    click.set_propagation_phase(gtk::PropagationPhase::Capture);
     let weak = item.downgrade();
     let menu_settings = settings.clone();
     click.connect_pressed(move |gesture, _, x, y| {
@@ -583,9 +601,12 @@ fn attach_row_controls(label: &gtk::Label, item: &gtk::ListItem, settings: &gio:
         let Some(position) = playlist_position(&item) else { return };
         eprintln!("playlist-debug: context menu position={position}");
         let menu = row_menu(&menu_settings, position, &path.string());
-        popup_menu(&widget, &menu, x, y);
+        // The row lays out only its own cells, so the menu belongs to the view, at the click's place in it.
+        let Some(view) = widget.ancestor(gtk::ColumnView::static_type()) else { return };
+        let Some(point) = widget.compute_point(&view, &gtk::graphene::Point::new(x as f32, y as f32)) else { return };
+        popup_menu(&view, &menu, f64::from(point.x()), f64::from(point.y()));
     });
-    label.add_controller(click);
+    row.add_controller(click);
 }
 
 /// The menu of an item at `position` in the playlist, whose path is `path`: what the item is played and removed by, its
