@@ -278,6 +278,7 @@ impl Window {
             }
         });
         add_show_directories_action(&window, settings);
+        window.imp().navigation.bind_kind_toggles(settings);
 
         window.add_context_actions();
         window.add_tab_actions();
@@ -3259,6 +3260,8 @@ impl Window {
                 }
             });
             settings.bind("media-only", browse, "media-only").build();
+            settings.bind("show-images", browse, "show-images").build();
+            settings.bind("show-videos", browse, "show-videos").build();
             settings.bind("thumbnail-crop", browse, "thumbnail-crop").build();
             settings.bind("video-frame-previews", browse, "video-frame-previews").build();
             settings.bind("directory-previews", browse, "directory-previews").build();

@@ -759,6 +759,11 @@ fn is_media(entry: &FileEntry) -> bool {
         .is_some_and(|kind| kind.starts_with("image/") || kind.starts_with("video/"))
 }
 
+/// Whether `entry`'s content type starts with `prefix`, such as `image/`.
+fn has_content_type(entry: &FileEntry, prefix: &str) -> bool {
+    entry.info().content_type().is_some_and(|kind| kind.starts_with(prefix))
+}
+
 /// What the files are sorted by.
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 enum SortBy {
@@ -783,6 +788,8 @@ struct Order {
 struct Visibility {
     show_hidden: bool,
     media_only: bool,
+    show_images: bool,
+    show_videos: bool,
     /// Whether folders are listed at all.
     folders_listed: bool,
 }
@@ -829,6 +836,12 @@ mod imp {
         /// Show only pictures and videos (and folders), not every file.
         #[property(get, set)]
         media_only: Cell<bool>,
+        /// Show pictures. Hiding them leaves every other kind of file as it was.
+        #[property(get, set)]
+        show_images: Cell<bool>,
+        /// Show videos.
+        #[property(get, set)]
+        show_videos: Cell<bool>,
         /// Crop each picture and video thumbnail to a square that fills the item's visual part.
         #[property(get, set)]
         thumbnail_crop: Cell<bool>,
@@ -956,6 +969,8 @@ mod imp {
 
             self.item_size.set(DEFAULT_ITEM_SIZE);
             self.media_only.set(true);
+            self.show_images.set(true);
+            self.show_videos.set(true);
             self.filename_display.replace("ellipsized".to_owned());
             self.info_layout.replace("inline".to_owned());
             self.show_directories.replace("first-last".to_owned());
@@ -966,7 +981,7 @@ mod imp {
 
             // The sorter and filter read their settings as plain values, kept up to date as the properties change.
             obj.cache_settings();
-            for name in ["show-hidden", "media-only", "show-directories", "sort-by", "sort-order"] {
+            for name in ["show-hidden", "media-only", "show-images", "show-videos", "show-directories", "sort-by", "sort-order"] {
                 obj.connect_notify_local(Some(name), |view, _| view.cache_settings());
             }
 
@@ -985,7 +1000,10 @@ mod imp {
                 let visible_when_hidden = visibility.show_hidden || !hidden;
                 let visible_when_media = !visibility.media_only || entry.is_dir() || is_media(entry);
                 let visible_when_listed = !entry.is_dir() || visibility.folders_listed;
-                visible_when_hidden && visible_when_media && visible_when_listed
+                let visible_when_kind = entry.is_dir()
+                    || !((!visibility.show_images && has_content_type(entry, "image/"))
+                        || (!visibility.show_videos && has_content_type(entry, "video/")));
+                visible_when_hidden && visible_when_media && visible_when_kind && visible_when_listed
             });
 
             // Folders go before the files, or among them when show-directories is inline.
@@ -1215,6 +1233,8 @@ mod imp {
             obj.connect_info_layout_notify(|view| view.refresh_items());
             obj.connect_show_hidden_notify(|view| view.refresh_filter());
             obj.connect_media_only_notify(|view| view.refresh_filter());
+            obj.connect_show_images_notify(|view| view.refresh_filter());
+            obj.connect_show_videos_notify(|view| view.refresh_filter());
             obj.connect_thumbnail_crop_notify(|view| view.refresh_items());
             obj.connect_directory_previews_notify(|view| view.refresh_items());
             obj.connect_folder_preview_cycle_notify(|view| view.update_cycle());
@@ -2186,6 +2206,8 @@ impl BrowseView {
         imp.visibility.set(Visibility {
             show_hidden: self.show_hidden(),
             media_only: self.media_only(),
+            show_images: self.show_images(),
+            show_videos: self.show_videos(),
             folders_listed: folders != "none",
         });
     }

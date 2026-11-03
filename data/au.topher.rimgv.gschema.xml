@@ -9,6 +9,14 @@
       <default>true</default>
       <summary>Only show pictures and videos in the browse view</summary>
     </key>
+    <key name="show-images" type="b">
+      <default>true</default>
+      <summary>Show pictures in the browse view</summary>
+    </key>
+    <key name="show-videos" type="b">
+      <default>true</default>
+      <summary>Show videos in the browse view</summary>
+    </key>
     <key name="thumbnail-crop" type="b">
       <default>false</default>
       <summary>Crop thumbnails to a square that fills the item's visual part</summary>

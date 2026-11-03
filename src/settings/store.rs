@@ -68,6 +68,8 @@ fn short_key(key: &str) -> &str {
 const LAYOUT: &[(&str, &str, &str)] = &[
     ("show-hidden", "browse", "show-hidden"),
     ("media-only", "browse", "media-only"),
+    ("show-images", "browse", "show-images"),
+    ("show-videos", "browse", "show-videos"),
     ("show-directories", "browse", "show-directories"),
     ("collapse-on-navigate", "browse", "collapse-on-navigate"),
     ("item-size", "browse", "item-size"),
