@@ -30,8 +30,10 @@ const MAX_FRAME_WIDTH: i32 = 2560;
 
 const MICROS: f64 = 1_000_000.0;
 
-/// How often the video is looked at for where to crop it.
+/// How often the video is looked at for where to crop it, at first, and the longest wait between looks once what is found has
+/// stopped changing. The wait doubles for each look that finds the crop as it was.
 const CROP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+const CROP_INTERVAL_MAX: std::time::Duration = std::time::Duration::from_secs(8);
 
 /// How far apart, in seconds, the two frames are that the area that moves is found from.
 const MOTION_GAP: f64 = 0.1;
@@ -47,25 +49,34 @@ const POSITION_INTERVAL: std::time::Duration = std::time::Duration::from_millis(
 /// need not keep up with every frame.
 const BACKDROP_INTERVAL: std::time::Duration = std::time::Duration::from_millis(150);
 
-/// One greyscale frame of the video at `path`, `seconds` in, decoded at the size `width` by `height`.
+/// The wait before the next look for the crop, after `settled` looks in a row that found it as it was.
+fn crop_delay(settled: u32) -> std::time::Duration {
+    (CROP_INTERVAL * 2u32.saturating_pow(settled.min(4))).min(CROP_INTERVAL_MAX)
+}
+
+/// One greyscale frame of the video at `path`, `seconds` in, scaled by ffmpeg to the size `width` by `height`.
 fn grab_gray(path: &Path, seconds: f64, width: i32, height: i32) -> Option<Vec<u8>> {
     let frame = crate::fs::thumbnail::run_program(
         std::process::Command::new("ffmpeg")
             .args(["-v", "error", "-ss", &format!("{seconds:.3}"), "-i"])
             .arg(path)
-            .args(["-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "gray", "-"]),
+            .args(["-frames:v", "1", "-vf", &format!("scale={width}:{height}:flags=area"), "-f", "rawvideo", "-pix_fmt", "gray", "-"]),
     )
     .ok()
     .flatten()?;
     (frame.len() == (width.max(0) * height.max(0)) as usize).then_some(frame)
 }
 
-/// Where to crop the video at `path` at `position` seconds, found by `method` from frames decoded from the file. This reads the
-/// file, so it runs on a worker thread.
+/// Where to crop the video at `path`, which is `width` by `height`, at `position` seconds, found by `method` from frames decoded
+/// from the file. The frames are scaled down by ffmpeg, and the rectangle found in them is scaled back up. This reads the file,
+/// so it runs on a worker thread.
 fn measure_frames(method: CropMethod, path: &Path, position: f64, width: i32, height: i32) -> Option<CropRect> {
-    let first = grab_gray(path, position, width, height)?;
-    let later = (method == CropMethod::Static).then(|| grab_gray(path, position + MOTION_GAP, width, height)).flatten();
-    framing::measure(method, &first, later.as_deref(), width as usize, height as usize)
+    let (small_width, small_height) = framing::measure_size(width, height);
+    let first = grab_gray(path, position, small_width, small_height)?;
+    let later = (method == CropMethod::Static).then(|| grab_gray(path, position + MOTION_GAP, small_width, small_height)).flatten();
+    let soft_max = framing::soft_pixels(small_width, width);
+    let found = framing::measure(method, &first, later.as_deref(), small_width as usize, small_height as usize, soft_max)?;
+    Some(framing::scaled_up(found, (small_width, small_height), (width, height)))
 }
 
 /// `width` by `height`, scaled down to the widest frame rendered, keeping the aspect ratio.
@@ -123,6 +134,10 @@ mod imp {
         pub(super) crop_candidate: Cell<Option<CropRect>>,
         pub(super) crop_timer: RefCell<Option<glib::SourceId>>,
         pub(super) crop_busy: Cell<bool>,
+        /// How many looks in a row found the crop as it was, which lengthens the wait for the next, and the position the last
+        /// look was at, so a paused video is not looked at again until it moves.
+        pub(super) crop_settled: Cell<u32>,
+        pub(super) crop_looked_at: Cell<Option<i64>>,
     }
 
     #[glib::object_subclass]
@@ -178,6 +193,8 @@ mod imp {
             // Sent before the seek, so a filter taken out in response is out of the way when it lands.
             self.obj().emit_by_name::<()>("seek-requested", &[]);
             self.backdrop_stale.set(true);
+            // Where it lands may have other bars.
+            self.crop_settled.set(0);
             let seconds = format!("{:.6}", timestamp as f64 / MICROS);
             let result = self.player.borrow().as_ref().map(|player| player.command(&["seek", &seconds, "absolute"]));
             if matches!(result, Some(Ok(()))) {
@@ -349,19 +366,27 @@ impl MpvStream {
         imp.crop.set(None);
         imp.crop_candidate.set(None);
         self.apply_framing_filters();
+        imp.crop_settled.set(0);
+        imp.crop_looked_at.set(None);
+        self.schedule_crop_check();
+    }
+
+    /// Looks for where to crop after the wait the last looks call for, in place of any look that is waiting. Nothing is looked
+    /// for when the framing does not crop.
+    fn schedule_crop_check(&self) {
+        let imp = self.imp();
         if let Some(timer) = imp.crop_timer.take() {
             timer.remove();
         }
-        if framing.crop.is_none() {
+        if imp.framing.get().crop.is_none() {
             return;
         }
         let weak = self.downgrade();
-        let timer = glib::timeout_add_local(CROP_INTERVAL, move || match weak.upgrade() {
-            Some(stream) => {
+        let timer = glib::timeout_add_local_once(crop_delay(imp.crop_settled.get()), move || {
+            if let Some(stream) = weak.upgrade() {
+                stream.imp().crop_timer.take();
                 stream.look_for_crop();
-                glib::ControlFlow::Continue
             }
-            None => glib::ControlFlow::Break,
         });
         imp.crop_timer.replace(Some(timer));
     }
@@ -376,47 +401,81 @@ impl MpvStream {
         player.set_framing_filters(detector, crop);
     }
 
-    /// Looks for where to crop, once an interval: asks the cropdetect filter, or measures a frame decoded from the file.
+    /// Looks for where to crop: asks the cropdetect filter, or measures a frame decoded from the file. The next look is set when
+    /// this one is done. A paused video is the same frame, so it is looked at only when it has moved since the last look.
     fn look_for_crop(&self) {
         let imp = self.imp();
         let Some(player) = imp.player.borrow().clone() else { return };
         let Some(method) = imp.framing.get().crop else { return };
-        if !imp.loaded.get() {
+        let position = imp.position.get();
+        if !imp.loaded.get() || (!self.is_playing() && imp.crop_looked_at.get() == Some(position)) || imp.crop_busy.get() {
+            self.schedule_crop_check();
             return;
         }
+        imp.crop_looked_at.set(Some(position));
         match method {
-            CropMethod::CropDetect => {
-                if let Some(rect) = player.detected_crop() {
-                    self.use_crop(rect, player.source_size());
-                }
-            }
+            // The answer comes back as an event.
+            CropMethod::CropDetect => player.request_detected_crop(),
             CropMethod::Edges | CropMethod::Static => {
-                // A measurement takes a moment, so the next waits for it.
-                let (Some(position), Some((width, height))) = (player.get_double("time-pos"), player.source_size()) else { return };
-                if imp.crop_busy.replace(true) {
+                let Some((width, height)) = player.source_size() else {
+                    self.schedule_crop_check();
                     return;
-                }
+                };
+                // A measurement takes a moment, so the next look waits for it.
+                imp.crop_busy.set(true);
                 let path = imp.path.borrow().clone();
+                let seconds = position as f64 / MICROS;
                 let weak = self.downgrade();
                 glib::spawn_future_local(async move {
-                    let rect = gio::spawn_blocking(move || measure_frames(method, &path, position, width, height)).await.ok().flatten();
+                    let rect = gio::spawn_blocking(move || measure_frames(method, &path, seconds, width, height)).await.ok().flatten();
                     let Some(stream) = weak.upgrade() else { return };
                     stream.imp().crop_busy.set(false);
-                    let Some(rect) = rect else { return };
-                    // Two measurements in a row must agree, so a frame that is dark for a moment does not crop the video.
-                    let before = stream.imp().crop_candidate.replace(Some(rect));
-                    if before.is_some_and(|before| framing::agree(before, rect)) {
-                        let size = stream.imp().player.borrow().as_ref().and_then(|player| player.source_size());
-                        stream.use_crop(rect, size);
-                    }
+                    stream.crop_measured(rect);
                 });
             }
         }
     }
 
+    /// Takes what a measurement of a frame found, if it found anything: crops to it if the measurement before agrees, so a
+    /// frame that is dark for a moment does not crop the video.
+    fn crop_measured(&self, rect: Option<CropRect>) {
+        let imp = self.imp();
+        if let Some(rect) = rect {
+            let before = imp.crop_candidate.replace(Some(rect));
+            if before.is_some_and(|before| framing::agree(before, rect)) {
+                let size = imp.player.borrow().as_ref().and_then(|player| player.source_size());
+                self.settle_crop(self.use_crop(rect, size));
+            } else {
+                imp.crop_settled.set(0);
+            }
+        }
+        self.schedule_crop_check();
+    }
+
+    /// Takes what the cropdetect filter found, if it had found anything, and sets the next look.
+    fn crop_detected(&self, rect: Option<CropRect>) {
+        let imp = self.imp();
+        if imp.framing.get().crop != Some(CropMethod::CropDetect) {
+            return;
+        }
+        // Until the file has loaded, what the filter found is about the file before.
+        if let Some(rect) = rect.filter(|_| imp.loaded.get()) {
+            let size = imp.player.borrow().as_ref().and_then(|player| player.source_size());
+            self.settle_crop(self.use_crop(rect, size));
+        }
+        self.schedule_crop_check();
+    }
+
+    /// Counts a look that found the crop as it was, which lengthens the wait for the next, or starts the wait over when the crop
+    /// `changed`.
+    fn settle_crop(&self, changed: bool) {
+        let settled = &self.imp().crop_settled;
+        settled.set(if changed { 0 } else { settled.get() + 1 });
+    }
+
     /// Crops to `rect`, unless that is the video as it is or little different from the crop in use. A rectangle that covers
-    /// the whole video takes the crop off.
-    fn use_crop(&self, rect: CropRect, source: Option<(i32, i32)>) {
+    /// the whole video takes the crop off. Whether the crop changed.
+    fn use_crop(&self, rect: CropRect, source: Option<(i32, i32)>) -> bool {
         let imp = self.imp();
         let whole = source.is_some_and(|(width, height)| rect.left == 0 && rect.top == 0 && rect.width >= width && rect.height >= height);
         let next = (!whole).then_some(rect);
@@ -429,6 +488,7 @@ impl MpvStream {
             imp.crop.set(next);
             self.apply_framing_filters();
         }
+        differs
     }
 
     /// Calls `callback` before each seek is sent to the player.
@@ -555,6 +615,7 @@ impl MpvStream {
                     player.set_flag("pause", !self.is_playing());
                 }
             }
+            Event::Crop(found) => self.crop_detected(found),
             // Until its own file has loaded, what the player reports is about the file before.
             _ if !imp.loaded.get() => {}
             Event::VideoReconfig => {
@@ -725,5 +786,16 @@ impl MpvStream {
         drop(pixels);
         imp.frame.replace(Some(texture.upcast()));
         self.invalidate_contents();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_wait_for_the_crop_doubles_up_to_a_longest() {
+        let seconds: Vec<u64> = (0..7).map(|settled| crop_delay(settled).as_secs()).collect();
+        assert_eq!(seconds, [1, 2, 4, 8, 8, 8, 8]);
     }
 }

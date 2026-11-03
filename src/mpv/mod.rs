@@ -34,9 +34,14 @@ pub enum Event {
     /// An observed property changed, with the id it was observed under; `None` when it has no value.
     Double(u64, Option<f64>),
     Flag(u64, Option<bool>),
+    /// What the cropdetect filter had found when `Player::request_detected_crop` asked, if it had found anything.
+    Crop(Option<CropRect>),
     Shutdown,
     Other,
 }
+
+/// The id the reply to `Player::request_detected_crop` comes back under, apart from the ids of observed properties.
+const REPLY_CROP: u64 = 1 << 32;
 
 /// A callback libmpv calls from its own threads.
 type Wakeup = Box<dyn Fn() + Send + Sync>;
@@ -499,18 +504,14 @@ impl Player {
         }
     }
 
-    /// What the cropdetect filter last found, if it has found anything.
-    pub fn detected_crop(&self) -> Option<CropRect> {
-        let name = CString::new(format!("vf-metadata/{}", framing::DETECTOR_LABEL)).ok()?;
-        // SAFETY: the node is filled in by libmpv, read while it is valid, and freed once read.
-        unsafe {
-            let mut node: sys::mpv_node = std::mem::zeroed();
-            if sys::mpv_get_property(self.handle, name.as_ptr(), sys::MPV_FORMAT_NODE, &mut node as *mut sys::mpv_node as *mut c_void) < 0 {
-                return None;
-            }
-            let found = read_crop(&node);
-            sys::mpv_free_node_contents(&mut node);
-            found
+    /// Asks for what the cropdetect filter last found, which comes back as `Event::Crop`. It is asked for without waiting, as
+    /// the answer is the mpv core's to give.
+    pub fn request_detected_crop(&self) {
+        let Ok(name) = CString::new(format!("vf-metadata/{}", framing::DETECTOR_LABEL)) else { return };
+        // SAFETY: the handle is live; libmpv copies the name.
+        let code = unsafe { sys::mpv_get_property_async(self.handle, REPLY_CROP, name.as_ptr(), sys::MPV_FORMAT_NODE) };
+        if code < 0 {
+            eprintln!("rsimgv: mpv: could not ask for the detected crop: {}", error_text(code));
         }
     }
 
@@ -611,6 +612,13 @@ impl Player {
                 sys::MPV_EVENT_FILE_LOADED => Event::FileLoaded,
                 sys::MPV_EVENT_PLAYBACK_RESTART => Event::PlaybackRestart,
                 sys::MPV_EVENT_VIDEO_RECONFIG => Event::VideoReconfig,
+                sys::MPV_EVENT_GET_PROPERTY_REPLY if event.reply_userdata == REPLY_CROP => {
+                    let property = &*(event.data as *const sys::mpv_event_property);
+                    let found = (event.error >= 0 && property.format == sys::MPV_FORMAT_NODE && !property.data.is_null())
+                        .then(|| read_crop(&*(property.data as *const sys::mpv_node)))
+                        .flatten();
+                    Event::Crop(found)
+                }
                 sys::MPV_EVENT_END_FILE => {
                     let end = &*(event.data as *const sys::mpv_event_end_file);
                     let error = (end.reason == sys::MPV_END_FILE_REASON_ERROR).then(|| error_text(end.error));

@@ -80,6 +80,10 @@ const CHANGE_RATIO: f64 = 0.10;
 /// How far apart, in pixels, two measurements may be and still agree.
 const AGREE_TOLERANCE: i32 = 4;
 
+/// The longest side, in pixels, of the frames the picture is looked for in. Larger videos are scaled down to it first: the steps
+/// that mark a border are as plain at that size, and finding them costs far less.
+const MEASURE_SIDE: i32 = 640;
+
 /// mpv's `cropdetect` filter as an `vf` argument, labelled so it can be found and replaced.
 pub fn detector_filter() -> String {
     format!("@{DETECTOR_LABEL}:cropdetect=limit=24/255:round=2:reset=200")
@@ -251,6 +255,47 @@ fn soft_lines(line: &dyn Fn(i64) -> Vec<u8>, start: i64, step: i64, limit: usize
     count
 }
 
+/// The size, with even sides, that a `width` by `height` frame is scaled down to before the picture is looked for in it, keeping
+/// its aspect ratio. Frames that are small enough stay as they are.
+pub fn measure_size(width: i32, height: i32) -> (i32, i32) {
+    let longest = width.max(height);
+    if longest <= MEASURE_SIDE {
+        return (width, height);
+    }
+    let scale = f64::from(MEASURE_SIDE) / f64::from(longest);
+    let side = |length: i32| ((f64::from(length) * scale).round() as i32).max(2) & !1;
+    (side(width), side(height))
+}
+
+/// The lines soft trimming may remove from each side of a picture found in a frame `measured` wide that was scaled down from one
+/// `source` wide: as many, at the frame's size, as `SOFT_PIXELS` is at the source's.
+pub fn soft_pixels(measured: i32, source: i32) -> usize {
+    (SOFT_PIXELS as f64 * f64::from(measured) / f64::from(source.max(1))).ceil() as usize
+}
+
+/// `rect`, found in a frame scaled down from a `source` wide and tall video to `reduced`, as a rectangle of the video. Offsets
+/// and sizes stay even, and an edge lands inside the picture rather than outside it, so a sliver of bar is not left in. An edge
+/// at the frame's own edge stays at the video's.
+pub fn scaled_up(rect: CropRect, reduced: (i32, i32), source: (i32, i32)) -> CropRect {
+    if reduced == source || reduced.0 <= 0 || reduced.1 <= 0 {
+        return rect;
+    }
+    let (scale_x, scale_y) = (f64::from(source.0) / f64::from(reduced.0), f64::from(source.1) / f64::from(reduced.1));
+    let start = |from: i32, scale: f64| {
+        let at = (f64::from(from) * scale).ceil() as i32;
+        at + at % 2
+    };
+    let end = |to: i32, reduced: i32, source: i32, scale: f64| if to >= reduced { source } else { ((f64::from(to) * scale).floor() as i32) & !1 };
+    let (left, top) = (start(rect.left, scale_x), start(rect.top, scale_y));
+    let right = end(rect.left + rect.width, reduced.0, source.0, scale_x);
+    let bottom = end(rect.top + rect.height, reduced.1, source.1, scale_y);
+    let (width, height) = ((right - left) & !1, (bottom - top) & !1);
+    if width <= 0 || height <= 0 {
+        return CropRect { width: source.0 & !1, height: source.1 & !1, left: 0, top: 0 };
+    }
+    CropRect { width, height, left, top }
+}
+
 /// The picture rectangle of one greyscale frame `width` by `height`, with even offsets and sizes. Up to `soft_max` soft lines
 /// are trimmed from each side of what the steps found.
 pub fn find_picture(gray: &[u8], width: usize, height: usize, threshold: f64, soft_max: usize) -> CropRect {
@@ -303,12 +348,13 @@ pub fn find_moving_picture(first: &[u8], second: &[u8], width: usize, height: us
 }
 
 /// The rectangle to crop `gray` (a frame `width` by `height`) to, by `method`. `later` is the frame a moment after, for `Static`.
-pub fn measure(method: CropMethod, gray: &[u8], later: Option<&[u8]>, width: usize, height: usize) -> Option<CropRect> {
+/// Up to `soft_max` soft lines are trimmed from each side, for `Edges`.
+pub fn measure(method: CropMethod, gray: &[u8], later: Option<&[u8]>, width: usize, height: usize, soft_max: usize) -> Option<CropRect> {
     if gray.len() != width * height || width == 0 || height == 0 {
         return None;
     }
     match method {
-        CropMethod::Edges => Some(find_picture(gray, width, height, EDGE_THRESHOLD, SOFT_PIXELS)),
+        CropMethod::Edges => Some(find_picture(gray, width, height, EDGE_THRESHOLD, soft_max)),
         CropMethod::Static => later.filter(|later| later.len() == gray.len()).and_then(|later| find_moving_picture(gray, later, width, height, MOTION_THRESHOLD)),
         CropMethod::CropDetect => None,
     }
@@ -487,6 +533,40 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn frames_are_measured_small_and_the_rectangle_scaled_back_up() {
+        assert_eq!(measure_size(1920, 1080), (640, 360));
+        assert_eq!(measure_size(3840, 2160), (640, 360));
+        assert_eq!(measure_size(1080, 1920), (360, 640));
+        assert_eq!(measure_size(640, 480), (640, 480), "a small frame is measured as it is");
+        assert_eq!(soft_pixels(640, 1920), 2);
+        assert_eq!(soft_pixels(640, 640), SOFT_PIXELS);
+        // A letterboxed 1920 by 1080 video, found at a third of the size.
+        let found = scaled_up(rect(640, 266, 0, 47), (640, 360), (1920, 1080));
+        assert_eq!(found, rect(1920, 796, 0, 142));
+        assert!(found.width % 2 == 0 && found.height % 2 == 0 && found.left % 2 == 0 && found.top % 2 == 0);
+        // The whole frame stays the whole video, so it still reads as no crop.
+        assert_eq!(scaled_up(rect(640, 360, 0, 0), (640, 360), (1920, 1080)), rect(1920, 1080, 0, 0));
+        assert_eq!(scaled_up(rect(404, 720, 438, 0), (1280, 720), (1280, 720)), rect(404, 720, 438, 0), "unscaled is unchanged");
+    }
+
+    #[test]
+    fn a_picture_found_in_a_scaled_down_frame_matches_one_found_in_the_full_frame() {
+        // A pillarbox in a full frame, and the same frame averaged down to a third.
+        let full = frame(|x, _| if (438..842).contains(&x) { 200 } else { 40 });
+        let (reduced_w, reduced_h) = (W / 3, H / 3);
+        let reduced: Vec<u8> = (0..reduced_h)
+            .flat_map(|y| (0..reduced_w).map(move |x| (x, y)))
+            .map(|(x, y)| {
+                let sum: u32 = (0..3).flat_map(|dy| (0..3).map(move |dx| (dx, dy))).map(|(dx, dy)| u32::from(full[(y * 3 + dy) * W + x * 3 + dx])).sum();
+                (sum / 9) as u8
+            })
+            .collect();
+        let found = measure(CropMethod::Edges, &reduced, None, reduced_w, reduced_h, soft_pixels(reduced_w as i32, W as i32)).unwrap();
+        let scaled = scaled_up(found, (reduced_w as i32, reduced_h as i32), (W as i32, H as i32));
+        assert!(agree(scaled, find_picture(&full, W, H, 12.0, SOFT_PIXELS)), "{scaled:?}");
     }
 
     #[test]

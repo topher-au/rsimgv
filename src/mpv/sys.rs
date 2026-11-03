@@ -25,6 +25,7 @@ pub const MPV_FORMAT_BYTE_ARRAY: c_int = 9;
 
 pub const MPV_EVENT_NONE: c_int = 0;
 pub const MPV_EVENT_SHUTDOWN: c_int = 1;
+pub const MPV_EVENT_GET_PROPERTY_REPLY: c_int = 6;
 pub const MPV_EVENT_END_FILE: c_int = 7;
 pub const MPV_EVENT_FILE_LOADED: c_int = 8;
 pub const MPV_EVENT_VIDEO_RECONFIG: c_int = 17;
@@ -131,6 +132,7 @@ unsafe extern "C" {
         data: *mut c_void,
     ) -> c_int;
     pub fn mpv_get_property(ctx: *mut mpv_handle, name: *const c_char, format: c_int, data: *mut c_void) -> c_int;
+    pub fn mpv_get_property_async(ctx: *mut mpv_handle, reply_userdata: u64, name: *const c_char, format: c_int) -> c_int;
     pub fn mpv_observe_property(ctx: *mut mpv_handle, reply_userdata: u64, name: *const c_char, format: c_int) -> c_int;
     pub fn mpv_wait_event(ctx: *mut mpv_handle, timeout: f64) -> *mut mpv_event;
     pub fn mpv_set_wakeup_callback(ctx: *mut mpv_handle, cb: Option<wakeup_fn>, d: *mut c_void);
