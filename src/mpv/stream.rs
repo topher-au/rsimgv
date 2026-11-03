@@ -40,6 +40,9 @@ const MOTION_GAP: f64 = 0.1;
 /// little, and the display scales it up as it draws it.
 const BACKDROP_SHRINK: f64 = 8.0;
 
+/// How often the position is reported to GTK, and so to the controls, while the video plays.
+const POSITION_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
+
 /// How long the backdrop is left as it is while the video plays, before it is made again from the frame. It is a blur, so it
 /// need not keep up with every frame.
 const BACKDROP_INTERVAL: std::time::Duration = std::time::Duration::from_millis(150);
@@ -107,6 +110,11 @@ mod imp {
         pub(super) duration: Cell<i64>,
         /// Whether a seek is under way, to report when it lands.
         pub(super) seeking: Cell<bool>,
+        /// The latest position mpv gave, in microseconds; when GTK was last given one; and the timer that gives it the latest
+        /// once the interval is up, if some were held back.
+        pub(super) position: Cell<i64>,
+        pub(super) position_at: Cell<Option<std::time::Instant>>,
+        pub(super) position_timer: RefCell<Option<glib::SourceId>>,
         /// The file this plays, how its frame is to be framed, and the crop in use. The timer looks for where to crop, and the
         /// candidate is the last measurement made from frames, which the next must agree with to be used.
         pub(super) path: RefCell<std::path::PathBuf>,
@@ -163,6 +171,7 @@ mod imp {
             if let Some(player) = self.player.borrow().as_ref() {
                 player.set_flag("pause", true);
             }
+            self.obj().report_position(true);
         }
 
         fn seek(&self, timestamp: i64) {
@@ -286,7 +295,7 @@ fn shared_player(options: &str) -> Option<Rc<Player>> {
 impl MpvStream {
     /// Stops the video and lets go of the player, which stays alive for the next video. Nothing plays after this.
     pub fn stop(&self) {
-        if let Some(timer) = self.imp().crop_timer.take() {
+        for timer in [self.imp().crop_timer.take(), self.imp().position_timer.take()].into_iter().flatten() {
             timer.remove();
         }
         let Some(player) = self.imp().player.take() else { return };
@@ -556,17 +565,19 @@ impl MpvStream {
                 // The frames before it were from before the seek.
                 imp.backdrop_stale.set(true);
                 if imp.seeking.replace(false) {
+                    self.report_position(true);
                     self.seek_success();
                 }
             }
             Event::Double(DURATION, Some(seconds)) => imp.duration.set((seconds * MICROS) as i64),
             Event::Double(TIME_POS, Some(seconds)) => {
-                if self.is_prepared() {
-                    self.update((seconds * MICROS) as i64);
-                }
+                imp.position.set((seconds * MICROS) as i64);
+                self.report_position(false);
             }
             Event::Flag(EOF_REACHED, Some(true)) => {
                 if self.is_prepared() && !self.is_ended() {
+                    // The end is reported at the position it reached.
+                    self.report_position(true);
                     self.stream_ended();
                 }
             }
@@ -574,6 +585,33 @@ impl MpvStream {
                 self.set_error(glib::Error::new(gtk::glib::FileError::Failed, &message));
             }
             _ => {}
+        }
+    }
+
+    /// Tells GTK the position mpv last gave, at most once an interval, as it comes with every frame and each report updates the
+    /// controls. A position held back is reported when the interval is up. `now` reports it at once, as a seek, a pause or the
+    /// end needs.
+    fn report_position(&self, now: bool) {
+        let imp = self.imp();
+        if !self.is_prepared() {
+            return;
+        }
+        let wait = imp.position_at.get().map(|at| POSITION_INTERVAL.saturating_sub(at.elapsed()));
+        if now || wait.is_none_or(|wait| wait.is_zero()) {
+            if let Some(timer) = imp.position_timer.take() {
+                timer.remove();
+            }
+            imp.position_at.set(Some(std::time::Instant::now()));
+            self.update(imp.position.get());
+        } else if imp.position_timer.borrow().is_none() {
+            let weak = self.downgrade();
+            let timer = glib::timeout_add_local_once(wait.unwrap_or_default(), move || {
+                if let Some(stream) = weak.upgrade() {
+                    stream.imp().position_timer.take();
+                    stream.report_position(true);
+                }
+            });
+            imp.position_timer.replace(Some(timer));
         }
     }
 

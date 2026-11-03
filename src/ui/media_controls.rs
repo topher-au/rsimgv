@@ -16,6 +16,9 @@ use super::media_viewer::{MAX_VOLUME, VOLUME_STEP};
 pub const SEEK_STEP: i64 = 5_000_000;
 /// Microseconds in a second, the unit that media timestamps and durations use.
 const MICROS: f64 = 1_000_000.0;
+/// How long the position slider is left where the user put it after a seek, so a position that has not caught up with the seek
+/// does not pull it back while it is dragged.
+const SEEK_HOLD: Duration = Duration::from_millis(400);
 /// How long the pointer may be off the volume button and its slider before the slider closes.
 const VOLUME_HIDE_DELAY: Duration = Duration::from_millis(250);
 
@@ -43,6 +46,16 @@ pub fn volume_icon(volume: f64, muted: bool) -> &'static str {
         "audio-volume-medium-symbolic"
     } else {
         "audio-volume-high-symbolic"
+    }
+}
+
+/// Gives `button` the icon and tooltip, when it does not have them, so a refresh with nothing changed leaves it alone.
+fn set_button(button: &gtk::Button, icon: &str, tooltip: &str) {
+    if button.icon_name().as_deref() != Some(icon) {
+        button.set_icon_name(icon);
+    }
+    if button.tooltip_text().as_deref() != Some(tooltip) {
+        button.set_tooltip_text(Some(tooltip));
     }
 }
 
@@ -84,6 +97,8 @@ mod imp {
         /// The volume and mute state. It outlives each video, so a new one starts at the same level.
         pub(super) volume: Cell<f64>,
         pub(super) muted: Cell<bool>,
+        /// When the user last moved the position slider.
+        pub(super) seeked_at: Cell<Option<std::time::Instant>>,
     }
 
     #[glib::object_subclass]
@@ -221,6 +236,8 @@ mod imp {
                 }
             });
 
+            // Nothing is shown while the controls are hidden, so they catch up when they are shown.
+            obj.connect_map(|controls| controls.refresh());
             obj.refresh();
         }
 
@@ -256,7 +273,9 @@ impl MediaControls {
             let weak = self.downgrade();
             media.connect_notify_local(None, move |_, _| {
                 if let Some(controls) = weak.upgrade() {
-                    controls.refresh();
+                    if controls.is_mapped() {
+                        controls.refresh();
+                    }
                 }
             });
             self.apply_audio();
@@ -346,6 +365,7 @@ impl MediaControls {
 
     /// Seeks to `seconds` into the video, as the position slider was dragged to.
     fn seek_to(&self, seconds: f64) {
+        self.imp().seeked_at.set(Some(std::time::Instant::now()));
         if let Some(media) = self.imp().media.borrow().clone() {
             media.seek((seconds * MICROS) as i64);
         }
@@ -410,8 +430,7 @@ impl MediaControls {
             });
 
         let (icon, tooltip) = if playing { ("media-playback-pause-symbolic", "Pause") } else { ("media-playback-start-symbolic", "Play") };
-        imp.play_button.set_icon_name(icon);
-        imp.play_button.set_tooltip_text(Some(tooltip));
+        set_button(&imp.play_button, icon, tooltip);
         imp.time_label.set_label(&format_time(position));
         imp.duration_label.set_label(&format_time(duration));
 
@@ -419,13 +438,13 @@ impl MediaControls {
         if imp.position.adjustment().upper() != seconds {
             imp.position.set_range(0.0, seconds);
         }
-        if !seeking && (imp.position.value() - position as f64 / MICROS).abs() > 0.01 {
+        let held = imp.seeked_at.get().is_some_and(|at| at.elapsed() < SEEK_HOLD);
+        if !seeking && !held && (imp.position.value() - position as f64 / MICROS).abs() > 0.01 {
             imp.position.set_value(position as f64 / MICROS);
         }
 
         let (volume, muted) = (imp.volume.get(), imp.muted.get());
-        imp.volume_button.set_icon_name(volume_icon(volume, muted));
-        imp.volume_button.set_tooltip_text(Some(if muted { "Unmute" } else { "Mute" }));
+        set_button(&imp.volume_button, volume_icon(volume, muted), if muted { "Unmute" } else { "Mute" });
         imp.volume_button.set_sensitive(media.as_ref().is_none_or(|media| media.has_audio()));
         if let Some(scale) = imp.volume_scale.get() {
             let shown = if muted { 0.0 } else { volume };
@@ -434,10 +453,12 @@ impl MediaControls {
             }
             scale.set_show_fill_level(muted);
             scale.set_fill_level(volume);
-            if volume > 1.0 {
-                scale.add_css_class("boosted");
-            } else {
-                scale.remove_css_class("boosted");
+            if scale.has_css_class("boosted") != (volume > 1.0) {
+                if volume > 1.0 {
+                    scale.add_css_class("boosted");
+                } else {
+                    scale.remove_css_class("boosted");
+                }
             }
         }
     }
