@@ -52,7 +52,7 @@ mod tests {
         let config = std::env::temp_dir().join(format!("rsimgv-test-{}.conf", std::process::id()));
         let _ = std::fs::remove_file(&config);
         std::env::set_var("RSIMGV_CONFIG", &config);
-        crate::settings::open("au.topher.rimgv");
+        crate::settings::open().expect("the settings open");
         super::fs_tree::tests::init_gtk();
         // The bundled icon theme resolves once registered.
         crate::register_icons();
@@ -68,7 +68,6 @@ mod tests {
         super::preferences::tests::run_scenarios();
         super::browse_view::tests::run_scenarios();
         super::media_viewer::tests::run_scenarios();
-        crate::settings::store_layout_tests();
         super::window::tests::run_scenarios();
     }
 }

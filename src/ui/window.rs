@@ -1507,7 +1507,7 @@ impl Window {
         eprintln!("playlist-debug: window step_playlist forward={forward} current={current:?} target={target:?} len={len}");
         // With repeat off, going past either end stops there instead of going round.
         let at_end = current.is_some_and(|current| if forward { current + 1 == len } else { current == 0 });
-        if at_end && !gio::Settings::new("au.topher.rimgv").boolean("playlist-repeat") {
+        if at_end && !crate::settings::app_settings().boolean("playlist-repeat") {
             self.announce_playlist("The end of the playlist");
             return;
         }
@@ -1658,7 +1658,7 @@ impl Window {
 
     /// Takes the playlist out into a window of its own, or puts it back beside the browse view.
     fn toggle_detached_playlist(&self) {
-        let settings = gio::Settings::new("au.topher.rimgv");
+        let settings = crate::settings::app_settings();
         if self.imp().playlist_window.borrow().is_some() {
             self.attach_playlist(&settings);
         } else {
@@ -4158,10 +4158,10 @@ pub(crate) mod tests {
         fs::write(root.join("file.txt"), "").unwrap();
         fs::create_dir_all(root.join("delta/epsilon")).unwrap();
 
-        let app = adw::Application::builder().application_id("au.topher.rimgv.Tests").build();
+        let app = adw::Application::builder().application_id("au.topher.rsimgv.Tests").build();
         // Windows may only be created once the application has started.
         gio::prelude::ApplicationExt::register(&app, gio::Cancellable::NONE).expect("register test application");
-        let settings = crate::settings::open("au.topher.rimgv");
+        let settings = crate::settings::open().expect("the settings open");
         tabs_keep_their_own_state(&app, &settings);
         folders_remember_their_sorts(&app, &settings);
         viewer_steps_between_folders(&app, &settings);

@@ -802,7 +802,7 @@ pub(crate) mod tests {
     use adw::prelude::ComboRowExt;
 
     pub(crate) fn run_scenarios() {
-        let settings = gio::Settings::new("au.topher.rimgv");
+        let settings = crate::settings::app_settings();
         settings.set_int("item-size", 96).unwrap();
         let dialog = PreferencesDialog::new(&settings);
         assert_eq!(dialog.imp().item_size_row.value(), 96.0, "the row shows the setting");

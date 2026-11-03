@@ -46,7 +46,7 @@ const IPC_KEYS: [&str; 7] = [
     "ipc-external-access",
 ];
 
-const APP_ID: &str = "au.topher.rimgv";
+const APP_ID: &str = "au.topher.rsimgv";
 
 /// The terminal's interrupt signal, which Ctrl+C sends.
 const SIGINT: i32 = 2;
@@ -83,7 +83,13 @@ fn main() -> glib::ExitCode {
         .expect("failed to load embedded resources");
     gio::resources_register(&resource);
 
-    let settings = settings::open(APP_ID);
+    let settings = match settings::open() {
+        Ok(settings) => settings,
+        Err(err) => {
+            eprintln!("rsimgv: {err:#}");
+            return glib::ExitCode::FAILURE;
+        }
+    };
 
     let app = adw::Application::builder()
         .application_id(APP_ID)
