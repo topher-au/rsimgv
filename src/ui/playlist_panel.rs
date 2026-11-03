@@ -64,8 +64,6 @@ impl SortColumn {
 pub struct PlaylistPanel {
     content: gtk::Box,
     view: gtk::ColumnView,
-    empty: gtk::Label,
-    scroller: gtk::ScrolledWindow,
     /// The items' paths, in the order shown.
     paths: gtk::StringList,
     /// What `paths` holds, to compare with the playlist.
@@ -190,15 +188,6 @@ impl PlaylistPanel {
             }
         });
 
-        let empty = gtk::Label::new(Some("Nothing yet. Right-click an item to add it, or drag files here."));
-        empty.set_wrap(true);
-        empty.set_xalign(0.0);
-        empty.set_margin_top(6);
-        empty.set_margin_bottom(6);
-        empty.set_margin_start(6);
-        empty.add_css_class("caption");
-        empty.add_css_class("dimmed");
-
         let search = gtk::SearchBar::new();
         search.set_show_close_button(true);
         let entry = gtk::SearchEntry::new();
@@ -229,7 +218,6 @@ impl PlaylistPanel {
         let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
     content.add_css_class("playlist-panel");
         content.set_width_request(PANEL_WIDTH);
-        content.append(&empty);
         content.append(&scroller);
         content.append(&search);
         content.append(toolbar.widget());
@@ -246,8 +234,6 @@ impl PlaylistPanel {
         let panel = Self {
             content,
             view,
-            empty,
-            scroller,
             paths,
             shown: RefCell::new(Vec::new()),
             current,
@@ -299,8 +285,6 @@ impl PlaylistPanel {
         self.paths.splice(start as u32, (shown.len() - start - end) as u32, &added);
         self.paths.items_changed(0, items.len() as u32, items.len() as u32);
 
-        self.empty.set_visible(items.is_empty());
-        self.scroller.set_visible(!items.is_empty());
         *shown = items;
         eprintln!("playlist-debug: refresh done items={} rows={} lengths={}", self.paths.n_items(), self.rows.borrow().len(), self.lengths.borrow().len());
         drop(shown);
