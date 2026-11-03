@@ -235,6 +235,9 @@ mod layout {
             if !changed {
                 if let Some(position) = grid.imp().reveal.take() {
                     grid.scroll_to(position);
+                    // The view moved, so it is noted where it is now, and the items that came into view are made.
+                    grid.remember_view(width, &table);
+                    grid.relayout_next_frame();
                 }
             }
         }
@@ -292,6 +295,8 @@ mod imp {
         /// the scroller has taken the new height of the grid, and how many layouts that has taken.
         pub(super) restore: Cell<Option<ViewAnchor>>,
         pub(super) restore_passes: Cell<u8>,
+        /// Whether a layout is already waiting for the next frame, so only one is asked for.
+        pub(super) deferred: Cell<bool>,
     }
 
     #[glib::object_subclass]
@@ -442,6 +447,22 @@ impl ItemGrid {
         });
     }
 
+    /// Lays the grid out again at the start of the next frame. A layout asked for from within a layout is dropped when that
+    /// layout ends, so what a layout changes, such as the scroll position that decides which items are shown, asks for the
+    /// next one this way, or the items that scrolled into view stay unmade until something else lays the grid out.
+    fn relayout_next_frame(&self) {
+        let imp = self.imp();
+        if imp.deferred.replace(true) {
+            return;
+        }
+        let grid = self.clone();
+        self.add_tick_callback(move |_, _| {
+            grid.imp().deferred.set(false);
+            grid.queue_allocate();
+            glib::ControlFlow::Break
+        });
+    }
+
     /// Has the next layout put the view back where it stands now. Forgetting row heights shrinks the grid to its
     /// estimate until the rows are measured again, and the scroller would clamp the scroll position, possibly to the top.
     fn hold_view(&self) {
@@ -449,8 +470,18 @@ impl ItemGrid {
         if imp.model.borrow().is_none() || imp.restore.get().is_some() {
             return;
         }
-        imp.restore.set(imp.view.get());
+        // Where the view stands now, not where it stood at the last layout, which a scroll since may have left behind.
+        imp.restore.set(self.current_view().or(imp.view.get()));
         imp.restore_passes.set(0);
+    }
+
+    /// Where the view stands now over the rows as last laid out, if they have been.
+    fn current_view(&self) -> Option<ViewAnchor> {
+        let imp = self.imp();
+        let table = imp.table.borrow().clone()?;
+        let adjustment = self.scroller()?.vadjustment();
+        let selected = imp.model.borrow().as_ref().map(|model| model.selected());
+        anchor_for(&table, table.count, table.items, selected, adjustment.value(), adjustment.page_size())
     }
 
     pub fn item_count(&self) -> u32 {
@@ -863,6 +894,7 @@ impl ItemGrid {
         if changed {
             imp.table.take();
             self.queue_resize();
+            self.relayout_next_frame();
         }
 
         // Keep about two screens of spare widgets for the next scroll, and let the rest go.
@@ -949,7 +981,7 @@ impl ItemGrid {
         if (!measuring && known && (adjustment.value() - reachable).abs() < 0.5) || passes >= MAX_RESTORE_PASSES {
             imp.restore.take();
         } else {
-            self.queue_allocate();
+            self.relayout_next_frame();
         }
     }
 
