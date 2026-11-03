@@ -145,6 +145,20 @@ pub const STATUS_PARTS: &[(&str, &str, &str)] = &[
     ("filename", "Filename under it", ""),
 ];
 
+/// What happens to a notification that comes when the stack it would join is full.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Overflow {
+    /// The oldest in the stack is taken down to make room.
+    #[default]
+    PushOut,
+    /// It waits, unseen, until a notification in the stack goes away.
+    Wait,
+}
+
+/// How many notifications a stack shows at once, unless the element says otherwise, and the most it can be set to.
+pub const DEFAULT_MAX_NOTIFICATIONS: i32 = 5;
+pub const MAX_NOTIFICATIONS_RANGE: (i32, i32) = (1, 20);
+
 /// How a seek display writes the time.
 pub const TIME_FORMATS: &[(&str, &str)] = &[
     ("elapsed-total", "Elapsed / total"),
@@ -194,6 +208,9 @@ pub struct Element {
     pub seconds: f64,
     pub items: Items,
     pub fullscreen_only: bool,
+    /// For notification messages: the most a stack shows at once, and what a notification that comes to a full one does.
+    pub max_notifications: i32,
+    pub overflow: Overflow,
     pub style: Style,
 }
 
@@ -276,6 +293,8 @@ impl Element {
             seconds: 2.0,
             items: Items::All,
             fullscreen_only: false,
+            max_notifications: DEFAULT_MAX_NOTIFICATIONS,
+            overflow: Overflow::default(),
             style: Style::default(),
         };
         match kind {
@@ -331,6 +350,8 @@ impl Element {
             "seconds": self.seconds,
             "items": match self.items { Items::All => "all", Items::Videos => "videos", Items::Pictures => "pictures" },
             "fullscreen-only": self.fullscreen_only,
+            "max-notifications": self.max_notifications,
+            "overflow": match self.overflow { Overflow::PushOut => "push-out", Overflow::Wait => "wait" },
             "font": self.style.font_family,
             "font-size": self.style.font_size,
             "text-color": self.style.text_color,
@@ -389,6 +410,10 @@ impl Element {
         }
         element.seconds = number("seconds", element.seconds, SECONDS_RANGE);
         element.fullscreen_only = flag("fullscreen-only", false);
+        element.max_notifications = whole("max-notifications", element.max_notifications, MAX_NOTIFICATIONS_RANGE);
+        if let Some(overflow) = text("overflow") {
+            element.overflow = if overflow == "wait" { Overflow::Wait } else { Overflow::PushOut };
+        }
         let style = &mut element.style;
         if let Some(family) = text("font") {
             style.font_family = family.to_owned();
@@ -572,6 +597,14 @@ mod tests {
     fn the_names_the_first_layouts_used_still_read() {
         let layout = Layout::from_json(r#"{"elements":[{"kind":"progress"},{"kind":"text"}]}"#).unwrap();
         assert_eq!((layout.elements[0].kind, layout.elements[1].kind), (Kind::Seek, Kind::Template));
+    }
+
+    #[test]
+    fn the_notification_limits_are_kept_and_held_in_range() {
+        let layout = Layout::from_json(r#"{"elements":[{"kind":"messages","max-notifications":99,"overflow":"wait"},{"kind":"messages"}]}"#).unwrap();
+        assert_eq!((layout.elements[0].max_notifications, layout.elements[0].overflow), (MAX_NOTIFICATIONS_RANGE.1, Overflow::Wait));
+        assert_eq!((layout.elements[1].max_notifications, layout.elements[1].overflow), (DEFAULT_MAX_NOTIFICATIONS, Overflow::PushOut));
+        assert_eq!(Layout::from_json(&layout.to_json()), Some(layout));
     }
 
     #[test]

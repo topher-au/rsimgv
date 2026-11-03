@@ -7,7 +7,7 @@
 //! so the rest of the window under the overlay still takes the clicks.
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::rc::{Rc, Weak};
 use std::time::Duration;
 
@@ -15,7 +15,7 @@ use gtk::glib;
 use gtk::prelude::*;
 
 use super::media_overlay::{align_label, horizontal_align, style_css, unique_class, Sheet};
-use crate::overlay::{Element, Kind, Slot, Style};
+use crate::overlay::{Element, Kind, Overflow, Slot, Style, DEFAULT_MAX_NOTIFICATIONS};
 
 /// How long a temporary message stays up unless it says otherwise.
 pub const DEFAULT_DURATION: Duration = Duration::from_secs(4);
@@ -175,6 +175,7 @@ impl Message {
 
 /// A message that is up.
 struct Shown {
+    slot: Slot,
     revealer: gtk::Revealer,
     label: gtk::Label,
     /// The timer that dismisses a temporary message.
@@ -194,6 +195,11 @@ struct Inner {
     /// Where a message goes that names no place.
     default_slot: Cell<Slot>,
     look: RefCell<Option<Look>>,
+    /// The most messages a stack shows at once, and what happens to one that comes to a full stack.
+    limit: Cell<usize>,
+    overflow: Cell<Overflow>,
+    /// Messages waiting for room in the stack they are for, oldest first.
+    queue: RefCell<VecDeque<(MessageId, Slot, Message)>>,
     messages: RefCell<HashMap<MessageId, Shown>>,
     next: Cell<MessageId>,
 }
@@ -225,6 +231,9 @@ impl MessageOverlay {
                 columns,
                 default_slot: Cell::new(Slot::BOTTOM_MIDDLE),
                 look: RefCell::new(None),
+                limit: Cell::new(DEFAULT_MAX_NOTIFICATIONS as usize),
+                overflow: Cell::new(Overflow::PushOut),
+                queue: RefCell::new(VecDeque::new()),
                 messages: RefCell::new(HashMap::new()),
                 next: Cell::new(0),
             }),
@@ -236,6 +245,7 @@ impl MessageOverlay {
     pub fn configure(&self, element: Option<&Element>) {
         let element = element.filter(|element| element.kind == Kind::Messages && element.enabled);
         self.inner.default_slot.set(element.map_or(Slot::BOTTOM_MIDDLE, |element| element.slot));
+        self.set_limit(element.map_or(DEFAULT_MAX_NOTIFICATIONS as usize, |element| element.max_notifications.max(1) as usize), element.map_or_else(Overflow::default, |element| element.overflow));
         let look = element.map(|element| {
             let class = unique_class("message-el");
             let Style { font_size, .. } = element.style;
@@ -247,6 +257,35 @@ impl MessageOverlay {
             Look { class, blur: element.style.blur, _sheet: Sheet::new(&css) }
         });
         self.inner.look.replace(look);
+    }
+
+    /// Sets the most messages a stack shows at once, and whether one that comes to a full stack pushes the oldest out or
+    /// waits for room. Messages already up stay.
+    pub fn set_limit(&self, limit: usize, overflow: Overflow) {
+        self.inner.limit.set(limit.max(1));
+        self.inner.overflow.set(overflow);
+        // A larger limit makes room for those that were waiting.
+        let slots: Vec<Slot> = self.inner.queue.borrow().iter().map(|(_, slot, _)| *slot).collect();
+        for slot in slots {
+            self.fill_from_queue(slot);
+        }
+    }
+
+    /// How many messages are up in the stack at `slot`.
+    fn count_in(&self, slot: Slot) -> usize {
+        self.inner.messages.borrow().values().filter(|shown| shown.slot == slot).count()
+    }
+
+    /// Brings up the messages waiting for the stack at `slot`, while it has room.
+    fn fill_from_queue(&self, slot: Slot) {
+        while self.count_in(slot) < self.inner.limit.get() {
+            let next = {
+                let mut queue = self.inner.queue.borrow_mut();
+                queue.iter().position(|(_, queued, _)| *queued == slot).and_then(|index| queue.remove(index))
+            };
+            let Some((id, slot, message)) = next else { return };
+            self.present(id, slot, message);
+        }
     }
 
     /// The messages that are up and want KDE's blur behind them.
@@ -267,6 +306,30 @@ impl MessageOverlay {
         self.inner.next.set(id);
 
         let slot = message.position.unwrap_or_else(|| self.inner.default_slot.get());
+        // A full stack either gives up its oldest message, or the new one waits its turn.
+        if self.count_in(slot) >= self.inner.limit.get() {
+            match self.inner.overflow.get() {
+                Overflow::Wait => {
+                    self.inner.queue.borrow_mut().push_back((id, slot, message));
+                    return id;
+                }
+                Overflow::PushOut => {
+                    while self.count_in(slot) >= self.inner.limit.get() {
+                        let oldest = self.inner.messages.borrow().iter().filter(|(_, shown)| shown.slot == slot).map(|(id, _)| *id).min();
+                        match oldest {
+                            Some(oldest) => self.dismiss(oldest),
+                            None => break,
+                        };
+                    }
+                }
+            }
+        }
+        self.present(id, slot, message);
+        id
+    }
+
+    /// Puts the message `id` up in the stack at `slot`.
+    fn present(&self, id: MessageId, slot: Slot, message: Message) {
         let align = slot.text_align();
         let card = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         card.add_css_class("message");
@@ -308,8 +371,14 @@ impl MessageOverlay {
                 }
             }
         });
+        // The newest message is the nearest the edge of the window: at the top of a stack at the top, and at the
+        // bottom of one below.
         if let Some(column) = self.inner.columns.get(&slot) {
-            column.append(&revealer);
+            if slot.row == 0 {
+                column.prepend(&revealer);
+            } else {
+                column.append(&revealer);
+            }
         }
         let appearing = revealer.clone();
         glib::idle_add_local_once(move || appearing.set_reveal_child(true));
@@ -328,12 +397,15 @@ impl MessageOverlay {
             }
             Lifetime::Persistent => None,
         };
-        self.inner.messages.borrow_mut().insert(id, Shown { revealer, label, timer });
-        id
+        self.inner.messages.borrow_mut().insert(id, Shown { slot, revealer, label, timer });
     }
 
-    /// Changes the text of the message `id`, if it is still up. Returns whether it was.
+    /// Changes the text of the message `id`, if it is still up or waiting. Returns whether it was.
     pub fn update(&self, id: MessageId, text: &str) -> bool {
+        if let Some((_, _, message)) = self.inner.queue.borrow_mut().iter_mut().find(|(queued, _, _)| *queued == id) {
+            message.text = text.to_owned();
+            return true;
+        }
         match self.inner.messages.borrow().get(&id) {
             Some(shown) => {
                 shown.label.set_text(text);
@@ -343,8 +415,14 @@ impl MessageOverlay {
         }
     }
 
-    /// Takes the message `id` down, if it is still up. Returns whether it was.
+    /// Takes the message `id` down, if it is still up or waiting. Returns whether it was.
     pub fn dismiss(&self, id: MessageId) -> bool {
+        // A message still waiting is only taken out of the line.
+        let waiting = self.inner.queue.borrow().iter().position(|(queued, _, _)| *queued == id);
+        if let Some(index) = waiting {
+            self.inner.queue.borrow_mut().remove(index);
+            return true;
+        }
         let Some(shown) = self.inner.messages.borrow_mut().remove(&id) else { return false };
         if let Some(timer) = shown.timer {
             timer.remove();
@@ -355,15 +433,23 @@ impl MessageOverlay {
             // It never finished appearing, so there is no fade to wait for.
             column.remove(&shown.revealer);
         }
+        // The room it leaves goes to the message that has waited longest for it.
+        self.fill_from_queue(shown.slot);
         true
     }
 
     /// Takes down every message.
     pub fn dismiss_all(&self) {
+        self.inner.queue.borrow_mut().clear();
         let ids: Vec<MessageId> = self.inner.messages.borrow().keys().copied().collect();
         for id in ids {
             self.dismiss(id);
         }
+    }
+
+    /// How many messages are waiting for room in a full stack.
+    pub fn queued_count(&self) -> usize {
+        self.inner.queue.borrow().len()
     }
 
     /// How many messages are up.
@@ -375,6 +461,7 @@ impl MessageOverlay {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::overlay::Overflow;
 
     fn cards_at(overlay: &MessageOverlay, position: Position) -> usize {
         let column = overlay.inner.columns.get(&position.slot()).expect("a column for each position");
@@ -406,6 +493,27 @@ pub(crate) mod tests {
         assert_eq!(overlay.message_count(), 0);
         assert!(!overlay.update(second, "late"));
         assert_eq!(cards_at(&overlay, Position::BottomCenter), 0);
+
+        // A stack holds as many as the limit says. A new message pushes the oldest out, or waits for room.
+        let layer = gtk::Overlay::new();
+        let overlay = MessageOverlay::new(&layer);
+        overlay.set_limit(2, Overflow::PushOut);
+        let (first, second, third) = (overlay.show(Message::persistent("1")), overlay.show(Message::persistent("2")), overlay.show(Message::persistent("3")));
+        assert_eq!(overlay.message_count(), 2, "the oldest was pushed out");
+        assert!(!overlay.dismiss(first) && overlay.update(second, "2b") && overlay.update(third, "3b"));
+        overlay.dismiss_all();
+
+        overlay.set_limit(1, Overflow::Wait);
+        let (up, waiting) = (overlay.show(Message::persistent("up")), overlay.show(Message::persistent("waiting")));
+        assert_eq!((overlay.message_count(), overlay.queued_count()), (1, 1));
+        assert!(overlay.update(waiting, "still waiting"), "a waiting message can be changed");
+        assert!(overlay.dismiss(up));
+        assert_eq!((overlay.message_count(), overlay.queued_count()), (1, 0), "room went to the one that waited");
+        assert!(overlay.update(waiting, "now up"));
+        // Another place has its own stack.
+        overlay.show(Message::persistent("elsewhere").at(Position::TopRight));
+        assert_eq!(overlay.message_count(), 2);
+        overlay.dismiss_all();
 
         assert_eq!(Message::notification("a").lifetime, Lifetime::Temporary(DEFAULT_DURATION));
         assert!(Message::persistent("a").dismissible && !Message::notification("a").dismissible);

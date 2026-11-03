@@ -12,7 +12,7 @@ use gtk::{gdk, gio, glib};
 use super::media_overlay::{layout_from_settings, set_preview, Preview};
 use crate::overlay::template::Template;
 use crate::overlay::{
-    sample, Element, Items, Kind, Layout, Slot, Style, Visibility, BAR_WIDTH_RANGE, FONT_SIZE_RANGE, PADDING_RANGE, PROPERTIES, RADIUS_RANGE,
+    sample, Element, Items, Kind, Layout, Overflow, Slot, Style, Visibility, BAR_WIDTH_RANGE, FONT_SIZE_RANGE, MAX_NOTIFICATIONS_RANGE, PADDING_RANGE, PROPERTIES, RADIUS_RANGE,
     SECONDS_RANGE, STATUS_PARTS, TIME_FORMATS,
 };
 
@@ -378,7 +378,9 @@ impl Editor {
         });
         group.add(&enabled);
 
-        if element.kind != Kind::Messages {
+        if element.kind == Kind::Messages {
+            self.add_stack_rows(&group, element);
+        } else {
             self.add_when_rows(&group, element);
         }
         page.add(&group);
@@ -476,6 +478,30 @@ impl Editor {
         group.add(&preview);
         page.add(&group);
         page
+    }
+
+    /// Adds to `group` the rows for how many notifications stack up, and what happens when the stack is full.
+    fn add_stack_rows(self: &Rc<Self>, group: &adw::PreferencesGroup, element: &Element) {
+        let most = adw::SpinRow::with_range(f64::from(MAX_NOTIFICATIONS_RANGE.0), f64::from(MAX_NOTIFICATIONS_RANGE.1), 1.0);
+        most.set_title("Most shown at once");
+        most.set_subtitle("Notifications stack up, the newest nearest the edge, to this many");
+        most.set_value(f64::from(element.max_notifications));
+        most.connect_value_notify({
+            let editor = self.clone();
+            move |row| editor.edit(|element| element.max_notifications = row.value() as i32)
+        });
+        group.add(&most);
+
+        let overflow = adw::ComboRow::builder()
+            .title("When the stack is full")
+            .model(&gtk::StringList::new(&["Push out the oldest", "Wait for room"]))
+            .build();
+        overflow.set_selected(u32::from(element.overflow == Overflow::Wait));
+        overflow.connect_selected_notify({
+            let editor = self.clone();
+            move |row| editor.edit(|element| element.overflow = if row.selected() == 1 { Overflow::Wait } else { Overflow::PushOut })
+        });
+        group.add(&overflow);
     }
 
     /// Adds to `group` the rows for when the element is up, and over what.
