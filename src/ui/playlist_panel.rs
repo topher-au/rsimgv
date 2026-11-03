@@ -6,7 +6,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::UNIX_EPOCH;
 
@@ -15,15 +15,14 @@ use gtk::prelude::*;
 use gtk::{gdk, gio, glib};
 
 use super::drag;
+use super::media_viewer::is_video;
 use super::playlist_toolbar::{Slot, Toolbar};
-use crate::fs::metadata::MediaInfo;
+use crate::fs::metadata::{anonymous, MediaInfo};
 use crate::playlist;
 use crate::scripts;
 
 /// How wide the panel is, in pixels.
 const PANEL_WIDTH: i32 = 400;
-/// The symbol that marks the item shown, in the position column.
-const CURRENT_MARK: &str = "▶";
 /// The columns in order: the setting that shows each, the menu label that toggles it, its title, and how wide it starts,
 /// in pixels. The position column is -1 wide, which is as wide as its marker, and cannot be resized.
 pub const COLUMNS: [(&str, &str, &str, i32); 4] = [
@@ -73,8 +72,10 @@ pub struct PlaylistPanel {
     shown: RefCell<Vec<String>>,
     /// The position of the item marked as the current one.
     current: Rc<Cell<Option<u32>>>,
-    /// The number cells showing an item now.
-    rows: Rc<RefCell<Vec<gtk::ListItem>>>,
+    /// The number cells showing an item now. Weak, so a cell GTK has let go of is not kept alive here.
+    rows: Rc<RefCell<Vec<glib::WeakRef<gtk::ListItem>>>>,
+    /// The length cells showing an item now, which are asked for again as the playlist scrolls. Weak, as `rows` is.
+    lengths: Rc<RefCell<Vec<glib::WeakRef<gtk::Label>>>>,
     /// The filter that keeps the items the search field matches, and the model it filters.
     filter: gtk::CustomFilter,
     filtered: gtk::FilterListModel,
@@ -85,8 +86,10 @@ pub struct PlaylistPanel {
 impl PlaylistPanel {
     /// Makes the panel, showing the playlist as it is. The columns shown and the lengths read follow `settings`.
     pub fn new(settings: &gio::Settings) -> Self {
+        eprintln!("playlist-debug: panel new");
         let current = Rc::new(Cell::new(None));
         let rows = Rc::new(RefCell::new(Vec::new()));
+        let lengths = Rc::new(RefCell::new(Vec::new()));
         let paths = gtk::StringList::new(&[]);
         let query = Rc::new(RefCell::new(String::new()));
         let searchable: Rc<RefCell<HashMap<String, String>>> = Rc::new(RefCell::new(HashMap::new()));
@@ -108,6 +111,7 @@ impl PlaylistPanel {
         let view = gtk::ColumnView::new(Some(selection.clone()));
         view.add_css_class("data-table");
         view.connect_activate(|view, position| {
+            eprintln!("playlist-debug: activate view row {position}");
             // The position is the row's in the view, which the search may have narrowed, so the item is found by its path.
             let path = view.model().and_then(|model| model.item(position)).and_downcast::<gtk::StringObject>();
             let Some(index) = path.and_then(|path| path_position(path.string().as_str())) else { return };
@@ -119,7 +123,7 @@ impl PlaylistPanel {
         let mut sortable = Vec::new();
         let saved_widths: Vec<i32> = settings.value("playlist-column-widths").get().unwrap_or_default();
         for (index, (key, _, title, width)) in COLUMNS.into_iter().enumerate() {
-            let factory = cell_factory(index, settings, &current, &rows);
+            let factory = cell_factory(index, settings, &current, &rows, &lengths);
             let column = gtk::ColumnViewColumn::new(Some(title), Some(factory));
             column.set_resizable(width >= 0);
             // The name fills the room between the position and the length, which are sized to their contents.
@@ -173,6 +177,13 @@ impl PlaylistPanel {
         scroller.set_vscrollbar_policy(gtk::PolicyType::Automatic);
         scroller.set_vexpand(true);
         scroller.set_child(Some(&view));
+        scroller.vadjustment().connect_value_changed({
+            let (lengths, settings) = (lengths.clone(), settings.clone());
+            move |adjustment| {
+                eprintln!("playlist-debug: scroll value={}", adjustment.value());
+                bring_visible_lengths_forward(&lengths, settings.boolean("playlist-fetch-in-background"));
+            }
+        });
 
         let empty = gtk::Label::new(Some("Nothing yet. Right-click an item to add it, or drag files here."));
         empty.set_wrap(true);
@@ -187,6 +198,7 @@ impl PlaylistPanel {
         search.set_show_close_button(true);
         let entry = gtk::SearchEntry::new();
         entry.set_placeholder_text(Some("Filter the playlist"));
+        entry.set_hexpand(true);
         search.set_child(Some(&entry));
         search.connect_entry(&entry);
         entry.connect_search_changed({
@@ -209,6 +221,7 @@ impl PlaylistPanel {
         let toolbar = toolbar(&selection, &view, &search);
 
         let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    content.add_css_class("playlist-panel");
         content.set_width_request(PANEL_WIDTH);
         content.append(&empty);
         content.append(&scroller);
@@ -233,6 +246,7 @@ impl PlaylistPanel {
             shown: RefCell::new(Vec::new()),
             current,
             rows,
+            lengths,
             filter,
             filtered,
             searchable,
@@ -250,6 +264,7 @@ impl PlaylistPanel {
     /// items that changed are added and removed, so the list keeps its place. Every row is bound again, as titles and
     /// lengths may have changed.
     pub fn refresh(&self) {
+        eprintln!("playlist-debug: refresh start shown={}", self.shown.borrow().len());
         let (items, searchable) = playlist::with(|list| {
             let items: Vec<String> = list.order().iter().map(|path| path.to_string_lossy().into_owned()).collect();
             let searchable: HashMap<String, String> = list
@@ -269,12 +284,14 @@ impl PlaylistPanel {
         let most = items.len().min(shown.len()) - start;
         let end = items.iter().rev().zip(shown.iter().rev()).take(most).take_while(|(item, row)| item == row).count();
         let added: Vec<&str> = items[start..items.len() - end].iter().map(String::as_str).collect();
+        eprintln!("playlist-debug: refresh shown={} items={} start={start} end={end} removed={} added={}", shown.len(), items.len(), shown.len() - start - end, added.len());
         self.paths.splice(start as u32, (shown.len() - start - end) as u32, &added);
         self.paths.items_changed(0, items.len() as u32, items.len() as u32);
 
         self.empty.set_visible(items.is_empty());
         self.scroller.set_visible(!items.is_empty());
         *shown = items;
+        eprintln!("playlist-debug: refresh done items={} rows={} lengths={}", self.paths.n_items(), self.rows.borrow().len(), self.lengths.borrow().len());
         drop(shown);
         self.refresh_current();
     }
@@ -283,9 +300,13 @@ impl PlaylistPanel {
     pub fn refresh_current(&self) {
         let current = playlist::with(|list| list.current()).map(|index| index as u32);
         let moved = self.current.replace(current) != current;
-        for item in self.rows.borrow().iter() {
-            if let (Some(number), Some(position)) = (item.child().and_downcast::<gtk::Label>(), playlist_position(item)) {
-                number.set_label(&number_text(position, current == Some(position)));
+        eprintln!("playlist-debug: refresh_current current={current:?} moved={moved} rows={}", self.rows.borrow().len());
+        for item in self.rows.borrow().iter().filter_map(|row| row.upgrade()) {
+            let Some(position) = playlist_position(&item) else { continue };
+            let shown = current == Some(position);
+            mark_current_row(&item, shown);
+            if let Some(number) = item.child().and_downcast::<gtk::Label>() {
+                set_label_if_changed(&number, &number_text(position));
             }
         }
         if let Some(row) = current.filter(|_| moved).and_then(|current| self.view_position(current)) {
@@ -315,16 +336,33 @@ impl PlaylistPanel {
 }
 
 /// The number cell's text: the item's place, or the marker for the one shown.
-fn number_text(position: u32, shown: bool) -> String {
-    if shown { CURRENT_MARK.to_owned() } else { (position + 1).to_string() }
+/// Gives the row that `list_item` is in the `current-item` class while `current` is set, so the current item can be styled.
+/// A row not in the view yet is left alone, as GTK's only reference to it is still floating: a wrapper around it would take
+/// that reference and free the row when dropped. Such a row is marked when it is mapped.
+fn mark_current_row(list_item: &gtk::ListItem, current: bool) {
+    let Some(child) = list_item.child().filter(|child| child.root().is_some()) else { return };
+    let Some(mut row) = child.parent() else { return };
+    while row.css_name().as_str() != "row" {
+        let Some(parent) = row.parent() else { return };
+        row = parent;
+    }
+    if current {
+        row.add_css_class("current-item");
+    } else {
+        row.remove_css_class("current-item");
+    }
 }
 
-/// The length a time of `duration` seconds is shown as, such as `3:05` or `1:02:09`, or nothing if it is not known.
+fn number_text(position: u32) -> String {
+    (position + 1).to_string()
+}
+
+/// The length a time of `duration` seconds is shown as, `HH:MM:SS`, or `--:--:--` if it is not known.
 fn length_text(duration: Option<f64>) -> String {
-    let Some(seconds) = duration.filter(|seconds| seconds.is_finite() && *seconds >= 0.0) else { return String::new() };
+    let Some(seconds) = duration.filter(|seconds| seconds.is_finite() && *seconds >= 0.0) else { return "--:--:--".to_owned() };
     let total = seconds.round() as u64;
     let (hours, minutes, seconds) = (total / 3600, total % 3600 / 60, total % 60);
-    if hours > 0 { format!("{hours}:{minutes:02}:{seconds:02}") } else { format!("{minutes}:{seconds:02}") }
+    format!("{hours:02}:{minutes:02}:{seconds:02}")
 }
 
 /// The modification time and size of the file at `path`, which its metadata is kept against.
@@ -334,16 +372,29 @@ pub fn stamp(path: &Path) -> Option<(i64, u64)> {
     Some((mtime, metadata.len()))
 }
 
+/// Sets a label's text only when it differs, so a cell bound again to the same item does not update its text.
+fn set_label_if_changed(label: &gtk::Label, text: &str) {
+    if label.label().as_str() != text {
+        label.set_label(text);
+    }
+}
+
 /// Shows the length of the item at `path` in `label`. Its metadata is used if it is known. Otherwise, if `fetch`, it is
 /// read in the background and shown once it is; if not, it is read when the item is played. The label remembers the
 /// path it shows, so a reading that arrives after the row shows another item is dropped.
 fn show_length(label: &gtk::Label, path: &Path, fetch: bool) {
+    eprintln!("playlist-debug: show_length path={} fetch={fetch}", anonymous(path));
     label.set_widget_name(&path.to_string_lossy());
-    label.set_label("");
+    set_label_if_changed(&label, "");
+    // Only videos have a length, so a picture shows none.
+    if !is_video(path) {
+        return;
+    }
+    set_label_if_changed(&label, &length_text(None));
     let Some((mtime, size)) = stamp(path) else { return };
     let info = MediaInfo::shared();
     if !fetch {
-        label.set_label(&length_text(info.get(path, mtime, size).and_then(|metadata| metadata.duration)));
+        set_label_if_changed(&label, &length_text(info.get(path, mtime, size).and_then(|metadata| metadata.duration)));
         return;
     }
     let shows = Rc::new({
@@ -351,6 +402,11 @@ fn show_length(label: &gtk::Label, path: &Path, fetch: bool) {
         let name = path.to_string_lossy().into_owned();
         move || weak.upgrade().is_some_and(|label| label.widget_name().as_str() == name)
     });
+    // Only a length on screen is still wanted, so one scrolled away is dropped from the queue until it is back.
+    let wanted = {
+        let (shows, weak) = (shows.clone(), label.downgrade());
+        move || shows() && weak.upgrade().is_some_and(|label| on_screen(&label))
+    };
     let ready = {
         let shows = shows.clone();
         let weak = label.downgrade();
@@ -358,12 +414,35 @@ fn show_length(label: &gtk::Label, path: &Path, fetch: bool) {
         let path = path.to_path_buf();
         move || {
             if let (true, Some(label)) = (shows(), weak.upgrade()) {
-                label.set_label(&length_text(info.get(&path, mtime, size).and_then(|metadata| metadata.duration)));
+                set_label_if_changed(&label, &length_text(info.get(&path, mtime, size).and_then(|metadata| metadata.duration)));
             }
         }
     };
-    let metadata = info.request(path, mtime, size, move || shows(), ready);
-    label.set_label(&length_text(metadata.and_then(|metadata| metadata.duration)));
+    let metadata = info.request(path, mtime, size, wanted, ready);
+    set_label_if_changed(&label, &length_text(metadata.and_then(|metadata| metadata.duration)));
+}
+
+/// Whether `label` is at least partly on screen in the playlist. A label not laid out yet counts as on screen, as it is
+/// about to be.
+fn on_screen(label: &gtk::Label) -> bool {
+    let Some(scroller) = label.ancestor(gtk::ScrolledWindow::static_type()) else { return true };
+    let Some(bounds) = label.compute_bounds(&scroller) else { return true };
+    bounds.y() < scroller.height() as f32 && bounds.y() + bounds.height() > 0.0
+}
+
+/// Brings the lengths on screen forward as the playlist scrolls. One still queued moves to the front of the queue, and
+/// one dropped while it was off screen is asked for again.
+fn bring_visible_lengths_forward(lengths: &RefCell<Vec<glib::WeakRef<gtk::Label>>>, fetch: bool) {
+    let visible: Vec<gtk::Label> = lengths.borrow().iter().filter_map(|label| label.upgrade()).filter(|label| on_screen(label)).collect();
+    eprintln!("playlist-debug: visible lengths={} of {}", visible.len(), lengths.borrow().len());
+    let info = MediaInfo::shared();
+    for label in visible {
+        let path = PathBuf::from(label.widget_name().as_str());
+        match stamp(&path) {
+            Some((mtime, size)) if info.is_pending(&path, mtime, size) => info.prioritise(&path, mtime, size),
+            _ => show_length(&label, &path, fetch),
+        }
+    }
 }
 
 /// The factory of one column's cells. Each cell is a label, which can be dragged to move its item, takes items dropped on
@@ -372,12 +451,15 @@ fn cell_factory(
     index: usize,
     settings: &gio::Settings,
     current: &Rc<Cell<Option<u32>>>,
-    rows: &Rc<RefCell<Vec<gtk::ListItem>>>,
+    rows: &Rc<RefCell<Vec<glib::WeakRef<gtk::ListItem>>>>,
+    lengths: &Rc<RefCell<Vec<glib::WeakRef<gtk::Label>>>>,
 ) -> gtk::SignalListItemFactory {
     let factory = gtk::SignalListItemFactory::new();
     let setup_settings = settings.clone();
+    let mapped_current = current.clone();
     factory.connect_setup(move |_, item| {
         let Some(item) = item.downcast_ref::<gtk::ListItem>() else { return };
+        eprintln!("playlist-debug: setup column={index}");
         let label = gtk::Label::new(None);
         label.set_margin_start(3);
         label.set_margin_end(3);
@@ -392,12 +474,23 @@ fn cell_factory(
         });
         label.set_hexpand(index != 0);
         attach_row_controls(&label, item, &setup_settings);
+        if index == 0 {
+            let (weak, current) = (item.downgrade(), mapped_current.clone());
+            label.connect_map(move |_| {
+                let Some(item) = weak.upgrade() else { return };
+                if let Some(position) = playlist_position(&item) {
+                    mark_current_row(&item, current.get() == Some(position));
+                }
+            });
+        }
         item.set_child(Some(&label));
     });
 
     let current = current.clone();
     let bound_rows = rows.clone();
     let unbound_rows = rows.clone();
+    let bound_lengths = lengths.clone();
+    let unbound_lengths = lengths.clone();
     let bind_settings = settings.clone();
     factory.connect_bind(move |_, item| {
         let Some(item) = item.downcast_ref::<gtk::ListItem>() else { return };
@@ -405,28 +498,49 @@ fn cell_factory(
             return;
         };
         let text = string.string();
+        eprintln!("playlist-debug: bind column={index} item={}", anonymous(Path::new(text.as_str())));
         let path = Path::new(text.as_str());
+        if index == 0 {
+            let mut bound = bound_rows.borrow_mut();
+            bound.retain(|row| row.upgrade().is_some());
+            if !bound.iter().any(|row| row.upgrade().as_ref() == Some(item)) {
+                bound.push(item.downgrade());
+            }
+        }
         match index {
             0 => {
                 if let Some(position) = playlist_position(item) {
-                    label.set_label(&number_text(position, current.get() == Some(position)));
-                }
-                let mut bound = bound_rows.borrow_mut();
-                if !bound.contains(item) {
-                    bound.push(item.clone());
+                    set_label_if_changed(&label, &number_text(position));
+                    mark_current_row(item, current.get() == Some(position));
                 }
             }
             1 => {
-                label.set_label(&playlist::with(|list| list.title(path)));
+                set_label_if_changed(&label, &playlist::with(|list| list.title(path)));
                 label.set_tooltip_text(Some(path.to_string_lossy().as_ref()));
             }
-            2 => show_length(&label, path, bind_settings.boolean("playlist-fetch-in-background")),
-            _ => label.set_label(&path.to_string_lossy()),
+            2 => {
+                let mut bound = bound_lengths.borrow_mut();
+                bound.retain(|bound| bound.upgrade().is_some());
+                if !bound.iter().any(|bound| bound.upgrade().as_ref() == Some(&label)) {
+                    bound.push(label.downgrade());
+                }
+                drop(bound);
+                show_length(&label, path, bind_settings.boolean("playlist-fetch-in-background"));
+            }
+            _ => set_label_if_changed(&label, &path.to_string_lossy()),
         }
     });
     factory.connect_unbind(move |_, item| {
-        if let (0, Some(item)) = (index, item.downcast_ref::<gtk::ListItem>()) {
-            unbound_rows.borrow_mut().retain(|row| row != item);
+        let Some(item) = item.downcast_ref::<gtk::ListItem>() else { return };
+        eprintln!("playlist-debug: unbind column={index}");
+        match index {
+            0 => unbound_rows.borrow_mut().retain(|row| row.upgrade().is_some_and(|row| row != *item)),
+            2 => {
+                if let Some(label) = item.child().and_downcast::<gtk::Label>() {
+                    unbound_lengths.borrow_mut().retain(|bound| bound.upgrade().is_some_and(|bound| bound != label));
+                }
+            }
+            _ => {}
         }
     });
     factory
@@ -439,6 +553,7 @@ fn attach_row_controls(label: &gtk::Label, item: &gtk::ListItem, settings: &gio:
     let weak = item.downgrade();
     source.connect_prepare(move |_, _, _| {
         let position = playlist_position(&weak.upgrade()?)?;
+        eprintln!("playlist-debug: drag start from={position}");
         Some(gdk::ContentProvider::for_value(&position.to_value()))
     });
     label.add_controller(source);
@@ -448,6 +563,7 @@ fn attach_row_controls(label: &gtk::Label, item: &gtk::ListItem, settings: &gio:
     target.connect_drop(move |target, value, _, _| {
         let (Some(item), Some(widget), Ok(from)) = (weak.upgrade(), target.widget(), value.get::<u32>()) else { return false };
         let Some(to) = playlist_position(&item) else { return false };
+        eprintln!("playlist-debug: drop from={from} to={to}");
         // Moving items changes the order by hand, so the list is no longer sorted by any column.
         if let Some(view) = widget.ancestor(gtk::ColumnView::static_type()).and_downcast::<gtk::ColumnView>() {
             view.sort_by_column(None::<&gtk::ColumnViewColumn>, gtk::SortType::Ascending);
@@ -465,6 +581,7 @@ fn attach_row_controls(label: &gtk::Label, item: &gtk::ListItem, settings: &gio:
         let Some(path) = item.item().and_downcast::<gtk::StringObject>() else { return };
         gesture.set_state(gtk::EventSequenceState::Claimed);
         let Some(position) = playlist_position(&item) else { return };
+        eprintln!("playlist-debug: context menu position={position}");
         let menu = row_menu(&menu_settings, position, &path.string());
         popup_menu(&widget, &menu, x, y);
     });
@@ -625,7 +742,10 @@ fn selection_actions(selection: &gtk::SingleSelection, view: &gtk::ColumnView) -
         let action = gio::SimpleAction::new(name, None);
         action.connect_activate({
             let (selection, view) = (selection.clone(), view.clone());
-            move |_, _| runs(&view, selected(&selection), playlist_len())
+            move |_, _| {
+                eprintln!("playlist-debug: action {name} selected={:?} len={}", selected(&selection), playlist_len());
+                runs(&view, selected(&selection), playlist_len())
+            }
         });
         group.add_action(&action);
         actions.push((action, needs));

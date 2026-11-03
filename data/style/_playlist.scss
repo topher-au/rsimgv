@@ -1,15 +1,70 @@
-// The playlist window's compact header: smaller text, with the padding of its boxes and buttons set below.
+// The playlist window's compact header: smaller text and buttons, with the padding of its boxes set below.
 headerbar.playlist-header-compact {
+  min-height: 0;
+
   label.title {
     font-size: small;
   }
 
   box {
-    padding: 2px 4px;
+    padding: 0 4px;
   }
 
   box.end button {
-    margin: 0;
-    padding: 2px;
+    margin: 2px;
+    padding: 0;
+  }
+}
+
+// The playlist panel: its toolbar, search field, list and rows.
+.playlist-panel {
+  box.menu {
+    padding: 0;
+    margin: 4px 0;
+
+    button {
+      padding: 2px;
+      margin: 0 1px;
+    }
+  }
+
+  searchbar box {
+    background: none;
+    padding: 2px 0;
+  }
+
+  scrolledwindow {
+    margin: 4px;
+    margin-left: 0;
+
+    > columnview {
+      border: 2px inset var(--border-color);
+    }
+  }
+
+  cell {
+    padding: 0 2px;
+  }
+
+  // The last cell leaves room for the overlay scrollbar, which would otherwise cover its text.
+  row > cell:last-child {
+    padding-right: 14px;
+  }
+
+  row {
+    padding: 4px 0;
+
+    &:hover {
+      background-color: color-mix(in srgb, var(--accent-bg-color) 20%, transparent);
+    }
+
+    &.current-item {
+      background-color: color-mix(in srgb, var(--accent-bg-color) 40%, transparent);
+    }
+
+    &:selected {
+      font-weight: unset;
+      background-color: color-mix(in srgb, var(--accent-bg-color) 80%, transparent);
+    }
   }
 }

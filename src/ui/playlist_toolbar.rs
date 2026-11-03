@@ -79,6 +79,7 @@ impl Toolbar {
         let bar = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         bar.set_margin_start(4);
         bar.set_margin_end(4);
+        bar.add_css_class("menu");
         let mut collapsible = Vec::new();
         for slot in slots {
             match slot {

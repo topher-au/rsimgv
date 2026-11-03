@@ -4,6 +4,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::rc::Rc;
@@ -150,6 +151,7 @@ impl MediaInfo {
             return Some(metadata);
         }
         let key: Key = (path.to_path_buf(), mtime, size);
+        eprintln!("playlist-debug: metadata request {} queued={} running={}", anonymous(path), self.inner.queue.borrow().len(), self.inner.running.get());
         let waiter = Waiter {
             wanted: Rc::new(wanted),
             on_ready: Box::new(on_ready),
@@ -162,11 +164,7 @@ impl MediaInfo {
             list.push(waiter);
             drop(waiters);
             // Asked for again while queued, so it is wanted now: it moves to the front of the queue.
-            let mut queue = self.inner.queue.borrow_mut();
-            if let Some(position) = queue.iter().position(|queued| queued == &key) {
-                queue.remove(position);
-                queue.push_back(key);
-            }
+            self.prioritise(path, mtime, size);
             return None;
         }
         waiters.insert(key.clone(), vec![waiter]);
@@ -174,6 +172,21 @@ impl MediaInfo {
         self.inner.queue.borrow_mut().push_back(key);
         self.start_jobs();
         None
+    }
+
+    /// Whether a request for the metadata of the file at `path` is still waiting for it.
+    pub fn is_pending(&self, path: &Path, mtime: i64, size: u64) -> bool {
+        self.inner.waiters.borrow().contains_key(&(path.to_path_buf(), mtime, size))
+    }
+
+    /// Moves the file at `path` to the front of the queue, where the next read is taken from, if it is queued.
+    pub fn prioritise(&self, path: &Path, mtime: i64, size: u64) {
+        let key: Key = (path.to_path_buf(), mtime, size);
+        let mut queue = self.inner.queue.borrow_mut();
+        if let Some(position) = queue.iter().position(|queued| queued == &key) {
+            queue.remove(position);
+            queue.push_back(key);
+        }
     }
 
     /// Starts queued files while there is room for them.
@@ -206,6 +219,7 @@ impl MediaInfo {
     fn finish(&self, key: Key, metadata: MediaMetadata) {
         self.inner.running.set(self.inner.running.get() - 1);
         let (path, mtime, size) = key.clone();
+        eprintln!("playlist-debug: metadata finish {}", anonymous(&path));
         let mut known = self.inner.known.borrow_mut();
         if known.len() >= MAX_KNOWN {
             known.clear();
@@ -219,6 +233,16 @@ impl MediaInfo {
             }
         }
         self.start_jobs();
+    }
+}
+
+/// A stand-in for a file's name in logs: a hash of the path, with the extension kept.
+pub fn anonymous(path: &Path) -> String {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    path.hash(&mut hasher);
+    match path.extension() {
+        Some(extension) => format!("{:016x}.{}", hasher.finish(), extension.to_string_lossy()),
+        None => format!("{:016x}", hasher.finish()),
     }
 }
 

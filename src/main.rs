@@ -64,10 +64,23 @@ extern "C" fn on_interrupt(_: i32) {
     INTERRUPTED.store(true, Ordering::SeqCst);
 }
 
+/// Temporary debugging aid: prints where a segmentation fault or abort happened, then aborts.
+const SIGSEGV: i32 = 11;
+const SIGABRT: i32 = 6;
+
+extern "C" fn on_crash(signum: i32) {
+    eprintln!("rsimgv: signal {signum}, backtrace:\n{}", std::backtrace::Backtrace::force_capture());
+    std::process::abort();
+}
+
 // Path is provided by the Meson build via RSIMGV_GRESOURCE.
 static RESOURCES: &[u8] = include_bytes!(env!("RSIMGV_GRESOURCE"));
 
 fn main() -> glib::ExitCode {
+    unsafe {
+        signal(SIGSEGV, on_crash);
+        signal(SIGABRT, on_crash);
+    }
     let resource = gio::Resource::from_data(&glib::Bytes::from_static(RESOURCES))
         .expect("failed to load embedded resources");
     gio::resources_register(&resource);
