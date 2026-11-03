@@ -12,15 +12,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use gtk::{gdk, gio};
 
 use crate::overlay::template::Template;
-use crate::overlay::{plain_icon, sample, Element, IconStyle, Items, Kind, Layout, Legacy, Slot, Style, TextAlign, Visibility};
+use crate::overlay::{plain_icon, sample, Element, FilenameWrap, IconStyle, Items, Kind, Layout, Legacy, Slot, Style, TextAlign, Visibility};
 
 /// The space between the edge of the item and the elements, and between one element and the next, in pixels.
 const MARGIN: i32 = 12;
 const SPACING: i32 = 6;
 /// How long an element takes to fade in and out, in milliseconds.
 const FADE: u32 = 150;
-/// The widest a media status's filename goes before it is shortened, in characters.
-const FILENAME_WIDTH: i32 = 40;
 
 /// The layout the settings say: the one saved by the configuration page, or the older settings' while none is saved.
 pub fn layout_from_settings(settings: &gio::Settings) -> Layout {
@@ -221,6 +219,7 @@ struct Placed {
     /// A media status's state icon, and the filename under its text.
     icon: Option<gtk::Label>,
     filename: Option<gtk::Label>,
+    filename_template: Template,
     /// Keeps the element's look on the display.
     _sheet: Sheet,
 }
@@ -368,7 +367,7 @@ fn fill(item: &Placed, frame: &Frame) -> bool {
         }
     }
     if let Some(label) = &item.filename {
-        label.set_text(&(frame.values)("filename").unwrap_or_default());
+        label.set_text(&item.filename_template.render(frame.values));
     }
     if item.label.text() != text {
         item.label.set_text(&text);
@@ -379,6 +378,36 @@ fn fill(item: &Placed, frame: &Frame) -> bool {
     }
     // An element with nothing to show does not show its background either.
     item.bar.is_some() || !text.trim().is_empty() || state_icon.is_some() || item.filename.as_ref().is_some_and(|label| !label.text().is_empty())
+}
+
+/// How `label`, a filename, fits the room it has: on one line in full, over several lines, or cut short with an ellipsis
+/// once it is more than `chars` characters wide.
+fn fit_filename(label: &gtk::Label, wrap: FilenameWrap, chars: i32) {
+    let (ellipsize, wrapped, width) = match wrap {
+        FilenameWrap::SingleLine => (gtk::pango::EllipsizeMode::None, false, -1),
+        FilenameWrap::Wrap => (gtk::pango::EllipsizeMode::None, true, chars),
+        FilenameWrap::EllipsizeStart => (gtk::pango::EllipsizeMode::Start, false, chars),
+        FilenameWrap::EllipsizeMiddle => (gtk::pango::EllipsizeMode::Middle, false, chars),
+        FilenameWrap::EllipsizeEnd => (gtk::pango::EllipsizeMode::End, false, chars),
+    };
+    label.set_ellipsize(ellipsize);
+    label.set_wrap(wrapped);
+    label.set_wrap_mode(gtk::pango::WrapMode::WordChar);
+    label.set_max_width_chars(width);
+}
+
+/// The CSS for the filename line of a media status, which is its own size, colour and opacity where the element sets them.
+fn filename_css(selector: &str, element: &Element) -> String {
+    let mut css = format!("{selector} {{ opacity: {};", element.filename_opacity);
+    if element.filename_font_size > 0.0 {
+        css.push_str(&format!(" font-size: {}pt;", element.filename_font_size));
+    }
+    if let Ok(color) = gdk::RGBA::parse(&element.filename_color) {
+        let alpha = (color.alpha() * element.style.text_opacity as f32).clamp(0.0, 1.0);
+        css.push_str(&format!(" color: {};", gdk::RGBA::new(color.red(), color.green(), color.blue(), alpha).to_str()));
+    }
+    css.push_str(" }");
+    css
 }
 
 fn build(index: usize, element: &Element) -> Placed {
@@ -411,8 +440,7 @@ fn build(index: usize, element: &Element) -> Placed {
         let filename = gtk::Label::new(None);
         filename.add_css_class("overlay-text");
         filename.add_css_class("overlay-subtext");
-        filename.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
-        filename.set_max_width_chars(FILENAME_WIDTH);
+        fit_filename(&filename, element.filename_wrap, element.filename_chars);
         align_label(&filename, align);
         filename
     });
@@ -440,8 +468,23 @@ fn build(index: usize, element: &Element) -> Placed {
     revealer.set_opacity(element.style.opacity);
     revealer.set_halign(horizontal_align(align));
     revealer.set_can_target(false);
-    let sheet = Sheet::new(&style_css(&format!(".overlay-element.{class}"), &element.style));
-    Placed { index, element: element.clone(), template: Template::parse(&element.text_template()), revealer, label, bar, icon, filename, _sheet: sheet }
+    let sheet = Sheet::new(&format!(
+        "{} {}",
+        style_css(&format!(".overlay-element.{class}"), &element.style),
+        filename_css(&format!(".overlay-element.{class} .overlay-subtext"), element),
+    ));
+    Placed {
+        index,
+        element: element.clone(),
+        template: Template::parse(&element.text_template()),
+        revealer,
+        label,
+        bar,
+        icon,
+        filename,
+        filename_template: Template::parse(&element.filename_template),
+        _sheet: sheet,
+    }
 }
 
 #[cfg(test)]

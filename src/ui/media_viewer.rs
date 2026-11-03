@@ -1389,6 +1389,11 @@ impl MediaViewer {
             _ => "⏸️",
         };
         values.insert("state-icon", icon.to_owned());
+        // Until the video has loaded, there is nothing of it to tell but that.
+        if !media.is_prepared() {
+            values.insert("loading", "Loading...".to_owned());
+            return values;
+        }
         values.insert("time-pos", clock(position));
         if duration > 0 {
             values.insert("duration", clock(duration));
@@ -1400,7 +1405,11 @@ impl MediaViewer {
             None => Some(1.0),
         };
         if let Some(speed) = speed {
-            values.insert("speed", format!("{speed:.2}").trim_end_matches('0').trim_end_matches('.').to_owned());
+            let speed_text = format!("{speed:.2}").trim_end_matches('0').trim_end_matches('.').to_owned();
+            if (speed - 1.0).abs() > 1e-6 {
+                values.insert("speed-changed", speed_text.clone());
+            }
+            values.insert("speed", speed_text);
         }
         values.insert("volume", format!("{:.0}", media.volume() * 100.0));
         if media.is_muted() {

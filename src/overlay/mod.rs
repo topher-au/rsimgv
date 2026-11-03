@@ -15,6 +15,8 @@ pub const PROPERTIES: &[(&str, &str)] = &[
     ("time-remaining", "The time left in the video"),
     ("percent-pos", "How far into the video, in percent"),
     ("speed", "The playback speed, such as 1.5"),
+    ("speed-changed", "The playback speed, only while it is not normal"),
+    ("loading", "Loading..., until the video has loaded"),
     ("volume", "The volume, in percent"),
     ("mute", "muted, while the video is muted"),
     ("fps", "The video's frame rate"),
@@ -41,6 +43,7 @@ pub fn sample(name: &str) -> Option<String> {
         "time-remaining" => "3:33",
         "percent-pos" => "28",
         "speed" => "1.5",
+        "speed-changed" => "1.5",
         "volume" => "80",
         "fps" => "29.97",
         "filename" => "example.mp4",
@@ -139,16 +142,73 @@ impl Kind {
     }
 }
 
-/// The parts a media status element can show, in the order it writes them, with the template that writes each. The state
-/// is an icon and the filename a line under the text, so neither is in the text.
-pub const STATUS_PARTS: &[(&str, &str, &str)] = &[
-    ("state", "State icon", ""),
-    ("time", "Time", "${time-pos}${?duration: / ${duration}}"),
-    ("percent", "Percent", "${?percent-pos:(${percent-pos}%)}"),
-    ("speed", "Speed", "${?speed:${speed}x}"),
-    ("volume", "Volume", "Vol ${volume}%${?mute: (muted)}"),
-    ("filename", "Filename under it", ""),
+/// The parts a media status element can show, in the order it writes them. The state is an icon and the filename a line
+/// under the text, so neither is in the text. The percent and the speed are written together, as `(20% @ 0.2x)`, or
+/// whichever of them there is.
+pub const STATUS_PARTS: &[(&str, &str)] = &[
+    ("state", "State icon"),
+    ("time", "Time"),
+    ("percent", "Percent"),
+    ("speed", "Speed"),
+    ("volume", "Volume"),
+    ("filename", "Filename under it"),
 ];
+
+/// How a media status writes the time, and the percent and the speed beside it.
+const STATUS_TIME: &str = "${time-pos}${?duration: / ${duration}}";
+const STATUS_PERCENT: &str = "${?percent-pos:(${percent-pos}%)}";
+const STATUS_SPEED: &str = "${?speed-changed:(${speed-changed}x)}";
+const STATUS_PERCENT_AND_SPEED: &str = "${?percent-pos:${?speed-changed:(${percent-pos}% @ ${speed-changed}x)}${!speed-changed:(${percent-pos}%)}}${!percent-pos:${?speed-changed:(${speed-changed}x)}}";
+const STATUS_VOLUME: &str = "Vol ${volume}%${?mute: (muted)}";
+
+/// How the filename of a media status fits in the space it has.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum FilenameWrap {
+    /// All on one line, however long.
+    SingleLine,
+    /// Over several lines, once it is longer than the most characters.
+    Wrap,
+    /// Cut short with an ellipsis at its start, middle or end, once it is longer than the most characters.
+    EllipsizeStart,
+    #[default]
+    EllipsizeMiddle,
+    EllipsizeEnd,
+}
+
+impl FilenameWrap {
+    pub const ALL: [FilenameWrap; 5] =
+        [FilenameWrap::SingleLine, FilenameWrap::Wrap, FilenameWrap::EllipsizeStart, FilenameWrap::EllipsizeMiddle, FilenameWrap::EllipsizeEnd];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            FilenameWrap::SingleLine => "single-line",
+            FilenameWrap::Wrap => "wrap",
+            FilenameWrap::EllipsizeStart => "start",
+            FilenameWrap::EllipsizeMiddle => "middle",
+            FilenameWrap::EllipsizeEnd => "end",
+        }
+    }
+
+    pub fn title(self) -> &'static str {
+        match self {
+            FilenameWrap::SingleLine => "One line, in full",
+            FilenameWrap::Wrap => "Wrap onto more lines",
+            FilenameWrap::EllipsizeStart => "Shorten at the start",
+            FilenameWrap::EllipsizeMiddle => "Shorten in the middle",
+            FilenameWrap::EllipsizeEnd => "Shorten at the end",
+        }
+    }
+
+    fn from_name(name: &str) -> Self {
+        Self::ALL.into_iter().find(|wrap| wrap.name() == name).unwrap_or_default()
+    }
+}
+
+/// The filename template, and how many characters wide its line goes before it wraps or is shortened.
+pub const DEFAULT_FILENAME_TEMPLATE: &str = "${filename}";
+pub const FILENAME_CHARS_RANGE: (i32, i32) = (10, 200);
+/// How see-through a filename line is unless the element says otherwise.
+pub const DEFAULT_FILENAME_OPACITY: f64 = 0.75;
 
 /// How a media status draws the playback state.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -228,6 +288,14 @@ pub struct Element {
     pub overflow: Overflow,
     /// How a media status draws the playback state.
     pub icon_style: IconStyle,
+    /// The filename line of a media status: its text, how it fits the space, and its own size (in points, or 0 for a
+    /// little under the text's), colour (none for the text's) and opacity.
+    pub filename_template: String,
+    pub filename_wrap: FilenameWrap,
+    pub filename_chars: i32,
+    pub filename_font_size: f64,
+    pub filename_color: String,
+    pub filename_opacity: f64,
     pub style: Style,
 }
 
@@ -313,6 +381,12 @@ impl Element {
             max_notifications: DEFAULT_MAX_NOTIFICATIONS,
             overflow: Overflow::default(),
             icon_style: IconStyle::default(),
+            filename_template: DEFAULT_FILENAME_TEMPLATE.to_owned(),
+            filename_wrap: FilenameWrap::default(),
+            filename_chars: 40,
+            filename_font_size: 0.0,
+            filename_color: String::new(),
+            filename_opacity: DEFAULT_FILENAME_OPACITY,
             style: Style::default(),
         };
         match kind {
@@ -338,12 +412,23 @@ impl Element {
         match self.kind {
             Kind::Template => self.template.clone(),
             Kind::Seek => time_template(&self.time_format).to_owned(),
-            Kind::Status => STATUS_PARTS
-                .iter()
-                .filter(|(name, _, template)| !template.is_empty() && self.parts.iter().any(|part| part == name))
-                .map(|(_, _, template)| *template)
-                .collect::<Vec<_>>()
-                .join("  "),
+            Kind::Status => {
+                let mut pieces = Vec::new();
+                if self.shows_part("time") {
+                    pieces.push(STATUS_TIME);
+                }
+                match (self.shows_part("percent"), self.shows_part("speed")) {
+                    (true, true) => pieces.push(STATUS_PERCENT_AND_SPEED),
+                    (true, false) => pieces.push(STATUS_PERCENT),
+                    (false, true) => pieces.push(STATUS_SPEED),
+                    (false, false) => {}
+                }
+                if self.shows_part("volume") {
+                    pieces.push(STATUS_VOLUME);
+                }
+                // Until the video has loaded there is nothing of it to write.
+                format!("${{?loading:Loading...}}${{!loading:{}}}", pieces.join("  "))
+            }
             Kind::Messages => String::new(),
         }
     }
@@ -370,6 +455,12 @@ impl Element {
             "fullscreen-only": self.fullscreen_only,
             "max-notifications": self.max_notifications,
             "overflow": match self.overflow { Overflow::PushOut => "push-out", Overflow::Wait => "wait" },
+            "filename-template": self.filename_template,
+            "filename-wrap": self.filename_wrap.name(),
+            "filename-max-chars": self.filename_chars,
+            "filename-font-size": self.filename_font_size,
+            "filename-color": self.filename_color,
+            "filename-opacity": self.filename_opacity,
             "icon-style": match self.icon_style { IconStyle::Emoji => "emoji", IconStyle::Characters => "characters" },
             "font": self.style.font_family,
             "font-size": self.style.font_size,
@@ -430,6 +521,18 @@ impl Element {
         element.seconds = number("seconds", element.seconds, SECONDS_RANGE);
         element.fullscreen_only = flag("fullscreen-only", false);
         element.max_notifications = whole("max-notifications", element.max_notifications, MAX_NOTIFICATIONS_RANGE);
+        if let Some(template) = text("filename-template") {
+            element.filename_template = template.to_owned();
+        }
+        if let Some(wrap) = text("filename-wrap") {
+            element.filename_wrap = FilenameWrap::from_name(wrap);
+        }
+        element.filename_chars = whole("filename-max-chars", element.filename_chars, FILENAME_CHARS_RANGE);
+        element.filename_font_size = number("filename-font-size", element.filename_font_size, (0.0, FONT_SIZE_RANGE.1));
+        if let Some(color) = text("filename-color") {
+            element.filename_color = color.to_owned();
+        }
+        element.filename_opacity = number("filename-opacity", element.filename_opacity, (0.0, 1.0));
         if let Some(icons) = text("icon-style") {
             element.icon_style = if icons == "characters" { IconStyle::Characters } else { IconStyle::Emoji };
         }
@@ -630,6 +733,15 @@ mod tests {
     }
 
     #[test]
+    fn the_filename_options_are_kept_and_held_in_range() {
+        let layout = Layout::from_json(r#"{"elements":[{"kind":"status","filename-wrap":"wrap","filename-max-chars":5000,"filename-template":"${path}"}]}"#).unwrap();
+        let element = &layout.elements[0];
+        assert_eq!((element.filename_wrap, element.filename_chars, element.filename_template.as_str()), (FilenameWrap::Wrap, FILENAME_CHARS_RANGE.1, "${path}"));
+        assert_eq!(Layout::from_json(&layout.to_json()), Some(layout));
+        assert_eq!(Element::of_kind(Kind::Status, Slot::TOP_LEFT).filename_wrap, FilenameWrap::EllipsizeMiddle);
+    }
+
+    #[test]
     fn an_emoji_becomes_the_plain_character() {
         assert_eq!(plain_icon("▶️"), "▶\u{fe0e}");
         assert_eq!(plain_icon("⏭️"), "⏭\u{fe0e}");
@@ -696,14 +808,29 @@ mod tests {
             "time-pos" => Some("1:23".to_owned()),
             "duration" => Some("4:56".to_owned()),
             "percent-pos" => Some("28".to_owned()),
-            "speed" => Some("1.5".to_owned()),
+            "speed-changed" => Some("0.2".to_owned()),
             _ => None,
         };
         let render = |status: &Element| template::Template::parse(&status.text_template()).render(&lookup);
-        assert_eq!(render(&status), "1:23 / 4:56  (28%)", "the state is an icon, so it is not in the text");
+        assert_eq!(render(&status), "1:23 / 4:56  (28% @ 0.2x)", "the state is an icon, so it is not in the text");
         status.parts = vec!["speed".to_owned(), "time".to_owned(), "filename".to_owned()];
-        assert_eq!(render(&status), "1:23 / 4:56  1.5x", "in the order it writes them, not the order they were chosen");
+        assert_eq!(render(&status), "1:23 / 4:56  (0.2x)", "in the order it writes them, not the order they were chosen");
         assert!(status.shows_part("filename") && !status.shows_part("state"));
+
+        // The percent and the speed are written as whichever of them there is.
+        status.parts = vec!["percent".to_owned(), "speed".to_owned()];
+        let only = |status: &Element, present: &[&str]| {
+            let present: Vec<String> = present.iter().map(|name| (*name).to_owned()).collect();
+            template::Template::parse(&status.text_template()).render(&|name| present.iter().any(|have| have == name).then(|| "1".to_owned()))
+        };
+        assert_eq!(only(&status, &["percent-pos", "speed-changed"]), "(1% @ 1x)");
+        assert_eq!(only(&status, &["percent-pos"]), "(1%)");
+        assert_eq!(only(&status, &["speed-changed"]), "(1x)");
+        assert_eq!(only(&status, &[]), "");
+
+        // Until the video has loaded, only that is said.
+        status.parts = vec!["time".to_owned(), "percent".to_owned()];
+        assert_eq!(only(&status, &["loading", "time-pos"]), "Loading...");
     }
 
     #[test]

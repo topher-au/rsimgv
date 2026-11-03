@@ -12,7 +12,7 @@ use gtk::{gdk, gio, glib};
 use super::media_overlay::{layout_from_settings, set_preview, Preview};
 use crate::overlay::template::Template;
 use crate::overlay::{
-    sample, Element, IconStyle, Items, Kind, Layout, Overflow, Slot, Style, Visibility, BAR_WIDTH_RANGE, FONT_SIZE_RANGE, MAX_NOTIFICATIONS_RANGE, PADDING_RANGE, PROPERTIES, RADIUS_RANGE,
+    sample, Element, FilenameWrap, IconStyle, Items, Kind, Layout, Overflow, Slot, Visibility, BAR_WIDTH_RANGE, FILENAME_CHARS_RANGE, FONT_SIZE_RANGE, MAX_NOTIFICATIONS_RANGE, PADDING_RANGE, PROPERTIES, RADIUS_RANGE,
     SECONDS_RANGE, STATUS_PARTS, TIME_FORMATS,
 };
 
@@ -458,7 +458,7 @@ impl Editor {
         let group = adw::PreferencesGroup::new();
         group.set_description(Some("The playback state and time, as mpv writes them on its own display."));
         let (preview, update) = self.preview_row();
-        for (part, title, _) in STATUS_PARTS {
+        for (part, title) in STATUS_PARTS {
             let row = adw::SwitchRow::builder().title(*title).active(element.parts.iter().any(|shown| shown == part)).build();
             row.connect_active_notify({
                 let editor = self.clone();
@@ -488,7 +488,85 @@ impl Editor {
         group.add(&icons);
         group.add(&preview);
         page.add(&group);
+        page.add(&self.filename_group(element));
         page
+    }
+
+    /// The options of the filename line of a media status: its text, how it fits the room, and its own look.
+    fn filename_group(self: &Rc<Self>, element: &Element) -> adw::PreferencesGroup {
+        let group = adw::PreferencesGroup::new();
+        group.set_title("Filename");
+        group.set_description(Some("The line under the status. Turn it on with Filename under it."));
+
+        let template = adw::EntryRow::builder().title("Filename template").text(element.filename_template.as_str()).build();
+        template.connect_changed({
+            let editor = self.clone();
+            move |row| editor.edit(|element| element.filename_template = row.text().to_string())
+        });
+        group.add(&template);
+
+        let titles: Vec<&str> = FilenameWrap::ALL.iter().map(|wrap| wrap.title()).collect();
+        let wrap = adw::ComboRow::builder().title("When it is long").model(&gtk::StringList::new(&titles)).build();
+        wrap.set_selected(FilenameWrap::ALL.iter().position(|candidate| *candidate == element.filename_wrap).unwrap_or(0) as u32);
+        let chars = adw::SpinRow::with_range(f64::from(FILENAME_CHARS_RANGE.0), f64::from(FILENAME_CHARS_RANGE.1), 1.0);
+        chars.set_title("Longest line");
+        chars.set_subtitle("In characters, before it wraps or is shortened");
+        chars.set_value(f64::from(element.filename_chars));
+        chars.set_sensitive(element.filename_wrap != FilenameWrap::SingleLine);
+        wrap.connect_selected_notify({
+            let editor = self.clone();
+            let chars = chars.clone();
+            move |row| {
+                if let Some(&wrap) = FilenameWrap::ALL.get(row.selected() as usize) {
+                    chars.set_sensitive(wrap != FilenameWrap::SingleLine);
+                    editor.edit(|element| element.filename_wrap = wrap);
+                }
+            }
+        });
+        chars.connect_value_notify({
+            let editor = self.clone();
+            move |row| editor.edit(|element| element.filename_chars = row.value() as i32)
+        });
+        group.add(&wrap);
+        group.add(&chars);
+
+        let size = adw::SpinRow::with_range(0.0, FONT_SIZE_RANGE.1, 1.0);
+        size.set_title("Font size");
+        size.set_subtitle("In points, or 0 for a little smaller than the text above");
+        size.set_value(element.filename_font_size);
+        size.connect_value_notify({
+            let editor = self.clone();
+            move |row| editor.edit(|element| element.filename_font_size = row.value())
+        });
+        group.add(&size);
+
+        // A colour of its own, or the text's.
+        let own = adw::SwitchRow::builder().title("Colour of its own").active(!element.filename_color.is_empty()).build();
+        let color = self.color_row("Filename colour", if element.filename_color.is_empty() { &element.style.text_color } else { &element.filename_color }, |element, color| element.filename_color = color);
+        color.set_sensitive(own.is_active());
+        own.connect_active_notify({
+            let editor = self.clone();
+            let color = color.clone();
+            move |row| {
+                color.set_sensitive(row.is_active());
+                editor.edit(|element| {
+                    element.filename_color = if row.is_active() { element.style.text_color.clone() } else { String::new() };
+                });
+            }
+        });
+        group.add(&own);
+        group.add(&color);
+
+        let opacity = adw::SpinRow::with_range(0.0, 100.0, 5.0);
+        opacity.set_title("Opacity");
+        opacity.set_subtitle("In percent");
+        opacity.set_value((element.filename_opacity * 100.0).round());
+        opacity.connect_value_notify({
+            let editor = self.clone();
+            move |row| editor.edit(|element| element.filename_opacity = row.value() / 100.0)
+        });
+        group.add(&opacity);
+        group
     }
 
     /// Adds to `group` the rows for how many notifications stack up, and what happens when the stack is full.
@@ -621,7 +699,7 @@ impl Editor {
             move |row| editor.edit(|element| element.style.font_size = row.value())
         });
         text.add(&font_size);
-        text.add(&self.color_row("Text colour", &style.text_color, |style, color| style.text_color = color));
+        text.add(&self.color_row("Text colour", &style.text_color, |element, color| element.style.text_color = color));
         let text_opacity = percent("Text opacity", "In percent", style.text_opacity);
         text_opacity.connect_value_notify({
             let editor = self.clone();
@@ -629,7 +707,7 @@ impl Editor {
         });
         text.add(&text_opacity);
 
-        boxed.add(&self.color_row("Background colour", &style.background, |style, color| style.background = color));
+        boxed.add(&self.color_row("Background colour", &style.background, |element, color| element.style.background = color));
         let background_opacity = percent("Background opacity", "In percent", style.background_opacity);
         background_opacity.connect_value_notify({
             let editor = self.clone();
@@ -673,7 +751,7 @@ impl Editor {
     }
 
     /// A row with a button that picks a colour, and calls `set` with the colour picked.
-    fn color_row(self: &Rc<Self>, title: &str, current: &str, set: fn(&mut Style, String)) -> adw::ActionRow {
+    fn color_row(self: &Rc<Self>, title: &str, current: &str, set: fn(&mut Element, String)) -> adw::ActionRow {
         let row = adw::ActionRow::builder().title(title).build();
         let button = gtk::ColorDialogButton::new(Some(gtk::ColorDialog::builder().with_alpha(false).build()));
         button.set_valign(gtk::Align::Center);
@@ -682,7 +760,7 @@ impl Editor {
             let editor = self.clone();
             move |button| {
                 let color = button.rgba().to_str().to_string();
-                editor.edit(|element| set(&mut element.style, color));
+                editor.edit(|element| set(element, color));
             }
         });
         row.add_suffix(&button);
@@ -718,7 +796,7 @@ pub(crate) mod tests {
     #[test]
     fn every_listed_property_has_a_sample_but_mute() {
         for (name, _) in PROPERTIES {
-            assert!(sample(name).is_some() || *name == "mute", "{name} has no sample");
+            assert!(sample(name).is_some() || matches!(*name, "mute" | "loading"), "{name} has no sample");
         }
     }
 }
