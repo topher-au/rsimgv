@@ -1,5 +1,5 @@
 //! The layout of the media overlay: the text, bars and status that float over the viewer's item, and where. The layout
-//! is a list of elements, each placed in one of nine places on the item, and is kept as JSON in the `overlay-layout`
+//! is a list of elements, each placed in one of nine places on the item, and is kept as JSON in the `viewer.overlay-layout`
 //! setting. This module is the model alone; `ui::media_overlay` draws it.
 
 pub mod template;

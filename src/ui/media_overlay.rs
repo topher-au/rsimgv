@@ -2,6 +2,8 @@
 //! item has a column, and an element is a revealer in the column of its place, so it fades in and out as it comes and
 //! goes. The overlay only shows things, so the item under it takes the clicks.
 
+use crate::settings::Settings;
+
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Duration;
@@ -9,7 +11,7 @@ use std::time::Duration;
 use gtk::prelude::*;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use gtk::{gdk, gio};
+use gtk::gdk;
 
 use super::media_viewer::MAX_VOLUME;
 use super::rotated_label::RotatedLabel;
@@ -23,22 +25,22 @@ const SPACING: i32 = 6;
 const ICON_CHARS: i32 = 2;
 
 /// The layout the settings say: the one saved by the configuration page, or the older settings' while none is saved.
-pub fn layout_from_settings(settings: &gio::Settings) -> Layout {
-    let saved = settings.string("overlay-layout");
+pub fn layout_from_settings(settings: &Settings) -> Layout {
+    let saved = settings.string("viewer.overlay-layout");
     if let Some(layout) = Layout::from_json(&saved) {
         return layout;
     }
     Layout::from_legacy(&Legacy {
-        seek_enabled: settings.boolean("seek-overlay"),
-        seek_bar: settings.boolean("seek-overlay-bar"),
-        seek_time: settings.boolean("seek-overlay-time"),
-        seek_time_format: settings.string("seek-overlay-time-format").to_string(),
-        seek_position: settings.string("seek-overlay-position").to_string(),
-        seek_seconds: settings.double("seek-overlay-seconds"),
-        seek_width: settings.int("seek-overlay-width"),
-        seek_always: settings.boolean("seek-overlay-always"),
-        status_enabled: settings.boolean("viewer-status-bar"),
-        status_position: settings.string("viewer-status-overlay-position").to_string(),
+        seek_enabled: settings.boolean("video.seek-overlay.enabled"),
+        seek_bar: settings.boolean("video.seek-overlay.bar"),
+        seek_time: settings.boolean("video.seek-overlay.time"),
+        seek_time_format: settings.string("video.seek-overlay.time-format").to_string(),
+        seek_position: settings.string("video.seek-overlay.position").to_string(),
+        seek_seconds: settings.double("video.seek-overlay.seconds"),
+        seek_width: settings.int("video.seek-overlay.width"),
+        seek_always: settings.boolean("video.seek-overlay.always"),
+        status_enabled: settings.boolean("viewer.status-bar.shown"),
+        status_position: settings.string("viewer.status-bar.overlay-position").to_string(),
     })
 }
 

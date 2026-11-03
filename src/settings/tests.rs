@@ -12,9 +12,12 @@ use gio::prelude::*;
 use gtk::{gio, glib};
 use serde_yaml_ng::Value;
 
-use super::YamlSettingsBackend;
+use super::{Settings, YamlSettingsBackend};
 
-/// A schema at `/test/rsimgv/`, and a relocatable schema for settings nested below it.
+/// The path of the test schema, which the top level of the settings file is at.
+const ROOT: &str = "/test/rsimgv/";
+
+/// A schema at `/test/rsimgv/`, a relocatable schema for settings nested below it, and child schemas for dotted names.
 const SCHEMA_XML: &str = r#"<schemalist>
   <schema id="test.rsimgv" path="/test/rsimgv/">
     <key name="window-width" type="i"><default>960</default></key>
@@ -24,6 +27,17 @@ const SCHEMA_XML: &str = r#"<schemalist>
   </schema>
   <schema id="test.rsimgv.nested">
     <key name="child" type="i"><default>7</default></key>
+  </schema>
+  <schema id="test.tree" path="/test/rsimgv/">
+    <child name="window" schema="test.tree.window"/>
+  </schema>
+  <schema id="test.tree.window" path="/test/rsimgv/window/">
+    <child name="sidebar" schema="test.tree.window.sidebar"/>
+    <key name="height" type="i"><default>640</default></key>
+    <key name="maximized" type="b"><default>false</default></key>
+  </schema>
+  <schema id="test.tree.window.sidebar" path="/test/rsimgv/window/sidebar/">
+    <key name="width" type="i"><default>-1</default></key>
   </schema>
 </schemalist>"#;
 
@@ -79,7 +93,7 @@ fn saved(file: &Path) -> Value {
 #[test]
 fn defaults_apply_when_nothing_is_saved() {
     let fixture = Fixture::new("defaults");
-    let backend = YamlSettingsBackend::new(fixture.file()).unwrap();
+    let backend = YamlSettingsBackend::new(fixture.file(), ROOT).unwrap();
     let settings = backend.settings(&fixture.schema("test.rsimgv"), None);
     assert_eq!(settings.int("window-width"), 960);
     assert!(!settings.boolean("show-hidden"));
@@ -92,11 +106,11 @@ fn defaults_apply_when_nothing_is_saved() {
 fn a_value_persists_across_backends() {
     let fixture = Fixture::new("persist");
     {
-        let backend = YamlSettingsBackend::new(fixture.file()).unwrap();
+        let backend = YamlSettingsBackend::new(fixture.file(), ROOT).unwrap();
         let settings = backend.settings(&fixture.schema("test.rsimgv"), None);
         settings.set_int("window-width", 1200).unwrap();
     }
-    let backend = YamlSettingsBackend::new(fixture.file()).unwrap();
+    let backend = YamlSettingsBackend::new(fixture.file(), ROOT).unwrap();
     let settings = backend.settings(&fixture.schema("test.rsimgv"), None);
     assert_eq!(settings.int("window-width"), 1200);
 }
@@ -104,13 +118,13 @@ fn a_value_persists_across_backends() {
 #[test]
 fn every_value_keeps_its_type() {
     let fixture = Fixture::new("types");
-    let backend = YamlSettingsBackend::new(fixture.file()).unwrap();
+    let backend = YamlSettingsBackend::new(fixture.file(), ROOT).unwrap();
     let settings = backend.settings(&fixture.schema("test.rsimgv"), None);
     settings.set_boolean("show-hidden", true).unwrap();
     settings.set_string("title", "a \"quoted\"\nline with ünïcode").unwrap();
     settings.set_strv("recent-files", ["/home/user/notes.txt", "it's"]).unwrap();
 
-    let reopened = YamlSettingsBackend::new(fixture.file()).unwrap();
+    let reopened = YamlSettingsBackend::new(fixture.file(), ROOT).unwrap();
     let settings = reopened.settings(&fixture.schema("test.rsimgv"), None);
     assert!(settings.boolean("show-hidden"));
     assert_eq!(settings.string("title"), "a \"quoted\"\nline with ünïcode");
@@ -120,7 +134,7 @@ fn every_value_keeps_its_type() {
 #[test]
 fn a_reset_returns_the_schema_default() {
     let fixture = Fixture::new("reset");
-    let backend = YamlSettingsBackend::new(fixture.file()).unwrap();
+    let backend = YamlSettingsBackend::new(fixture.file(), ROOT).unwrap();
     let settings = backend.settings(&fixture.schema("test.rsimgv"), None);
     settings.set_int("window-width", 1200).unwrap();
     settings.reset("window-width");
@@ -131,15 +145,15 @@ fn a_reset_returns_the_schema_default() {
 #[test]
 fn nested_paths_nest_in_the_file() {
     let fixture = Fixture::new("nested");
-    let backend = YamlSettingsBackend::new(fixture.file()).unwrap();
+    let backend = YamlSettingsBackend::new(fixture.file(), ROOT).unwrap();
     let settings = backend.settings(&fixture.schema("test.rsimgv.nested"), Some("/test/rsimgv/group/parent/"));
     settings.set_int("child", 8).unwrap();
 
     let root = saved(&fixture.file());
-    assert_eq!(root["test"]["rsimgv"]["group"]["parent"]["child"]["value"], Value::String("8".into()));
-    assert_eq!(root["test"]["rsimgv"]["group"]["parent"]["child"]["type"], Value::String("i".into()));
+    assert_eq!(root["group"]["parent"]["child"]["value"], Value::String("8".into()));
+    assert_eq!(root["group"]["parent"]["child"]["type"], Value::String("i".into()));
 
-    let reopened = YamlSettingsBackend::new(fixture.file()).unwrap();
+    let reopened = YamlSettingsBackend::new(fixture.file(), ROOT).unwrap();
     let settings = reopened.settings(&fixture.schema("test.rsimgv.nested"), Some("/test/rsimgv/group/parent/"));
     assert_eq!(settings.int("child"), 8);
 }
@@ -147,7 +161,7 @@ fn nested_paths_nest_in_the_file() {
 #[test]
 fn a_delayed_apply_saves_the_batch_once_and_a_revert_discards_it() {
     let fixture = Fixture::new("delay");
-    let backend = YamlSettingsBackend::new(fixture.file()).unwrap();
+    let backend = YamlSettingsBackend::new(fixture.file(), ROOT).unwrap();
     let settings = backend.settings(&fixture.schema("test.rsimgv"), None);
 
     settings.delay();
@@ -156,7 +170,7 @@ fn a_delayed_apply_saves_the_batch_once_and_a_revert_discards_it() {
     assert!(!fixture.file().exists(), "nothing is saved until the batch is applied");
     settings.apply();
 
-    let reopened = YamlSettingsBackend::new(fixture.file()).unwrap();
+    let reopened = YamlSettingsBackend::new(fixture.file(), ROOT).unwrap();
     let saved_settings = reopened.settings(&fixture.schema("test.rsimgv"), None);
     assert_eq!(saved_settings.int("window-width"), 1200);
     assert_eq!(saved_settings.string("title"), "changed");
@@ -170,7 +184,7 @@ fn a_delayed_apply_saves_the_batch_once_and_a_revert_discards_it() {
 #[test]
 fn a_write_notifies_other_settings_objects_but_not_its_writer() {
     let fixture = Fixture::new("notify");
-    let backend = YamlSettingsBackend::new(fixture.file()).unwrap();
+    let backend = YamlSettingsBackend::new(fixture.file(), ROOT).unwrap();
     let schema = fixture.schema("test.rsimgv");
     let writer = backend.settings(&schema, None);
     let observer = backend.settings(&schema, None);
@@ -190,7 +204,7 @@ fn a_write_notifies_other_settings_objects_but_not_its_writer() {
 #[test]
 fn a_batch_notifies_each_key_it_changed() {
     let fixture = Fixture::new("batch-notify");
-    let backend = YamlSettingsBackend::new(fixture.file()).unwrap();
+    let backend = YamlSettingsBackend::new(fixture.file(), ROOT).unwrap();
     let schema = fixture.schema("test.rsimgv");
     let writer = backend.settings(&schema, None);
     let observer = backend.settings(&schema, None);
@@ -211,13 +225,13 @@ fn a_batch_notifies_each_key_it_changed() {
 #[test]
 fn two_backends_on_one_file_keep_each_others_writes() {
     let fixture = Fixture::new("two-writers");
-    let first = YamlSettingsBackend::new(fixture.file()).unwrap();
-    let second = YamlSettingsBackend::new(fixture.file()).unwrap();
+    let first = YamlSettingsBackend::new(fixture.file(), ROOT).unwrap();
+    let second = YamlSettingsBackend::new(fixture.file(), ROOT).unwrap();
     let schema = fixture.schema("test.rsimgv");
     first.settings(&schema, None).set_int("window-width", 1).unwrap();
     second.settings(&schema, None).set_string("title", "second").unwrap();
 
-    let reopened = YamlSettingsBackend::new(fixture.file()).unwrap();
+    let reopened = YamlSettingsBackend::new(fixture.file(), ROOT).unwrap();
     let settings = reopened.settings(&schema, None);
     assert_eq!(settings.int("window-width"), 1, "the first write is kept");
     assert_eq!(settings.string("title"), "second", "the second write is kept");
@@ -226,7 +240,7 @@ fn two_backends_on_one_file_keep_each_others_writes() {
 #[test]
 fn an_outside_edit_is_read_and_notified() {
     let fixture = Fixture::new("outside-edit");
-    let backend = YamlSettingsBackend::new(fixture.file()).unwrap();
+    let backend = YamlSettingsBackend::new(fixture.file(), ROOT).unwrap();
     let settings = backend.settings(&fixture.schema("test.rsimgv"), None);
     let changed = Rc::new(RefCell::new(false));
     let sink = changed.clone();
@@ -234,7 +248,7 @@ fn an_outside_edit_is_read_and_notified() {
 
     fs::write(
         fixture.file(),
-        "test:\n  rsimgv:\n    window-width:\n      type: i\n      value: '1500'\n",
+        "window-width:\n  type: i\n  value: '1500'\n",
     )
     .unwrap();
     pump_until(|| *changed.borrow());
@@ -246,7 +260,7 @@ fn an_outside_edit_is_read_and_notified() {
 fn a_malformed_file_is_read_only_and_left_as_it_is() {
     let fixture = Fixture::new("malformed");
     fs::write(fixture.file(), "window: [").unwrap();
-    let backend = YamlSettingsBackend::new(fixture.file()).unwrap();
+    let backend = YamlSettingsBackend::new(fixture.file(), ROOT).unwrap();
     let settings = backend.settings(&fixture.schema("test.rsimgv"), None);
     assert!(!settings.is_writable("window-width"));
     assert!(settings.set_int("window-width", 1).is_err(), "the write is refused");
@@ -258,10 +272,10 @@ fn a_value_of_another_type_in_the_file_reads_as_the_default() {
     let fixture = Fixture::new("wrong-type");
     fs::write(
         fixture.file(),
-        "test:\n  rsimgv:\n    window-width:\n      type: s\n      value: \"'wide'\"\n",
+        "window-width:\n  type: s\n  value: \"'wide'\"\n",
     )
     .unwrap();
-    let backend = YamlSettingsBackend::new(fixture.file()).unwrap();
+    let backend = YamlSettingsBackend::new(fixture.file(), ROOT).unwrap();
     let settings = backend.settings(&fixture.schema("test.rsimgv"), None);
     assert_eq!(settings.int("window-width"), 960);
 }
@@ -270,7 +284,7 @@ fn a_value_of_another_type_in_the_file_reads_as_the_default() {
 fn a_missing_parent_directory_is_created_on_the_first_save() {
     let fixture = Fixture::new("parent");
     let file = fixture.dir.join("nested").join("settings.yaml");
-    let backend = YamlSettingsBackend::new(&file).unwrap();
+    let backend = YamlSettingsBackend::new(&file, ROOT).unwrap();
     let settings = backend.settings(&fixture.schema("test.rsimgv"), None);
     settings.set_int("window-width", 1).unwrap();
     assert!(file.exists());
@@ -279,11 +293,73 @@ fn a_missing_parent_directory_is_created_on_the_first_save() {
 #[test]
 fn a_missing_file_leaves_no_settings() {
     let fixture = Fixture::new("missing");
-    let backend = YamlSettingsBackend::new(fixture.file()).unwrap();
+    let backend = YamlSettingsBackend::new(fixture.file(), ROOT).unwrap();
     let settings = backend.settings(&fixture.schema("test.rsimgv"), None);
     settings.set_int("window-width", 1200).unwrap();
     fs::remove_file(fixture.file()).unwrap();
     let settings = backend.settings(&fixture.schema("test.rsimgv"), None);
     pump_until(|| settings.int("window-width") == 960);
     assert_eq!(settings.int("window-width"), 960, "a deleted file falls back to the defaults");
+}
+
+#[test]
+fn a_dotted_name_reads_and_writes_the_nested_setting() {
+    let fixture = Fixture::new("dotted");
+    let backend = YamlSettingsBackend::new(fixture.file(), ROOT).unwrap();
+    let settings = Settings::new(backend.settings(&fixture.schema("test.tree"), None));
+    assert_eq!(settings.int("window.height"), 640);
+    assert_eq!(settings.int("window.sidebar.width"), -1);
+
+    settings.set_int("window.height", 800).unwrap();
+    settings.set_int("window.sidebar.width", 200).unwrap();
+    assert_eq!(settings.int("window.height"), 800);
+
+    let root = saved(&fixture.file());
+    assert_eq!(root["window"]["height"]["value"], Value::String("800".into()));
+    assert_eq!(root["window"]["sidebar"]["width"]["value"], Value::String("200".into()));
+
+    settings.reset("window.height");
+    assert_eq!(settings.int("window.height"), 640);
+}
+
+#[test]
+fn a_change_is_reported_by_its_dotted_name() {
+    let fixture = Fixture::new("dotted-notify");
+    let backend = YamlSettingsBackend::new(fixture.file(), ROOT).unwrap();
+    let schema = fixture.schema("test.tree");
+    let writer = Settings::new(backend.settings(&schema, None));
+    let observer = Settings::new(backend.settings(&schema, None));
+    let keys = Rc::new(RefCell::new(Vec::new()));
+    let sink = keys.clone();
+    let handler = observer.connect_changed("window.sidebar.width", move |settings, key| {
+        sink.borrow_mut().push((key.to_owned(), settings.int(key)));
+    });
+
+    writer.set_int("window.sidebar.width", 300).unwrap();
+    pump_until(|| !keys.borrow().is_empty());
+    assert_eq!(keys.borrow().as_slice(), [("window.sidebar.width".to_owned(), 300)]);
+
+    observer.disconnect(handler);
+    writer.set_int("window.sidebar.width", 400).unwrap();
+    pump_until(|| observer.int("window.sidebar.width") == 400);
+    assert_eq!(keys.borrow().len(), 1, "a disconnected handler is not called");
+}
+
+#[test]
+fn a_toggle_action_follows_its_setting_under_its_own_name() {
+    let fixture = Fixture::new("toggle-action");
+    let backend = YamlSettingsBackend::new(fixture.file(), ROOT).unwrap();
+    let schema = fixture.schema("test.tree");
+    let settings = Settings::new(backend.settings(&schema, None));
+    let action = settings.create_toggle_action("window.maximized", "maximize-window");
+    assert_eq!(action.name(), "maximize-window");
+
+    action.activate(None);
+    assert!(settings.boolean("window.maximized"), "activating toggles the setting");
+    assert_eq!(action.state().and_then(|state| state.get::<bool>()), Some(true));
+
+    let other = Settings::new(backend.settings(&schema, None));
+    other.set_boolean("window.maximized", false).unwrap();
+    pump_until(|| action.state().and_then(|state| state.get::<bool>()) == Some(false));
+    assert_eq!(action.state().and_then(|state| state.get::<bool>()), Some(false), "the state follows the setting");
 }

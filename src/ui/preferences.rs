@@ -1,6 +1,8 @@
 //! The preferences dialog. Its rows are bound to the application's GSettings keys, so a change
 //! made here, from the menu, or by another instance applies immediately.
 
+use crate::settings::{ChangedHandler, Settings};
+
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
@@ -253,11 +255,11 @@ mod imp {
         #[template_child]
         pub remove_script_button: TemplateChild<gtk::Button>,
         /// The handler that keeps the size row in step with the setting; removed when the dialog closes.
-        pub(super) size_handler: RefCell<Option<glib::SignalHandlerId>>,
+        pub(super) size_handler: RefCell<Option<ChangedHandler>>,
         /// The handler that rebuilds the info list when the setting changes; removed when the dialog closes.
-        pub(super) info_handler: RefCell<Option<glib::SignalHandlerId>>,
+        pub(super) info_handler: RefCell<Option<ChangedHandler>>,
         /// The handler that rebuilds the scripts list when the setting changes; removed when the dialog closes.
-        pub(super) scripts_handler: RefCell<Option<glib::SignalHandlerId>>,
+        pub(super) scripts_handler: RefCell<Option<ChangedHandler>>,
     }
 
     #[glib::object_subclass]
@@ -289,33 +291,33 @@ glib::wrapper! {
 impl PreferencesDialog {
     /// Shows the options of the chosen video backend, and lets SVP be changed only while mpv plays videos, with a
     /// banner that offers mpv while it does not. The extra mpv options are saved when applied.
-    fn bind_video_backend(&self, settings: &gio::Settings) {
+    fn bind_video_backend(&self, settings: &Settings) {
         use adw::prelude::EntryRowExt;
         let imp = self.imp();
         let row = &*imp.mpv_args_row;
-        row.set_text(&settings.string("mpv-args"));
+        row.set_text(&settings.string("video.mpv.args"));
         row.connect_apply({
             let settings = settings.clone();
             move |row| {
-                let _ = settings.set_string("mpv-args", &row.text());
+                let _ = settings.set_string("video.mpv.args", &row.text());
             }
         });
-        settings.bind("mpv-opengl", &*imp.mpv_opengl_row, "active").build();
+        settings.bind("video.mpv.opengl", &*imp.mpv_opengl_row, "active").build();
         settings
-            .bind("video-backend", &*imp.svp_banner, "revealed")
+            .bind("video.backend", &*imp.svp_banner, "revealed")
             .mapping(|variant, _| Some((variant.str()? != "mpv").to_value()))
             .get_only()
             .build();
         imp.svp_banner.connect_button_clicked({
             let settings = settings.clone();
             move |_| {
-                let _ = settings.set_string("video-backend", "mpv");
+                let _ = settings.set_string("video.backend", "mpv");
             }
         });
         let groups = [("visible", &imp.mpv_group, "mpv"), ("visible", &imp.gstreamer_group, "gtk"), ("sensitive", &imp.svp_group, "mpv")];
         for (property, group, backend) in groups {
             settings
-                .bind("video-backend", &**group, property)
+                .bind("video.backend", &**group, property)
                 .mapping(move |variant, _| Some((variant.str()? == backend).to_value()))
                 .get_only()
                 .build();
@@ -323,30 +325,30 @@ impl PreferencesDialog {
     }
 
     /// Binds the remote control rows. Each transport's path or port row is insensitive while its toggle is off.
-    fn bind_remote(&self, settings: &gio::Settings) {
+    fn bind_remote(&self, settings: &Settings) {
         use adw::prelude::EntryRowExt;
         let imp = self.imp();
-        settings.bind("ipc-socket", &*imp.ipc_socket_row, "active").build();
-        settings.bind("ipc-socket", &*imp.ipc_socket_path_row, "sensitive").build();
-        settings.bind("ipc-tcp-enabled", &*imp.ipc_tcp_switch_row, "active").build();
-        settings.bind("ipc-tcp-enabled", &*imp.ipc_tcp_row, "sensitive").build();
-        settings.bind("ipc-http-enabled", &*imp.ipc_http_switch_row, "active").build();
-        settings.bind("ipc-http-enabled", &*imp.ipc_http_row, "sensitive").build();
-        bind_port(settings, &imp.ipc_tcp_row, "ipc-tcp-port");
-        bind_port(settings, &imp.ipc_http_row, "ipc-http-port");
+        settings.bind("remote.socket.enabled", &*imp.ipc_socket_row, "active").build();
+        settings.bind("remote.socket.enabled", &*imp.ipc_socket_path_row, "sensitive").build();
+        settings.bind("remote.tcp.enabled", &*imp.ipc_tcp_switch_row, "active").build();
+        settings.bind("remote.tcp.enabled", &*imp.ipc_tcp_row, "sensitive").build();
+        settings.bind("remote.http.enabled", &*imp.ipc_http_switch_row, "active").build();
+        settings.bind("remote.http.enabled", &*imp.ipc_http_row, "sensitive").build();
+        bind_port(settings, &imp.ipc_tcp_row, "remote.tcp.port");
+        bind_port(settings, &imp.ipc_http_row, "remote.http.port");
 
         // The path is saved when applied, and a blank path means the default socket.
         let row = &*imp.ipc_socket_path_row;
-        row.set_text(&settings.string("ipc-socket-path"));
+        row.set_text(&settings.string("remote.socket.path"));
         row.connect_apply({
             let settings = settings.clone();
             move |row| {
-                let _ = settings.set_string("ipc-socket-path", &row.text());
+                let _ = settings.set_string("remote.socket.path", &row.text());
             }
         });
     }
 
-    pub fn new(settings: &gio::Settings) -> Self {
+    pub fn new(settings: &Settings) -> Self {
         let dialog: Self = glib::Object::new();
         let imp = dialog.imp();
 
@@ -361,70 +363,70 @@ impl PreferencesDialog {
         imp.app_version_box.set_tooltip_text(Some(&format!("rsimgv {}", env!("CARGO_PKG_VERSION"))));
         imp.gtk_version_box.set_tooltip_text(Some(&format!("GTK {gtk_version}")));
 
-        settings.bind("show-hidden", &*imp.show_hidden_row, "active").build();
-        settings.bind("collapse-on-navigate", &*imp.collapse_on_navigate_row, "active").build();
-        settings.bind("media-only", &*imp.media_only_row, "active").build();
-        settings.bind("image-preloading", &*imp.image_preloading_row, "active").build();
+        settings.bind("browse.show-hidden", &*imp.show_hidden_row, "active").build();
+        settings.bind("browse.collapse-on-navigate", &*imp.collapse_on_navigate_row, "active").build();
+        settings.bind("browse.media-only", &*imp.media_only_row, "active").build();
+        settings.bind("image.preloading", &*imp.image_preloading_row, "active").build();
         imp.thumbnail_threads_row.adjustment().set_upper(crate::fs::thumbnail::thread_limit() as f64);
-        bind_port(settings, &imp.thumbnail_threads_row, "thumbnail-threads");
-        settings.bind("thumbnail-cache", &*imp.thumbnail_cache_row, "active").build();
-        settings.bind("thumbnail-unload-offscreen", &*imp.thumbnail_unload_offscreen_row, "active").build();
-        settings.bind("thumbnail-crop", &*imp.thumbnail_crop_row, "active").build();
-        settings.bind("video-frame-previews", &*imp.video_frame_previews_row, "active").build();
-        settings.bind("directory-previews", &*imp.directory_previews_row, "active").build();
-        settings.bind("folder-preview-cycle", &*imp.folder_preview_cycle_row, "active").build();
-        bind_port(settings, &imp.folder_preview_count_row, "folder-preview-count");
-        settings.bind("folder-preview-fit", &*imp.folder_preview_fit_row, "active").build();
+        bind_port(settings, &imp.thumbnail_threads_row, "thumbnails.threads");
+        settings.bind("thumbnails.cache", &*imp.thumbnail_cache_row, "active").build();
+        settings.bind("thumbnails.unload-offscreen", &*imp.thumbnail_unload_offscreen_row, "active").build();
+        settings.bind("thumbnails.crop", &*imp.thumbnail_crop_row, "active").build();
+        settings.bind("browse.video-frame-previews", &*imp.video_frame_previews_row, "active").build();
+        settings.bind("browse.folder-previews.enabled", &*imp.directory_previews_row, "active").build();
+        settings.bind("browse.folder-previews.cycle", &*imp.folder_preview_cycle_row, "active").build();
+        bind_port(settings, &imp.folder_preview_count_row, "browse.folder-previews.count");
+        settings.bind("browse.folder-previews.fit", &*imp.folder_preview_fit_row, "active").build();
         // The number of previews is not used while they are fitted, so its row is off then.
         settings
-            .bind("folder-preview-fit", &*imp.folder_preview_count_row, "sensitive")
+            .bind("browse.folder-previews.fit", &*imp.folder_preview_count_row, "sensitive")
             .flags(gio::SettingsBindFlags::INVERT_BOOLEAN)
             .build();
-        settings.bind("viewer-blurred-background", &*imp.blurred_background_row, "active").build();
-        settings.bind("svp-enabled", &*imp.svp_enabled_row, "active").build();
-        settings.bind("svp-fps-target", &*imp.svp_fps_target_row, "value").build();
-        settings.bind("svp-nvof", &*imp.svp_nvof_row, "active").build();
-        settings.bind("svp-seek-bypass", &*imp.svp_seek_bypass_row, "active").build();
-        settings.bind("svp-seek-bypass-delay", &*imp.svp_seek_bypass_delay_row, "value").build();
-        settings.bind("svp-seek-bypass", &*imp.svp_seek_bypass_delay_row, "sensitive").get_only().build();
-        bind_port(settings, &imp.svp_fps_minimum_row, "svp-fps-minimum");
-        bind_port(settings, &imp.svp_fps_maximum_row, "svp-fps-maximum");
-        settings.bind("viewer-status-bar", &*imp.viewer_status_bar_row, "active").build();
-        bind_port(settings, &imp.zoom_step_row, "zoom-step");
-        bind_port(settings, &imp.sidebar_animation_ms_row, "sidebar-animation-ms");
-        bind_port(settings, &imp.video_crop_trim_row, "video-crop-trim");
-        bind_port(settings, &imp.video_backdrop_blur_row, "video-backdrop-blur");
+        settings.bind("viewer.blurred-background", &*imp.blurred_background_row, "active").build();
+        settings.bind("video.svp.enabled", &*imp.svp_enabled_row, "active").build();
+        settings.bind("video.svp.fps.target", &*imp.svp_fps_target_row, "value").build();
+        settings.bind("video.svp.nvof", &*imp.svp_nvof_row, "active").build();
+        settings.bind("video.svp.seek-bypass.enabled", &*imp.svp_seek_bypass_row, "active").build();
+        settings.bind("video.svp.seek-bypass.delay", &*imp.svp_seek_bypass_delay_row, "value").build();
+        settings.bind("video.svp.seek-bypass.enabled", &*imp.svp_seek_bypass_delay_row, "sensitive").get_only().build();
+        bind_port(settings, &imp.svp_fps_minimum_row, "video.svp.fps.minimum");
+        bind_port(settings, &imp.svp_fps_maximum_row, "video.svp.fps.maximum");
+        settings.bind("viewer.status-bar.shown", &*imp.viewer_status_bar_row, "active").build();
+        bind_port(settings, &imp.zoom_step_row, "image.zoom-step");
+        bind_port(settings, &imp.sidebar_animation_ms_row, "window.sidebar.animation-ms");
+        bind_port(settings, &imp.video_crop_trim_row, "video.crop.trim");
+        bind_port(settings, &imp.video_backdrop_blur_row, "video.backdrop.blur");
         for (row, key) in [
-            (&imp.video_backdrop_zoom_row, "video-backdrop-zoom"),
-            (&imp.video_backdrop_dim_row, "video-backdrop-dim"),
+            (&imp.video_backdrop_zoom_row, "video.backdrop.zoom"),
+            (&imp.video_backdrop_dim_row, "video.backdrop.dim"),
         ] {
             settings.bind(key, &**row, "value").build();
         }
         // The options mean nothing while their filter is off.
         for row in [imp.video_crop_method_row.upcast_ref::<gtk::Widget>(), imp.video_crop_trim_row.upcast_ref()] {
-            settings.bind("video-crop", row, "sensitive").get_only().build();
+            settings.bind("video.crop.enabled", row, "sensitive").get_only().build();
         }
         for row in [
             imp.video_backdrop_zoom_row.upcast_ref::<gtk::Widget>(),
             imp.video_backdrop_blur_row.upcast_ref(),
             imp.video_backdrop_dim_row.upcast_ref(),
         ] {
-            settings.bind("video-backdrop", row, "sensitive").get_only().build();
+            settings.bind("video.backdrop.enabled", row, "sensitive").get_only().build();
         }
-        settings.bind("sidebar-animations", &*imp.sidebar_animation_ms_row, "sensitive").get_only().build();
-        bind_port(settings, &imp.video_start_delay_row, "video-start-delay");
-        bind_port(settings, &imp.scroll_speed_row, "scroll-speed");
-        bind_port(settings, &imp.thumbnail_bar_size_row, "viewer-thumbnail-bar-size");
+        settings.bind("window.sidebar.animations", &*imp.sidebar_animation_ms_row, "sensitive").get_only().build();
+        bind_port(settings, &imp.video_start_delay_row, "video.start-delay");
+        bind_port(settings, &imp.scroll_speed_row, "mouse.scroll.speed");
+        bind_port(settings, &imp.thumbnail_bar_size_row, "viewer.thumbnail-bar.size");
         dialog.bind_video_backend(settings);
         dialog.bind_remote(settings);
-        settings.bind("ipc-external-access", &*imp.ipc_external_row, "active").build();
+        settings.bind("remote.external-access", &*imp.ipc_external_row, "active").build();
 
         bind_switches(settings, dialog.imp());
         bind_choices(settings, dialog.imp());
         imp.controls_reset_button.connect_clicked({
             let settings = settings.clone();
             move |_| {
-                for key in ["video-controls-x", "video-controls-y", "video-controls-width"] {
+                for key in ["video.controls.x", "video.controls.y", "video.controls.width"] {
                     settings.reset(key);
                 }
             }
@@ -443,32 +445,32 @@ impl PreferencesDialog {
             factor => format!("{factor}x"),
         });
         // The scale holds a double and the key an integer, so the factor is written by hand.
-        scale.set_value(f64::from(settings.int("expand-up-to-factor")));
+        scale.set_value(f64::from(settings.int("image.expand-up-to-factor")));
         scale.connect_value_changed({
             let settings = settings.clone();
             move |scale| {
                 let factor = scale.value().round() as i32;
-                if settings.int("expand-up-to-factor") != factor {
-                    let _ = settings.set_int("expand-up-to-factor", factor);
+                if settings.int("image.expand-up-to-factor") != factor {
+                    let _ = settings.set_int("image.expand-up-to-factor", factor);
                 }
             }
         });
 
         // The spin row holds a double and the key an integer, so the size is converted by hand.
-        imp.item_size_row.set_value(f64::from(settings.int("item-size")));
+        imp.item_size_row.set_value(f64::from(settings.int("browse.item-size")));
         let row = imp.item_size_row.downgrade();
         imp.item_size_row.connect_value_notify({
             let settings = settings.clone();
             move |row| {
                 let size = row.value() as i32;
-                if settings.int("item-size") != size {
-                    let _ = settings.set_int("item-size", size);
+                if settings.int("browse.item-size") != size {
+                    let _ = settings.set_int("browse.item-size", size);
                 }
             }
         });
-        let handler = settings.connect_changed(Some("item-size"), move |settings, _| {
+        let handler = settings.connect_changed("browse.item-size", move |settings, _| {
             if let Some(row) = row.upgrade() {
-                row.set_value(f64::from(settings.int("item-size")));
+                row.set_value(f64::from(settings.int("browse.item-size")));
             }
         });
         imp.size_handler.replace(Some(handler));
@@ -495,7 +497,7 @@ impl PreferencesDialog {
 impl PreferencesDialog {
     /// Lists the scripts, and adds, edits or removes them through a dialog. Each change is saved to the
     /// `scripts` setting, and the list follows that setting.
-    fn bind_scripts(&self, settings: &gio::Settings) {
+    fn bind_scripts(&self, settings: &Settings) {
         let imp = self.imp();
         let editing: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
 
@@ -613,7 +615,7 @@ impl PreferencesDialog {
 
         // The list is rebuilt from the setting now, and again whenever the setting changes.
         let list = imp.scripts_list.clone();
-        let rebuild = move |settings: &gio::Settings| {
+        let rebuild = move |settings: &Settings| {
             while let Some(child) = list.first_child() {
                 list.remove(&child);
             }
@@ -623,37 +625,37 @@ impl PreferencesDialog {
             }
         };
         rebuild(settings);
-        let handler = settings.connect_changed(Some("scripts"), move |settings, _| rebuild(settings));
+        let handler = settings.connect_changed("scripts.list", move |settings, _| rebuild(settings));
         imp.scripts_handler.replace(Some(handler));
     }
 }
 
 /// Binds each switch row to its boolean setting.
-fn bind_switches(settings: &gio::Settings, imp: &imp::PreferencesDialog) {
+fn bind_switches(settings: &Settings, imp: &imp::PreferencesDialog) {
     let switches = [
-        ("remember-folder-sort", &imp.remember_folder_sort_row),
-        ("playlist-fetch-in-background", &imp.playlist_fetch_row),
-        ("open-fullscreen", &imp.open_fullscreen_row),
-        ("auto-hide-cursor", &imp.auto_hide_cursor_row),
-        ("smooth-scrolling", &imp.smooth_scrolling_row),
-        ("image-info-in-title", &imp.image_info_in_title_row),
-        ("remember-file-settings", &imp.remember_file_settings_row),
-        ("remember-position", &imp.remember_position_row),
-        ("remember-speed", &imp.remember_speed_row),
-        ("remember-volume", &imp.remember_volume_row),
-        ("remember-rotation", &imp.remember_rotation_row),
-        ("remember-zoom", &imp.remember_zoom_row),
-        ("remember-pan", &imp.remember_pan_row),
-        ("video-crop", &imp.video_crop_row),
-        ("video-backdrop", &imp.video_backdrop_row),
-        ("video-controls-locked", &imp.controls_locked_row),
-        ("sidebar-animations", &imp.sidebar_animations_row),
-        ("keep-fit-mode", &imp.keep_fit_mode_row),
-        ("unlock-minimum-zoom", &imp.unlock_minimum_zoom_row),
-        ("smooth-upscaling", &imp.smooth_upscaling_row),
-        ("viewer-thumbnail-bar-shown", &imp.thumbnail_bar_shown_row),
-        ("viewer-thumbnail-bar-overlay", &imp.thumbnail_bar_overlay_row),
-        ("viewer-thumbnail-bar-pinned", &imp.thumbnail_bar_pinned_row),
+        ("browse.sort.remember-per-folder", &imp.remember_folder_sort_row),
+        ("playlist.fetch-in-background", &imp.playlist_fetch_row),
+        ("viewer.open-fullscreen", &imp.open_fullscreen_row),
+        ("viewer.auto-hide-cursor", &imp.auto_hide_cursor_row),
+        ("image.smooth-scrolling", &imp.smooth_scrolling_row),
+        ("viewer.image-info-in-title", &imp.image_info_in_title_row),
+        ("remember.enabled", &imp.remember_file_settings_row),
+        ("remember.position", &imp.remember_position_row),
+        ("remember.speed", &imp.remember_speed_row),
+        ("remember.volume", &imp.remember_volume_row),
+        ("remember.rotation", &imp.remember_rotation_row),
+        ("remember.zoom", &imp.remember_zoom_row),
+        ("remember.pan", &imp.remember_pan_row),
+        ("video.crop.enabled", &imp.video_crop_row),
+        ("video.backdrop.enabled", &imp.video_backdrop_row),
+        ("video.controls.locked", &imp.controls_locked_row),
+        ("window.sidebar.animations", &imp.sidebar_animations_row),
+        ("image.keep-fit", &imp.keep_fit_mode_row),
+        ("image.unlock-minimum-zoom", &imp.unlock_minimum_zoom_row),
+        ("image.smooth-upscaling", &imp.smooth_upscaling_row),
+        ("viewer.thumbnail-bar.shown", &imp.thumbnail_bar_shown_row),
+        ("viewer.thumbnail-bar.overlay", &imp.thumbnail_bar_overlay_row),
+        ("viewer.thumbnail-bar.pinned", &imp.thumbnail_bar_pinned_row),
     ];
     for (key, row) in switches {
         settings.bind(key, &**row, "active").build();
@@ -661,29 +663,29 @@ fn bind_switches(settings: &gio::Settings, imp: &imp::PreferencesDialog) {
 }
 
 /// Binds each combo row to a string setting whose value is one of `choices`, by position in the row.
-fn bind_choices(settings: &gio::Settings, imp: &imp::PreferencesDialog) {
+fn bind_choices(settings: &Settings, imp: &imp::PreferencesDialog) {
     let combos: [(&str, &glib::Object, &[&str]); 21] = [
-        ("thumbnail-aggression", imp.thumbnail_aggression_row.upcast_ref(), &["low", "standard", "increased", "high", "extreme"]),
-        ("video-crop-method", imp.video_crop_method_row.upcast_ref(), &["cropdetect", "edges", "static"]),
-        ("folder-end", imp.folder_end_row.upcast_ref(), &["stop", "loop", "next-folder"]),
-        ("sort-by", imp.default_sort_by_row.upcast_ref(), &["name", "modified", "size", "type"]),
-        ("sort-order", imp.default_sort_order_row.upcast_ref(), &["ascending", "descending"]),
-        ("mouse-back", imp.back_button_row.upcast_ref(), &["back", "up", "previous", "next", "forward", "none"]),
-        ("mouse-forward", imp.forward_button_row.upcast_ref(), &["back", "up", "previous", "next", "forward", "none"]),
-        ("scroll-image", imp.scroll_image_row.upcast_ref(), &["ctrl-zoom", "zoom", "step", "none"]),
-        ("scroll-video", imp.scroll_video_row.upcast_ref(), &["volume", "seek", "step", "none"]),
-        ("video-backend", imp.video_backend_row.upcast_ref(), &["mpv", "gtk"]),
-        ("viewer-thumbnail-bar", imp.thumbnail_bar_row.upcast_ref(), &["top", "left", "bottom", "right"]),
-        ("start-location", imp.start_location_row.upcast_ref(), &["last", "root", "home", "specific"]),
-        ("filename-display", imp.filename_row.upcast_ref(), &["off", "wrapped", "ellipsized"]),
-        ("show-directories", imp.show_directories_row.upcast_ref(), &["none", "first-last", "inline"]),
-        ("zoom-indicator", imp.zoom_indicator_row.upcast_ref(), &["on", "off", "auto"]),
-        ("image-fit", imp.image_fit_row.upcast_ref(), &["window", "width", "height", "fill", "original"]),
-        ("original-focus", imp.original_focus_row.upcast_ref(), &["top", "center", "cursor"]),
-        ("scaling-filter", imp.scaling_filter_row.upcast_ref(), &["nearest", "linear", "linear-sharp", "cubic", "cubic-sharp"]),
-        ("info-layout", imp.info_layout_dropdown.upcast_ref(), &["disabled", "stacked", "inline"]),
-        ("svp-fps-mode", imp.svp_fps_mode_row.upcast_ref(), &["default", "fixed", "variable", "display"]),
-        ("playlist-window-headerbar", imp.playlist_window_headerbar_row.upcast_ref(), &["full", "compact", "none"]),
+        ("thumbnails.aggression", imp.thumbnail_aggression_row.upcast_ref(), &["low", "standard", "increased", "high", "extreme"]),
+        ("video.crop.method", imp.video_crop_method_row.upcast_ref(), &["cropdetect", "edges", "static"]),
+        ("viewer.folder-end", imp.folder_end_row.upcast_ref(), &["stop", "loop", "next-folder"]),
+        ("browse.sort.by", imp.default_sort_by_row.upcast_ref(), &["name", "modified", "size", "type"]),
+        ("browse.sort.order", imp.default_sort_order_row.upcast_ref(), &["ascending", "descending"]),
+        ("mouse.back", imp.back_button_row.upcast_ref(), &["back", "up", "previous", "next", "forward", "none"]),
+        ("mouse.forward", imp.forward_button_row.upcast_ref(), &["back", "up", "previous", "next", "forward", "none"]),
+        ("mouse.scroll.image", imp.scroll_image_row.upcast_ref(), &["ctrl-zoom", "zoom", "step", "none"]),
+        ("mouse.scroll.video", imp.scroll_video_row.upcast_ref(), &["volume", "seek", "step", "none"]),
+        ("video.backend", imp.video_backend_row.upcast_ref(), &["mpv", "gtk"]),
+        ("viewer.thumbnail-bar.side", imp.thumbnail_bar_row.upcast_ref(), &["top", "left", "bottom", "right"]),
+        ("start.location", imp.start_location_row.upcast_ref(), &["last", "root", "home", "specific"]),
+        ("browse.filename-display", imp.filename_row.upcast_ref(), &["off", "wrapped", "ellipsized"]),
+        ("browse.show-directories", imp.show_directories_row.upcast_ref(), &["none", "first-last", "inline"]),
+        ("image.zoom-indicator", imp.zoom_indicator_row.upcast_ref(), &["on", "off", "auto"]),
+        ("image.fit", imp.image_fit_row.upcast_ref(), &["window", "width", "height", "fill", "original"]),
+        ("image.original-focus", imp.original_focus_row.upcast_ref(), &["top", "center", "cursor"]),
+        ("image.scaling-filter", imp.scaling_filter_row.upcast_ref(), &["nearest", "linear", "linear-sharp", "cubic", "cubic-sharp"]),
+        ("browse.info.layout", imp.info_layout_dropdown.upcast_ref(), &["disabled", "stacked", "inline"]),
+        ("video.svp.fps.mode", imp.svp_fps_mode_row.upcast_ref(), &["default", "fixed", "variable", "display"]),
+        ("playlist.window.headerbar", imp.playlist_window_headerbar_row.upcast_ref(), &["full", "compact", "none"]),
     ];
     for (key, object, choices) in combos {
         let choices: &'static [&'static str] = choices;
@@ -704,12 +706,12 @@ fn bind_choices(settings: &gio::Settings, imp: &imp::PreferencesDialog) {
 
 /// Fills the info list from the `info-fields` setting, one row per field in its order, and offers the
 /// fields not yet shown in the add menu. Called again whenever the setting changes.
-fn rebuild_info_list(settings: &gio::Settings, imp: &imp::PreferencesDialog) {
+fn rebuild_info_list(settings: &Settings, imp: &imp::PreferencesDialog) {
     let list = &imp.info_list;
     while let Some(child) = list.first_child() {
         list.remove(&child);
     }
-    let shown: Vec<String> = settings.strv("info-fields").iter().map(|key| key.to_string()).collect();
+    let shown: Vec<String> = settings.strv("browse.info.fields").iter().map(|key| key.to_string()).collect();
     for (index, key) in shown.iter().enumerate() {
         if let Some(field) = InfoField::from_key(key) {
             list.append(&info_row(settings, index, field));
@@ -727,7 +729,7 @@ fn rebuild_info_list(settings: &gio::Settings, imp: &imp::PreferencesDialog) {
 
 /// One row of the info list: a drag handle, the field's name, and a remove button. Dropping another row
 /// onto it moves that field to this row's place.
-fn info_row(settings: &gio::Settings, index: usize, field: InfoField) -> gtk::Box {
+fn info_row(settings: &Settings, index: usize, field: InfoField) -> gtk::Box {
     let builder = gtk::Builder::from_resource("/au/topher/rsimgv/ui/info_field_row.ui");
     let row: gtk::Box = builder.object("row").expect("info_field_row.ui defines `row`");
     let handle: gtk::Image = builder.object("handle").expect("info_field_row.ui defines `handle`");
@@ -745,11 +747,11 @@ fn info_row(settings: &gio::Settings, index: usize, field: InfoField) -> gtk::Bo
         let settings = settings.clone();
         move |_, value, _, _| {
             let Ok(dragged) = value.get::<String>() else { return false };
-            let mut keys: Vec<String> = settings.strv("info-fields").iter().map(|key| key.to_string()).collect();
+            let mut keys: Vec<String> = settings.strv("browse.info.fields").iter().map(|key| key.to_string()).collect();
             let Some(from) = keys.iter().position(|key| *key == dragged) else { return false };
             let moved = keys.remove(from);
             keys.insert(index.min(keys.len()), moved);
-            let _ = settings.set_strv("info-fields", keys.as_slice());
+            let _ = settings.set_strv("browse.info.fields", keys.as_slice());
             true
         }
     });
@@ -759,8 +761,8 @@ fn info_row(settings: &gio::Settings, index: usize, field: InfoField) -> gtk::Bo
         let settings = settings.clone();
         move |_| {
             let keys: Vec<String> =
-                settings.strv("info-fields").iter().map(|key| key.to_string()).filter(|key| key != field.key()).collect();
-            let _ = settings.set_strv("info-fields", keys.as_slice());
+                settings.strv("browse.info.fields").iter().map(|key| key.to_string()).filter(|key| key != field.key()).collect();
+            let _ = settings.set_strv("browse.info.fields", keys.as_slice());
         }
     });
 
@@ -768,11 +770,11 @@ fn info_row(settings: &gio::Settings, index: usize, field: InfoField) -> gtk::Bo
 }
 
 /// Keeps the info list in step with the `info-fields` setting, and gives the add menu its action.
-fn bind_info_fields(settings: &gio::Settings, dialog: &PreferencesDialog) {
+fn bind_info_fields(settings: &Settings, dialog: &PreferencesDialog) {
     let imp = dialog.imp();
     rebuild_info_list(settings, imp);
     let weak = dialog.downgrade();
-    let handler = settings.connect_changed(Some("info-fields"), move |settings, _| {
+    let handler = settings.connect_changed("browse.info.fields", move |settings, _| {
         if let Some(dialog) = weak.upgrade() {
             rebuild_info_list(settings, dialog.imp());
         }
@@ -785,10 +787,10 @@ fn bind_info_fields(settings: &gio::Settings, dialog: &PreferencesDialog) {
         let settings = settings.clone();
         move |_, key| {
             let Some(key) = key.and_then(|key| key.get::<String>()) else { return };
-            let mut keys: Vec<String> = settings.strv("info-fields").iter().map(|key| key.to_string()).collect();
+            let mut keys: Vec<String> = settings.strv("browse.info.fields").iter().map(|key| key.to_string()).collect();
             if !keys.contains(&key) {
                 keys.push(key);
-                let _ = settings.set_strv("info-fields", keys.as_slice());
+                let _ = settings.set_strv("browse.info.fields", keys.as_slice());
             }
         }
     });
@@ -803,20 +805,20 @@ pub(crate) mod tests {
 
     pub(crate) fn run_scenarios() {
         let settings = crate::settings::app_settings();
-        settings.set_int("item-size", 96).unwrap();
+        settings.set_int("browse.item-size", 96).unwrap();
         let dialog = PreferencesDialog::new(&settings);
         assert_eq!(dialog.imp().item_size_row.value(), 96.0, "the row shows the setting");
 
         // Changing the row writes the setting, and changing the setting moves the row.
         dialog.imp().item_size_row.set_value(160.0);
-        assert_eq!(settings.int("item-size"), 160);
-        settings.set_int("item-size", 112).unwrap();
+        assert_eq!(settings.int("browse.item-size"), 160);
+        settings.set_int("browse.item-size", 112).unwrap();
         assert_eq!(dialog.imp().item_size_row.value(), 112.0);
 
-        settings.set_boolean("media-only", false).unwrap();
+        settings.set_boolean("browse.media-only", false).unwrap();
         assert!(!dialog.imp().media_only_row.is_active());
-        settings.set_boolean("media-only", true).unwrap();
-        settings.set_int("item-size", 128).unwrap();
+        settings.set_boolean("browse.media-only", true).unwrap();
+        settings.set_int("browse.item-size", 128).unwrap();
 
         assert!(dialog.imp().image_preloading_row.is_active(), "image preloading is on by default");
         assert!(dialog.imp().thumbnail_cache_row.is_active(), "the thumbnail cache is on by default");
@@ -827,9 +829,9 @@ pub(crate) mod tests {
         assert_eq!(threads.value(), 4f64.min(threads.upper()), "4 by default, where the system has that many");
 
         // A port row is insensitive while its transport is off.
-        settings.set_boolean("ipc-tcp-enabled", false).unwrap();
+        settings.set_boolean("remote.tcp.enabled", false).unwrap();
         assert!(!dialog.imp().ipc_tcp_row.is_sensitive(), "the TCP port is insensitive while TCP is off");
-        settings.set_boolean("ipc-tcp-enabled", true).unwrap();
+        settings.set_boolean("remote.tcp.enabled", true).unwrap();
         assert!(dialog.imp().ipc_tcp_row.is_sensitive(), "the TCP port is sensitive while TCP is on");
 
         // The chosen backend's options are shown, and SVP can be changed only with mpv.
@@ -837,14 +839,14 @@ pub(crate) mod tests {
         assert!(imp.mpv_group.get_visible() && !imp.gstreamer_group.get_visible(), "mpv is the default");
         assert!(imp.svp_group.is_sensitive());
         imp.video_backend_row.set_selected(1);
-        assert_eq!(settings.string("video-backend"), "gtk");
+        assert_eq!(settings.string("video.backend"), "gtk");
         assert!(!imp.mpv_group.get_visible() && imp.gstreamer_group.get_visible(), "GStreamer's options replace mpv's");
         assert!(!imp.svp_group.is_sensitive(), "SVP needs mpv");
         assert!(imp.svp_banner.is_revealed(), "the banner offers mpv while another backend is chosen");
         imp.svp_banner.emit_by_name::<()>("button-clicked", &[]);
-        assert_eq!(settings.string("video-backend"), "mpv", "its button chooses mpv");
+        assert_eq!(settings.string("video.backend"), "mpv", "its button chooses mpv");
         assert!(!imp.svp_banner.is_revealed());
-        settings.reset("video-backend");
+        settings.reset("video.backend");
         assert!(imp.mpv_group.get_visible() && imp.svp_group.is_sensitive());
 
         // Every page with groups stacks them with no gap.
@@ -858,29 +860,29 @@ pub(crate) mod tests {
 
         // The image rows are bound to their settings.
         imp.image_fit_row.set_selected(3);
-        assert_eq!(settings.string("image-fit"), "fill");
-        settings.reset("image-fit");
+        assert_eq!(settings.string("image.fit"), "fill");
+        settings.reset("image.fit");
         imp.original_focus_row.set_selected(2);
-        assert_eq!(settings.string("original-focus"), "cursor");
-        settings.reset("original-focus");
+        assert_eq!(settings.string("image.original-focus"), "cursor");
+        settings.reset("image.original-focus");
         assert!(!imp.unlock_minimum_zoom_row.is_active(), "the minimum zoom is locked by default");
         imp.unlock_minimum_zoom_row.set_active(true);
-        assert!(settings.boolean("unlock-minimum-zoom"));
-        settings.reset("unlock-minimum-zoom");
+        assert!(settings.boolean("image.unlock-minimum-zoom"));
+        settings.reset("image.unlock-minimum-zoom");
 
         // The Folder Navigation rows are bound to their settings.
         imp.folder_end_row.set_selected(2);
-        assert_eq!(settings.string("folder-end"), "next-folder");
-        settings.reset("folder-end");
+        assert_eq!(settings.string("viewer.folder-end"), "next-folder");
+        settings.reset("viewer.folder-end");
         imp.default_sort_by_row.set_selected(1);
         imp.default_sort_order_row.set_selected(1);
-        assert_eq!(settings.string("sort-by"), "modified");
-        assert_eq!(settings.string("sort-order"), "descending");
-        settings.reset("sort-by");
-        settings.reset("sort-order");
+        assert_eq!(settings.string("browse.sort.by"), "modified");
+        assert_eq!(settings.string("browse.sort.order"), "descending");
+        settings.reset("browse.sort.by");
+        settings.reset("browse.sort.order");
         imp.remember_folder_sort_row.set_active(true);
-        assert!(settings.boolean("remember-folder-sort"));
-        settings.reset("remember-folder-sort");
+        assert!(settings.boolean("browse.sort.remember-per-folder"));
+        settings.reset("browse.sort.remember-per-folder");
     }
 }
 
@@ -1313,7 +1315,7 @@ fn bind_tabs(switcher: &adw::ViewSwitcher, stack: &adw::ViewStack) {
 }
 
 /// Keeps a port row in step with an integer setting, in both directions.
-fn bind_port(settings: &gio::Settings, row: &adw::SpinRow, key: &'static str) {
+fn bind_port(settings: &Settings, row: &adw::SpinRow, key: &'static str) {
     row.set_value(f64::from(settings.int(key)));
     let settings = settings.clone();
     row.connect_value_notify(move |row| {
@@ -1324,7 +1326,7 @@ fn bind_port(settings: &gio::Settings, row: &adw::SpinRow, key: &'static str) {
 impl PreferencesDialog {
     /// Keeps the rows for what is remembered about each file insensitive while nothing is, and the zoom position's while the
     /// zoom level is not, as a position means nothing without the zoom it goes with.
-    fn bind_file_settings(&self, settings: &gio::Settings) {
+    fn bind_file_settings(&self, settings: &Settings) {
         let imp = self.imp();
         let rows = [
             imp.remember_position_row.clone(),
@@ -1337,16 +1339,16 @@ impl PreferencesDialog {
         let update = {
             let settings = settings.clone();
             move || {
-                let enabled = settings.boolean("remember-file-settings");
+                let enabled = settings.boolean("remember.enabled");
                 for row in &rows {
                     row.set_sensitive(enabled);
                 }
-                pan.set_sensitive(enabled && settings.boolean("remember-zoom"));
+                pan.set_sensitive(enabled && settings.boolean("remember.zoom"));
             }
         };
         update();
-        for key in ["remember-file-settings", "remember-zoom"] {
-            settings.connect_changed(Some(key), {
+        for key in ["remember.enabled", "remember.zoom"] {
+            settings.connect_changed(key, {
                 let update = update.clone();
                 move |_, _| update()
             });
@@ -1355,15 +1357,15 @@ impl PreferencesDialog {
 
     /// Shows the start directory row only for a specific start location, with the chosen folder as
     /// its subtitle, and lets its button pick the folder.
-    fn bind_start_directory(&self, settings: &gio::Settings) {
+    fn bind_start_directory(&self, settings: &Settings) {
         let imp = self.imp();
         settings
-            .bind("start-location", &*imp.start_directory_row, "visible")
+            .bind("start.location", &*imp.start_directory_row, "visible")
             .mapping(|variant, _| Some((variant.str()? == "specific").to_value()))
             .get_only()
             .build();
         settings
-            .bind("start-directory", &*imp.start_directory_row, "subtitle")
+            .bind("start.directory", &*imp.start_directory_row, "subtitle")
             .mapping(|variant, _| {
                 let path = variant.str()?;
                 Some(if path.is_empty() { "None chosen".to_value() } else { path.to_value() })
@@ -1377,14 +1379,14 @@ impl PreferencesDialog {
             let Some(dialog) = weak.upgrade() else { return };
             let root = dialog.root().and_downcast::<gtk::Window>();
             let chooser = gtk::FileDialog::builder().title("Start Directory").build();
-            let current = settings.string("start-directory");
+            let current = settings.string("start.directory");
             if !current.is_empty() {
                 chooser.set_initial_folder(Some(&gio::File::for_path(current.as_str())));
             }
             let settings = settings.clone();
             chooser.select_folder(root.as_ref(), None::<&gio::Cancellable>, move |result| {
                 if let Some(path) = result.ok().and_then(|folder| folder.path()) {
-                    let _ = settings.set_string("start-directory", &path.to_string_lossy());
+                    let _ = settings.set_string("start.directory", &path.to_string_lossy());
                 }
             });
         });

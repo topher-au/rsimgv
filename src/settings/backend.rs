@@ -2,9 +2,9 @@
 //! notifications that tell GSettings what changed, the watch on the file for outside edits, and the `extern "C"`
 //! functions the C shim calls.
 //!
-//! Ownership: the object holds one strong reference to the state, given to it as a raw pointer by
-//! `Arc::into_raw`, and releases it with `release` when it is finalized. `YamlSettingsBackend` holds another. The file
-//! watch holds only a `Weak`, so the state is not kept alive by its own monitor.
+//! Ownership: the object holds the strong reference to the state, given to it as a raw pointer by `Arc::into_raw`, and
+//! releases it with `release` when it is finalized. The file watch holds only a `Weak`, so the state is not kept alive by
+//! its own monitor.
 //!
 //! Locking: `State::inner` is locked only for in-memory reads and for the write-and-save step of a change. Notifications
 //! are sent after the lock is released, since GSettings may call back into the application.
@@ -22,7 +22,7 @@ use gio::prelude::*;
 use glib::translate::{FromGlibPtrNone, IntoGlibPtr};
 use gtk::{gio, glib};
 
-use super::storage::{self, Document, SchemaKey};
+use super::storage::{self, Document};
 
 extern "C" {
     /// Creates the GSettingsBackend object around `state`, which it releases with `state_destroy`.
@@ -35,6 +35,8 @@ extern "C" {
 /// The settings of one file, and what the backend needs to answer GSettings about them.
 pub struct State {
     file: PathBuf,
+    /// The key path that the top level of the file is at, ending in `/`.
+    root: String,
     inner: Mutex<Inner>,
     /// The GSettingsBackend that notifications are sent through. Zero before it is attached and after it is released.
     backend: AtomicUsize,
@@ -44,16 +46,15 @@ pub struct State {
 
 struct Inner {
     document: Document,
-    /// The keys of the schemas in use, which decide how the layout before the typed format is read.
-    keys: Vec<SchemaKey>,
     /// Whether the file can be written. A file that did not parse when the backend opened is not overwritten.
     writable: bool,
 }
 
 impl State {
-    /// The state for the settings in `file`. A file that cannot be read is kept as it is, and the settings are read-only.
-    pub fn open(file: PathBuf) -> Self {
-        let (document, writable) = match storage::load(&file, &[]) {
+    /// The state for the settings in `file`, whose top level is at the key path `root`. A file that cannot be read is
+    /// kept as it is, and the settings are read-only.
+    pub fn open(file: PathBuf, root: String) -> Self {
+        let (document, writable) = match storage::load(&file, &root) {
             Ok(document) => (document, true),
             Err(err) => {
                 eprintln!("rsimgv: the settings are read-only until the file is fixed: {err:#}");
@@ -62,7 +63,8 @@ impl State {
         };
         Self {
             file,
-            inner: Mutex::new(Inner { document, keys: Vec::new(), writable }),
+            root,
+            inner: Mutex::new(Inner { document, writable }),
             backend: AtomicUsize::new(0),
             monitor: Mutex::new(None),
         }
@@ -81,20 +83,6 @@ impl State {
     /// Stops notifications, before the object that receives them is released.
     fn detach(&self) {
         self.backend.store(0, Ordering::Release);
-    }
-
-    /// Adds the schema keys `keys` (GSettings key, name in the schema, GVariant type) and reads the file for them.
-    pub fn register(&self, keys: Vec<(String, String, String)>) {
-        {
-            let mut inner = self.lock();
-            for (key, name, ty) in keys {
-                if !inner.keys.iter().any(|known| known.path == key) {
-                    inner.keys.push(SchemaKey { path: key, name, ty });
-                }
-            }
-        }
-        let changed = self.refresh();
-        self.notify(&changed, std::ptr::null_mut());
     }
 
     /// The value of the GSettings key `key` as `ty`. `None` when no setting is saved, or the saved one has another type,
@@ -123,7 +111,7 @@ impl State {
             inner.writable,
             "the settings file could not be read when rsimgv started, so it is read-only until it is fixed and rsimgv restarts"
         );
-        let mut next = storage::load(&self.file, &inner.keys)?;
+        let mut next = storage::load(&self.file, &self.root)?;
         for (path, value) in changes {
             next.invalid.remove(&path);
             match value {
@@ -135,7 +123,7 @@ impl State {
                 }
             }
         }
-        storage::save(&self.file, &next)?;
+        storage::save(&self.file, &next, &self.root)?;
         let changed = changed_paths(&inner.document.values, &next.values);
         inner.document = next;
         Ok(changed)
@@ -145,7 +133,7 @@ impl State {
     /// settings as they are. A file that is gone leaves none, so every setting in it falls back to its default.
     fn refresh(&self) -> Vec<String> {
         let mut inner = self.lock();
-        let fresh = match storage::load(&self.file, &inner.keys) {
+        let fresh = match storage::load(&self.file, &self.root) {
             Ok(fresh) => fresh,
             Err(err) => {
                 eprintln!("rsimgv: keeping the current settings: {err:#}");
@@ -382,41 +370,27 @@ pub extern "C" fn rsimgv_state_sync(_state: *mut c_void) {}
 /// A settings file, and the GSettingsBackend that gives its settings to `gio::Settings`. Keep it alive for as long as
 /// its settings are used: the file is watched only while it is.
 pub struct YamlSettingsBackend {
-    state: Arc<State>,
     backend: gio::SettingsBackend,
 }
 
 impl YamlSettingsBackend {
-    /// The backend for the settings in `file`, which is created with its parent directory if that is missing. A file
-    /// that does not parse does not fail here: the settings are read-only until it is fixed.
-    pub fn new(file: impl Into<PathBuf>) -> anyhow::Result<Self> {
+    /// The backend for the settings in `file`, which is created with its parent directory if that is missing. The top
+    /// level of the file is at the key path `root`, which ends in `/`. Settings outside it cannot be saved. A file that
+    /// does not parse does not fail here: the settings are read-only until it is fixed.
+    pub fn new(file: impl Into<PathBuf>, root: &str) -> anyhow::Result<Self> {
         let file = file.into();
         if let Some(parent) = file.parent().filter(|parent| !parent.as_os_str().is_empty()) {
             std::fs::create_dir_all(parent).with_context(|| format!("could not create {}", parent.display()))?;
         }
-        let state = Arc::new(State::open(file));
+        let state = Arc::new(State::open(file, root.to_owned()));
         let backend = create_backend(&state);
         watch(&state);
-        Ok(Self { state, backend })
+        Ok(Self { backend })
     }
 
     /// Settings for `schema`, saved in this backend's file. `path` overrides the schema's path, as for a relocatable
-    /// schema. Settings of the schema that the file holds in the layout before the typed format are read as well.
+    /// schema.
     pub fn settings(&self, schema: &gio::SettingsSchema, path: Option<&str>) -> gio::Settings {
-        let prefix = path
-            .map(str::to_owned)
-            .or_else(|| schema.path().map(|path| path.to_string()))
-            .unwrap_or_default();
-        let keys = schema
-            .list_keys()
-            .into_iter()
-            .map(|name| {
-                let name = name.to_string();
-                let ty = schema.key(&name).value_type().as_str().to_owned();
-                (format!("{prefix}{name}"), name, ty)
-            })
-            .collect();
-        self.state.register(keys);
         gio::Settings::new_full(schema, Some(&self.backend), path)
     }
 }

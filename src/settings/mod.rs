@@ -4,15 +4,16 @@
 //! environment or registered with GIO. `storage` is the file format and `backend` the GSettingsBackend behind it, whose
 //! C subclass is native/backend.c.
 //!
-//! The file nests each setting by its key path, to any depth: a setting at `/au/topher/rsimgv/group/parent/child` is
-//! saved under `au`, `topher`, `rsimgv`, `group` and `parent`. GSettings names cannot contain `--`, so the depth comes
-//! from the path: open a relocatable schema at the nested path, such as `/au/topher/rsimgv/group/parent/`.
+//! The file nests each setting by its key path below the schema's path, to any depth: a setting at
+//! `/au/topher/rsimgv/window/sidebar/width` is saved as `width` under `window` and `sidebar`. Each group is a child schema
+//! in `data/au.topher.rsimgv.gschema.xml`, and code names a setting by its dotted path, `window.sidebar.width`, through
+//! `tree::Settings`.
 
 mod backend;
-mod legacy;
 #[cfg(test)]
 mod tests;
 mod storage;
+mod tree;
 
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -21,6 +22,7 @@ use anyhow::Context;
 use gtk::{gio, glib};
 
 pub use backend::YamlSettingsBackend;
+pub use tree::{ChangedHandler, Settings};
 
 /// The schema of the application's settings.
 pub const SCHEMA_ID: &str = "au.topher.rsimgv";
@@ -44,23 +46,24 @@ thread_local! {
 
 /// Opens the application's settings in `config_path()`, and returns them. Call this once, before any other settings
 /// are read; `app_settings` gives more objects for the same file.
-pub fn open() -> anyhow::Result<gio::Settings> {
+pub fn open() -> anyhow::Result<Settings> {
     let schema = gio::SettingsSchemaSource::default()
         .and_then(|source| source.lookup(SCHEMA_ID, true))
         .with_context(|| format!("the settings schema {SCHEMA_ID} is not installed"))?;
-    let backend = YamlSettingsBackend::new(config_path())?;
-    let settings = backend.settings(&schema, None);
+    let root = schema.path().with_context(|| format!("the settings schema {SCHEMA_ID} has no path"))?;
+    let backend = YamlSettingsBackend::new(config_path(), &root)?;
+    let settings = Settings::new(backend.settings(&schema, None));
     APP.with(|app| *app.borrow_mut() = Some(App { backend, schema }));
     Ok(settings)
 }
 
-/// A new `gio::Settings` for the application's schema, on the backend `open` created.
+/// New `Settings` for the application's schema, on the backend `open` created.
 ///
 /// Panics if `open` has not been called on this thread.
-pub fn app_settings() -> gio::Settings {
+pub fn app_settings() -> Settings {
     APP.with(|app| {
         let app = app.borrow();
         let app = app.as_ref().expect("settings::open runs before any settings are used");
-        app.backend.settings(&app.schema, None)
+        Settings::new(app.backend.settings(&app.schema, None))
     })
 }

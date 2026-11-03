@@ -1,11 +1,11 @@
 //! The scripts listed on the Scripts page: a name, a command, and whether to wait for it to finish. A command is run
 //! by the shell, with `%file%` standing for the path of the item it is run on.
 
+use crate::settings::Settings;
+
 use std::path::Path;
 use std::process::{Child, Command};
 
-use gtk::gio;
-use gtk::prelude::*;
 
 /// What `%file%` in a command becomes: the shell's first argument, which is the item's path.
 const FILE_ARGUMENT: &str = "\"$1\"";
@@ -57,19 +57,19 @@ impl Script {
 }
 
 /// The scripts in the `scripts` setting, in order. Entries that are not scripts are skipped.
-pub fn read_scripts(settings: &gio::Settings) -> Vec<Script> {
-    settings.strv("scripts").iter().filter_map(|text| Script::from_setting(text)).collect()
+pub fn read_scripts(settings: &Settings) -> Vec<Script> {
+    settings.strv("scripts.list").iter().filter_map(|text| Script::from_setting(text)).collect()
 }
 
 /// Saves `scripts` as the `scripts` setting.
-pub fn write_scripts(settings: &gio::Settings, scripts: &[Script]) {
+pub fn write_scripts(settings: &Settings, scripts: &[Script]) {
     let entries: Vec<String> = scripts.iter().map(Script::to_setting).collect();
     let entries: Vec<&str> = entries.iter().map(String::as_str).collect();
-    let _ = settings.set_strv("scripts", entries.as_slice());
+    let _ = settings.set_strv("scripts.list", entries.as_slice());
 }
 
 /// The script called `name`, the first if several share it.
-pub fn find_script(settings: &gio::Settings, name: &str) -> Option<Script> {
+pub fn find_script(settings: &Settings, name: &str) -> Option<Script> {
     read_scripts(settings).into_iter().find(|script| script.name == name)
 }
 

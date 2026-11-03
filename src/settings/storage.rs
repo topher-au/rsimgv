@@ -1,22 +1,21 @@
-//! The settings file: one YAML document nested by the segments of each setting's GSettings key path, to any depth. A
-//! setting is a mapping holding its exact GVariant `type` and its GVariant text as `value`, so no YAML scalar is ever
-//! read as a setting's type:
+//! The settings file: one YAML document nested by the segments of each setting's GSettings key path below the root
+//! path of the schema, to any depth. A setting is a mapping holding its exact GVariant `type` and its GVariant text as
+//! `value`, so no YAML scalar is ever read as a setting's type. With the root `/au/topher/rsimgv/`, the settings at
+//! `/au/topher/rsimgv/window/width` and `/au/topher/rsimgv/window/sidebar/width` are:
 //!
 //! ```yaml
-//! au:
-//!   topher:
-//!     rsimgv:
-//!       window-width:
-//!         type: i
-//!         value: "960"
-//!       recent-files:
-//!         type: as
-//!         value: "['/home/user/notes.txt']"
+//! window:
+//!   width:
+//!     type: i
+//!     value: "960"
+//!   sidebar:
+//!     width:
+//!       type: i
+//!       value: "-1"
 //! ```
 //!
 //! A mapping with `type` and `value` keys is always a setting, so those two names cannot be used for a group. An entry
-//! that does not parse is kept as it was written, so a save never discards it, and it reads as absent. A file in the
-//! layout that came before this one is read by `legacy`.
+//! that does not parse is kept as it was written, so a save never discards it, and it reads as absent.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -24,16 +23,6 @@ use std::path::Path;
 use anyhow::{bail, Context};
 use gtk::glib;
 use serde_yaml_ng::{Mapping, Value};
-
-use super::legacy::{self, Legacy};
-
-/// A key of a schema, as the file needs it: its full key path, its name within the schema, and its GVariant type.
-#[derive(Clone, Debug, PartialEq)]
-pub struct SchemaKey {
-    pub path: String,
-    pub name: String,
-    pub ty: String,
-}
 
 /// The settings in a file.
 #[derive(Clone, Debug, Default)]
@@ -44,72 +33,40 @@ pub struct Document {
     pub invalid: BTreeMap<String, Value>,
 }
 
-/// Reads the document in `text`. Settings that the layout before this one saved under `keys` are migrated to typed
-/// values.
-pub fn parse(text: &str, keys: &[SchemaKey]) -> anyhow::Result<Document> {
-    let root = match serde_yaml_ng::from_str::<Value>(text).context("the settings are not valid YAML")? {
+/// Reads the document in `text`, whose top level is at the key path `root`.
+pub fn parse(text: &str, root: &str) -> anyhow::Result<Document> {
+    let top = match serde_yaml_ng::from_str::<Value>(text).context("the settings are not valid YAML")? {
         Value::Null => Mapping::new(),
-        Value::Mapping(root) => root,
+        Value::Mapping(top) => top,
         _ => bail!("the top level of the settings is not a mapping"),
     };
 
     let mut document = Document::default();
-    let mut legacy = Legacy::new();
-    walk(&root, &mut Vec::new(), &mut document, &mut legacy);
-    for (path, variant) in legacy::migrate(&legacy, keys) {
-        // A setting saved in the typed format wins over the same setting in the layout before it.
-        document.values.entry(path).or_insert(variant);
-    }
+    walk(&top, root, &mut document);
     Ok(document)
 }
 
-/// Reads the mapping `node`, whose path so far is `segments`, into `document`. A mapping that is not a setting is a
-/// group. A scalar is a setting saved in the layout before this one, which `legacy` keeps under its group and name.
-fn walk(node: &Mapping, segments: &mut Vec<String>, document: &mut Document, legacy: &mut Legacy) {
+/// Reads the mapping `node`, at the key path `prefix`, into `document`. A mapping that is not a setting is a group.
+fn walk(node: &Mapping, prefix: &str, document: &mut Document) {
     for (key, value) in node {
         let Some(name) = key.as_str() else {
             eprintln!("rsimgv: skipping a settings entry whose key is not a string");
             continue;
         };
+        let path = format!("{prefix}{name}");
         match value {
-            Value::Mapping(inner) if is_entry(inner) => {
-                let path = full_path(segments, name);
-                match entry(value) {
-                    Some(variant) => {
-                        document.values.insert(path, variant);
-                    }
-                    None => {
-                        eprintln!("rsimgv: the setting {path} is not a typed value; it is kept as written and ignored");
-                        document.invalid.insert(path, value.clone());
-                    }
-                }
-            }
-            Value::Mapping(inner) => {
-                segments.push(name.to_owned());
-                walk(inner, segments, document, legacy);
-                segments.pop();
-            }
-            _ => match segments.split_first() {
-                Some((group, rest)) => {
-                    let name = rest.iter().map(String::as_str).chain([name]).collect::<Vec<_>>().join(".");
-                    legacy.insert((group.clone(), name), value.clone());
+            Value::Mapping(inner) if !is_entry(inner) => walk(inner, &format!("{path}/"), document),
+            _ => match entry(value) {
+                Some(variant) => {
+                    document.values.insert(path, variant);
                 }
                 None => {
-                    document.invalid.insert(format!("/{name}"), value.clone());
+                    eprintln!("rsimgv: the setting {path} is not a typed value; it is kept as written and ignored");
+                    document.invalid.insert(path, value.clone());
                 }
             },
         }
     }
-}
-
-/// The full key path of the setting `name` under `segments`.
-fn full_path(segments: &[String], name: &str) -> String {
-    let mut path = String::new();
-    for segment in segments.iter().map(String::as_str).chain([name]) {
-        path.push('/');
-        path.push_str(segment);
-    }
-    path
 }
 
 /// Whether `mapping` is a setting rather than a group: it has a `type` and a `value`.
@@ -127,19 +84,24 @@ fn entry(value: &Value) -> Option<glib::Variant> {
     (variant.type_() == ty).then_some(variant)
 }
 
-/// The YAML text of `document`.
-pub fn serialize(document: &Document) -> anyhow::Result<String> {
-    let mut root = Mapping::new();
+/// The YAML text of `document`, whose top level is at the key path `root`. A setting outside `root` is an error.
+pub fn serialize(document: &Document, root: &str) -> anyhow::Result<String> {
+    let mut top = Mapping::new();
     for (path, variant) in &document.values {
         let mut entry = Mapping::new();
         entry.insert(Value::String("type".to_owned()), Value::String(variant.type_().as_str().to_owned()));
         entry.insert(Value::String("value".to_owned()), Value::String(variant.print(false).to_string()));
-        insert_at(&mut root, path, Value::Mapping(entry));
+        insert_at(&mut top, relative(path, root)?, Value::Mapping(entry));
     }
     for (path, value) in &document.invalid {
-        insert_at(&mut root, path, value.clone());
+        insert_at(&mut top, relative(path, root)?, value.clone());
     }
-    serde_yaml_ng::to_string(&Value::Mapping(root)).context("the settings could not be written as YAML")
+    serde_yaml_ng::to_string(&Value::Mapping(top)).context("the settings could not be written as YAML")
+}
+
+/// The key path `path` below `root`.
+fn relative<'a>(path: &'a str, root: &str) -> anyhow::Result<&'a str> {
+    path.strip_prefix(root).with_context(|| format!("the setting {path} is not under {root}"))
 }
 
 /// Puts `value` in `node` at the key path `path`, in a nested mapping for each segment before its last.
@@ -167,17 +129,17 @@ fn insert_segments(node: &mut Mapping, segments: &[&str], value: Value) {
 }
 
 /// The document in `file`. A missing file holds no settings.
-pub fn load(file: &Path, keys: &[SchemaKey]) -> anyhow::Result<Document> {
+pub fn load(file: &Path, root: &str) -> anyhow::Result<Document> {
     match std::fs::read_to_string(file) {
-        Ok(text) => parse(&text, keys).with_context(|| format!("could not read {}", file.display())),
+        Ok(text) => parse(&text, root).with_context(|| format!("could not read {}", file.display())),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(Document::default()),
         Err(err) => Err(err).with_context(|| format!("could not read {}", file.display())),
     }
 }
 
 /// Writes `document` to `file` as one atomic replacement, creating the parent directory if it is missing.
-pub fn save(file: &Path, document: &Document) -> anyhow::Result<()> {
-    let text = serialize(document)?;
+pub fn save(file: &Path, document: &Document, root: &str) -> anyhow::Result<()> {
+    let text = serialize(document, root)?;
     if let Some(parent) = file.parent() {
         std::fs::create_dir_all(parent).with_context(|| format!("could not create {}", parent.display()))?;
     }
@@ -189,6 +151,9 @@ pub fn save(file: &Path, document: &Document) -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use glib::prelude::ToVariant;
+
+    /// The root path of the settings in the tests.
+    const ROOT: &str = "/test/";
 
     /// One value of each type the schemas use, as GVariant text, with the tricky strings that need escaping.
     const SAMPLES: &[(&str, &str)] = &[
@@ -219,75 +184,91 @@ mod tests {
             let variant = glib::Variant::parse(Some(glib::VariantTy::new(ty).unwrap()), text).unwrap();
             document.values.insert(format!("/test/key-{index}"), variant);
         }
-        let text = serialize(&document).unwrap();
-        let parsed = parse(&text, &[]).unwrap();
+        let text = serialize(&document, ROOT).unwrap();
+        let parsed = parse(&text, ROOT).unwrap();
         assert_eq!(parsed.values, document.values);
         assert!(parsed.invalid.is_empty());
     }
 
     #[test]
-    fn settings_nest_to_any_depth() {
+    fn settings_nest_to_any_depth_below_the_root() {
         let mut document = Document::default();
-        document.values.insert("/au/topher/rsimgv/window-width".to_owned(), 1200i32.to_variant());
-        document.values.insert("/a/b/c/d/e/deep".to_owned(), true.to_variant());
-        document.values.insert("/top".to_owned(), "x".to_variant());
-        let text = serialize(&document).unwrap();
-        let root: Value = serde_yaml_ng::from_str(&text).unwrap();
-        assert_eq!(root["au"]["topher"]["rsimgv"]["window-width"]["value"], Value::String("1200".into()));
-        assert_eq!(root["a"]["b"]["c"]["d"]["e"]["deep"]["type"], Value::String("b".into()));
-        assert_eq!(parse(&text, &[]).unwrap().values, document.values);
+        document.values.insert("/test/window/width".to_owned(), 1200i32.to_variant());
+        document.values.insert("/test/a/b/c/d/e/deep".to_owned(), true.to_variant());
+        document.values.insert("/test/top".to_owned(), "x".to_variant());
+        let text = serialize(&document, ROOT).unwrap();
+        let top: Value = serde_yaml_ng::from_str(&text).unwrap();
+        assert_eq!(top["window"]["width"]["value"], Value::String("1200".into()));
+        assert_eq!(top["a"]["b"]["c"]["d"]["e"]["deep"]["type"], Value::String("b".into()));
+        assert!(top.get("test").is_none(), "the root path is not in the file");
+        assert_eq!(parse(&text, ROOT).unwrap().values, document.values);
+    }
+
+    #[test]
+    fn a_setting_outside_the_root_cannot_be_written() {
+        let mut document = Document::default();
+        document.values.insert("/elsewhere/key".to_owned(), true.to_variant());
+        assert!(serialize(&document, ROOT).is_err());
+    }
+
+    #[test]
+    fn a_scalar_is_kept_but_ignored() {
+        let document = parse("window:\n  width: 960\n", ROOT).unwrap();
+        assert!(document.values.is_empty());
+        assert_eq!(document.invalid.get("/test/window/width"), Some(&Value::Number(960.into())));
+        assert!(serialize(&document, ROOT).unwrap().contains("width: 960"), "it is written back unchanged");
     }
 
     #[test]
     fn a_setting_can_share_a_group_with_nested_groups() {
         let text = "/x/y:\n  type: b\n  value: 'true'\n";
         let nested = "x:\n  y:\n    type: b\n    value: 'true'\n  z:\n    w:\n      type: s\n      value: '\"hi\"'\n";
-        assert_eq!(parse(nested, &[]).unwrap().values.len(), 2);
-        assert!(parse(text, &[]).unwrap().values.is_empty(), "a path with a leading slash is not a key");
+        assert_eq!(parse(nested, ROOT).unwrap().values.len(), 2);
+        assert!(parse(text, ROOT).unwrap().values.is_empty(), "a path with a leading slash is not a key");
     }
 
     #[test]
     fn a_string_value_is_stored_as_text_not_as_yaml() {
         let mut document = Document::default();
         document.values.insert("/test/numeric-text".to_owned(), "1200".to_variant());
-        let text = serialize(&document).unwrap();
+        let text = serialize(&document, ROOT).unwrap();
         assert!(text.contains("type: s"), "the type is written: {text}");
-        assert_eq!(parse(&text, &[]).unwrap().values, document.values);
+        assert_eq!(parse(&text, ROOT).unwrap().values, document.values);
     }
 
     #[test]
     fn an_entry_whose_value_is_not_text_is_kept_but_ignored() {
         let text = "test:\n  size:\n    type: i\n    value: 'wide'\n  flag:\n    type: b\n    value: true\n";
-        let document = parse(text, &[]).unwrap();
+        let document = parse(text, ROOT).unwrap();
         assert!(document.values.is_empty(), "neither entry is a valid setting");
-        assert!(document.invalid.contains_key("/test/size"));
-        assert!(document.invalid.contains_key("/test/flag"));
-        let written = serialize(&document).unwrap();
+        assert!(document.invalid.contains_key("/test/test/size"));
+        assert!(document.invalid.contains_key("/test/test/flag"));
+        let written = serialize(&document, ROOT).unwrap();
         assert!(written.contains("wide"), "the malformed entry is written back unchanged");
     }
 
     #[test]
     fn an_unknown_type_signature_is_invalid() {
-        let document = parse("test:\n  key:\n    type: zz\n    value: '1'\n", &[]).unwrap();
+        let document = parse("test:\n  key:\n    type: zz\n    value: '1'\n", ROOT).unwrap();
         assert!(document.values.is_empty());
-        assert!(document.invalid.contains_key("/test/key"));
+        assert!(document.invalid.contains_key("/test/test/key"));
     }
 
     #[test]
     fn a_file_that_is_not_yaml_is_an_error() {
-        assert!(parse("window: [", &[]).is_err());
-        assert!(parse("- just\n- a list\n", &[]).is_err());
+        assert!(parse("window: [", ROOT).is_err());
+        assert!(parse("- just\n- a list\n", ROOT).is_err());
     }
 
     #[test]
     fn an_empty_file_holds_no_settings() {
-        assert!(parse("", &[]).unwrap().values.is_empty());
+        assert!(parse("", ROOT).unwrap().values.is_empty());
     }
 
     #[test]
     fn a_missing_file_holds_no_settings() {
         let file = std::env::temp_dir().join(format!("rsimgv-missing-{}", std::process::id())).join("settings.yaml");
-        assert!(load(&file, &[]).unwrap().values.is_empty());
+        assert!(load(&file, ROOT).unwrap().values.is_empty());
     }
 
     #[test]
@@ -297,23 +278,8 @@ mod tests {
         let file = dir.join("nested").join("settings.yaml");
         let mut document = Document::default();
         document.values.insert("/test/flag".to_owned(), true.to_variant());
-        save(&file, &document).unwrap();
-        assert_eq!(load(&file, &[]).unwrap().values, document.values);
+        save(&file, &document, ROOT).unwrap();
+        assert_eq!(load(&file, ROOT).unwrap().values, document.values);
         let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn a_legacy_file_loads_with_the_schema_types() {
-        let keys = [SchemaKey { path: "/test/window-width".to_owned(), name: "window-width".to_owned(), ty: "i".to_owned() }];
-        let document = parse("window:\n  width: 960\n", &keys).unwrap();
-        assert_eq!(document.values.get("/test/window-width"), Some(&960i32.to_variant()));
-    }
-
-    #[test]
-    fn a_typed_setting_wins_over_the_same_legacy_setting() {
-        let keys = [SchemaKey { path: "/test/window-width".to_owned(), name: "window-width".to_owned(), ty: "i".to_owned() }];
-        let text = "window:\n  width: 960\ntest:\n  window-width:\n    type: i\n    value: '1024'\n";
-        let document = parse(text, &keys).unwrap();
-        assert_eq!(document.values.get("/test/window-width"), Some(&1024i32.to_variant()));
     }
 }

@@ -3,11 +3,13 @@
 //! place, swaps the map for the element's editor: tabs for each group of options, and Save and Cancel under them. The
 //! changes to the element are kept apart until it is saved.
 
+use crate::settings::Settings;
+
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use adw::prelude::*;
-use gtk::{gdk, gio, glib};
+use gtk::{gdk, glib};
 
 use super::media_overlay::{layout_from_settings, set_preview, Preview};
 use crate::overlay::template::Template;
@@ -24,7 +26,7 @@ struct Draft {
 }
 
 struct Editor {
-    settings: gio::Settings,
+    settings: Settings,
     layout: RefCell<Layout>,
     draft: RefCell<Option<Draft>>,
     /// Holds the map and the element's editor, one at a time.
@@ -40,7 +42,7 @@ const MAP_PAGE: &str = "map";
 const EDITOR_PAGE: &str = "editor";
 
 /// The page, to put in the preferences.
-pub fn build(settings: &gio::Settings) -> gtk::Widget {
+pub fn build(settings: &Settings) -> gtk::Widget {
     let editor = Rc::new(Editor {
         settings: settings.clone(),
         layout: RefCell::new(layout_from_settings(settings)),
@@ -77,7 +79,7 @@ pub fn build(settings: &gio::Settings) -> gtk::Widget {
     reset.connect_clicked({
         let editor = editor.clone();
         move |_| {
-            editor.settings.reset("overlay-layout");
+            editor.settings.reset("viewer.overlay-layout");
             editor.reload();
         }
     });
@@ -132,7 +134,7 @@ pub fn build(settings: &gio::Settings) -> gtk::Widget {
 
     // A change to the setting from outside, such as an edit of the settings file, is shown.
     let weak = Rc::downgrade(&editor);
-    settings.connect_changed(Some("overlay-layout"), move |_, _| {
+    settings.connect_changed("viewer.overlay-layout", move |_, _| {
         if let Some(editor) = weak.upgrade() {
             if layout_from_settings(&editor.settings) != *editor.layout.borrow() {
                 editor.reload();
@@ -149,7 +151,7 @@ impl Editor {
     }
 
     fn save(&self) {
-        let _ = self.settings.set_string("overlay-layout", &self.layout.borrow().to_json());
+        let _ = self.settings.set_string("viewer.overlay-layout", &self.layout.borrow().to_json());
     }
 
     /// Changes the element being edited with `change`. Nothing is saved until the editor is.

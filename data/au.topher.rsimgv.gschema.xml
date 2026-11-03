@@ -1,6 +1,23 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <schemalist>
   <schema id="au.topher.rsimgv" path="/au/topher/rsimgv/">
+    <child name="browse" schema="au.topher.rsimgv.browse"/>
+    <child name="thumbnails" schema="au.topher.rsimgv.thumbnails"/>
+    <child name="window" schema="au.topher.rsimgv.window"/>
+    <child name="start" schema="au.topher.rsimgv.start"/>
+    <child name="playlist" schema="au.topher.rsimgv.playlist"/>
+    <child name="viewer" schema="au.topher.rsimgv.viewer"/>
+    <child name="image" schema="au.topher.rsimgv.image"/>
+    <child name="video" schema="au.topher.rsimgv.video"/>
+    <child name="remember" schema="au.topher.rsimgv.remember"/>
+    <child name="mouse" schema="au.topher.rsimgv.mouse"/>
+    <child name="remote" schema="au.topher.rsimgv.remote"/>
+    <child name="scripts" schema="au.topher.rsimgv.scripts"/>
+  </schema>
+  <schema id="au.topher.rsimgv.browse" path="/au/topher/rsimgv/browse/">
+    <child name="info" schema="au.topher.rsimgv.browse.info"/>
+    <child name="sort" schema="au.topher.rsimgv.browse.sort"/>
+    <child name="folder-previews" schema="au.topher.rsimgv.browse.folder-previews"/>
     <key name="show-hidden" type="b">
       <default>false</default>
       <summary>Show hidden files and folders</summary>
@@ -17,24 +34,298 @@
       <default>true</default>
       <summary>Show videos in the browse view</summary>
     </key>
-    <key name="thumbnail-crop" type="b">
+    <key name="show-directories" type="s">
+      <choices>
+        <choice value="none"/>
+        <choice value="first-last"/>
+        <choice value="inline"/>
+      </choices>
+      <default>'first-last'</default>
+      <summary>Where folders are listed: not at all, before and after the files as the sort order says, or among the files</summary>
+    </key>
+    <key name="collapse-on-navigate" type="b">
       <default>false</default>
-      <summary>Crop thumbnails to a square that fills the item's visual part</summary>
+      <summary>Collapse folders outside the current path when navigating</summary>
+    </key>
+    <key name="item-size" type="i">
+      <default>128</default>
+      <range min="32" max="2048"/>
+      <summary>Size in pixels of the visual part of each browse item</summary>
+    </key>
+    <key name="filename-display" type="s">
+      <choices>
+        <choice value="off"/>
+        <choice value="wrapped"/>
+        <choice value="ellipsized"/>
+      </choices>
+      <default>'ellipsized'</default>
+      <summary>How item names are shown: off, wrapped to two lines, or ellipsized</summary>
     </key>
     <key name="video-frame-previews" type="b">
       <default>true</default>
       <summary>Generate the frames a video plays while it is under the pointer, or is the item last selected and the pointer is over none</summary>
     </key>
-    <key name="directory-previews" type="b">
+  </schema>
+  <schema id="au.topher.rsimgv.browse.info" path="/au/topher/rsimgv/browse/info/">
+    <key name="layout" type="s">
+      <choices>
+        <choice value="disabled"/>
+        <choice value="stacked"/>
+        <choice value="inline"/>
+      </choices>
+      <default>'inline'</default>
+      <summary>How item info is laid out: disabled, one field per line, or fields separated by bullets</summary>
+    </key>
+    <key name="fields" type="as">
+      <default>['size', 'modified']</default>
+      <summary>Details shown under each item's name</summary>
+    </key>
+  </schema>
+  <schema id="au.topher.rsimgv.browse.sort" path="/au/topher/rsimgv/browse/sort/">
+    <key name="by" type="s">
+      <choices>
+        <choice value="name"/>
+        <choice value="modified"/>
+        <choice value="size"/>
+        <choice value="type"/>
+      </choices>
+      <default>'name'</default>
+      <summary>What the browse view sorts files and folders by, in a folder with no remembered sort: name, modification time, size or type</summary>
+    </key>
+    <key name="order" type="s">
+      <choices>
+        <choice value="ascending"/>
+        <choice value="descending"/>
+      </choices>
+      <default>'ascending'</default>
+      <summary>Whether the browse view sorts ascending or descending, in a folder with no remembered sort</summary>
+    </key>
+    <key name="remember-per-folder" type="b">
+      <default>false</default>
+      <summary>Keep the sort chosen in the sort menu for that folder alone, rather than changing the default</summary>
+    </key>
+  </schema>
+  <schema id="au.topher.rsimgv.browse.folder-previews" path="/au/topher/rsimgv/browse/folder-previews/">
+    <key name="enabled" type="b">
       <default>false</default>
       <summary>Show a cascade of the first pictures and videos over a folder's icon</summary>
     </key>
-    <key name="folder-preview-count" type="i">
+    <key name="count" type="i">
       <default>4</default>
       <range min="1" max="12"/>
       <summary>The most pictures and videos scattered over a folder's icon</summary>
     </key>
-    <key name="viewer-status-overlay-position" type="s">
+    <key name="fit" type="b">
+      <default>false</default>
+      <summary>Fit as many previews to a folder's icon as their pictures' dimensions allow, instead of a set number</summary>
+    </key>
+    <key name="cycle" type="b">
+      <default>false</default>
+      <summary>Cycle a folder's preview pictures through its media while it is under the pointer, or is the item last selected and the pointer is over none</summary>
+    </key>
+  </schema>
+  <schema id="au.topher.rsimgv.thumbnails" path="/au/topher/rsimgv/thumbnails/">
+    <key name="threads" type="i">
+      <default>4</default>
+      <range min="1" max="4096"/>
+      <summary>How many thumbnails are made at the same time, at most the number of threads on the system</summary>
+    </key>
+    <key name="cache" type="b">
+      <default>true</default>
+      <summary>Keep thumbnails on disk, so they are not made again the next time they are shown</summary>
+    </key>
+    <key name="aggression" type="s">
+      <choices>
+        <choice value="low"/>
+        <choice value="standard"/>
+        <choice value="increased"/>
+        <choice value="high"/>
+        <choice value="extreme"/>
+      </choices>
+      <default>'standard'</default>
+      <summary>How eagerly thumbnails are made for items off screen: only those on screen, or those up to one, two or four screens away, or the whole folder</summary>
+    </key>
+    <key name="unload-offscreen" type="b">
+      <default>true</default>
+      <summary>Free the memory of thumbnails scrolled out of view, and load them again when they come back</summary>
+    </key>
+    <key name="crop" type="b">
+      <default>false</default>
+      <summary>Crop thumbnails to a square that fills the item's visual part</summary>
+    </key>
+  </schema>
+  <schema id="au.topher.rsimgv.window" path="/au/topher/rsimgv/window/">
+    <child name="sidebar" schema="au.topher.rsimgv.window.sidebar"/>
+    <key name="width" type="i">
+      <default>960</default>
+      <range min="320" max="10000"/>
+      <summary>Width of the window when it is not maximized</summary>
+    </key>
+    <key name="height" type="i">
+      <default>640</default>
+      <range min="240" max="10000"/>
+      <summary>Height of the window when it is not maximized</summary>
+    </key>
+    <key name="maximized" type="b">
+      <default>false</default>
+      <summary>Whether the window was maximized when it was last closed</summary>
+    </key>
+  </schema>
+  <schema id="au.topher.rsimgv.window.sidebar" path="/au/topher/rsimgv/window/sidebar/">
+    <key name="width" type="i">
+      <default>-1</default>
+      <summary>Sidebar width chosen by dragging, in pixels; -1 uses the default width</summary>
+    </key>
+    <key name="bookmarks-expanded" type="b">
+      <default>true</default>
+      <summary>Whether the sidebar's bookmarks section is expanded</summary>
+    </key>
+    <key name="filesystem-expanded" type="b">
+      <default>true</default>
+      <summary>Whether the sidebar's filesystem section is expanded</summary>
+    </key>
+    <key name="animations" type="b">
+      <default>true</default>
+      <summary>Slide the sidebars and the thumbnail bar in and out, rather than showing and hiding them at once</summary>
+    </key>
+    <key name="animation-ms" type="i">
+      <range min="0" max="2000"/>
+      <default>250</default>
+      <summary>How long the sidebars and the thumbnail bar take to slide in and out, in milliseconds</summary>
+    </key>
+  </schema>
+  <schema id="au.topher.rsimgv.start" path="/au/topher/rsimgv/start/">
+    <key name="location" type="s">
+      <choices>
+        <choice value="last"/>
+        <choice value="root"/>
+        <choice value="home"/>
+        <choice value="specific"/>
+      </choices>
+      <default>'last'</default>
+      <summary>Where a new window starts: the last open folder, the root folder, the home folder, or start.directory</summary>
+    </key>
+    <key name="directory" type="s">
+      <default>''</default>
+      <summary>The folder a new window starts in when start.location is specific</summary>
+    </key>
+    <key name="last-directory" type="s">
+      <default>''</default>
+      <summary>The folder open when the last window closed, used when start.location is last</summary>
+    </key>
+    <key name="last-file" type="s">
+      <default>''</default>
+      <summary>The item selected in start.last-directory when the last window closed, reselected on start</summary>
+    </key>
+  </schema>
+  <schema id="au.topher.rsimgv.playlist" path="/au/topher/rsimgv/playlist/">
+    <child name="columns" schema="au.topher.rsimgv.playlist.columns"/>
+    <child name="window" schema="au.topher.rsimgv.playlist.window"/>
+    <key name="fetch-in-background" type="b">
+      <default>true</default>
+      <summary>Whether the playlist reads the lengths of its items in the background, rather than when each is first played</summary>
+    </key>
+    <key name="repeat" type="b">
+      <default>true</default>
+      <summary>Whether the playlist goes back to its first item after its last, and the other way round</summary>
+    </key>
+    <key name="shown" type="b">
+      <default>false</default>
+      <summary>Whether the playlist is shown beside the browse view</summary>
+    </key>
+    <key name="width" type="i">
+      <default>-1</default>
+      <summary>The width of the playlist beside the browse view, or -1 for the default</summary>
+    </key>
+    <key name="detached" type="b">
+      <default>false</default>
+      <summary>Whether the playlist is in a window of its own</summary>
+    </key>
+    <key name="sort" type="(sb)">
+      <default>('', false)</default>
+      <summary>The column the playlist is sorted by, by its name, and whether it is sorted descending; an empty name is no sort</summary>
+    </key>
+  </schema>
+  <schema id="au.topher.rsimgv.playlist.columns" path="/au/topher/rsimgv/playlist/columns/">
+    <key name="position" type="b">
+      <default>true</default>
+      <summary>Whether the playlist shows the position column</summary>
+    </key>
+    <key name="name" type="b">
+      <default>true</default>
+      <summary>Whether the playlist shows the name column</summary>
+    </key>
+    <key name="length" type="b">
+      <default>true</default>
+      <summary>Whether the playlist shows the length column</summary>
+    </key>
+    <key name="filename" type="b">
+      <default>true</default>
+      <summary>Whether the playlist shows the filename column</summary>
+    </key>
+    <key name="widths" type="ai">
+      <default>[-1, -1, -1, 300]</default>
+      <summary>The widths of the playlist's columns, in the order they are shown in, with -1 for a column that sizes itself</summary>
+    </key>
+  </schema>
+  <schema id="au.topher.rsimgv.playlist.window" path="/au/topher/rsimgv/playlist/window/">
+    <key name="width" type="i">
+      <default>320</default>
+      <summary>The width of the playlist's own window</summary>
+    </key>
+    <key name="height" type="i">
+      <default>600</default>
+      <summary>The height of the playlist's own window</summary>
+    </key>
+    <key name="headerbar" type="s">
+      <choices>
+        <choice value="full"/>
+        <choice value="compact"/>
+        <choice value="none"/>
+      </choices>
+      <default>'full'</default>
+      <summary>The header of the playlist's own window: full, compact (half the height, with a smaller title), or none</summary>
+    </key>
+  </schema>
+  <schema id="au.topher.rsimgv.viewer" path="/au/topher/rsimgv/viewer/">
+    <child name="status-bar" schema="au.topher.rsimgv.viewer.status-bar"/>
+    <child name="thumbnail-bar" schema="au.topher.rsimgv.viewer.thumbnail-bar"/>
+    <key name="open-fullscreen" type="b">
+      <default>false</default>
+      <summary>Open the viewer in fullscreen</summary>
+    </key>
+    <key name="auto-hide-cursor" type="b">
+      <default>true</default>
+      <summary>Hide the mouse cursor while the viewer is idle</summary>
+    </key>
+    <key name="image-info-in-title" type="b">
+      <default>false</default>
+      <summary>Show the image's file name and details in the window title</summary>
+    </key>
+    <key name="blurred-background" type="b">
+      <default>false</default>
+      <summary>Show a blurred, dimmed, cropped copy of the picture behind it in the viewer</summary>
+    </key>
+    <key name="overlay-layout" type="s">
+      <default>""</default>
+      <summary>The elements of the media overlay and where they sit, as JSON. While empty, the older seek overlay and status overlay settings make the layout</summary>
+    </key>
+    <key name="folder-end" type="s">
+      <choices>
+        <choice value="stop"/>
+        <choice value="loop"/>
+        <choice value="next-folder"/>
+      </choices>
+      <default>'stop'</default>
+      <summary>What stepping past either end of a folder in the viewer does: stop, loop around the folder, or go on to the next folder with media</summary>
+    </key>
+  </schema>
+  <schema id="au.topher.rsimgv.viewer.status-bar" path="/au/topher/rsimgv/viewer/status-bar/">
+    <key name="shown" type="b">
+      <default>false</default>
+      <summary>Show a status bar under the viewer's item: its position, name, resolution, frame rate and file size</summary>
+    </key>
+    <key name="overlay-position" type="s">
       <choices>
         <choice value="top-left"/>
         <choice value="top-middle"/>
@@ -46,208 +337,9 @@
       <default>'bottom-middle'</default>
       <summary>Where the status bar floats over the viewer's item in fullscreen</summary>
     </key>
-    <key name="viewer-status-bar" type="b">
-      <default>false</default>
-      <summary>Show a status bar under the viewer's item: its position, name, resolution, frame rate and file size</summary>
-    </key>
-    <key name="mpv-opengl" type="b">
-      <default>false</default>
-      <summary>Render videos played by libmpv with OpenGL, with the blurred backdrop drawn by a shader, rather than in software</summary>
-    </key>
-    <key name="svp-enabled" type="b">
-      <default>false</default>
-      <summary>Interpolate the frames of videos played by libmpv with SVP (SmoothVideo Project)</summary>
-    </key>
-    <key name="svp-fps-mode" type="s">
-      <choices>
-        <choice value="default"/>
-        <choice value="fixed"/>
-        <choice value="variable"/>
-        <choice value="display"/>
-      </choices>
-      <default>'display'</default>
-      <summary>The output frame rate: the source's, a fixed target, the target divided by the speed, or the display's rate divided by the speed</summary>
-    </key>
-    <key name="svp-fps-target" type="d">
-      <default>0.0</default>
-      <summary>The target output frame rate for the fixed and variable modes, or 0 for the source's</summary>
-    </key>
-    <key name="svp-fps-minimum" type="i">
-      <default>60</default>
-      <summary>The lowest output frame rate SVP is given</summary>
-    </key>
-    <key name="svp-fps-maximum" type="i">
-      <default>240</default>
-      <summary>The highest output frame rate SVP is given</summary>
-    </key>
-    <key name="svp-nvof" type="b">
-      <default>true</default>
-      <summary>Use NVIDIA optical flow for SVP's motion analysis, rather than the CPU</summary>
-    </key>
-    <key name="svp-seek-bypass" type="b">
-      <default>true</default>
-      <summary>Leave SVP out of the video while it is skipped through and just after it starts, as mpv reloads SVP after every seek</summary>
-    </key>
-    <key name="svp-seek-bypass-delay" type="d">
-      <range min="0.1" max="10.0"/>
-      <default>1.0</default>
-      <summary>How many seconds after the last seek SVP comes back</summary>
-    </key>
-    <key name="image-preloading" type="b">
-      <default>true</default>
-      <summary>When viewing an image, preload the adjacent images in the background</summary>
-    </key>
-    <key name="thumbnail-threads" type="i">
-      <default>4</default>
-      <range min="1" max="4096"/>
-      <summary>How many thumbnails are made at the same time, at most the number of threads on the system</summary>
-    </key>
-    <key name="thumbnail-cache" type="b">
-      <default>true</default>
-      <summary>Keep thumbnails on disk, so they are not made again the next time they are shown</summary>
-    </key>
-    <key name="thumbnail-aggression" type="s">
-      <choices>
-        <choice value="low"/>
-        <choice value="standard"/>
-        <choice value="increased"/>
-        <choice value="high"/>
-        <choice value="extreme"/>
-      </choices>
-      <default>'standard'</default>
-      <summary>How eagerly thumbnails are made for items off screen: only those on screen, or those up to one, two or four screens away, or the whole folder</summary>
-    </key>
-    <key name="thumbnail-unload-offscreen" type="b">
-      <default>true</default>
-      <summary>Free the memory of thumbnails scrolled out of view, and load them again when they come back</summary>
-    </key>
-    <key name="folder-preview-fit" type="b">
-      <default>false</default>
-      <summary>Fit as many previews to a folder's icon as their pictures' dimensions allow, instead of a set number</summary>
-    </key>
-    <key name="folder-preview-cycle" type="b">
-      <default>false</default>
-      <summary>Cycle a folder's preview pictures through its media while it is under the pointer, or is the item last selected and the pointer is over none</summary>
-    </key>
-    <key name="item-size" type="i">
-      <default>128</default>
-      <range min="32" max="2048"/>
-      <summary>Size in pixels of the visual part of each browse item</summary>
-    </key>
-    <key name="collapse-on-navigate" type="b">
-      <default>false</default>
-      <summary>Collapse folders outside the current path when navigating</summary>
-    </key>
-    <key name="window-width" type="i">
-      <default>960</default>
-      <range min="320" max="10000"/>
-      <summary>Width of the window when it is not maximized</summary>
-    </key>
-    <key name="window-height" type="i">
-      <default>640</default>
-      <range min="240" max="10000"/>
-      <summary>Height of the window when it is not maximized</summary>
-    </key>
-    <key name="window-maximized" type="b">
-      <default>false</default>
-      <summary>Whether the window was maximized when it was last closed</summary>
-    </key>
-    <key name="start-location" type="s">
-      <choices>
-        <choice value="last"/>
-        <choice value="root"/>
-        <choice value="home"/>
-        <choice value="specific"/>
-      </choices>
-      <default>'last'</default>
-      <summary>Where a new window starts: the last open folder, the root folder, the home folder, or start-directory</summary>
-    </key>
-    <key name="start-directory" type="s">
-      <default>''</default>
-      <summary>The folder a new window starts in when start-location is specific</summary>
-    </key>
-    <key name="last-directory" type="s">
-      <default>''</default>
-      <summary>The folder open when the last window closed, used when start-location is last</summary>
-    </key>
-    <key name="last-file" type="s">
-      <default>''</default>
-      <summary>The item selected in last-directory when the last window closed, reselected on start</summary>
-    </key>
-    <key name="sidebar-width" type="i">
-      <default>-1</default>
-      <summary>Sidebar width chosen by dragging, in pixels; -1 uses the default width</summary>
-    </key>
-    <key name="sidebar-bookmarks-expanded" type="b">
-      <default>true</default>
-      <summary>Whether the sidebar's bookmarks section is expanded</summary>
-    </key>
-    <key name="sidebar-filesystem-expanded" type="b">
-      <default>true</default>
-      <summary>Whether the sidebar's filesystem section is expanded</summary>
-    </key>
-    <key name="playlist-fetch-in-background" type="b">
-      <default>true</default>
-      <summary>Whether the playlist reads the lengths of its items in the background, rather than when each is first played</summary>
-    </key>
-    <key name="playlist-show-position" type="b">
-      <default>true</default>
-      <summary>Whether the playlist shows the position column</summary>
-    </key>
-    <key name="playlist-show-name" type="b">
-      <default>true</default>
-      <summary>Whether the playlist shows the name column</summary>
-    </key>
-    <key name="playlist-show-length" type="b">
-      <default>true</default>
-      <summary>Whether the playlist shows the length column</summary>
-    </key>
-    <key name="playlist-show-filename" type="b">
-      <default>true</default>
-      <summary>Whether the playlist shows the filename column</summary>
-    </key>
-    <key name="playlist-column-widths" type="ai">
-      <default>[-1, -1, -1, 300]</default>
-      <summary>The widths of the playlist's columns, in the order they are shown in, with -1 for a column that sizes itself</summary>
-    </key>
-    <key name="playlist-sort" type="(sb)">
-      <default>('', false)</default>
-      <summary>The column the playlist is sorted by, by its name, and whether it is sorted descending; an empty name is no sort</summary>
-    </key>
-    <key name="playlist-shown" type="b">
-      <default>false</default>
-      <summary>Whether the playlist is shown beside the browse view</summary>
-    </key>
-    <key name="playlist-width" type="i">
-      <default>-1</default>
-      <summary>The width of the playlist beside the browse view, or -1 for the default</summary>
-    </key>
-    <key name="playlist-detached" type="b">
-      <default>false</default>
-      <summary>Whether the playlist is in a window of its own</summary>
-    </key>
-    <key name="playlist-window-width" type="i">
-      <default>320</default>
-      <summary>The width of the playlist's own window</summary>
-    </key>
-    <key name="playlist-window-height" type="i">
-      <default>600</default>
-      <summary>The height of the playlist's own window</summary>
-    </key>
-    <key name="playlist-window-headerbar" type="s">
-      <choices>
-        <choice value="full"/>
-        <choice value="compact"/>
-        <choice value="none"/>
-      </choices>
-      <default>'full'</default>
-      <summary>The header of the playlist's own window: full, compact (half the height, with a smaller title), or none</summary>
-    </key>
-    <key name="playlist-repeat" type="b">
-      <default>true</default>
-      <summary>Whether the playlist goes back to its first item after its last, and the other way round</summary>
-    </key>
-    <key name="viewer-thumbnail-bar" type="s">
+  </schema>
+  <schema id="au.topher.rsimgv.viewer.thumbnail-bar" path="/au/topher/rsimgv/viewer/thumbnail-bar/">
+    <key name="side" type="s">
       <choices>
         <choice value="top"/>
         <choice value="left"/>
@@ -257,49 +349,26 @@
       <default>'bottom'</default>
       <summary>The side of the viewer the thumbnail bar is on</summary>
     </key>
-    <key name="viewer-thumbnail-bar-shown" type="b">
+    <key name="shown" type="b">
       <default>true</default>
       <summary>Show the thumbnail bar in the viewer</summary>
     </key>
-    <key name="viewer-thumbnail-bar-overlay" type="b">
+    <key name="overlay" type="b">
       <default>true</default>
       <summary>Float the thumbnail bar over the picture, rather than beside it</summary>
     </key>
-    <key name="viewer-thumbnail-bar-pinned" type="b">
+    <key name="pinned" type="b">
       <default>false</default>
       <summary>Keep the floating thumbnail bar shown, rather than only while the pointer is near it</summary>
     </key>
-    <key name="viewer-thumbnail-bar-size" type="i">
+    <key name="size" type="i">
       <range min="48" max="256"/>
       <default>80</default>
       <summary>The size of the thumbnails in the viewer's thumbnail bar, in pixels</summary>
     </key>
-    <key name="open-fullscreen" type="b">
-      <default>false</default>
-      <summary>Open the viewer in fullscreen</summary>
-    </key>
-    <key name="auto-hide-cursor" type="b">
-      <default>true</default>
-      <summary>Hide the mouse cursor while the viewer is idle</summary>
-    </key>
-    <key name="smooth-scrolling" type="b">
-      <default>true</default>
-      <summary>Animate zooming and panning of images, rather than jumping to the new view</summary>
-    </key>
-    <key name="image-info-in-title" type="b">
-      <default>false</default>
-      <summary>Show the image's file name and details in the window title</summary>
-    </key>
-    <key name="zoom-indicator" type="s">
-      <choices>
-        <choice value="on"/>
-        <choice value="off"/>
-        <choice value="auto"/>
-      </choices>
-      <default>'auto'</default>
-      <summary>Show the zoom level: on, off, or only when the image is zoomed</summary>
-    </key>
-    <key name="image-fit" type="s">
+  </schema>
+  <schema id="au.topher.rsimgv.image" path="/au/topher/rsimgv/image/">
+    <key name="fit" type="s">
       <choices>
         <choice value="window"/>
         <choice value="width"/>
@@ -309,6 +378,10 @@
       </choices>
       <default>'window'</default>
       <summary>How an image is sized when it is opened: to fit the window, its width or its height, to cover the window, or at its own size</summary>
+    </key>
+    <key name="keep-fit" type="b">
+      <default>true</default>
+      <summary>Keep the fit mode when switching images</summary>
     </key>
     <key name="original-focus" type="s">
       <choices>
@@ -323,6 +396,29 @@
       <default>false</default>
       <summary>Let zooming out go below the image's own size; locked, zooming out stops at 100%</summary>
     </key>
+    <key name="zoom-step" type="i">
+      <default>25</default>
+      <range min="5" max="100"/>
+      <summary>How much one zoom step enlarges or shrinks the picture, in percent</summary>
+    </key>
+    <key name="expand-up-to-factor" type="i">
+      <default>0</default>
+      <range min="0" max="4"/>
+      <summary>Largest zoom, as a multiple of their own size, that small images are enlarged to when fitted; 0 has no limit</summary>
+    </key>
+    <key name="zoom-indicator" type="s">
+      <choices>
+        <choice value="on"/>
+        <choice value="off"/>
+        <choice value="auto"/>
+      </choices>
+      <default>'auto'</default>
+      <summary>Show the zoom level: on, off, or only when the image is zoomed</summary>
+    </key>
+    <key name="smooth-scrolling" type="b">
+      <default>true</default>
+      <summary>Animate zooming and panning of images, rather than jumping to the new view</summary>
+    </key>
     <key name="scaling-filter" type="s">
       <choices>
         <choice value="nearest"/>
@@ -334,11 +430,23 @@
       <default>'linear'</default>
       <summary>How images are resampled when drawn: nearest keeps pixels sharp, linear smooths them, cubic smooths them with more detail, and the sharp ones sharpen the result</summary>
     </key>
-    <key name="keep-fit-mode" type="b">
+    <key name="smooth-upscaling" type="b">
       <default>true</default>
-      <summary>Keep the fit mode when switching images</summary>
+      <summary>Smooth pixels when images are enlarged, rather than drawing them as blocks; off uses nearest for enlarged images</summary>
     </key>
-    <key name="video-backend" type="s">
+    <key name="preloading" type="b">
+      <default>true</default>
+      <summary>When viewing an image, preload the adjacent images in the background</summary>
+    </key>
+  </schema>
+  <schema id="au.topher.rsimgv.video" path="/au/topher/rsimgv/video/">
+    <child name="mpv" schema="au.topher.rsimgv.video.mpv"/>
+    <child name="svp" schema="au.topher.rsimgv.video.svp"/>
+    <child name="seek-overlay" schema="au.topher.rsimgv.video.seek-overlay"/>
+    <child name="crop" schema="au.topher.rsimgv.video.crop"/>
+    <child name="backdrop" schema="au.topher.rsimgv.video.backdrop"/>
+    <child name="controls" schema="au.topher.rsimgv.video.controls"/>
+    <key name="backend" type="s">
       <choices>
         <choice value="mpv"/>
         <choice value="gtk"/>
@@ -346,23 +454,83 @@
       <default>'mpv'</default>
       <summary>What plays videos: libmpv, or GStreamer through GTK's own media backend</summary>
     </key>
-    <key name="overlay-layout" type="s">
-      <default>""</default>
-      <summary>The elements of the media overlay and where they sit, as JSON. While empty, the older seek overlay and status overlay settings make the layout</summary>
+    <key name="start-delay" type="i">
+      <default>150</default>
+      <range min="0" max="2000"/>
+      <summary>How long, in milliseconds, a video waits to start after stepping to it with next or previous; 0 starts it at once</summary>
     </key>
-    <key name="seek-overlay" type="b">
+  </schema>
+  <schema id="au.topher.rsimgv.video.mpv" path="/au/topher/rsimgv/video/mpv/">
+    <key name="args" type="s">
+      <default>""</default>
+      <summary>Extra mpv command line options for the mpv player, such as --hwdec=auto-copy</summary>
+    </key>
+    <key name="opengl" type="b">
+      <default>false</default>
+      <summary>Render videos played by libmpv with OpenGL, with the blurred backdrop drawn by a shader, rather than in software</summary>
+    </key>
+  </schema>
+  <schema id="au.topher.rsimgv.video.svp" path="/au/topher/rsimgv/video/svp/">
+    <child name="fps" schema="au.topher.rsimgv.video.svp.fps"/>
+    <child name="seek-bypass" schema="au.topher.rsimgv.video.svp.seek-bypass"/>
+    <key name="enabled" type="b">
+      <default>false</default>
+      <summary>Interpolate the frames of videos played by libmpv with SVP (SmoothVideo Project)</summary>
+    </key>
+    <key name="nvof" type="b">
+      <default>true</default>
+      <summary>Use NVIDIA optical flow for SVP's motion analysis, rather than the CPU</summary>
+    </key>
+  </schema>
+  <schema id="au.topher.rsimgv.video.svp.fps" path="/au/topher/rsimgv/video/svp/fps/">
+    <key name="mode" type="s">
+      <choices>
+        <choice value="default"/>
+        <choice value="fixed"/>
+        <choice value="variable"/>
+        <choice value="display"/>
+      </choices>
+      <default>'display'</default>
+      <summary>The output frame rate: the source's, a fixed target, the target divided by the speed, or the display's rate divided by the speed</summary>
+    </key>
+    <key name="target" type="d">
+      <default>0.0</default>
+      <summary>The target output frame rate for the fixed and variable modes, or 0 for the source's</summary>
+    </key>
+    <key name="minimum" type="i">
+      <default>60</default>
+      <summary>The lowest output frame rate SVP is given</summary>
+    </key>
+    <key name="maximum" type="i">
+      <default>240</default>
+      <summary>The highest output frame rate SVP is given</summary>
+    </key>
+  </schema>
+  <schema id="au.topher.rsimgv.video.svp.seek-bypass" path="/au/topher/rsimgv/video/svp/seek-bypass/">
+    <key name="enabled" type="b">
+      <default>true</default>
+      <summary>Leave SVP out of the video while it is skipped through and just after it starts, as mpv reloads SVP after every seek</summary>
+    </key>
+    <key name="delay" type="d">
+      <range min="0.1" max="10.0"/>
+      <default>1.0</default>
+      <summary>How many seconds after the last seek SVP comes back</summary>
+    </key>
+  </schema>
+  <schema id="au.topher.rsimgv.video.seek-overlay" path="/au/topher/rsimgv/video/seek-overlay/">
+    <key name="enabled" type="b">
       <default>true</default>
       <summary>Show a progress bar and the time over a video when it is skipped through</summary>
     </key>
-    <key name="seek-overlay-bar" type="b">
+    <key name="bar" type="b">
       <default>true</default>
       <summary>Show a progress bar in the seek overlay</summary>
     </key>
-    <key name="seek-overlay-time" type="b">
+    <key name="time" type="b">
       <default>true</default>
       <summary>Show the time in the seek overlay</summary>
     </key>
-    <key name="seek-overlay-time-format" type="s">
+    <key name="time-format" type="s">
       <choices>
         <choice value="elapsed-total"/>
         <choice value="remaining-total"/>
@@ -372,7 +540,7 @@
       <default>'elapsed-total'</default>
       <summary>How the seek overlay writes the time: elapsed and total, remaining and total, or just one of them</summary>
     </key>
-    <key name="seek-overlay-position" type="s">
+    <key name="position" type="s">
       <choices>
         <choice value="top-left"/>
         <choice value="top-middle"/>
@@ -384,62 +552,27 @@
       <default>'top-middle'</default>
       <summary>Where the seek overlay sits over the video</summary>
     </key>
-    <key name="seek-overlay-seconds" type="d">
+    <key name="seconds" type="d">
       <range min="0.5" max="10.0"/>
       <default>2.0</default>
       <summary>How long the seek overlay stays up after a skip, in seconds</summary>
     </key>
-    <key name="seek-overlay-width" type="i">
+    <key name="width" type="i">
       <range min="120" max="1200"/>
       <default>360</default>
       <summary>The width of the seek overlay's progress bar, in pixels</summary>
     </key>
-    <key name="seek-overlay-always" type="b">
+    <key name="always" type="b">
       <default>false</default>
       <summary>Keep the seek overlay up while a video plays, rather than only after a skip</summary>
     </key>
-    <key name="remember-file-settings" type="b">
-      <default>true</default>
-      <summary>Keep settings for each file, such as where a video was left, and use them when the file is shown again</summary>
-    </key>
-    <key name="remember-position" type="b">
-      <default>true</default>
-      <summary>Keep where a video was left, and start it there next time</summary>
-    </key>
-    <key name="remember-speed" type="b">
-      <default>true</default>
-      <summary>Keep the playback speed of a video</summary>
-    </key>
-    <key name="remember-volume" type="b">
-      <default>false</default>
-      <summary>Keep the volume and mute state of a video</summary>
-    </key>
-    <key name="remember-rotation" type="b">
-      <default>false</default>
-      <summary>Keep how a picture or video was turned and mirrored</summary>
-    </key>
-    <key name="remember-zoom" type="b">
-      <default>true</default>
-      <summary>Keep how a picture was zoomed, or its fit mode</summary>
-    </key>
-    <key name="remember-pan" type="b">
-      <default>true</default>
-      <summary>Keep where a zoomed picture was panned to</summary>
-    </key>
-    <key name="sidebar-animations" type="b">
-      <default>true</default>
-      <summary>Slide the sidebars and the thumbnail bar in and out, rather than showing and hiding them at once</summary>
-    </key>
-    <key name="sidebar-animation-ms" type="i">
-      <range min="0" max="2000"/>
-      <default>250</default>
-      <summary>How long the sidebars and the thumbnail bar take to slide in and out, in milliseconds</summary>
-    </key>
-    <key name="video-crop" type="b">
+  </schema>
+  <schema id="au.topher.rsimgv.video.crop" path="/au/topher/rsimgv/video/crop/">
+    <key name="enabled" type="b">
       <default>false</default>
       <summary>Crop the black bars, or the backdrop, off the edges of a video that mpv plays</summary>
     </key>
-    <key name="video-crop-method" type="s">
+    <key name="method" type="s">
       <choices>
         <choice value="cropdetect"/>
         <choice value="edges"/>
@@ -448,173 +581,87 @@
       <default>'cropdetect'</default>
       <summary>How the picture to crop to is found: mpv's near-black border detector, the brightness steps at the picture's border, or the area that moves</summary>
     </key>
-    <key name="video-crop-trim" type="i">
+    <key name="trim" type="i">
       <range min="0" max="32"/>
       <default>0</default>
       <summary>Pixels trimmed from each side that was cropped, so a soft edge is not left in</summary>
     </key>
-    <key name="video-backdrop" type="b">
+  </schema>
+  <schema id="au.topher.rsimgv.video.backdrop" path="/au/topher/rsimgv/video/backdrop/">
+    <key name="enabled" type="b">
       <default>false</default>
       <summary>Fill the space round a video with a blurred, dimmed copy of it</summary>
     </key>
-    <key name="video-backdrop-zoom" type="d">
+    <key name="zoom" type="d">
       <range min="1.0" max="4.0"/>
       <default>1.0</default>
       <summary>How far the copy behind the picture is zoomed in</summary>
     </key>
-    <key name="video-backdrop-blur" type="i">
+    <key name="blur" type="i">
       <range min="1" max="64"/>
       <default>8</default>
       <summary>How blurred the copy behind the picture is</summary>
     </key>
-    <key name="video-backdrop-dim" type="d">
+    <key name="dim" type="d">
       <range min="0.0" max="1.0"/>
       <default>0.5</default>
       <summary>How bright the copy behind the picture is, from 0 for black to 1 for unchanged</summary>
     </key>
-    <key name="video-controls-locked" type="b">
+  </schema>
+  <schema id="au.topher.rsimgv.video.controls" path="/au/topher/rsimgv/video/controls/">
+    <key name="locked" type="b">
       <default>true</default>
       <summary>Keep the video controls where they are. Unlocked, they can be dragged to a new place over the video, and their left or right edge dragged to change their width</summary>
     </key>
-    <key name="video-controls-x" type="d">
+    <key name="x" type="d">
       <range min="0.0" max="1.0"/>
       <default>0.5</default>
       <summary>The centre of the video controls across the video frame, from 0 at the left to 1 at the right</summary>
     </key>
-    <key name="video-controls-y" type="d">
+    <key name="y" type="d">
       <range min="0.0" max="1.0"/>
       <default>0.92</default>
       <summary>The centre of the video controls down the video frame, from 0 at the top to 1 at the bottom</summary>
     </key>
-    <key name="video-controls-width" type="d">
+    <key name="width" type="d">
       <range min="0.0" max="1.0"/>
       <default>0.0</default>
       <summary>The width of the video controls as a share of the video frame, or 0 for the width they need</summary>
     </key>
-    <key name="mpv-args" type="s">
-      <default>""</default>
-      <summary>Extra mpv command line options for the mpv player, such as --hwdec=auto-copy</summary>
-    </key>
-    <key name="video-start-delay" type="i">
-      <default>150</default>
-      <range min="0" max="2000"/>
-      <summary>How long, in milliseconds, a video waits to start after stepping to it with next or previous; 0 starts it at once</summary>
-    </key>
-    <key name="zoom-step" type="i">
-      <default>25</default>
-      <range min="5" max="100"/>
-      <summary>How much one zoom step enlarges or shrinks the picture, in percent</summary>
-    </key>
-    <key name="expand-up-to-factor" type="i">
-      <default>0</default>
-      <range min="0" max="4"/>
-      <summary>Largest zoom, as a multiple of their own size, that small images are enlarged to when fitted; 0 has no limit</summary>
-    </key>
-    <key name="smooth-upscaling" type="b">
+  </schema>
+  <schema id="au.topher.rsimgv.remember" path="/au/topher/rsimgv/remember/">
+    <key name="enabled" type="b">
       <default>true</default>
-      <summary>Smooth pixels when images are enlarged, rather than drawing them as blocks; off uses nearest for enlarged images</summary>
+      <summary>Keep settings for each file, such as where a video was left, and use them when the file is shown again</summary>
     </key>
-    <key name="filename-display" type="s">
-      <choices>
-        <choice value="off"/>
-        <choice value="wrapped"/>
-        <choice value="ellipsized"/>
-      </choices>
-      <default>'ellipsized'</default>
-      <summary>How item names are shown: off, wrapped to two lines, or ellipsized</summary>
+    <key name="position" type="b">
+      <default>true</default>
+      <summary>Keep where a video was left, and start it there next time</summary>
     </key>
-    <key name="show-directories" type="s">
-      <choices>
-        <choice value="none"/>
-        <choice value="first-last"/>
-        <choice value="inline"/>
-      </choices>
-      <default>'first-last'</default>
-      <summary>Where folders are listed: not at all, before and after the files as the sort order says, or among the files</summary>
+    <key name="speed" type="b">
+      <default>true</default>
+      <summary>Keep the playback speed of a video</summary>
     </key>
-    <key name="sort-by" type="s">
-      <choices>
-        <choice value="name"/>
-        <choice value="modified"/>
-        <choice value="size"/>
-        <choice value="type"/>
-      </choices>
-      <default>'name'</default>
-      <summary>What the browse view sorts files and folders by, in a folder with no remembered sort: name, modification time, size or type</summary>
-    </key>
-    <key name="sort-order" type="s">
-      <choices>
-        <choice value="ascending"/>
-        <choice value="descending"/>
-      </choices>
-      <default>'ascending'</default>
-      <summary>Whether the browse view sorts ascending or descending, in a folder with no remembered sort</summary>
-    </key>
-    <key name="remember-folder-sort" type="b">
+    <key name="volume" type="b">
       <default>false</default>
-      <summary>Keep the sort chosen in the sort menu for that folder alone, rather than changing the default</summary>
+      <summary>Keep the volume and mute state of a video</summary>
     </key>
-    <key name="folder-end" type="s">
-      <choices>
-        <choice value="stop"/>
-        <choice value="loop"/>
-        <choice value="next-folder"/>
-      </choices>
-      <default>'stop'</default>
-      <summary>What stepping past either end of a folder in the viewer does: stop, loop around the folder, or go on to the next folder with media</summary>
-    </key>
-    <key name="info-layout" type="s">
-      <choices>
-        <choice value="disabled"/>
-        <choice value="stacked"/>
-        <choice value="inline"/>
-      </choices>
-      <default>'inline'</default>
-      <summary>How item info is laid out: disabled, one field per line, or fields separated by bullets</summary>
-    </key>
-    <key name="info-fields" type="as">
-      <default>['size', 'modified']</default>
-      <summary>Details shown under each item's name</summary>
-    </key>
-    <key name="ipc-socket" type="b">
+    <key name="rotation" type="b">
       <default>false</default>
-      <summary>Serve the JSON IPC on a Unix socket in the runtime directory</summary>
+      <summary>Keep how a picture or video was turned and mirrored</summary>
     </key>
-    <key name="ipc-socket-path" type="s">
-      <default>''</default>
-      <summary>Where the Unix socket is; empty for rsimgv.sock in the runtime directory</summary>
+    <key name="zoom" type="b">
+      <default>true</default>
+      <summary>Keep how a picture was zoomed, or its fit mode</summary>
     </key>
-    <key name="ipc-tcp-enabled" type="b">
-      <default>false</default>
-      <summary>Serve the JSON IPC on a TCP port</summary>
+    <key name="pan" type="b">
+      <default>true</default>
+      <summary>Keep where a zoomed picture was panned to</summary>
     </key>
-    <key name="ipc-tcp-port" type="i">
-      <default>9700</default>
-      <range min="1" max="65535"/>
-      <summary>The TCP port the JSON IPC is served on, when TCP is enabled</summary>
-    </key>
-    <key name="ipc-http-enabled" type="b">
-      <default>false</default>
-      <summary>Serve the JSON IPC over HTTP</summary>
-    </key>
-    <key name="ipc-http-port" type="i">
-      <default>9780</default>
-      <range min="1" max="65535"/>
-      <summary>The HTTP port the JSON IPC is served on, when HTTP is enabled</summary>
-    </key>
-    <key name="ipc-external-access" type="b">
-      <default>false</default>
-      <summary>Let other machines reach the TCP and HTTP IPC ports, rather than only localhost</summary>
-    </key>
-    <key name="viewer-blurred-background" type="b">
-      <default>false</default>
-      <summary>Show a blurred, dimmed, cropped copy of the picture behind it in the viewer</summary>
-    </key>
-    <key name="scripts" type="as">
-      <default>[]</default>
-      <summary>Scripts listed in the preferences, each a JSON object with its name, command and wait flag</summary>
-    </key>
-    <key name="mouse-back" type="s">
+  </schema>
+  <schema id="au.topher.rsimgv.mouse" path="/au/topher/rsimgv/mouse/">
+    <child name="scroll" schema="au.topher.rsimgv.mouse.scroll"/>
+    <key name="back" type="s">
       <choices>
         <choice value="back"/>
         <choice value="up"/>
@@ -626,7 +673,7 @@
       <default>'back'</default>
       <summary>What the mouse's back button does: back, up, previous, next, forward, or none</summary>
     </key>
-    <key name="mouse-forward" type="s">
+    <key name="forward" type="s">
       <choices>
         <choice value="back"/>
         <choice value="up"/>
@@ -638,7 +685,9 @@
       <default>'forward'</default>
       <summary>What the mouse's forward button does: back, up, previous, next, forward, or none</summary>
     </key>
-    <key name="scroll-image" type="s">
+  </schema>
+  <schema id="au.topher.rsimgv.mouse.scroll" path="/au/topher/rsimgv/mouse/scroll/">
+    <key name="image" type="s">
       <choices>
         <choice value="ctrl-zoom"/>
         <choice value="zoom"/>
@@ -648,7 +697,7 @@
       <default>'ctrl-zoom'</default>
       <summary>What the scroll wheel does over a picture: zoom with Ctrl, zoom, step between items, or nothing</summary>
     </key>
-    <key name="scroll-video" type="s">
+    <key name="video" type="s">
       <choices>
         <choice value="volume"/>
         <choice value="seek"/>
@@ -658,10 +707,57 @@
       <default>'none'</default>
       <summary>What the scroll wheel does over a video: volume, seek, step between items, or nothing</summary>
     </key>
-    <key name="scroll-speed" type="i">
+    <key name="speed" type="i">
       <range min="10" max="400"/>
       <default>100</default>
       <summary>How far each notch of the scroll wheel moves, in percent of the normal amount</summary>
+    </key>
+  </schema>
+  <schema id="au.topher.rsimgv.remote.socket" path="/au/topher/rsimgv/remote/socket/">
+    <key name="enabled" type="b">
+      <default>false</default>
+      <summary>Serve the JSON IPC on a Unix socket in the runtime directory</summary>
+    </key>
+    <key name="path" type="s">
+      <default>''</default>
+      <summary>Where the Unix socket is; empty for rsimgv.sock in the runtime directory</summary>
+    </key>
+  </schema>
+  <schema id="au.topher.rsimgv.remote" path="/au/topher/rsimgv/remote/">
+    <child name="socket" schema="au.topher.rsimgv.remote.socket"/>
+    <child name="tcp" schema="au.topher.rsimgv.remote.tcp"/>
+    <child name="http" schema="au.topher.rsimgv.remote.http"/>
+    <key name="external-access" type="b">
+      <default>false</default>
+      <summary>Let other machines reach the TCP and HTTP IPC ports, rather than only localhost</summary>
+    </key>
+  </schema>
+  <schema id="au.topher.rsimgv.remote.tcp" path="/au/topher/rsimgv/remote/tcp/">
+    <key name="enabled" type="b">
+      <default>false</default>
+      <summary>Serve the JSON IPC on a TCP port</summary>
+    </key>
+    <key name="port" type="i">
+      <default>9700</default>
+      <range min="1" max="65535"/>
+      <summary>The TCP port the JSON IPC is served on, when TCP is enabled</summary>
+    </key>
+  </schema>
+  <schema id="au.topher.rsimgv.remote.http" path="/au/topher/rsimgv/remote/http/">
+    <key name="enabled" type="b">
+      <default>false</default>
+      <summary>Serve the JSON IPC over HTTP</summary>
+    </key>
+    <key name="port" type="i">
+      <default>9780</default>
+      <range min="1" max="65535"/>
+      <summary>The HTTP port the JSON IPC is served on, when HTTP is enabled</summary>
+    </key>
+  </schema>
+  <schema id="au.topher.rsimgv.scripts" path="/au/topher/rsimgv/scripts/">
+    <key name="list" type="as">
+      <default>[]</default>
+      <summary>Scripts listed in the preferences, each a JSON object with its name, command and wait flag</summary>
     </key>
   </schema>
 </schemalist>

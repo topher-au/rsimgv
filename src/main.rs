@@ -10,6 +10,8 @@ mod mpv;
 mod settings;
 mod ui;
 
+use crate::settings::Settings;
+
 use adw::prelude::*;
 use services::{ipc, remote};
 use storage::bookmarks;
@@ -24,26 +26,26 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 /// The settings about making thumbnails.
-const THUMBNAIL_KEYS: [&str; 4] = ["thumbnail-threads", "thumbnail-cache", "thumbnail-unload-offscreen", "thumbnail-aggression"];
+const THUMBNAIL_KEYS: [&str; 4] = ["thumbnails.threads", "thumbnails.cache", "thumbnails.unload-offscreen", "thumbnails.aggression"];
 
 /// Gives the thumbnails what the settings say about making them.
-fn apply_thumbnail_settings(settings: &gio::Settings) {
+fn apply_thumbnail_settings(settings: &Settings) {
     let thumbnails = fs::thumbnail::Thumbnails::shared();
-    thumbnails.set_thread_count(settings.int("thumbnail-threads").max(1) as usize);
-    thumbnails.set_disk_cache(settings.boolean("thumbnail-cache"));
-    thumbnails.set_unload_offscreen(settings.boolean("thumbnail-unload-offscreen"));
-    thumbnails.set_aggression(fs::thumbnail::Aggression::from_name(&settings.string("thumbnail-aggression")));
+    thumbnails.set_thread_count(settings.int("thumbnails.threads").max(1) as usize);
+    thumbnails.set_disk_cache(settings.boolean("thumbnails.cache"));
+    thumbnails.set_unload_offscreen(settings.boolean("thumbnails.unload-offscreen"));
+    thumbnails.set_aggression(fs::thumbnail::Aggression::from_name(&settings.string("thumbnails.aggression")));
 }
 
 /// The settings that decide which IPC transports run, and on which ports.
 const IPC_KEYS: [&str; 7] = [
-    "ipc-socket",
-    "ipc-socket-path",
-    "ipc-tcp-enabled",
-    "ipc-tcp-port",
-    "ipc-http-enabled",
-    "ipc-http-port",
-    "ipc-external-access",
+    "remote.socket.enabled",
+    "remote.socket.path",
+    "remote.tcp.enabled",
+    "remote.tcp.port",
+    "remote.http.enabled",
+    "remote.http.port",
+    "remote.external-access",
 ];
 
 const APP_ID: &str = "au.topher.rsimgv";
@@ -140,14 +142,14 @@ fn main() -> glib::ExitCode {
     let ipc_server = Rc::new(RefCell::new(ipc::Server::new(calls)));
     serve_ipc(&app, receiver);
     for key in IPC_KEYS {
-        settings.connect_changed(Some(key), {
+        settings.connect_changed(key, {
             let settings = settings.clone();
             let ipc_server = ipc_server.clone();
             move |_, _| ipc_server.borrow_mut().apply(&ipc_config(&settings))
         });
     }
     for key in THUMBNAIL_KEYS {
-        settings.connect_changed(Some(key), |settings, _| apply_thumbnail_settings(settings));
+        settings.connect_changed(key, |settings, _| apply_thumbnail_settings(settings));
     }
     let shutdown_server = ipc_server.clone();
     let startup_settings = settings.clone();
@@ -267,9 +269,9 @@ fn main() -> glib::ExitCode {
 }
 
 /// The IPC transports the settings ask for.
-fn ipc_config(settings: &gio::Settings) -> ipc::Config {
-    let socket_path = settings.string("ipc-socket-path");
-    let socket = settings.boolean("ipc-socket").then(|| {
+fn ipc_config(settings: &Settings) -> ipc::Config {
+    let socket_path = settings.string("remote.socket.path");
+    let socket = settings.boolean("remote.socket.enabled").then(|| {
         if socket_path.is_empty() { ipc::default_socket_path() } else { PathBuf::from(socket_path.as_str()) }
     });
     let port = |enabled: &str, key: &str| {
@@ -277,9 +279,9 @@ fn ipc_config(settings: &gio::Settings) -> ipc::Config {
     };
     ipc::Config {
         socket,
-        tcp_port: port("ipc-tcp-enabled", "ipc-tcp-port"),
-        http_port: port("ipc-http-enabled", "ipc-http-port"),
-        external: settings.boolean("ipc-external-access"),
+        tcp_port: port("remote.tcp.enabled", "remote.tcp.port"),
+        http_port: port("remote.http.enabled", "remote.http.port"),
+        external: settings.boolean("remote.external-access"),
     }
 }
 

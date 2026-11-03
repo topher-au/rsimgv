@@ -6,6 +6,8 @@
 //! mpv reloads the script after every seek, as the filter drops VapourSynth when it is reset. So that skipping through a
 //! video does not wait on that each time, the filter can be left out until the skipping has stopped.
 
+use crate::settings::Settings;
+
 use std::collections::hash_map::DefaultHasher;
 use std::ffi::{c_char, c_int, c_void, CString};
 use std::fs::{DirBuilder, Permissions};
@@ -16,8 +18,7 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use gtk::gio::prelude::SettingsExt;
-use gtk::{gio, glib};
+use gtk::glib;
 use serde_json::{json, Value};
 
 /// The whole frame rates the output is rounded to.
@@ -253,19 +254,19 @@ pub struct Config {
 }
 
 impl Config {
-    pub fn from_settings(settings: &gio::Settings) -> Self {
+    pub fn from_settings(settings: &Settings) -> Self {
         Self {
-            enabled: settings.boolean("svp-enabled"),
+            enabled: settings.boolean("video.svp.enabled"),
             rate: Rate {
-                mode: Mode::from_name(&settings.string("svp-fps-mode")),
-                target: settings.double("svp-fps-target"),
-                minimum: f64::from(settings.int("svp-fps-minimum")),
-                maximum: f64::from(settings.int("svp-fps-maximum")),
+                mode: Mode::from_name(&settings.string("video.svp.fps.mode")),
+                target: settings.double("video.svp.fps.target"),
+                minimum: f64::from(settings.int("video.svp.fps.minimum")),
+                maximum: f64::from(settings.int("video.svp.fps.maximum")),
             },
-            nvof: settings.boolean("svp-nvof"),
+            nvof: settings.boolean("video.svp.nvof"),
             seek_bypass: settings
-                .boolean("svp-seek-bypass")
-                .then(|| Duration::from_secs_f64(settings.double("svp-seek-bypass-delay"))),
+                .boolean("video.svp.seek-bypass.enabled")
+                .then(|| Duration::from_secs_f64(settings.double("video.svp.seek-bypass.delay"))),
         }
     }
 }
