@@ -197,6 +197,27 @@
                                   </object>
                                 </child>
                                 <child>
+                                  <object class="AdwSwitchRow" id="playlist_fetch_row">
+                                    <property name="title">Read playlist lengths in the background</property>
+                                    <property name="subtitle">Off reads an item's length only when it is first played</property>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="AdwComboRow" id="playlist_window_headerbar_row">
+                                    <property name="title">Playlist window header</property>
+                                    <property name="subtitle">The header of the playlist when it is in its own window</property>
+                                    <property name="model">
+                                      <object class="GtkStringList">
+                                        <items>
+                                          <item>Full</item>
+                                          <item>Compact</item>
+                                          <item>None</item>
+                                        </items>
+                                      </object>
+                                    </property>
+                                  </object>
+                                </child>
+                                <child>
                                   <object class="AdwComboRow" id="default_sort_by_row">
                                     <property name="title">Default sorting</property>
                                     <property name="subtitle">How folders with no remembered sort are sorted</property>

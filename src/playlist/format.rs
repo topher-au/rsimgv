@@ -1,5 +1,6 @@
 //! Reading and writing playlists in the standard formats: M3U (and M3U8), PLS and XSPF. Pure: no GTK.
 
+use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Component, Path, PathBuf};
@@ -17,16 +18,27 @@ pub enum Format {
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Parsed {
     pub paths: Vec<PathBuf>,
+    /// The title each path is given in the file, if it is. Parallel to `paths`.
+    pub titles: Vec<Option<String>>,
     pub skipped: usize,
 }
 
 impl Parsed {
-    fn push(&mut self, path: Option<PathBuf>) {
+    fn push(&mut self, path: Option<PathBuf>, title: Option<String>) {
         match path {
-            Some(path) => self.paths.push(path),
+            Some(path) => {
+                self.paths.push(path);
+                self.titles.push(title);
+            }
             None => self.skipped += 1,
         }
     }
+}
+
+/// A title the file holds, if it holds one that is not empty.
+fn nonempty(title: &str) -> Option<String> {
+    let title = title.trim();
+    (!title.is_empty()).then(|| title.to_owned())
 }
 
 impl Format {
@@ -53,8 +65,8 @@ impl Format {
     }
 }
 
-/// The text of a playlist file holding `items`, which are absolute paths.
-pub fn write(format: Format, items: &[PathBuf]) -> String {
+/// The text of a playlist file holding `items`: absolute paths, each with the title it is shown by.
+pub fn write(format: Format, items: &[(PathBuf, String)]) -> String {
     match format {
         Format::M3u => write_m3u(items),
         Format::Pls => write_pls(items),
@@ -81,59 +93,74 @@ pub(super) fn decode(bytes: &[u8]) -> String {
     }
 }
 
-fn write_m3u(items: &[PathBuf]) -> String {
+fn write_m3u(items: &[(PathBuf, String)]) -> String {
     let mut text = String::from("#EXTM3U\n");
-    for item in items {
-        text.push_str(&format!("#EXTINF:-1,{}\n{}\n", title(item), plain_or_uri(item)));
+    for (item, title) in items {
+        text.push_str(&format!("#EXTINF:-1,{}\n{}\n", one_line(title), plain_or_uri(item)));
     }
     text
 }
 
 fn read_m3u(text: &str, base: &Path) -> Parsed {
     let mut parsed = Parsed::default();
+    // An #EXTINF line gives the title of the entry after it.
+    let mut title = None;
     for line in text.lines() {
-        if !line.trim().is_empty() && !line.trim_start().starts_with('#') {
-            parsed.push(entry_path(line, base, false));
+        let trimmed = line.trim();
+        if let Some(info) = trimmed.strip_prefix("#EXTINF:") {
+            title = info.split_once(',').and_then(|(_, title)| nonempty(title));
+        } else if !trimmed.is_empty() && !trimmed.starts_with('#') {
+            parsed.push(entry_path(line, base, false), title.take());
         }
     }
     parsed
 }
 
-fn write_pls(items: &[PathBuf]) -> String {
+fn write_pls(items: &[(PathBuf, String)]) -> String {
     let mut text = String::from("[playlist]\n");
-    for (index, item) in items.iter().enumerate() {
+    for (index, (item, title)) in items.iter().enumerate() {
         let number = index + 1;
-        text.push_str(&format!("File{number}={}\nTitle{number}={}\nLength{number}=-1\n", plain_or_uri(item), title(item)));
+        text.push_str(&format!("File{number}={}\nTitle{number}={}\nLength{number}=-1\n", plain_or_uri(item), one_line(title)));
     }
     text.push_str(&format!("NumberOfEntries={}\nVersion=2\n", items.len()));
     text
 }
 
 fn read_pls(text: &str, base: &Path) -> Parsed {
-    let mut entries: Vec<(u64, &str)> = text
-        .lines()
-        .filter_map(|line| {
-            let (key, value) = line.split_once('=')?;
-            let number = key.trim().get(..4).filter(|head| head.eq_ignore_ascii_case("file")).and(key.trim().get(4..))?;
-            Some((number.parse::<u64>().ok()?, value))
-        })
-        .collect();
+    let mut files: Vec<(u64, &str)> = Vec::new();
+    let mut titles: HashMap<u64, &str> = HashMap::new();
+    for line in text.lines() {
+        let Some((key, value)) = line.split_once('=') else { continue };
+        let key = key.trim();
+        if let Some(number) = numbered(key, "file") {
+            files.push((number, value));
+        } else if let Some(number) = numbered(key, "title") {
+            titles.insert(number, value);
+        }
+    }
     // The numbers give the order, whatever order the lines are in.
-    entries.sort_by_key(|(number, _)| *number);
+    files.sort_by_key(|(number, _)| *number);
     let mut parsed = Parsed::default();
-    for (_, value) in entries {
-        parsed.push(entry_path(value, base, false));
+    for (number, value) in files {
+        parsed.push(entry_path(value, base, false), titles.get(&number).and_then(|title| nonempty(title)));
     }
     parsed
 }
 
-fn write_xspf(items: &[PathBuf]) -> String {
+/// The number in a key such as `File3` or `Title3`, which is `name` followed by a number, whatever its case.
+fn numbered(key: &str, name: &str) -> Option<u64> {
+    let head = key.get(..name.len())?;
+    let number = key.get(name.len()..)?;
+    head.eq_ignore_ascii_case(name).then(|| number.parse().ok()).flatten()
+}
+
+fn write_xspf(items: &[(PathBuf, String)]) -> String {
     let mut text = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<playlist version=\"1\" xmlns=\"http://xspf.org/ns/0/\">\n  <trackList>\n");
-    for item in items {
+    for (item, title) in items {
         text.push_str(&format!(
             "    <track>\n      <location>{}</location>\n      <title>{}</title>\n    </track>\n",
             xml_escape(&file_uri(item)),
-            xml_escape(&title(item))
+            xml_escape(&one_line(title))
         ));
     }
     text.push_str("  </trackList>\n</playlist>\n");
@@ -146,16 +173,22 @@ fn read_xspf(text: &str, base: &Path) -> Parsed {
     let mut parsed = Parsed::default();
     for track in xml_elements(&text, "track") {
         if let Some(location) = xml_elements(track, "location").first() {
-            parsed.push(entry_path(xml_text(location).trim(), base, true));
+            let title = xml_elements(track, "title").first().and_then(|title| nonempty(&xml_text(title)));
+            parsed.push(entry_path(xml_text(location).trim(), base, true), title);
         }
     }
     parsed
 }
 
-/// The name a player shows for `path`: its file name without the extension, on one line.
-fn title(path: &Path) -> String {
+/// The name a player shows for `path` when it has no other: its file name without the extension, on one line.
+pub fn default_title(path: &Path) -> String {
     let stem = path.file_stem().unwrap_or(path.as_os_str()).to_string_lossy();
-    stem.replace(['\n', '\r'], " ")
+    one_line(&stem)
+}
+
+/// `text` on one line, as a title must be in a line-based file.
+fn one_line(text: &str) -> String {
+    text.replace(['\n', '\r'], " ")
 }
 
 /// `path` as a line of text: as it is, or as a URI if it would not survive that, not being UTF-8 or holding a line break.
@@ -371,12 +404,24 @@ mod tests {
         ]
     }
 
+    /// The awkward paths, each with a title that needs care in a file too.
+    fn titled_items() -> Vec<(PathBuf, String)> {
+        let titles = ["Plain", "With, a comma & <angle>", "Ünï title", "Hash", "Two\nlines", "Not UTF-8"];
+        awkward_items().into_iter().zip(titles).map(|(path, title)| (path, title.to_owned())).collect()
+    }
+
     #[test]
-    fn every_format_round_trips_awkward_paths() {
+    fn every_format_round_trips_awkward_paths_and_titles() {
+        let expected_titles = ["Plain", "With, a comma & <angle>", "Ünï title", "Hash", "Two lines", "Not UTF-8"];
         for format in [Format::M3u, Format::Pls, Format::Xspf] {
-            let text = write(format, &awkward_items());
+            let text = write(format, &titled_items());
             let parsed = read(text.as_bytes(), Path::new("/elsewhere"));
-            assert_eq!(parsed, Parsed { paths: awkward_items(), skipped: 0 }, "{format:?}: {text}");
+            let expected = Parsed {
+                paths: awkward_items(),
+                titles: expected_titles.map(|title| Some(title.to_owned())).to_vec(),
+                skipped: 0,
+            };
+            assert_eq!(parsed, expected, "{format:?}: {text}");
         }
     }
 
@@ -385,6 +430,13 @@ mod tests {
         for format in [Format::M3u, Format::Pls, Format::Xspf] {
             assert_eq!(read(write(format, &[]).as_bytes(), Path::new("/")), Parsed::default(), "{format:?}");
         }
+    }
+
+    #[test]
+    fn an_entry_without_a_title_has_none() {
+        let text = "#EXTM3U\n/a.png\n#EXTINF:-1,\n/b.png\n";
+        let parsed = read(text.as_bytes(), Path::new("/"));
+        assert_eq!(parsed.titles, [None, None]);
     }
 
     #[test]

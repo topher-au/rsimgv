@@ -4,6 +4,12 @@
     <property name="default-width">960</property>
     <property name="default-height">640</property>
     <property name="title">rsimgv</property>
+    <child>
+      <object class="AdwBreakpoint">
+        <condition>max-width: 800px</condition>
+        <setter object="playlist_split" property="collapsed">True</setter>
+      </object>
+    </child>
     <property name="content">
       <object class="GtkOverlay" id="message_layer">
         <property name="child">
@@ -95,11 +101,6 @@
                         </property>
                       </object>
                     </property>
-                  </object>
-                </child>
-                <child>
-                  <object class="GtkExpander" id="playlist_expander">
-                    <style><class name="rsimgv-sidebar-section"/></style>
                   </object>
                 </child>
                 <child>
@@ -268,6 +269,12 @@
                           </section>
                           <section>
                             <item>
+                              <attribute name="label">Detach Playlist</attribute>
+                              <attribute name="action">win.playlist-detach</attribute>
+                            </item>
+                          </section>
+                          <section>
+                            <item>
                               <attribute name="label">Preferences</attribute>
                               <attribute name="action">app.preferences</attribute>
                             </item>
@@ -292,7 +299,11 @@
               </object>
             </child>
             <property name="content">
-              <object class="AdwToolbarView">
+              <!-- The playlist is a sidebar below the header, on the opposite side from the browse split's. -->
+              <object class="RsimgvOverlaySplitView" id="playlist_split">
+                <child type="content">
+                  <object class="AdwToolbarView">
+                <property name="hexpand">true</property>
                 <child type="bottom">
                   <object class="AdwTabBar" id="tab_bar">
                     <property name="view">tab_view</property>
@@ -303,6 +314,8 @@
                 <property name="content">
                   <object class="AdwTabView" id="tab_view"/>
                 </property>
+                  </object>
+                </child>
               </object>
             </property>
           </object>

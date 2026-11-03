@@ -115,6 +115,10 @@ mod imp {
         #[template_child]
         pub remember_folder_sort_row: TemplateChild<adw::SwitchRow>,
         #[template_child]
+        pub playlist_fetch_row: TemplateChild<adw::SwitchRow>,
+        #[template_child]
+        pub playlist_window_headerbar_row: TemplateChild<adw::ComboRow>,
+        #[template_child]
         pub default_sort_by_row: TemplateChild<adw::ComboRow>,
         #[template_child]
         pub default_sort_order_row: TemplateChild<adw::ComboRow>,
@@ -588,6 +592,7 @@ impl PreferencesDialog {
 fn bind_switches(settings: &gio::Settings, imp: &imp::PreferencesDialog) {
     let switches = [
         ("remember-folder-sort", &imp.remember_folder_sort_row),
+        ("playlist-fetch-in-background", &imp.playlist_fetch_row),
         ("seek-overlay", &imp.seek_overlay_row),
         ("seek-overlay-bar", &imp.seek_overlay_bar_row),
         ("seek-overlay-time", &imp.seek_overlay_time_row),
@@ -610,7 +615,7 @@ fn bind_switches(settings: &gio::Settings, imp: &imp::PreferencesDialog) {
 
 /// Binds each combo row to a string setting whose value is one of `choices`, by position in the row.
 fn bind_choices(settings: &gio::Settings, imp: &imp::PreferencesDialog) {
-    let combos: [(&str, &glib::Object, &[&str]); 21] = [
+    let combos: [(&str, &glib::Object, &[&str]); 22] = [
         ("seek-overlay-time-format", imp.seek_overlay_time_format_row.upcast_ref(), &["elapsed-total", "remaining-total", "elapsed", "remaining"]),
         (
             "seek-overlay-position",
@@ -635,6 +640,7 @@ fn bind_choices(settings: &gio::Settings, imp: &imp::PreferencesDialog) {
         ("scaling-filter", imp.scaling_filter_row.upcast_ref(), &["nearest", "linear", "linear-sharp", "cubic", "cubic-sharp"]),
         ("info-layout", imp.info_layout_dropdown.upcast_ref(), &["disabled", "stacked", "inline"]),
         ("svp-fps-mode", imp.svp_fps_mode_row.upcast_ref(), &["default", "fixed", "variable", "display"]),
+        ("playlist-window-headerbar", imp.playlist_window_headerbar_row.upcast_ref(), &["full", "compact", "none"]),
         (
             "viewer-status-overlay-position",
             imp.status_overlay_position_row.upcast_ref(),

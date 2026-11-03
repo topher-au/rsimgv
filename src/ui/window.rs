@@ -1,5 +1,5 @@
 use std::cell::{Cell, RefCell};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 use std::path::{Path, PathBuf};
 
@@ -22,7 +22,8 @@ use super::{BrowseView, FsTree, HeaderBar, MediaViewer, MessageOverlay, Navigati
 use super::{Level, Message};
 use super::message_overlay::{MessageId, Position};
 use super::keybinds_overlay::KeybindsOverlay;
-use super::playlist_panel::PlaylistPanel;
+use super::playlist_panel::{stamp, PlaylistPanel, SortColumn};
+use crate::fs::metadata::MediaInfo;
 
 mod imp {
     use super::*;
@@ -54,7 +55,11 @@ mod imp {
         #[template_child]
         pub bookmarks_list: TemplateChild<gtk::ListBox>,
         #[template_child]
-        pub playlist_expander: TemplateChild<gtk::Expander>,
+        pub playlist_split: TemplateChild<OverlaySplitView>,
+        /// The window the playlist is in while it is taken out of the window, if it is.
+        pub(super) playlist_window: RefCell<Option<adw::Window>>,
+        /// The header of that window, which its header style setting changes.
+        pub(super) playlist_header: RefCell<Option<adw::HeaderBar>>,
         /// The playlist in the sidebar, made once the template is built.
         pub(super) playlist_panel: std::cell::OnceCell<PlaylistPanel>,
         #[template_child]
@@ -95,6 +100,9 @@ mod imp {
         /// Whether the viewer is showing the playlist, rather than the folder's items. The viewer then has nothing to
         /// do with the folder the window shows, which stays as it was.
         pub(super) playlist_playing: Cell<bool>,
+        /// Whether the playlist's sidebar is open. It is kept as the sidebar opens and closes, and the sidebar is then
+        /// put beside whichever page is shown.
+        pub(super) playlist_shown: Cell<bool>,
         /// Whether the viewer made the window fullscreen when it opened, so closing it leaves fullscreen again.
         pub(super) viewer_fullscreened: Cell<bool>,
         /// The keybinding handler, detached when the window closes.
@@ -206,6 +214,10 @@ impl Window {
             if let Some(keys) = window.imp().key_handler.get() {
                 keys.uninstall();
             }
+            // A playlist in a window of its own closes with the window it belongs to.
+            if let Some(detached) = window.imp().playlist_window.take() {
+                detached.destroy();
+            }
             glib::Propagation::Proceed
         });
         let tree = (*imp.tree).clone();
@@ -238,6 +250,16 @@ impl Window {
         settings.bind("sidebar-filesystem-expanded", &*imp.filesystem_expander, "expanded").build();
         tree.set_show_hidden(settings.boolean("show-hidden"));
         let tree_for_settings = tree.clone();
+        settings.connect_changed(Some("playlist-window-headerbar"), {
+            let weak = window.downgrade();
+            move |settings, _| {
+                if let Some(window) = weak.upgrade() {
+                    if let Some(header) = window.imp().playlist_header.borrow().as_ref() {
+                        apply_playlist_header_style(header, &settings.string("playlist-window-headerbar"));
+                    }
+                }
+            }
+        });
         settings.connect_changed(Some("show-hidden"), move |settings, _| {
             tree_for_settings.set_show_hidden(settings.boolean("show-hidden"));
         });
@@ -257,12 +279,17 @@ impl Window {
         window.add_context_actions();
         window.add_tab_actions();
         window.add_binding_actions();
-        window.add_playlist_actions();
+        window.add_playlist_actions(settings);
         let keys = ActionKeyHandler::install(&window);
         let _ = window.imp().key_handler.set(keys);
         window.connect_sources();
         window.refresh_bookmarks();
-        let _ = window.imp().playlist_panel.set(PlaylistPanel::new(&window.imp().playlist_expander));
+        let panel = PlaylistPanel::new(settings);
+        let _ = window.imp().playlist_panel.set(panel);
+        window.setup_playlist_splits(settings);
+        if settings.boolean("playlist-detached") {
+            window.detach_playlist(settings);
+        }
         window.imp().viewer.set_use_mpv(settings.string("video-backend") == "mpv");
         window.imp().viewer.set_mpv_options(&settings.string("mpv-args"));
         crate::mpv::watch_config({
@@ -707,9 +734,13 @@ impl Window {
     fn show_in_viewer(&self, paths: Vec<PathBuf>, index: usize, playlist: bool) {
         let imp = self.imp();
         imp.playlist_playing.set(playlist);
+        if let (true, Some(path)) = (playlist, paths.get(index)) {
+            self.read_length_when_played(path);
+        }
         self.apply_folder_end();
         imp.viewer.show(paths, index);
         imp.viewer_open.set(true);
+        self.place_playlist();
         self.refresh_keybinds_overlay();
         imp.pages.set_visible_child(&*imp.viewer);
         imp.viewer.grab_focus();
@@ -720,11 +751,30 @@ impl Window {
         self.update_title();
     }
 
+    /// Reads the length of the playlist item `path` when it is played, if the playlist does not read lengths in the
+    /// background. The panel then shows it once it is read.
+    fn read_length_when_played(&self, path: &Path) {
+        let Some(settings) = self.imp().settings.get() else { return };
+        if settings.boolean("playlist-fetch-in-background") {
+            return;
+        }
+        let Some((mtime, size)) = stamp(path) else { return };
+        let weak = self.downgrade();
+        MediaInfo::shared().request(path, mtime, size, || true, move || {
+            if let Some(window) = weak.upgrade() {
+                if let Some(panel) = window.imp().playlist_panel.get() {
+                    panel.refresh();
+                }
+            }
+        });
+    }
+
     /// Returns from the viewer to the browse view, releasing what the viewer held.
     fn close_viewer(&self) {
         let imp = self.imp();
         imp.viewer.close();
         imp.viewer_open.set(false);
+        self.place_playlist();
         imp.playlist_playing.set(false);
         self.apply_folder_end();
         self.refresh_keybinds_overlay();
@@ -853,6 +903,13 @@ impl Window {
         bound_action(self, &weak, "playlist-load", Window::choose_playlist_to_load);
         bound_action(self, &weak, "playlist-save", Window::choose_playlist_to_save);
         bound_action(self, &weak, "playlist-clear", Window::confirm_clear_playlist);
+        bound_action(self, &weak, "playlist-add-current", Window::add_current_to_playlist);
+        bound_action(self, &weak, "playlist-add-files", Window::choose_files_to_add);
+        bound_action(self, &weak, "playlist-add-directory", Window::choose_directory_to_add);
+        bound_action(self, &weak, "playlist-remove-current", Window::remove_current_from_playlist);
+        bound_action(self, &weak, "playlist-save-current", Window::save_playlist_current);
+        bound_action(self, &weak, "playlist-load-url", Window::ask_playlist_url);
+        bound_action(self, &weak, "playlist-pause", |window| window.imp().viewer.pause());
         bound_action(self, &weak, "toggle-playlist", Window::toggle_playlist_panel);
         bound_action(self, &weak, "toggle-sidebar", |window| {
             let split = &window.imp().split;
@@ -934,8 +991,13 @@ impl Window {
     }
 
     /// The actions behind the playlist's menu items and its panel, which say what they work on in their parameter.
-    fn add_playlist_actions(&self) {
+    fn add_playlist_actions(&self, settings: &gio::Settings) {
         let weak = self.downgrade();
+        // The menu's column toggles are window actions named by their settings, so they work from any part of the window.
+        for (key, _, _, _) in crate::ui::playlist_panel::COLUMNS {
+            self.add_action(&settings.create_action(key));
+        }
+        self.add_action(&settings.create_action("playlist-repeat"));
         for name in ["playlist-add-paths", "playlist-remove-paths"] {
             let action = gio::SimpleAction::new(name, Some(&<Vec<String>>::static_variant_type()));
             let weak = weak.clone();
@@ -965,6 +1027,67 @@ impl Window {
             });
             self.add_action(&action);
         }
+        // The state is the column the playlist was last sorted by, and whether it was sorted descending. An empty name is no sort.
+        let sort_type = <(String, bool)>::static_variant_type();
+        let saved_sort: (String, bool) = settings.value("playlist-sort").get().unwrap_or_default();
+        let sort = gio::SimpleAction::new_stateful("playlist-sort", Some(&sort_type), &saved_sort.to_variant());
+        let weak_sort = weak.clone();
+        let settings_sort = settings.clone();
+        sort.connect_activate(move |action, parameter| {
+            let (Some(window), Some((column, descending))) = (weak_sort.upgrade(), parameter.and_then(|p| p.get::<(String, bool)>())) else { return };
+            if let Some(sort) = SortColumn::from_name(&column) {
+                window.sort_playlist(sort, descending);
+                let state = (column, descending).to_variant();
+                action.set_state(&state);
+                let _ = settings_sort.set_value("playlist-sort", &state);
+            }
+        });
+        self.add_action(&sort);
+        // A check mark shows while the playlist is in its own window, which the main menu's item toggles.
+        let detach = gio::SimpleAction::new_stateful("playlist-detach", None, &false.to_variant());
+        let weak_detach = weak.clone();
+        detach.connect_activate(move |_, _| {
+            if let Some(window) = weak_detach.upgrade() {
+                window.toggle_detached_playlist();
+            }
+        });
+        self.add_action(&detach);
+        let shuffle = gio::SimpleAction::new_stateful("playlist-shuffle", None, &playlist::with(|list| list.is_shuffled()).to_variant());
+        let weak_shuffle = weak.clone();
+        shuffle.connect_activate(move |_, _| {
+            if let Some(window) = weak_shuffle.upgrade() {
+                window.toggle_playlist_shuffle();
+            }
+        });
+        self.add_action(&shuffle);
+        let edit = gio::SimpleAction::new("playlist-edit-title", Some(glib::VariantTy::UINT32));
+        let weak_edit = weak.clone();
+        edit.connect_activate(move |_, parameter| {
+            let (Some(window), Some(index)) = (weak_edit.upgrade(), parameter.and_then(|p| p.get::<u32>())) else { return };
+            window.edit_playlist_title(index as usize);
+        });
+        self.add_action(&edit);
+        let delete = gio::SimpleAction::new("playlist-delete", Some(glib::VariantTy::STRING));
+        let weak_delete = weak.clone();
+        delete.connect_activate(move |_, parameter| {
+            let (Some(window), Some(path)) = (weak_delete.upgrade(), parameter.and_then(|p| p.get::<String>())) else { return };
+            window.confirm_delete_from_disk(PathBuf::from(path));
+        });
+        self.add_action(&delete);
+        let reveal = gio::SimpleAction::new("reveal-path", Some(glib::VariantTy::STRING));
+        let weak_reveal = weak.clone();
+        reveal.connect_activate(move |_, parameter| {
+            let (Some(window), Some(path)) = (weak_reveal.upgrade(), parameter.and_then(|p| p.get::<String>())) else { return };
+            window.reveal_path(Path::new(&path));
+        });
+        self.add_action(&reveal);
+        let open_with = gio::SimpleAction::new("playlist-open-with", Some(&<(String, String)>::static_variant_type()));
+        let weak_open = weak.clone();
+        open_with.connect_activate(move |_, parameter| {
+            let (Some(window), Some((script, path))) = (weak_open.upgrade(), parameter.and_then(|p| p.get::<(String, String)>())) else { return };
+            window.run_script_on(&script, Some(PathBuf::from(path)));
+        });
+        self.add_action(&open_with);
         let moved = gio::SimpleAction::new("playlist-move", Some(&<(u32, u32)>::static_variant_type()));
         moved.connect_activate(move |_, parameter| {
             let (Some(window), Some((from, to))) = (weak.upgrade(), parameter.and_then(|p| p.get::<(u32, u32)>())) else { return };
@@ -1076,6 +1199,7 @@ impl Window {
     /// playlist. The viewer goes back to browsing if nothing is left to show.
     fn show_playlist_change(&self) {
         let imp = self.imp();
+        self.set_action_state("playlist-shuffle", playlist::with(|list| list.is_shuffled()).to_variant());
         if let Some(panel) = imp.playlist_panel.get() {
             panel.refresh();
         }
@@ -1085,7 +1209,7 @@ impl Window {
             }
         }
         if imp.playlist_playing.get() {
-            let items = playlist::with(|list| list.items().to_vec());
+            let items = playlist::with(|list| list.order().to_vec());
             if items.is_empty() {
                 self.close_viewer();
             } else {
@@ -1112,7 +1236,13 @@ impl Window {
             self.play_playlist();
             return;
         }
-        let (target, current) = playlist::with(|list| (list.step_index(forward), list.current()));
+        let (target, current, len) = playlist::with(|list| (list.step_index(forward), list.current(), list.len()));
+        // With repeat off, going past either end stops there instead of going round.
+        let at_end = current.is_some_and(|current| if forward { current + 1 == len } else { current == 0 });
+        if at_end && !gio::Settings::new("au.topher.rimgv").boolean("playlist-repeat") {
+            self.announce_playlist("The end of the playlist");
+            return;
+        }
         if let Some(target) = target.filter(|target| Some(*target) != current) {
             self.play_playlist_at(target);
         }
@@ -1134,7 +1264,7 @@ impl Window {
     /// Shows the playlist's item at `index` in the viewer, if there is one.
     fn play_playlist_at(&self, index: usize) {
         let imp = self.imp();
-        let items = if imp.playlist_playing.get() { None } else { Some(playlist::with(|list| list.items().to_vec())) };
+        let items = if imp.playlist_playing.get() { None } else { Some(playlist::with(|list| list.order().to_vec())) };
         if index >= playlist::with(|list| list.len()) {
             return;
         }
@@ -1167,16 +1297,266 @@ impl Window {
         });
     }
 
-    /// Shows the playlist's items in the sidebar, or hides them. A sidebar that is hidden opens to show them.
+    /// Shows the playlist beside the browse view, on the side opposite the sidebar, or hides it. While it is in a window
+    /// of its own, that window is brought forward instead.
     fn toggle_playlist_panel(&self) {
         let imp = self.imp();
-        let Some(panel) = imp.playlist_panel.get() else { return };
-        if imp.split.show_sidebar() {
-            panel.toggle_expanded();
-        } else {
-            imp.split.set_show_sidebar(true);
-            panel.expand();
+        if let Some(detached) = imp.playlist_window.borrow().as_ref() {
+            gtk::prelude::GtkWindowExt::present(detached);
+            return;
         }
+        let split = self.active_playlist_split();
+        split.set_show_sidebar(!split.show_sidebar());
+    }
+
+    /// The split view the playlist is beside now: the viewer's while it is shown, else the browse view's.
+    fn active_playlist_split(&self) -> OverlaySplitView {
+        let imp = self.imp();
+        if self.viewer_is_open() {
+            imp.viewer.playlist_split()
+        } else {
+            (*imp.playlist_split).clone()
+        }
+    }
+
+    /// Sets up the playlist's two split views, the browse view's and the viewer's: their sidebars are on the end side,
+    /// they collapse together, and their openness is kept as the playlist's. Then the playlist is put beside the page.
+    fn setup_playlist_splits(&self, settings: &gio::Settings) {
+        let imp = self.imp();
+        let browse = (*imp.playlist_split).clone();
+        let viewer = imp.viewer.playlist_split();
+        imp.playlist_shown.set(settings.boolean("playlist-shown"));
+        let width = settings.int("playlist-width");
+        for split in [&browse, &viewer] {
+            split.set_user_sidebar_width((width > 0).then_some(width));
+            split.set_sidebar_position(gtk::PackType::End);
+            split.connect_show_sidebar_changed({
+                let weak = self.downgrade();
+                move |view, shown| {
+                    // A split view with no playlist beside it opening or closing says nothing about the playlist.
+                    if view.sidebar().is_none() {
+                        return;
+                    }
+                    if let Some(window) = weak.upgrade() {
+                        window.imp().playlist_shown.set(shown);
+                    }
+                }
+            });
+        }
+        browse.bind_property("collapsed", &viewer, "collapsed").sync_create().build();
+        self.place_playlist();
+    }
+
+    /// Puts the playlist's sidebar in the split view of the page on show, open or closed as it was, and takes it out of
+    /// the other. While the playlist is in a window of its own, neither split view holds it.
+    fn place_playlist(&self) {
+        let imp = self.imp();
+        let Some(panel) = imp.playlist_panel.get() else { return };
+        let active = self.active_playlist_split();
+        let browse = (*imp.playlist_split).clone();
+        let viewer = imp.viewer.playlist_split();
+        let idle = if active == browse { viewer } else { browse };
+        idle.set_sidebar(None::<&gtk::Widget>);
+        idle.set_show_sidebar(false);
+        if imp.playlist_window.borrow().is_some() {
+            active.set_sidebar(None::<&gtk::Widget>);
+            return;
+        }
+        let content = panel.content();
+        if let Some(parent) = content.parent().and_downcast::<gtk::Box>() {
+            parent.remove(content);
+        }
+        active.set_sidebar(Some(content));
+        active.set_show_sidebar(imp.playlist_shown.get());
+    }
+
+    /// Takes the playlist out of both split views, so it can be put in a window of its own.
+    fn clear_playlist_sidebars(&self) {
+        let imp = self.imp();
+        for split in [(*imp.playlist_split).clone(), imp.viewer.playlist_split()] {
+            split.set_sidebar(None::<&gtk::Widget>);
+            split.set_show_sidebar(false);
+        }
+    }
+
+    /// Shuffles the order the playlist plays in, or puts back the order its items were made in, and shows the change.
+    fn toggle_playlist_shuffle(&self) {
+        let on = !playlist::with(|list| list.is_shuffled());
+        playlist::with(|list| list.set_shuffled(on));
+        self.playlist_changed();
+    }
+
+    /// Takes the playlist out into a window of its own, or puts it back beside the browse view.
+    fn toggle_detached_playlist(&self) {
+        let settings = gio::Settings::new("au.topher.rimgv");
+        if self.imp().playlist_window.borrow().is_some() {
+            self.attach_playlist(&settings);
+        } else {
+            self.detach_playlist(&settings);
+        }
+    }
+
+    /// Moves the playlist from beside the browse view into a window of its own. That window takes this window's actions,
+    /// so its buttons and the playlist's actions work from it.
+    fn detach_playlist(&self, settings: &gio::Settings) {
+        let imp = self.imp();
+        let Some(panel) = imp.playlist_panel.get() else { return };
+        let content = panel.content();
+        self.clear_playlist_sidebars();
+        let holder = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        holder.append(content);
+
+        let attach = gtk::Button::from_icon_name("view-restore-symbolic");
+        attach.set_tooltip_text(Some("Put the playlist back beside the browse view"));
+        attach.set_action_name(Some("win.playlist-detach"));
+        let header = adw::HeaderBar::new();
+        header.pack_end(&attach);
+        apply_playlist_header_style(&header, &settings.string("playlist-window-headerbar"));
+        let toolbar = adw::ToolbarView::new();
+        toolbar.add_top_bar(&header);
+        toolbar.set_content(Some(&holder));
+
+        let window = adw::Window::new();
+        window.set_title(Some("Playlist"));
+        window.set_default_size(settings.int("playlist-window-width"), settings.int("playlist-window-height"));
+        window.set_transient_for(Some(self.upcast_ref::<gtk::Window>()));
+        adw::prelude::AdwWindowExt::set_content(&window, Some(&toolbar));
+        window.insert_action_group("win", Some(self));
+        let weak = self.downgrade();
+        let closing = settings.clone();
+        window.connect_close_request(move |detached| {
+            save_playlist_window_size(detached, &closing);
+            if let Some(window) = weak.upgrade() {
+                window.imp().playlist_window.take();
+                window.reattach_playlist();
+                save_playlist_layout(&window, &closing);
+            }
+            glib::Propagation::Proceed
+        });
+        gtk::prelude::GtkWindowExt::present(&window);
+        imp.playlist_window.replace(Some(window));
+        imp.playlist_header.replace(Some(header));
+        self.set_action_state("playlist-detach", true.to_variant());
+        save_playlist_layout(self, settings);
+    }
+
+    /// Puts the playlist back beside the browse view, and closes the window it was in.
+    fn attach_playlist(&self, settings: &gio::Settings) {
+        let detached = self.imp().playlist_window.take();
+        self.reattach_playlist();
+        if let Some(window) = detached {
+            window.close();
+        }
+        save_playlist_layout(self, settings);
+    }
+
+    /// Moves the playlist's widget back beside the browse view, and shows it there.
+    fn reattach_playlist(&self) {
+        let imp = self.imp();
+        let Some(panel) = imp.playlist_panel.get() else { return };
+        let content = panel.content();
+        if let Some(parent) = content.parent().and_downcast::<gtk::Box>() {
+            parent.remove(content);
+        }
+        imp.playlist_header.take();
+        self.set_action_state("playlist-detach", false.to_variant());
+        self.place_playlist();
+    }
+
+    /// Adds what the viewer shows, or the marked items while browsing, to the end of the playlist.
+    fn add_current_to_playlist(&self) {
+        let targets = self.playlist_targets();
+        if targets.is_empty() {
+            self.announce_playlist("Nothing is selected to add to the playlist");
+        } else {
+            self.add_to_playlist_later(targets, false);
+        }
+    }
+
+    /// Asks for files whose pictures and videos are added to the playlist.
+    fn choose_files_to_add(&self) {
+        let dialog = gtk::FileDialog::builder().title("Add to Playlist").build();
+        let weak = self.downgrade();
+        dialog.open_multiple(Some(self), None::<&gio::Cancellable>, move |result| {
+            let Some(files) = result.ok() else { return };
+            let paths: Vec<PathBuf> = files.iter::<gio::File>().flatten().filter_map(|file| file.path()).collect();
+            if let Some(window) = weak.upgrade() {
+                window.add_to_playlist_later(paths, false);
+            }
+        });
+    }
+
+    /// Asks for a folder whose pictures and videos are added to the playlist.
+    fn choose_directory_to_add(&self) {
+        let dialog = gtk::FileDialog::builder().title("Add Folder to Playlist").build();
+        let weak = self.downgrade();
+        dialog.select_folder(Some(self), None::<&gio::Cancellable>, move |result| {
+            let Some(path) = result.ok().and_then(|folder| folder.path()) else { return };
+            if let Some(window) = weak.upgrade() {
+                window.add_to_playlist_later(vec![path], false);
+            }
+        });
+    }
+
+    /// Takes the item the playlist is on out of it.
+    fn remove_current_from_playlist(&self) {
+        match playlist::with(|list| list.current()) {
+            Some(index) if playlist::with(|list| list.remove_at(index)) => self.playlist_changed(),
+            _ => self.announce_playlist("Nothing is playing to remove from the playlist"),
+        }
+    }
+
+    /// Saves the playlist to the file it was loaded from or saved to, or asks for a file if it has none.
+    fn save_playlist_current(&self) {
+        match playlist::with(|list| list.source().map(Path::to_path_buf)) {
+            Some(path) => self.write_playlist_file(path),
+            None => self.choose_playlist_to_save(),
+        }
+    }
+
+    /// Asks for the address of a playlist to load.
+    fn ask_playlist_url(&self) {
+        let entry = gtk::Entry::new();
+        entry.set_placeholder_text(Some("https://example.com/playlist.m3u8"));
+        entry.set_activates_default(true);
+        let dialog = adw::AlertDialog::new(Some("Load Playlist from URL"), Some("Only pictures and videos on this computer are kept."));
+        adw::prelude::AlertDialogExt::add_response(&dialog, "cancel", "Cancel");
+        adw::prelude::AlertDialogExt::add_response(&dialog, "load", "Load");
+        adw::prelude::AlertDialogExt::set_default_response(&dialog, Some("load"));
+        adw::prelude::AlertDialogExt::set_close_response(&dialog, "cancel");
+        adw::prelude::AlertDialogExt::set_extra_child(&dialog, Some(&entry));
+        let weak = self.downgrade();
+        adw::prelude::AlertDialogExt::connect_response(&dialog, None, move |_, response| {
+            let url = entry.text().trim().to_owned();
+            if response != "load" || url.is_empty() {
+                return;
+            }
+            if let Some(window) = weak.upgrade() {
+                window.load_playlist_url(url);
+            }
+        });
+        adw::prelude::AdwDialogExt::present(&dialog, Some(self));
+    }
+
+    /// Reads the playlist at `url`, in whatever scheme the address names, and offers it as a file would be. Its items are
+    /// read as absolute paths, since a remote playlist has no folder of its own to find them in.
+    fn load_playlist_url(&self, url: String) {
+        let weak = self.downgrade();
+        glib::spawn_future_local(async move {
+            let fetch = url.clone();
+            let read = gio::spawn_blocking(move || {
+                gio::File::for_uri(&fetch)
+                    .load_contents(None::<&gio::Cancellable>)
+                    .map(|(bytes, _)| playlist_from_bytes(&bytes, Path::new("/")))
+            })
+            .await;
+            let Some(window) = weak.upgrade() else { return };
+            match read {
+                Ok(Ok(loaded)) => window.offer_loaded_playlist(&url, loaded, None),
+                Ok(Err(err)) => window.report_playlist_problem(&format!("Could not read {url}: {err}")),
+                Err(_) => window.report_playlist_problem(&format!("Reading {url} panicked")),
+            }
+        });
     }
 
     /// Asks for a playlist file, and loads it.
@@ -1197,6 +1577,7 @@ impl Window {
         let weak = self.downgrade();
         glib::spawn_future_local(async move {
             let name = path.file_name().map_or_else(|| path.display().to_string(), |name| name.to_string_lossy().into_owned());
+            let source = path.clone();
             let read = gio::spawn_blocking(move || read_playlist_file(&path)).await;
             let Some(window) = weak.upgrade() else { return };
             let loaded = match read {
@@ -1210,18 +1591,24 @@ impl Window {
                     return;
                 }
             };
-            if loaded.paths.is_empty() {
-                window.report_playlist_problem(&format!("{name} has no pictures or videos on this computer"));
-            } else if playlist::with(|list| list.is_empty()) {
-                window.take_loaded_playlist(loaded, true);
-            } else {
-                window.confirm_replace_playlist(&name, loaded);
-            }
+            window.offer_loaded_playlist(&name, loaded, Some(source));
         });
     }
 
+    /// Offers a playlist that was read. It becomes the playlist if the playlist is empty; otherwise the user is asked whether
+    /// it replaces the playlist or is added to its end. `source` is the file it was read from, if any.
+    fn offer_loaded_playlist(&self, name: &str, loaded: format::Parsed, source: Option<PathBuf>) {
+        if loaded.paths.is_empty() {
+            self.report_playlist_problem(&format!("{name} has no pictures or videos on this computer"));
+        } else if playlist::with(|list| list.is_empty()) {
+            self.take_loaded_playlist(loaded, true, source);
+        } else {
+            self.confirm_replace_playlist(name, loaded, source);
+        }
+    }
+
     /// Asks whether the file called `name` replaces the playlist or is added to its end.
-    fn confirm_replace_playlist(&self, name: &str, loaded: format::Parsed) {
+    fn confirm_replace_playlist(&self, name: &str, loaded: format::Parsed, source: Option<PathBuf>) {
         let dialog = adw::AlertDialog::new(Some("Load Playlist"), Some(&format!("The playlist already has items. Replace them with {name}, or add it to the end?")));
         adw::prelude::AlertDialogExt::add_response(&dialog, "cancel", "Cancel");
         adw::prelude::AlertDialogExt::add_response(&dialog, "add", "Add to End");
@@ -1230,12 +1617,12 @@ impl Window {
         adw::prelude::AlertDialogExt::set_default_response(&dialog, Some("add"));
         adw::prelude::AlertDialogExt::set_close_response(&dialog, "cancel");
         let weak = self.downgrade();
-        let loaded = RefCell::new(Some(loaded));
+        let loaded = RefCell::new(Some((loaded, source)));
         adw::prelude::AlertDialogExt::connect_response(&dialog, None, move |_, response| {
-            let (Some(window), Some(loaded)) = (weak.upgrade(), loaded.take()) else { return };
+            let (Some(window), Some((loaded, source))) = (weak.upgrade(), loaded.take()) else { return };
             match response {
-                "replace" => window.take_loaded_playlist(loaded, true),
-                "add" => window.take_loaded_playlist(loaded, false),
+                "replace" => window.take_loaded_playlist(loaded, true, source),
+                "add" => window.take_loaded_playlist(loaded, false, None),
                 _ => {}
             }
         });
@@ -1243,14 +1630,17 @@ impl Window {
     }
 
     /// Makes the playlist what was loaded, or adds it to the end, and says how that went.
-    fn take_loaded_playlist(&self, loaded: format::Parsed, replace: bool) {
-        let format::Parsed { paths, skipped } = loaded;
+    fn take_loaded_playlist(&self, loaded: format::Parsed, replace: bool, source: Option<PathBuf>) {
+        let format::Parsed { paths, titles, skipped } = loaded;
+        let entries = paths.into_iter().zip(titles);
         let count = playlist::with(|list| {
             if replace {
-                list.replace(paths);
+                list.clear();
+                list.set_source(source);
+                list.add_with_titles(entries);
                 list.len()
             } else {
-                list.add(paths)
+                list.add_with_titles(entries)
             }
         });
         let mut text = format!("Loaded {count} {}", if count == 1 { "item" } else { "items" });
@@ -1287,18 +1677,157 @@ impl Window {
                 (PathBuf::from(name), Format::M3u)
             }
         };
-        let text = playlist::with(|list| format::write(file_format, list.items()));
+        let text = playlist::with(|list| {
+            let entries: Vec<(PathBuf, String)> = list.order().iter().map(|path| (path.clone(), list.title(path))).collect();
+            format::write(file_format, &entries)
+        });
         let weak = self.downgrade();
         glib::spawn_future_local(async move {
             let name = path.file_name().map_or_else(|| path.display().to_string(), |name| name.to_string_lossy().into_owned());
+            let saved = path.clone();
             let written = gio::spawn_blocking(move || crate::atomic_file::write(&path, text.as_bytes())).await;
             let Some(window) = weak.upgrade() else { return };
             match written {
-                Ok(Ok(())) => window.announce_playlist(&format!("Saved the playlist as {name}")),
+                Ok(Ok(())) => {
+                    playlist::with(|list| list.set_source(Some(saved)));
+                    window.announce_playlist(&format!("Saved the playlist as {name}"));
+                }
                 Ok(Err(err)) => window.report_playlist_problem(&format!("Could not save {name}: {err}")),
                 Err(_) => window.report_playlist_problem(&format!("Saving {name} panicked")),
             }
         });
+    }
+
+    /// Sorts the playlist by `column`, highest first if `descending`, and shows the change. Length is read first where it
+    /// is not known, so that sort waits for those readings.
+    fn sort_playlist(&self, column: SortColumn, descending: bool) {
+        match column {
+            SortColumn::Name => {
+                playlist::with(|list| {
+                    let keys: HashMap<PathBuf, String> = list.order().iter().map(|path| (path.clone(), list.title(path).to_lowercase())).collect();
+                    list.sort_shown_by(|path| keys[path].clone(), descending);
+                });
+                self.playlist_changed();
+            }
+            SortColumn::Filename => {
+                playlist::with(|list| list.sort_shown_by(|path| path.to_string_lossy().to_lowercase(), descending));
+                self.playlist_changed();
+            }
+            SortColumn::Length => self.sort_playlist_by_length(descending),
+        }
+    }
+
+    /// Sorts the playlist by length. The lengths are read from the files where the metadata is not known, and the sort
+    /// happens once they all are.
+    fn sort_playlist_by_length(&self, descending: bool) {
+        let info = MediaInfo::shared();
+        let paths = playlist::with(|list| list.order().to_vec());
+        let finish = {
+            let weak = self.downgrade();
+            let info = info.clone();
+            Rc::new(move || {
+                let Some(window) = weak.upgrade() else { return };
+                playlist::with(|list| {
+                    let keys: HashMap<PathBuf, i64> = list.order().iter().map(|path| (path.clone(), duration_millis(&info, path))).collect();
+                    list.sort_shown_by(|path| keys[path], descending);
+                });
+                window.playlist_changed();
+            })
+        };
+        let waiting = Rc::new(Cell::new(0usize));
+        for path in &paths {
+            let Some((mtime, size)) = stamp(path) else { continue };
+            waiting.set(waiting.get() + 1);
+            let done = {
+                let waiting = waiting.clone();
+                let finish = finish.clone();
+                move || {
+                    waiting.set(waiting.get() - 1);
+                    if waiting.get() == 0 {
+                        finish();
+                    }
+                }
+            };
+            if info.request(path, mtime, size, || true, done).is_some() {
+                waiting.set(waiting.get() - 1);
+            }
+        }
+        if waiting.get() == 0 {
+            finish();
+        }
+    }
+
+    /// Asks for the title of the item at `index` in the playlist, and gives it the one entered. An empty title takes back
+    /// the file name.
+    fn edit_playlist_title(&self, index: usize) {
+        let Some(path) = playlist::with(|list| list.order().get(index).cloned()) else { return };
+        let title = playlist::with(|list| list.title(&path));
+        let entry = gtk::Entry::new();
+        entry.set_text(&title);
+        entry.set_activates_default(true);
+        let dialog = adw::AlertDialog::new(Some("Edit Title"), Some("The title is shown in the playlist. Leave it empty to show the file name."));
+        adw::prelude::AlertDialogExt::add_response(&dialog, "cancel", "Cancel");
+        adw::prelude::AlertDialogExt::add_response(&dialog, "save", "Save");
+        adw::prelude::AlertDialogExt::set_default_response(&dialog, Some("save"));
+        adw::prelude::AlertDialogExt::set_close_response(&dialog, "cancel");
+        adw::prelude::AlertDialogExt::set_extra_child(&dialog, Some(&entry));
+        let weak = self.downgrade();
+        adw::prelude::AlertDialogExt::connect_response(&dialog, None, move |_, response| {
+            if response != "save" {
+                return;
+            }
+            playlist::with(|list| list.set_title(&path, &entry.text()));
+            if let Some(window) = weak.upgrade() {
+                window.playlist_changed();
+            }
+        });
+        adw::prelude::AdwDialogExt::present(&dialog, Some(self));
+    }
+
+    /// Asks whether the file at `path` is deleted from the disk. It is deleted for good, not moved to the trash, and then
+    /// it is taken out of the playlist.
+    fn confirm_delete_from_disk(&self, path: PathBuf) {
+        let name = path.file_name().map_or_else(|| path.display().to_string(), |name| name.to_string_lossy().into_owned());
+        let dialog = adw::AlertDialog::new(Some("Delete from Disk?"), Some(&format!("{name} will be deleted for good. This cannot be undone.")));
+        adw::prelude::AlertDialogExt::add_response(&dialog, "cancel", "Cancel");
+        adw::prelude::AlertDialogExt::add_response(&dialog, "delete", "Delete");
+        adw::prelude::AlertDialogExt::set_response_appearance(&dialog, "delete", adw::ResponseAppearance::Destructive);
+        adw::prelude::AlertDialogExt::set_default_response(&dialog, Some("cancel"));
+        adw::prelude::AlertDialogExt::set_close_response(&dialog, "cancel");
+        let weak = self.downgrade();
+        adw::prelude::AlertDialogExt::connect_response(&dialog, None, move |_, response| {
+            if response != "delete" {
+                return;
+            }
+            if let Some(window) = weak.upgrade() {
+                window.delete_from_disk(&path, &name);
+            }
+        });
+        adw::prelude::AdwDialogExt::present(&dialog, Some(self));
+    }
+
+    /// Deletes the file at `path` from the disk, and takes it out of the playlist, if it could be deleted.
+    fn delete_from_disk(&self, path: &Path, name: &str) {
+        if let Err(err) = std::fs::remove_file(path) {
+            self.notify_error(&format!("Could not delete {name}: {err}"));
+            return;
+        }
+        self.remove_from_playlist(&[path.to_path_buf()]);
+    }
+
+    /// Shows the file or folder at `path` in the browse view, with it selected in its folder, leaving the viewer if it is shown.
+    fn reveal_path(&self, path: &Path) {
+        if self.viewer_is_open() {
+            self.close_viewer();
+        }
+        self.open_path(path, Destination::CurrentTab, true);
+    }
+
+    /// Sets the state of this window's action `name`, which shows the playlist's state.
+    fn set_action_state(&self, name: &str, state: glib::Variant) {
+        if let Some(action) = self.lookup_action(name).and_downcast::<gio::SimpleAction>() {
+            action.set_state(&state);
+        }
     }
 
     /// Asks whether to clear the playlist, and clears it.
@@ -1775,18 +2304,27 @@ impl Window {
 
     /// Shows the list of the keybindings in force where the user is, or hides it.
     fn toggle_keybinds_overlay(&self) {
-        let overlay = self.imp().keybinds.get_or_init(|| KeybindsOverlay::new(&self.imp().message_layer));
+        let overlay = self.imp().keybinds.get_or_init(|| KeybindsOverlay::new(&self.keybinds_host()));
         if overlay.is_shown() {
             overlay.hide();
         } else {
+            overlay.move_to(&self.keybinds_host());
             overlay.show(&self.active_scopes());
         }
+    }
+
+    /// The overlay the keybindings list sits over: the picture of the viewer while it is open, so the list stays within
+    /// it, or the whole window otherwise.
+    fn keybinds_host(&self) -> gtk::Overlay {
+        let imp = self.imp();
+        if self.viewer_is_open() { imp.viewer.overlay() } else { (*imp.message_layer).clone() }
     }
 
     /// Makes the list of keybindings, if it is up, the ones in force now, as the viewer opened or closed or showed
     /// another kind of item.
     fn refresh_keybinds_overlay(&self) {
         if let Some(overlay) = self.imp().keybinds.get().filter(|overlay| overlay.is_shown()) {
+            overlay.move_to(&self.keybinds_host());
             overlay.rebuild(&self.active_scopes());
         }
     }
@@ -1828,12 +2366,16 @@ impl Window {
     /// Runs the script called `name` on the item in front of the user. A script that waits is followed to its end,
     /// and the folder is listed again then, as the script may have changed what is in it. Problems are printed.
     pub fn run_script(&self, name: &str) {
+        self.run_script_on(name, self.script_target());
+    }
+
+    /// Runs the script called `name` on `target`, the item it runs on if it uses one. Otherwise as `run_script`.
+    pub fn run_script_on(&self, name: &str, target: Option<PathBuf>) {
         let Some(settings) = self.imp().settings.get() else { return };
         let Some(script) = crate::scripts::find_script(settings, name) else {
             self.report_script_problem(&format!("There is no script called {name}"));
             return;
         };
-        let target = self.script_target();
         if script.uses_file() && target.is_none() {
             self.report_script_problem(&format!("{name} needs an item to run on, and none is selected"));
             return;
@@ -2765,6 +3307,30 @@ fn save_window_state(window: &Window, settings: &gio::Settings) {
         let _ = settings.set_int("window-width", window.width());
         let _ = settings.set_int("window-height", window.height());
     }
+    save_playlist_layout(window, settings);
+}
+
+/// Saves the playlist's layout: whether it is shown and how wide it is beside the page, and whether it is in a window of
+/// its own, with that window's size.
+fn save_playlist_layout(window: &Window, settings: &gio::Settings) {
+    let imp = window.imp();
+    let _ = settings.set_boolean("playlist-shown", imp.playlist_shown.get());
+    if let Some(width) = window.active_playlist_split().user_sidebar_width() {
+        let _ = settings.set_int("playlist-width", width);
+    }
+    let detached = imp.playlist_window.borrow().clone();
+    let _ = settings.set_boolean("playlist-detached", detached.is_some());
+    if let Some(detached) = &detached {
+        save_playlist_window_size(detached, settings);
+    }
+}
+
+/// Saves the size of the window the playlist is in, while it is shown.
+fn save_playlist_window_size(window: &adw::Window, settings: &gio::Settings) {
+    if window.width() > 0 && window.height() > 0 {
+        let _ = settings.set_int("playlist-window-width", window.width());
+        let _ = settings.set_int("playlist-window-height", window.height());
+    }
 }
 
 /// How long the window must stay unchanged before its state is saved.
@@ -2967,6 +3533,40 @@ pub(crate) mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
+    /// The menu's column toggles show and hide the columns, and "Reveal in browser" shows the item's folder.
+    fn playlist_menu_actions(app: &adw::Application, settings: &gio::Settings) {
+        let root = std::env::temp_dir().join(format!("rsimgv-reveal-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let (alpha, gamma) = (root.join("alpha"), root.join("gamma"));
+        let pixbuf = gtk::gdk_pixbuf::Pixbuf::new(gtk::gdk_pixbuf::Colorspace::Rgb, false, 8, 8, 8).unwrap();
+        for folder in [&alpha, &gamma] {
+            fs::create_dir_all(folder).unwrap();
+            pixbuf.savev(folder.join("one.png"), "png", &[]).unwrap();
+        }
+
+        let window = Window::new(app, settings);
+        let panel = window.imp().playlist_panel.get().unwrap();
+        for (index, key) in ["playlist-show-position", "playlist-show-name", "playlist-show-length", "playlist-show-filename"].into_iter().enumerate() {
+            let before = settings.boolean(key);
+            panel.content().activate_action(&format!("win.{key}"), None).unwrap();
+            assert_eq!(settings.boolean(key), !before, "the toggle changes the setting for {key}");
+            assert_eq!(panel.column_shown(index as u32), !before, "the toggle changes the column for {key}");
+            panel.content().activate_action(&format!("win.{key}"), None).unwrap();
+            assert_eq!(panel.column_shown(index as u32), before, "the toggle changes the column back for {key}");
+        }
+
+        window.navigate(&gamma);
+        let browse = window.active_browse().unwrap();
+        wait_for("the folder to list", || browse.media_paths().len() == 1);
+        window.open_viewer(&browse, &gamma.join("one.png"));
+        assert!(window.viewer_is_open(), "the viewer is open before revealing");
+        gio::prelude::ActionGroupExt::activate_action(&window, "reveal-path", Some(&alpha.join("one.png").to_string_lossy().to_variant()));
+        assert!(!window.viewer_is_open(), "revealing leaves the viewer");
+        assert_eq!(window.current_path().as_ref(), Some(&alpha), "revealing shows the item's folder");
+        window.destroy();
+        let _ = fs::remove_dir_all(&root);
+    }
+
     /// The viewer goes through the playlist without the folder shown, or the item selected in it, having any part in it.
     fn playlist_plays_apart_from_browsing(app: &adw::Application, settings: &gio::Settings) {
         let root = std::env::temp_dir().join(format!("rsimgv-playlist-{}", std::process::id()));
@@ -3009,7 +3609,7 @@ pub(crate) mod tests {
         window.add_to_playlist_later(vec![alpha.join("notes.txt")], false);
         window.add_to_playlist_later(vec![alpha.join("one.png"), gamma.clone()], false);
         wait_for("the item and the folder to be added", || len() == 3);
-        assert_eq!(playlist::with(|list| list.items().to_vec()), [alpha.join("one.png"), gamma.join("one.png"), gamma.join("two.png")]);
+        assert_eq!(playlist::with(|list| list.order().to_vec()), [alpha.join("one.png"), gamma.join("one.png"), gamma.join("two.png")]);
         window.add_to_playlist_later(vec![gamma.clone()], true);
         wait_for("the folder to be taken off", || len() == 1);
         window.add_to_playlist_later(vec![gamma.clone()], false);
@@ -3068,7 +3668,7 @@ pub(crate) mod tests {
         // A move in the panel keeps the item shown, at its new place.
         assert_eq!(current(), Some(1));
         gtk::prelude::WidgetExt::activate_action(&window, "win.playlist-move", Some(&(1u32, 0u32).to_variant())).unwrap();
-        assert_eq!(playlist::with(|list| list.items().to_vec()), [gamma.join("two.png"), alpha.join("one.png")]);
+        assert_eq!(playlist::with(|list| list.order().to_vec()), [gamma.join("two.png"), alpha.join("one.png")]);
         assert_eq!(current(), Some(0));
         assert!(shows(&gamma.join("two.png")));
 
@@ -3222,6 +3822,7 @@ pub(crate) mod tests {
         folders_remember_their_sorts(&app, &settings);
         viewer_steps_between_folders(&app, &settings);
         playlist_plays_apart_from_browsing(&app, &settings);
+        playlist_menu_actions(&app, &settings);
         context_actions_work(&app, &settings);
         window_size_is_saved(&app, &settings);
         size_change_is_saved_without_closing(&app, &settings);
@@ -3375,6 +3976,13 @@ fn bound_action(map: &impl IsA<gio::ActionMap>, window: &glib::WeakRef<Window>, 
 
 /// The items of a context menu for playlist changes to the item at `path`, with `targets` items being acted on: a lone
 /// file gets the one that applies to it, and a folder or several items, which may be partly in the playlist, get both.
+/// The duration of the file at `path` in milliseconds, from its metadata if that is known, or -1 if it is not. Items of
+/// unknown length sort first.
+fn duration_millis(info: &MediaInfo, path: &Path) -> i64 {
+    let metadata = stamp(path).and_then(|(mtime, size)| info.get(path, mtime, size));
+    metadata.and_then(|metadata| metadata.duration).map_or(-1, |seconds| (seconds * 1000.0).round() as i64)
+}
+
 fn playlist_menu_items(path: &Path, is_dir: bool, targets: usize) -> Vec<(&'static str, &'static str)> {
     let add = ("Add to Playlist", "win.playlist-add-paths");
     let remove = ("Remove from Playlist", "win.playlist-remove-paths");
@@ -3416,11 +4024,28 @@ fn count_text(paths: &[PathBuf], count: usize) -> String {
 /// is common in these files and the viewer has nothing to show for it.
 fn read_playlist_file(path: &Path) -> std::io::Result<format::Parsed> {
     let bytes = std::fs::read(path)?;
-    let mut parsed = format::read(&bytes, path.parent().unwrap_or(Path::new("/")));
+    Ok(playlist_from_bytes(&bytes, path.parent().unwrap_or(Path::new("/"))))
+}
+
+/// Shows the playlist window's header as `style` says: `full`, `compact` (shorter, with a smaller title), or `none`, which hides it.
+fn apply_playlist_header_style(header: &adw::HeaderBar, style: &str) {
+    header.set_visible(style != "none");
+    header.set_show_title(style != "none");
+    if style == "compact" {
+        header.add_css_class("playlist-header-compact");
+    } else {
+        header.remove_css_class("playlist-header-compact");
+    }
+}
+
+/// The pictures and videos a playlist's text lists, with how many entries it had that are not those left out. Relative
+/// entries are found from `base`.
+fn playlist_from_bytes(bytes: &[u8], base: &Path) -> format::Parsed {
+    let mut parsed = format::read(bytes, base);
     let listed = parsed.paths.len();
-    parsed.paths.retain(|item| item.file_name().is_some_and(|name| crate::fs::walk::is_media_name(&name.to_string_lossy())));
+    parsed.paths.retain(|item| playlist::is_playable(item));
     parsed.skipped += listed - parsed.paths.len();
-    Ok(parsed)
+    parsed
 }
 
 /// The file types the playlist dialogs offer: all the formats, then each one.

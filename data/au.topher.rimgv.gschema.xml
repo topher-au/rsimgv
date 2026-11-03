@@ -162,6 +162,67 @@
       <default>true</default>
       <summary>Whether the sidebar's filesystem section is expanded</summary>
     </key>
+    <key name="playlist-fetch-in-background" type="b">
+      <default>true</default>
+      <summary>Whether the playlist reads the lengths of its items in the background, rather than when each is first played</summary>
+    </key>
+    <key name="playlist-show-position" type="b">
+      <default>true</default>
+      <summary>Whether the playlist shows the position column</summary>
+    </key>
+    <key name="playlist-show-name" type="b">
+      <default>true</default>
+      <summary>Whether the playlist shows the name column</summary>
+    </key>
+    <key name="playlist-show-length" type="b">
+      <default>true</default>
+      <summary>Whether the playlist shows the length column</summary>
+    </key>
+    <key name="playlist-show-filename" type="b">
+      <default>true</default>
+      <summary>Whether the playlist shows the filename column</summary>
+    </key>
+    <key name="playlist-column-widths" type="ai">
+      <default>[-1, -1, -1, 300]</default>
+      <summary>The widths of the playlist's columns, in the order they are shown in, with -1 for a column that sizes itself</summary>
+    </key>
+    <key name="playlist-sort" type="(sb)">
+      <default>('', false)</default>
+      <summary>The column the playlist is sorted by, by its name, and whether it is sorted descending; an empty name is no sort</summary>
+    </key>
+    <key name="playlist-shown" type="b">
+      <default>false</default>
+      <summary>Whether the playlist is shown beside the browse view</summary>
+    </key>
+    <key name="playlist-width" type="i">
+      <default>-1</default>
+      <summary>The width of the playlist beside the browse view, or -1 for the default</summary>
+    </key>
+    <key name="playlist-detached" type="b">
+      <default>false</default>
+      <summary>Whether the playlist is in a window of its own</summary>
+    </key>
+    <key name="playlist-window-width" type="i">
+      <default>320</default>
+      <summary>The width of the playlist's own window</summary>
+    </key>
+    <key name="playlist-window-height" type="i">
+      <default>600</default>
+      <summary>The height of the playlist's own window</summary>
+    </key>
+    <key name="playlist-window-headerbar" type="s">
+      <choices>
+        <choice value="full"/>
+        <choice value="compact"/>
+        <choice value="none"/>
+      </choices>
+      <default>'full'</default>
+      <summary>The header of the playlist's own window: full, compact (half the height, with a smaller title), or none</summary>
+    </key>
+    <key name="playlist-repeat" type="b">
+      <default>true</default>
+      <summary>Whether the playlist goes back to its first item after its last, and the other way round</summary>
+    </key>
     <key name="viewer-thumbnail-bar" type="s">
       <choices>
         <choice value="top"/>

@@ -1,0 +1,15 @@
+// The playlist window's compact header: smaller text, with the padding of its boxes and buttons set below.
+headerbar.playlist-header-compact {
+  label.title {
+    font-size: small;
+  }
+
+  box {
+    padding: 2px 4px;
+  }
+
+  box.end button {
+    margin: 0;
+    padding: 2px;
+  }
+}

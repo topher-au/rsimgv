@@ -96,7 +96,18 @@
       </object>
     </child>
     <child>
+      <!-- The playlist is a sidebar below the header, on the opposite side from the browse split's. The window fills it. -->
+      <object class="RsimgvOverlaySplitView" id="playlist_split">
+        <property name="hexpand">true</property>
+        <property name="vexpand">true</property>
+        <child type="content">
+      <object class="GtkBox" id="content_column">
+        <property name="orientation">vertical</property>
+        <property name="hexpand">true</property>
+        <property name="vexpand">true</property>
+        <child>
       <object class="GtkBox" id="body">
+        <property name="vexpand">true</property>
     <child>
       <object class="GtkOverlay" id="overlay">
         <property name="hexpand">true</property>
@@ -132,10 +143,6 @@
             </child>
           </object>
         </child>
-      </object>
-    </child>
-      </object>
-    </child>
     <child>
       <object class="GtkBox" id="status_bar">
         <property name="visible">false</property>
@@ -175,6 +182,14 @@
           <object class="GtkLabel" id="status_size">
             <style><class name="dim-label"/></style>
           </object>
+        </child>
+      </object>
+    </child>
+      </object>
+        </child>
+      </object>
+    </child>
+      </object>
         </child>
       </object>
     </child>

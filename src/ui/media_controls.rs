@@ -294,6 +294,12 @@ impl MediaControls {
         self.imp().next_button.set_sensitive(has_next);
     }
 
+    /// Pauses the video, if one is playing.
+    pub fn pause(&self) {
+        let Some(media) = self.imp().media.borrow().clone() else { return };
+        media.pause();
+    }
+
     /// Plays the video if it is paused, and pauses it if it is playing. A video that has ended starts again.
     pub fn toggle_playing(&self) {
         let Some(media) = self.imp().media.borrow().clone() else { return };

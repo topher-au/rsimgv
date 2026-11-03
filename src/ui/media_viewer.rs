@@ -20,6 +20,7 @@ use crate::file_settings::FileSettings;
 use crate::fs::metadata::MediaInfo;
 use crate::fs::thumbnail::Pixels;
 use super::media_controls::MediaControls;
+use super::overlay_split_view::OverlaySplitView;
 use super::seek_overlay::{SeekOptions, SeekOverlay};
 use super::thumbnail_bar::ThumbnailBar;
 
@@ -235,6 +236,11 @@ mod imp {
         pub header_dock: TemplateChild<gtk::Box>,
         #[template_child]
         pub body: TemplateChild<gtk::Box>,
+        /// The body and the status bar under it, which the playlist sidebar sits beside.
+        #[template_child]
+        pub content_column: TemplateChild<gtk::Box>,
+        #[template_child]
+        pub playlist_split: TemplateChild<OverlaySplitView>,
         #[template_child]
         pub pin_button: TemplateChild<gtk::ToggleButton>,
         #[template_child]
@@ -513,6 +519,16 @@ glib::wrapper! {
 }
 
 impl MediaViewer {
+    /// The split view around the picture, whose sidebar holds the playlist while the viewer is shown.
+    pub fn playlist_split(&self) -> OverlaySplitView {
+        self.imp().playlist_split.clone()
+    }
+
+    /// The overlay over the picture, which the keybindings list sits over while the viewer is open.
+    pub fn overlay(&self) -> gtk::Overlay {
+        (*self.imp().overlay).clone()
+    }
+
     /// Shows the item at `index` of `paths`, the folder's pictures and videos in display order.
     pub fn show(&self, paths: Vec<PathBuf>, index: usize) {
         self.imp().thumbnail_bar.set_paths(&paths);
@@ -918,6 +934,11 @@ impl MediaViewer {
         self.imp().canvas.pan(dx, dy);
     }
 
+    /// Pauses the video shown, if there is one.
+    pub fn pause(&self) {
+        self.imp().controls.pause();
+    }
+
     /// Plays or pauses the video shown, if there is one.
     pub fn toggle_playback(&self) {
         self.imp().controls.toggle_playing();
@@ -1298,7 +1319,7 @@ impl MediaViewer {
             bar.set_can_target(true);
             bar.remove_css_class("status-overlay");
             imp.status_expander.set_visible(true);
-            self.append(bar);
+            imp.content_column.append(bar);
         }
     }
 
