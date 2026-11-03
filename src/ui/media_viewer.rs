@@ -23,7 +23,7 @@ use crate::fs::thumbnail::Pixels;
 use super::media_controls::MediaControls;
 use super::overlay_split_view::OverlaySplitView;
 use super::media_overlay::{clock, fraction, Frame, MediaOverlay};
-use crate::overlay::Layout;
+use crate::overlay::{Layout, Trigger, TRIGGERS};
 use super::thumbnail_bar::ThumbnailBar;
 
 const MICROS: f64 = 1_000_000.0;
@@ -447,7 +447,12 @@ mod imp {
         /// Whether the last skip went forward.
         pub(super) seek_forward: Cell<bool>,
         /// When the video was last skipped through, for the elements that show for a while after a skip.
-        pub(super) last_seek: Cell<Option<std::time::Instant>>,
+        pub(super) changed_at: Cell<[Option<std::time::Instant>; TRIGGERS]>,
+        /// What each change an element waits for last read, to tell when it changes, and until when a picture's zoom is
+        /// still settling after it is shown.
+        pub(super) watched: Cell<[Option<f64>; TRIGGERS]>,
+        pub(super) zoom_settles: Cell<Option<std::time::Instant>>,
+        pub(super) zoom_scale: Cell<f64>,
         /// The SVP frame interpolation settings, applied to the videos mpv plays.
         pub(super) svp: RefCell<Option<crate::svp::Config>>,
         /// The filter that applies SVP to the video shown, while SVP is on for it.
@@ -604,6 +609,7 @@ mod imp {
                 let weak = weak.clone();
                 move |_, scale| {
                     if let Some(viewer) = weak.upgrade() {
+                        viewer.imp().zoom_scale.set(scale);
                         viewer.imp().zoom_label.set_label(&format!("{:.0}%", scale * 100.0));
                         viewer.update_zoom_indicator();
                     }
@@ -1434,7 +1440,7 @@ impl MediaViewer {
         if let Some(target) = self.imp().controls.seek_by(from, micros) {
             let now = std::time::Instant::now();
             self.imp().seek_landing.set(Some((target, now)));
-            self.imp().last_seek.set(Some(now));
+            self.note_change(Trigger::Seek);
             self.imp().seek_forward.set(micros >= 0);
             self.refresh_overlay();
         }
@@ -1504,7 +1510,26 @@ impl MediaViewer {
         ] {
             values.insert(name, label.label().to_string());
         }
-        let Some(media) = imp.media.borrow().clone() else { return values };
+        // How the item is turned, and for a picture how far it is zoomed.
+        let media = imp.media.borrow().clone();
+        let orientation = match media.as_ref().map(|media| media.downcast_ref::<crate::mpv::MpvStream>().map(crate::mpv::MpvStream::orientation)) {
+            Some(video) => video,
+            None if imp.canvas.texture().is_some() => Some(imp.canvas.orientation()),
+            None => None,
+        };
+        if let Some(orientation) = orientation {
+            let degrees = orientation.degrees();
+            values.insert("rotation", degrees.to_string());
+            values.insert("rotation-percent", (u32::from(degrees) * 100 / 360).to_string());
+            values.insert("rotation-name", crate::overlay::rotation_name(degrees).to_owned());
+            if orientation.is_mirrored() {
+                values.insert("mirrored", "yes".to_owned());
+            }
+        }
+        if media.is_none() && imp.canvas.texture().is_some() {
+            values.insert("zoom", format!("{:.0}", imp.zoom_scale.get() * 100.0));
+        }
+        let Some(media) = media else { return values };
         let landing = imp.seek_landing.get().filter(|(_, when)| when.elapsed() < SEEK_SETTLE);
         let position = landing.map_or_else(|| media.timestamp(), |(target, _)| target);
         let duration = media.duration();
@@ -1538,6 +1563,8 @@ impl MediaViewer {
             if (speed - 1.0).abs() > 1e-6 {
                 values.insert("speed-changed", speed_text.clone());
             }
+            values.insert("speed-fraction", crate::overlay::speed_fraction(speed));
+            values.insert("speed-percent", format!("{:.0}", speed * 100.0));
             values.insert("speed", speed_text);
         }
         values.insert("volume", format!("{:.0}", media.volume() * 100.0));
@@ -1558,6 +1585,7 @@ impl MediaViewer {
             overlay.hide_all();
             return;
         }
+        self.track_changes();
         let values = self.overlay_values();
         let media = imp.media.borrow().clone();
         let position_fraction = media.as_ref().map_or(0.0, |media| {
@@ -1571,15 +1599,62 @@ impl MediaViewer {
             is_video: media.is_some(),
             playing: media.as_ref().is_some_and(|media| media.is_playing()),
             fullscreen: imp.fullscreen.get(),
-            since_seek: imp.last_seek.get().map(|when| when.elapsed()),
+            volume_fraction: if imp.controls.audio().1 { 0.0 } else { imp.controls.audio().0 },
+            since_change: imp.changed_at.get().map(|when| when.map(|when| when.elapsed())),
         });
+    }
+
+    /// Notes that `trigger`'s change just happened, for the elements that come up after it.
+    fn note_change(&self, trigger: Trigger) {
+        let imp = self.imp();
+        let mut changed = imp.changed_at.get();
+        changed[trigger as usize] = Some(std::time::Instant::now());
+        imp.changed_at.set(changed);
+    }
+
+    /// Looks for a change in the volume, speed, rotation or zoom since the last look, which brings up the displays of them.
+    /// The first look at an item only notes where each stands, so what a file's settings put there is not a change.
+    fn track_changes(&self) {
+        let imp = self.imp();
+        let media = imp.media.borrow().clone();
+        let stream = media.as_ref().and_then(|media| media.downcast_ref::<crate::mpv::MpvStream>().cloned());
+        let orientation = match (&stream, &media) {
+            (Some(stream), _) => Some(stream.orientation()),
+            (None, None) if imp.canvas.texture().is_some() => Some(imp.canvas.orientation()),
+            _ => None,
+        };
+        let audio = imp.controls.audio();
+        let current = [
+            (Trigger::Volume, media.as_ref().map(|_| if audio.1 { -1.0 } else { audio.0 })),
+            (Trigger::Speed, stream.as_ref().and_then(crate::mpv::MpvStream::speed)),
+            (Trigger::Rotation, orientation.map(|orientation| f64::from(orientation.degrees()) + if orientation.is_mirrored() { 1000.0 } else { 0.0 })),
+            (Trigger::Zoom, (media.is_none() && imp.canvas.texture().is_some()).then(|| imp.zoom_scale.get())),
+        ];
+        let settling = imp.zoom_settles.get().is_some_and(|until| std::time::Instant::now() < until);
+        let mut watched = imp.watched.get();
+        for (trigger, value) in current {
+            let seen = &mut watched[trigger as usize];
+            match (*seen, value) {
+                (_, None) => *seen = None,
+                (None, Some(value)) => *seen = Some(value),
+                (Some(before), Some(value)) if (before - value).abs() > 1e-6 => {
+                    *seen = Some(value);
+                    if !(trigger == Trigger::Zoom && settling) {
+                        self.note_change(trigger);
+                    }
+                }
+                _ => {}
+            }
+        }
+        imp.watched.set(watched);
     }
 
     /// Takes the overlay's elements down, as the item they showed is gone.
     fn hide_overlay(&self) {
         let imp = self.imp();
         imp.seek_landing.take();
-        imp.last_seek.take();
+        imp.changed_at.set([None; TRIGGERS]);
+        imp.watched.set([None; TRIGGERS]);
         if let Some(overlay) = imp.media_overlay.get() {
             overlay.hide_all();
         }
@@ -2100,6 +2175,8 @@ impl MediaViewer {
     fn set_picture(&self, pixels: &Pixels, placement: Option<Placement>, orientation: Option<Orientation>) {
         let imp = self.imp();
         imp.canvas.set_texture(Some(pixels.texture()));
+        // The zoom settles as the picture is first laid out, which is no change of the user's.
+        imp.zoom_settles.set(Some(std::time::Instant::now() + std::time::Duration::from_millis(500)));
         // Turned first, as the placement is of the picture as it was shown turned.
         if let Some(orientation) = orientation {
             imp.canvas.set_orientation(orientation);

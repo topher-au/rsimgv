@@ -13,7 +13,7 @@ use super::media_overlay::{layout_from_settings, set_preview, Preview};
 use crate::overlay::template::Template;
 use crate::overlay::{
     sample, Element, FilenameWrap, IconStyle, Items, Kind, Layout, Overflow, Slot, Visibility, BAR_WIDTH_RANGE, FADE_RANGE, FILENAME_CHARS_RANGE, FONT_SIZE_RANGE, MARGIN_RANGE, SHADOW_BLUR_RANGE, SHADOW_OFFSET_RANGE, STROKE_RANGE, MAX_NOTIFICATIONS_RANGE, PADDING_RANGE, PROPERTIES, RADIUS_RANGE,
-    SECONDS_RANGE, STATUS_PARTS, TIME_FORMATS,
+    SECONDS_RANGE, STATUS_PARTS, TIME_FORMATS, RotationFormat, SpeedFormat,
 };
 
 /// The element being edited, and where it goes back to.
@@ -194,6 +194,18 @@ impl Editor {
             }
             Kind::Status => {
                 tabs.add_titled_with_icon(&self.status_tab(&element), Some("content"), "Status", "media-playback-start-symbolic");
+            }
+            Kind::Volume => {
+                tabs.add_titled_with_icon(&self.volume_tab(&element), Some("content"), "Volume", "audio-volume-high-symbolic");
+            }
+            Kind::Speed => {
+                tabs.add_titled_with_icon(&self.speed_tab(&element), Some("content"), "Speed", "media-seek-forward-symbolic");
+            }
+            Kind::Rotation => {
+                tabs.add_titled_with_icon(&self.rotation_tab(&element), Some("content"), "Rotation", "object-rotate-right-symbolic");
+            }
+            Kind::Zoom => {
+                tabs.add_titled_with_icon(&self.zoom_tab(), Some("content"), "Zoom", "zoom-in-symbolic");
             }
             Kind::Messages => {}
         }
@@ -487,6 +499,114 @@ impl Editor {
         page
     }
 
+    fn volume_tab(self: &Rc<Self>, element: &Element) -> adw::PreferencesPage {
+        let page = adw::PreferencesPage::new();
+        let group = adw::PreferencesGroup::new();
+        group.set_description(Some("The volume, shown for a moment after it changes."));
+        let bar = adw::SwitchRow::builder().title("Bar").active(element.bar).build();
+        let upright = adw::ComboRow::builder()
+            .title("Bar direction")
+            .model(&gtk::StringList::new(&["Horizontal", "Vertical"]))
+            .build();
+        upright.set_selected(u32::from(element.bar_vertical));
+        let length = adw::SpinRow::with_range(f64::from(BAR_WIDTH_RANGE.0), f64::from(BAR_WIDTH_RANGE.1), 10.0);
+        length.set_title("Bar length");
+        length.set_subtitle("In pixels");
+        length.set_value(f64::from(element.bar_width));
+        for row in [upright.upcast_ref::<gtk::Widget>(), length.upcast_ref()] {
+            row.set_sensitive(element.bar);
+        }
+        bar.connect_active_notify({
+            let editor = self.clone();
+            let (upright, length) = (upright.clone(), length.clone());
+            move |row| {
+                upright.set_sensitive(row.is_active());
+                length.set_sensitive(row.is_active());
+                editor.edit(|element| element.bar = row.is_active());
+            }
+        });
+        upright.connect_selected_notify({
+            let editor = self.clone();
+            move |row| editor.edit(|element| element.bar_vertical = row.selected() == 1)
+        });
+        length.connect_value_notify({
+            let editor = self.clone();
+            move |row| editor.edit(|element| element.bar_width = row.value() as i32)
+        });
+        let text = adw::SwitchRow::builder().title("Text").subtitle("The level in percent, or Muted").active(element.show_text).build();
+        let (preview, update) = self.preview_row();
+        text.connect_active_notify({
+            let editor = self.clone();
+            move |row| {
+                editor.edit(|element| element.show_text = row.is_active());
+                update();
+            }
+        });
+        group.add(&bar);
+        group.add(&upright);
+        group.add(&length);
+        group.add(&text);
+        group.add(&preview);
+        page.add(&group);
+        page
+    }
+
+    fn speed_tab(self: &Rc<Self>, element: &Element) -> adw::PreferencesPage {
+        let page = adw::PreferencesPage::new();
+        let group = adw::PreferencesGroup::new();
+        group.set_description(Some("The playback speed, shown for a moment after it changes."));
+        let titles: Vec<&str> = SpeedFormat::ALL.iter().map(|format| format.title()).collect();
+        let format = adw::ComboRow::builder().title("Written as").model(&gtk::StringList::new(&titles)).build();
+        format.set_selected(SpeedFormat::ALL.iter().position(|candidate| *candidate == element.speed_format).unwrap_or(0) as u32);
+        let (preview, update) = self.preview_row();
+        format.connect_selected_notify({
+            let editor = self.clone();
+            move |row| {
+                if let Some(&format) = SpeedFormat::ALL.get(row.selected() as usize) {
+                    editor.edit(|element| element.speed_format = format);
+                    update();
+                }
+            }
+        });
+        group.add(&format);
+        group.add(&preview);
+        page.add(&group);
+        page
+    }
+
+    fn rotation_tab(self: &Rc<Self>, element: &Element) -> adw::PreferencesPage {
+        let page = adw::PreferencesPage::new();
+        let group = adw::PreferencesGroup::new();
+        group.set_description(Some("How far the picture or video is turned, shown for a moment after it changes."));
+        let titles: Vec<&str> = RotationFormat::ALL.iter().map(|format| format.title()).collect();
+        let format = adw::ComboRow::builder().title("Written as").model(&gtk::StringList::new(&titles)).build();
+        format.set_selected(RotationFormat::ALL.iter().position(|candidate| *candidate == element.rotation_format).unwrap_or(0) as u32);
+        let (preview, update) = self.preview_row();
+        format.connect_selected_notify({
+            let editor = self.clone();
+            move |row| {
+                if let Some(&format) = RotationFormat::ALL.get(row.selected() as usize) {
+                    editor.edit(|element| element.rotation_format = format);
+                    update();
+                }
+            }
+        });
+        group.add(&format);
+        group.add(&preview);
+        page.add(&group);
+        page
+    }
+
+    fn zoom_tab(self: &Rc<Self>) -> adw::PreferencesPage {
+        let page = adw::PreferencesPage::new();
+        let group = adw::PreferencesGroup::new();
+        group.set_description(Some("The zoom level of a picture, in percent, shown for a moment after it changes."));
+        let (preview, _) = self.preview_row();
+        group.add(&preview);
+        page.add(&group);
+        page
+    }
+
     fn status_tab(self: &Rc<Self>, element: &Element) -> adw::PreferencesPage {
         let page = adw::PreferencesPage::new();
         let group = adw::PreferencesGroup::new();
@@ -631,7 +751,7 @@ impl Editor {
     fn add_when_rows(self: &Rc<Self>, group: &adw::PreferencesGroup, element: &Element) {
         let visibility = adw::ComboRow::builder()
             .title("Show")
-            .model(&gtk::StringList::new(&["Always", "After skipping", "While paused"]))
+            .model(&gtk::StringList::new(&["Always", if element.kind.is_display() && element.kind != Kind::Seek { "After it changes" } else { "After skipping" }, "While paused"]))
             .build();
         visibility.set_selected(match element.visibility {
             Visibility::Always => 0,
@@ -640,7 +760,7 @@ impl Editor {
         });
         let seconds = adw::SpinRow::with_range(SECONDS_RANGE.0, SECONDS_RANGE.1, 0.5);
         seconds.set_title("Time shown");
-        seconds.set_subtitle("How long it stays up after a skip, in seconds");
+        seconds.set_subtitle("How long it stays up after a change, in seconds");
         seconds.set_digits(1);
         seconds.set_value(element.seconds);
         seconds.set_sensitive(element.visibility == Visibility::Seek);
@@ -899,7 +1019,7 @@ pub(crate) mod tests {
     #[test]
     fn every_listed_property_has_a_sample_but_mute() {
         for (name, _) in PROPERTIES {
-            assert!(sample(name).is_some() || matches!(*name, "mute" | "loading"), "{name} has no sample");
+            assert!(sample(name).is_some() || matches!(*name, "mute" | "loading" | "mirrored"), "{name} has no sample");
         }
     }
 }

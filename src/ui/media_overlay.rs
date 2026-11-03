@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use gtk::{gdk, gio};
 
 use crate::overlay::template::Template;
-use crate::overlay::{DEFAULT_MARGIN, plain_icon, sample, Element, FilenameWrap, IconStyle, Items, Kind, Layout, Legacy, Slot, Style, TextAlign, Visibility};
+use crate::overlay::{TRIGGERS, DEFAULT_MARGIN, plain_icon, sample, Element, FilenameWrap, IconStyle, Items, Kind, Layout, Legacy, Slot, Style, TextAlign, Visibility};
 
 /// The space between one element and the next, in pixels.
 const SPACING: i32 = 6;
@@ -234,8 +234,10 @@ pub struct Frame<'a> {
     pub is_video: bool,
     pub playing: bool,
     pub fullscreen: bool,
-    /// How long ago the video was skipped through, if it has been since it was shown.
-    pub since_seek: Option<Duration>,
+    /// How far through the volume bar is, from 0 to 1.
+    pub volume_fraction: f64,
+    /// How long ago each change an element can wait for last happened, if it has since the item was shown.
+    pub since_change: [Option<Duration>; TRIGGERS],
 }
 
 impl Element {
@@ -248,7 +250,7 @@ impl Element {
         };
         let when = match self.visibility {
             Visibility::Always => true,
-            Visibility::Seek => frame.since_seek.is_some_and(|since| since.as_secs_f64() < self.seconds),
+            Visibility::Seek => frame.since_change[self.kind.trigger() as usize].is_some_and(|since| since.as_secs_f64() < self.seconds),
             Visibility::Paused => frame.is_video && !frame.playing,
         };
         self.enabled && over && when && (!self.fullscreen_only || frame.fullscreen)
@@ -347,7 +349,7 @@ impl MediaOverlay {
         }
         if let Some((_, item)) = self.previewed.borrow().as_ref() {
             let sampled = |name: &str| (frame.values)(name).or_else(|| sample(name));
-            let shown = Frame { values: &sampled, fraction: frame.fraction.max(0.28), ..*frame };
+            let shown = Frame { values: &sampled, fraction: frame.fraction.max(0.28), volume_fraction: frame.volume_fraction.max(0.8), ..*frame };
             fill(item, &shown);
             if !item.revealer.reveals_child() {
                 item.revealer.set_reveal_child(true);
@@ -422,7 +424,7 @@ fn fill(item: &Placed, frame: &Frame) -> bool {
     }
     item.label.set_visible(!text.is_empty());
     if let Some(bar) = &item.bar {
-        bar.set_fraction(frame.fraction);
+        bar.set_fraction(if item.element.kind == Kind::Volume { frame.volume_fraction } else { frame.fraction });
     }
     // An element with nothing to show does not show its background either.
     item.bar.is_some() || !text.trim().is_empty() || state_icon.is_some() || item.filename.as_ref().is_some_and(|label| !label.text().is_empty())
@@ -464,10 +466,21 @@ fn build(index: usize, element: &Element) -> Placed {
     let card = gtk::Box::new(gtk::Orientation::Vertical, 4);
     card.add_css_class("overlay-element");
     card.add_css_class(&class);
-    let bar = (element.kind == Kind::Seek && element.bar).then(|| {
+    // A volume bar can stand upright, with its text beside it rather than under it.
+    let upright = element.kind == Kind::Volume && element.bar_vertical;
+    if upright {
+        card.set_orientation(gtk::Orientation::Horizontal);
+    }
+    let bar = (matches!(element.kind, Kind::Seek | Kind::Volume) && element.bar).then(|| {
         let bar = gtk::ProgressBar::new();
         bar.add_css_class("seek-bar");
-        bar.set_size_request(element.bar_width, -1);
+        if upright {
+            bar.set_orientation(gtk::Orientation::Vertical);
+            bar.set_inverted(true);
+            bar.set_size_request(-1, element.bar_width);
+        } else {
+            bar.set_size_request(element.bar_width, -1);
+        }
         card.append(&bar);
         bar
     });
@@ -545,7 +558,7 @@ mod tests {
     const SECOND: i64 = 1_000_000;
 
     fn frame<'a>(values: &'a dyn Fn(&str) -> Option<String>) -> Frame<'a> {
-        Frame { values, fraction: 0.0, is_video: true, playing: true, fullscreen: false, since_seek: None }
+        Frame { values, fraction: 0.0, volume_fraction: 0.0, is_video: true, playing: true, fullscreen: false, since_change: [None; TRIGGERS] }
     }
 
     #[test]
@@ -579,8 +592,15 @@ mod tests {
 
         element.visibility = Visibility::Seek;
         assert!(!element.is_up(&frame(&none)));
-        assert!(element.is_up(&Frame { since_seek: Some(Duration::from_secs(1)), ..frame(&none) }));
-        assert!(!element.is_up(&Frame { since_seek: Some(Duration::from_secs(3)), ..frame(&none) }));
+        assert!(element.is_up(&Frame { since_change: [Some(Duration::from_secs(1)), None, None, None, None], ..frame(&none) }));
+        assert!(!element.is_up(&Frame { since_change: [Some(Duration::from_secs(3)), None, None, None, None], ..frame(&none) }));
+
+        // A display waits for its own change, not the video being skipped through.
+        let mut volume = Element::of_kind(Kind::Volume, Slot::TOP_RIGHT);
+        assert!(!volume.is_up(&Frame { since_change: [Some(Duration::from_secs(1)), None, None, None, None], ..frame(&none) }));
+        assert!(volume.is_up(&Frame { since_change: [None, Some(Duration::from_secs(1)), None, None, None], ..frame(&none) }));
+        volume.visibility = Visibility::Always;
+        assert!(volume.is_up(&frame(&none)));
 
         element.visibility = Visibility::Always;
         element.fullscreen_only = true;

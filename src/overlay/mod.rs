@@ -16,6 +16,13 @@ pub const PROPERTIES: &[(&str, &str)] = &[
     ("percent-pos", "How far into the video, in percent"),
     ("speed", "The playback speed, such as 1.5"),
     ("speed-changed", "The playback speed, only while it is not normal"),
+    ("speed-fraction", "The playback speed as a fraction, such as 3/2"),
+    ("speed-percent", "The playback speed in percent, such as 150"),
+    ("rotation", "How far the item is turned clockwise, in degrees"),
+    ("rotation-percent", "How far it is turned, as 0, 25, 50 or 75 percent of a full turn"),
+    ("rotation-name", "How far it is turned, as none, quarter, half or three quarters"),
+    ("mirrored", "yes, while the item is mirrored"),
+    ("zoom", "The zoom level of a picture, in percent"),
     ("loading", "Loading..., until the video has loaded"),
     ("volume", "The volume, in percent"),
     ("mute", "muted, while the video is muted"),
@@ -44,6 +51,12 @@ pub fn sample(name: &str) -> Option<String> {
         "percent-pos" => "28",
         "speed" => "1.5",
         "speed-changed" => "1.5",
+        "speed-fraction" => "3/2",
+        "speed-percent" => "150",
+        "rotation" => "90",
+        "rotation-percent" => "25",
+        "rotation-name" => "quarter",
+        "zoom" => "125",
         "volume" => "80",
         "fps" => "29.97",
         "filename" => "example.mp4",
@@ -102,19 +115,45 @@ pub enum Kind {
     Template,
     /// A progress bar and the time, which come up when the video is skipped through.
     Seek,
+    /// The volume as a bar, text or both, which comes up when it changes.
+    Volume,
+    /// The playback speed, which comes up when it changes.
+    Speed,
+    /// How far the item is turned, which comes up when it changes.
+    Rotation,
+    /// The zoom level of a picture, which comes up when it changes.
+    Zoom,
     /// The state, time and so on of the playback, as mpv's own on-screen display writes them.
     Status,
     /// Where notification messages appear, and how they look.
     Messages,
 }
 
+/// What an element that comes up for a while after a change is waiting for the change of.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Trigger {
+    Seek = 0,
+    Volume = 1,
+    Speed = 2,
+    Rotation = 3,
+    Zoom = 4,
+}
+
+/// How many triggers there are.
+pub const TRIGGERS: usize = 5;
+
 impl Kind {
-    pub const ALL: [Kind; 4] = [Kind::Seek, Kind::Status, Kind::Messages, Kind::Template];
+    pub const ALL: [Kind; 8] =
+        [Kind::Seek, Kind::Volume, Kind::Speed, Kind::Rotation, Kind::Zoom, Kind::Status, Kind::Messages, Kind::Template];
 
     pub fn name(self) -> &'static str {
         match self {
             Kind::Template => "template",
             Kind::Seek => "seek",
+            Kind::Volume => "volume",
+            Kind::Speed => "speed",
+            Kind::Rotation => "rotation",
+            Kind::Zoom => "zoom",
             Kind::Status => "status",
             Kind::Messages => "messages",
         }
@@ -125,9 +164,30 @@ impl Kind {
         match self {
             Kind::Template => "Template",
             Kind::Seek => "Seek display",
+            Kind::Volume => "Volume display",
+            Kind::Speed => "Speed display",
+            Kind::Rotation => "Rotation display",
+            Kind::Zoom => "Zoom display",
             Kind::Status => "Media status",
             Kind::Messages => "Notification messages",
         }
+    }
+
+    /// The change that brings an element of this kind up, when it is set to come up after one. An element that shows
+    /// something else waits for the video to be skipped through.
+    pub fn trigger(self) -> Trigger {
+        match self {
+            Kind::Volume => Trigger::Volume,
+            Kind::Speed => Trigger::Speed,
+            Kind::Rotation => Trigger::Rotation,
+            Kind::Zoom => Trigger::Zoom,
+            _ => Trigger::Seek,
+        }
+    }
+
+    /// Whether the kind is a display of one property that comes up when it changes.
+    pub fn is_display(self) -> bool {
+        matches!(self, Kind::Seek | Kind::Volume | Kind::Speed | Kind::Rotation | Kind::Zoom)
     }
 
     fn from_name(name: &str) -> Self {
@@ -135,12 +195,128 @@ impl Kind {
             // The names the first layouts used.
             "progress" => Kind::Seek,
             "seek" => Kind::Seek,
+            "volume" => Kind::Volume,
+            "speed" => Kind::Speed,
+            "rotation" => Kind::Rotation,
+            "zoom" => Kind::Zoom,
             "status" => Kind::Status,
             "messages" => Kind::Messages,
             _ => Kind::Template,
         }
     }
 }
+
+/// How a speed display writes the speed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum SpeedFormat {
+    /// `1.5x`
+    #[default]
+    Multiplier,
+    /// `3/2x`
+    Fraction,
+    /// `150%`
+    Percentage,
+}
+
+impl SpeedFormat {
+    pub const ALL: [SpeedFormat; 3] = [SpeedFormat::Multiplier, SpeedFormat::Fraction, SpeedFormat::Percentage];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            SpeedFormat::Multiplier => "multiplier",
+            SpeedFormat::Fraction => "fraction",
+            SpeedFormat::Percentage => "percentage",
+        }
+    }
+
+    pub fn title(self) -> &'static str {
+        match self {
+            SpeedFormat::Multiplier => "Multiplier, 1.5x",
+            SpeedFormat::Fraction => "Fraction, 3/2x",
+            SpeedFormat::Percentage => "Percentage, 150%",
+        }
+    }
+
+    fn from_name(name: &str) -> Self {
+        Self::ALL.into_iter().find(|format| format.name() == name).unwrap_or_default()
+    }
+
+    fn template(self) -> &'static str {
+        match self {
+            SpeedFormat::Multiplier => "${speed}x",
+            SpeedFormat::Fraction => "${speed-fraction}x",
+            SpeedFormat::Percentage => "${speed-percent}%",
+        }
+    }
+}
+
+/// How a rotation display writes how far the item is turned.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum RotationFormat {
+    /// `90°`
+    #[default]
+    Degrees,
+    /// `25%` of a full turn
+    Percentage,
+    /// `quarter`
+    Words,
+}
+
+impl RotationFormat {
+    pub const ALL: [RotationFormat; 3] = [RotationFormat::Degrees, RotationFormat::Percentage, RotationFormat::Words];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            RotationFormat::Degrees => "degrees",
+            RotationFormat::Percentage => "percentage",
+            RotationFormat::Words => "words",
+        }
+    }
+
+    pub fn title(self) -> &'static str {
+        match self {
+            RotationFormat::Degrees => "Degrees, 0° 90° 180° 270°",
+            RotationFormat::Percentage => "Percentage, 0% 25% 50% 75%",
+            RotationFormat::Words => "Words, none quarter half three quarters",
+        }
+    }
+
+    fn from_name(name: &str) -> Self {
+        Self::ALL.into_iter().find(|format| format.name() == name).unwrap_or_default()
+    }
+
+    fn template(self) -> &'static str {
+        match self {
+            RotationFormat::Degrees => "${rotation}°${?mirrored: mirrored}",
+            RotationFormat::Percentage => "${rotation-percent}%${?mirrored: mirrored}",
+            RotationFormat::Words => "${rotation-name}${?mirrored: mirrored}",
+        }
+    }
+}
+
+/// `speed` as the simplest fraction of at most 16ths that is within half a percent of it, such as `3/2`, or a whole number.
+pub fn speed_fraction(speed: f64) -> String {
+    for denominator in 1..=16u32 {
+        let numerator = (speed * f64::from(denominator)).round();
+        if numerator >= 1.0 && (numerator / f64::from(denominator) - speed).abs() < 0.005 {
+            return if denominator == 1 { format!("{numerator}") } else { format!("{numerator}/{denominator}") };
+        }
+    }
+    format!("{speed:.2}")
+}
+
+/// How a rotation of `degrees` clockwise is said in words.
+pub fn rotation_name(degrees: u16) -> &'static str {
+    match degrees % 360 {
+        90 => "quarter",
+        180 => "half",
+        270 => "three quarters",
+        _ => "none",
+    }
+}
+
+/// The template that writes a volume display's text: the level, or that it is muted.
+const VOLUME_TEXT: &str = "${?mute:Muted}${!mute:${volume}%}";
 
 /// The parts a media status element can show, in the order it writes them. The state is an icon and the filename a line
 /// under the text, so neither is in the text. The percent and the speed are written together, as `(20% @ 0.2x)`, or
@@ -278,8 +454,13 @@ pub struct Element {
     /// What a seek display shows: whether it has a bar, and how it writes the time.
     pub bar: bool,
     pub time_format: String,
-    /// The width of a seek display's bar, in pixels.
+    /// The width of a seek display's bar, or the length of a volume display's, in pixels.
     pub bar_width: i32,
+    /// For a volume display: whether the bar stands upright, and whether it has text as well as the bar.
+    pub bar_vertical: bool,
+    pub show_text: bool,
+    pub speed_format: SpeedFormat,
+    pub rotation_format: RotationFormat,
     /// What a media status shows, from `STATUS_PARTS`.
     pub parts: Vec<String>,
     pub visibility: Visibility,
@@ -404,6 +585,10 @@ impl Element {
             bar: true,
             time_format: TIME_FORMATS[0].0.to_owned(),
             bar_width: 360,
+            bar_vertical: false,
+            show_text: true,
+            speed_format: SpeedFormat::default(),
+            rotation_format: RotationFormat::default(),
             parts: ["state", "time", "percent"].map(str::to_owned).to_vec(),
             visibility: Visibility::Always,
             seconds: 2.0,
@@ -427,6 +612,20 @@ impl Element {
                 element.visibility = Visibility::Seek;
                 element.items = Items::Videos;
             }
+            Kind::Volume => {
+                element.visibility = Visibility::Seek;
+                element.items = Items::Videos;
+                element.bar_width = 160;
+            }
+            Kind::Speed => {
+                element.visibility = Visibility::Seek;
+                element.items = Items::Videos;
+            }
+            Kind::Rotation => element.visibility = Visibility::Seek,
+            Kind::Zoom => {
+                element.visibility = Visibility::Seek;
+                element.items = Items::Pictures;
+            }
             Kind::Status => element.items = Items::Videos,
             Kind::Template => element.template = "${filename}".to_owned(),
             Kind::Messages => {}
@@ -445,6 +644,10 @@ impl Element {
         match self.kind {
             Kind::Template => self.template.clone(),
             Kind::Seek => time_template(&self.time_format).to_owned(),
+            Kind::Volume => if self.show_text { VOLUME_TEXT.to_owned() } else { String::new() },
+            Kind::Speed => self.speed_format.template().to_owned(),
+            Kind::Rotation => self.rotation_format.template().to_owned(),
+            Kind::Zoom => "${zoom}%".to_owned(),
             Kind::Status => {
                 let mut pieces = Vec::new();
                 if self.shows_part("time") {
@@ -481,6 +684,10 @@ impl Element {
             "bar": self.bar,
             "time-format": self.time_format,
             "bar-width": self.bar_width,
+            "bar-vertical": self.bar_vertical,
+            "show-text": self.show_text,
+            "speed-format": self.speed_format.name(),
+            "rotation-format": self.rotation_format.name(),
             "parts": self.parts,
             "visibility": match self.visibility { Visibility::Always => "always", Visibility::Seek => "seek", Visibility::Paused => "paused" },
             "seconds": self.seconds,
@@ -545,6 +752,14 @@ impl Element {
             element.time_format = format.to_owned();
         }
         element.bar_width = whole("bar-width", element.bar_width, BAR_WIDTH_RANGE);
+        element.bar_vertical = flag("bar-vertical", element.bar_vertical);
+        element.show_text = flag("show-text", element.show_text);
+        if let Some(format) = text("speed-format") {
+            element.speed_format = SpeedFormat::from_name(format);
+        }
+        if let Some(format) = text("rotation-format") {
+            element.rotation_format = RotationFormat::from_name(format);
+        }
         if let Some(parts) = object.get("parts").and_then(Value::as_array) {
             element.parts = parts.iter().filter_map(Value::as_str).map(str::to_owned).collect();
         }
@@ -671,7 +886,7 @@ impl Layout {
     pub fn from_legacy(legacy: &Legacy) -> Self {
         let mut seek = Element::of_kind(Kind::Seek, Slot::from_name(&legacy.seek_position).unwrap_or(Slot::TOP_MIDDLE));
         seek.enabled = legacy.seek_enabled;
-        seek.name = "Seek bar".to_owned();
+        seek.name = "Seek display".to_owned();
         seek.bar = legacy.seek_bar;
         seek.time_format = if legacy.seek_time { legacy.seek_time_format.clone() } else { "none".to_owned() };
         seek.visibility = if legacy.seek_always { Visibility::Always } else { Visibility::Seek };
@@ -825,6 +1040,34 @@ mod tests {
         assert_eq!((layout.elements[0].max_notifications, layout.elements[0].overflow), (MAX_NOTIFICATIONS_RANGE.1, Overflow::Wait));
         assert_eq!((layout.elements[1].max_notifications, layout.elements[1].overflow), (DEFAULT_MAX_NOTIFICATIONS, Overflow::PushOut));
         assert_eq!(Layout::from_json(&layout.to_json()), Some(layout));
+    }
+
+    #[test]
+    fn speeds_are_written_as_fractions() {
+        assert_eq!(speed_fraction(1.0), "1");
+        assert_eq!(speed_fraction(0.5), "1/2");
+        assert_eq!(speed_fraction(1.5), "3/2");
+        assert_eq!(speed_fraction(0.25), "1/4");
+        assert_eq!(speed_fraction(2.0), "2");
+        assert_eq!(speed_fraction(0.333), "1/3");
+        assert_eq!(rotation_name(0), "none");
+        assert_eq!(rotation_name(90), "quarter");
+        assert_eq!(rotation_name(180), "half");
+        assert_eq!(rotation_name(270), "three quarters");
+    }
+
+    #[test]
+    fn the_displays_come_up_for_the_change_they_show() {
+        for (kind, trigger) in [(Kind::Volume, Trigger::Volume), (Kind::Speed, Trigger::Speed), (Kind::Rotation, Trigger::Rotation), (Kind::Zoom, Trigger::Zoom), (Kind::Seek, Trigger::Seek), (Kind::Template, Trigger::Seek)] {
+            assert_eq!(kind.trigger(), trigger);
+            assert!((trigger as usize) < TRIGGERS);
+        }
+        let layout = Layout::from_json(r#"{"elements":[{"kind":"volume","speed-format":"fraction"},{"kind":"speed","speed-format":"fraction"},{"kind":"rotation","rotation-format":"words"}]}"#).unwrap();
+        assert_eq!(layout.elements[0].visibility, Visibility::Seek, "a display comes up after a change");
+        assert_eq!(layout.elements[1].text_template(), "${speed-fraction}x");
+        assert_eq!(layout.elements[2].text_template(), "${rotation-name}${?mirrored: mirrored}");
+        assert_eq!(Layout::from_json(&layout.to_json()), Some(layout));
+        assert!(Kind::ALL.iter().all(|kind| Kind::from_name(kind.name()) == *kind));
     }
 
     #[test]
