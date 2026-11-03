@@ -398,6 +398,8 @@ mod imp {
         /// can be told from the level a video merely inherited.
         pub(super) remember: Cell<Remember>,
         pub(super) audio_at_load: Cell<(f64, bool)>,
+        /// The volume and mute state the user had before any video's own was applied, which the videos without their own start at.
+        pub(super) audio_base: Cell<Option<(f64, bool)>>,
         /// The video shown, if the item is one. The viewer owns it, and the controls drive it.
         pub(super) media: RefCell<Option<gtk::MediaStream>>,
         /// Whether a video starts again when it ends, and whether the next item plays when it ends instead.
@@ -2020,9 +2022,19 @@ impl MediaViewer {
             let fit = if media.is::<crate::mpv::MpvStream>() { gtk::ContentFit::Fill } else { gtk::ContentFit::Contain };
             imp.picture.set_content_fit(fit);
             imp.picture.set_paintable(Some(&media));
-            // A video with a volume of its own starts at it; the others start at the level the last one left.
-            if let Some(volume) = settings.as_ref().filter(|_| imp.remember.get().volume).and_then(|settings| settings.get_f64("volume")) {
-                imp.controls.set_audio(volume, settings.as_ref().and_then(|settings| settings.get_bool("muted")).unwrap_or(false));
+            // A video with a volume of its own starts at it. The others start at the level the user had before any video's
+            // own, so one video's volume does not carry over to the next.
+            let remember = imp.remember.get();
+            if remember.enabled && remember.volume {
+                let base = imp.audio_base.get().unwrap_or_else(|| imp.controls.audio());
+                imp.audio_base.set(Some(base));
+                let saved = settings.as_ref().and_then(|settings| settings.get_f64("volume"));
+                match saved {
+                    Some(volume) => imp.controls.set_audio(volume, settings.as_ref().and_then(|settings| settings.get_bool("muted")).unwrap_or(false)),
+                    None => imp.controls.set_audio(base.0, base.1),
+                }
+            } else {
+                imp.audio_base.set(None);
             }
             imp.audio_at_load.set(imp.controls.audio());
             imp.controls.set_media(Some(&media));
