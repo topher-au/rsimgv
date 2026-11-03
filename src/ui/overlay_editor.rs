@@ -43,6 +43,10 @@ const EDITOR_PAGE: &str = "editor";
 
 /// The page, to put in the preferences.
 pub fn build(settings: &Settings) -> gtk::Widget {
+    build_editor(settings).pages.clone().upcast()
+}
+
+fn build_editor(settings: &Settings) -> Rc<Editor> {
     let editor = Rc::new(Editor {
         settings: settings.clone(),
         layout: RefCell::new(layout_from_settings(settings)),
@@ -141,7 +145,7 @@ pub fn build(settings: &Settings) -> gtk::Widget {
             }
         }
     });
-    editor.pages.clone().upcast()
+    editor
 }
 
 impl Editor {
@@ -196,6 +200,7 @@ impl Editor {
             }
             Kind::Status => {
                 tabs.add_titled_with_icon(&self.status_tab(&element), Some("content"), "Status", "media-playback-start-symbolic");
+                tabs.add_titled_with_icon(&self.filename_tab(&element), Some("filename"), "Filename", "text-x-generic-symbolic");
             }
             Kind::Volume => {
                 tabs.add_titled_with_icon(&self.volume_tab(&element), Some("content"), "Volume", "audio-volume-high-symbolic");
@@ -212,6 +217,7 @@ impl Editor {
             Kind::Messages => {}
         }
         tabs.add_titled_with_icon(&self.look_tab(&element), Some("look"), "Look", "applications-graphics-symbolic");
+        tabs.add_titled_with_icon(&self.effects_tab(&element), Some("effects"), "Effects", "display-brightness-symbolic");
         for page in tabs.pages().iter::<adw::ViewStackPage>().flatten() {
             super::preferences::tighten(&page.child());
         }
@@ -431,13 +437,17 @@ impl Editor {
             move |row| editor.edit(|element| element.enabled = row.is_active())
         });
         group.add(&enabled);
-
-        if element.kind == Kind::Messages {
-            self.add_stack_rows(&group, element);
-        } else {
-            self.add_when_rows(&group, element);
-        }
         page.add(&group);
+
+        let behaviour = adw::PreferencesGroup::new();
+        if element.kind == Kind::Messages {
+            behaviour.set_title("Stack");
+            self.add_stack_rows(&behaviour, element);
+        } else {
+            behaviour.set_title("Visibility");
+            self.add_when_rows(&behaviour, element);
+        }
+        page.add(&behaviour);
         page
     }
 
@@ -470,14 +480,22 @@ impl Editor {
             }
         });
         group.add(&markup);
-        self.add_layout_rows(&group, element, None, None);
         group.add(&preview);
         page.add(&group);
+        page.add(&self.layout_group(element, None, None));
 
         let help = adw::PreferencesGroup::new();
         help.add(&reference());
         page.add(&help);
         page
+    }
+
+    /// A group of the rows `add_layout_rows` makes.
+    fn layout_group(self: &Rc<Self>, element: &Element, spacing: Option<&str>, align: Option<&str>) -> adw::PreferencesGroup {
+        let group = adw::PreferencesGroup::new();
+        group.set_title("Layout");
+        self.add_layout_rows(&group, element, spacing, align);
+        group
     }
 
     /// Adds to `group` the rows for how the things in an element are spaced and line up: the space between them, how they line
@@ -522,17 +540,17 @@ impl Editor {
         group.add(&row);
     }
 
-    /// Adds to `group` the rows for a display with a bar and text: each can be turned off, the bar can stand upright, and
-    /// the text sits above, below or beside the bar.
-    fn add_bar_rows(self: &Rc<Self>, group: &adw::PreferencesGroup, element: &Element, update: Rc<dyn Fn()>) {
-        let bar = adw::SwitchRow::builder().title("Bar").active(element.bar).build();
+    /// The groups for a display with a bar and text: each can be turned off, the bar can stand upright, and the text sits
+    /// above, below or beside the bar.
+    fn bar_groups(self: &Rc<Self>, element: &Element, update: Rc<dyn Fn()>) -> (adw::PreferencesGroup, adw::PreferencesGroup) {
+        let bar = adw::SwitchRow::builder().title("Show the bar").active(element.bar).build();
         let upright = adw::ComboRow::builder().title("Bar direction").model(&gtk::StringList::new(&["Horizontal", "Vertical"])).build();
         upright.set_selected(u32::from(element.bar_vertical));
         let length = adw::SpinRow::with_range(f64::from(BAR_WIDTH_RANGE.0), f64::from(BAR_WIDTH_RANGE.1), 10.0);
         length.set_title("Bar length");
         length.set_subtitle("In pixels");
         length.set_value(f64::from(element.bar_width));
-        let text = adw::SwitchRow::builder().title("Text").active(element.show_text).build();
+        let text = adw::SwitchRow::builder().title("Show the text").active(element.show_text).build();
         let titles: Vec<&str> = TextPosition::ALL.iter().map(|position| position.title()).collect();
         let position = adw::ComboRow::builder().title("Text position").model(&gtk::StringList::new(&titles)).build();
         position.set_selected(TextPosition::ALL.iter().position(|candidate| *candidate == element.text_position).unwrap_or(0) as u32);
@@ -584,20 +602,28 @@ impl Editor {
                 }
             }
         });
-        group.add(&bar);
-        group.add(&upright);
-        group.add(&length);
-        group.add(&text);
-        group.add(&position);
-        self.add_layout_rows(group, element, Some("Space between bar and text"), Some("Bar and text alignment"));
+        let bar_group = adw::PreferencesGroup::new();
+        bar_group.set_title("Bar");
+        bar_group.add(&bar);
+        bar_group.add(&upright);
+        bar_group.add(&length);
+        let text_group = adw::PreferencesGroup::new();
+        text_group.set_title("Text");
+        text_group.add(&text);
+        text_group.add(&position);
+        (bar_group, text_group)
+    }
+
+    /// The layout of a display with a bar and text.
+    fn bar_layout_group(self: &Rc<Self>, element: &Element) -> adw::PreferencesGroup {
+        self.layout_group(element, Some("Space between bar and text"), Some("Bar and text alignment"))
     }
 
     fn seek_tab(self: &Rc<Self>, element: &Element) -> adw::PreferencesPage {
         let page = adw::PreferencesPage::new();
-        let group = adw::PreferencesGroup::new();
-        group.set_description(Some("A progress bar and the time, shown for a moment after the video is skipped through."));
         let (preview, update) = self.preview_row();
-        self.add_bar_rows(&group, element, update.clone());
+        page.add(&intro_group("A progress bar and the time, shown for a moment after the video is skipped through.", &preview));
+        let (bar, text) = self.bar_groups(element, update.clone());
         let labels: Vec<&str> = TIME_FORMATS.iter().map(|(_, label)| *label).collect();
         let format = adw::ComboRow::builder().title("Time").subtitle("How the time is written").model(&gtk::StringList::new(&labels)).build();
         format.set_selected(TIME_FORMATS.iter().position(|(name, _)| *name == element.time_format).unwrap_or(0) as u32);
@@ -610,20 +636,21 @@ impl Editor {
                 }
             }
         });
-        group.add(&format);
-        group.add(&preview);
-        page.add(&group);
+        text.add(&format);
+        page.add(&bar);
+        page.add(&text);
+        page.add(&self.bar_layout_group(element));
         page
     }
 
     fn volume_tab(self: &Rc<Self>, element: &Element) -> adw::PreferencesPage {
         let page = adw::PreferencesPage::new();
-        let group = adw::PreferencesGroup::new();
-        group.set_description(Some("The volume, shown for a moment after it changes."));
         let (preview, update) = self.preview_row();
-        self.add_bar_rows(&group, element, update);
-        group.add(&preview);
-        page.add(&group);
+        page.add(&intro_group("The volume, shown for a moment after it changes.", &preview));
+        let (bar, text) = self.bar_groups(element, update);
+        page.add(&bar);
+        page.add(&text);
+        page.add(&self.bar_layout_group(element));
         page
     }
 
@@ -685,9 +712,10 @@ impl Editor {
 
     fn status_tab(self: &Rc<Self>, element: &Element) -> adw::PreferencesPage {
         let page = adw::PreferencesPage::new();
-        let group = adw::PreferencesGroup::new();
-        group.set_description(Some("The playback state and time, as mpv writes them on its own display."));
         let (preview, update) = self.preview_row();
+        page.add(&intro_group("The playback state and time, as mpv writes them on its own display.", &preview));
+        let group = adw::PreferencesGroup::new();
+        group.set_title("Parts");
         for (part, title) in STATUS_PARTS {
             let row = adw::SwitchRow::builder().title(*title).active(element.parts.iter().any(|shown| shown == part)).build();
             row.connect_active_notify({
@@ -705,6 +733,7 @@ impl Editor {
             });
             group.add(&row);
         }
+        page.add(&group);
         let icons = adw::ComboRow::builder()
             .title("State icons")
             .subtitle("How playing, paused and skipping are drawn")
@@ -715,19 +744,20 @@ impl Editor {
             let editor = self.clone();
             move |row| editor.edit(|element| element.icon_style = if row.selected() == 1 { IconStyle::Characters } else { IconStyle::Emoji })
         });
-        group.add(&icons);
-        self.add_layout_rows(&group, element, Some("Space after the icon"), Some("Icon alignment"));
-        group.add(&preview);
-        page.add(&group);
-        page.add(&self.filename_group(element));
+        let layout = adw::PreferencesGroup::new();
+        layout.set_title("Icons and layout");
+        layout.add(&icons);
+        self.add_layout_rows(&layout, element, Some("Space after the icon"), Some("Icon alignment"));
+        page.add(&layout);
         page
     }
 
     /// The options of the filename line of a media status: its text, how it fits the room, and its own look.
-    fn filename_group(self: &Rc<Self>, element: &Element) -> adw::PreferencesGroup {
+    fn filename_tab(self: &Rc<Self>, element: &Element) -> adw::PreferencesPage {
+        let page = adw::PreferencesPage::new();
         let group = adw::PreferencesGroup::new();
-        group.set_title("Filename");
-        group.set_description(Some("The line under the status. Turn it on with Filename under it."));
+        group.set_title("Text");
+        group.set_description(Some("The line under the status. Turn it on with Filename under it, on the Status tab."));
 
         let template = adw::EntryRow::builder().title("Filename template").text(element.filename_template.as_str()).build();
         template.connect_changed({
@@ -760,7 +790,10 @@ impl Editor {
         });
         group.add(&wrap);
         group.add(&chars);
+        page.add(&group);
 
+        let look = adw::PreferencesGroup::new();
+        look.set_title("Look");
         let size = adw::SpinRow::with_range(0.0, FONT_SIZE_RANGE.1, 1.0);
         size.set_title("Font size");
         size.set_subtitle("In points, or 0 for a little smaller than the text above");
@@ -769,7 +802,7 @@ impl Editor {
             let editor = self.clone();
             move |row| editor.edit(|element| element.filename_font_size = row.value())
         });
-        group.add(&size);
+        look.add(&size);
 
         // A colour of its own, or the text's.
         let own = adw::SwitchRow::builder().title("Colour of its own").active(!element.filename_color.is_empty()).build();
@@ -785,8 +818,8 @@ impl Editor {
                 });
             }
         });
-        group.add(&own);
-        group.add(&color);
+        look.add(&own);
+        look.add(&color);
 
         let opacity = adw::SpinRow::with_range(0.0, 100.0, 5.0);
         opacity.set_title("Opacity");
@@ -796,8 +829,9 @@ impl Editor {
             let editor = self.clone();
             move |row| editor.edit(|element| element.filename_opacity = row.value() / 100.0)
         });
-        group.add(&opacity);
-        group
+        look.add(&opacity);
+        page.add(&look);
+        page
     }
 
     /// Adds to `group` the rows for how many notifications stack up, and what happens when the stack is full.
@@ -888,7 +922,7 @@ impl Editor {
         group.add(&fullscreen);
     }
 
-    /// The font, colours and corners.
+    /// The text, the background behind it, and the element as a whole.
     fn look_tab(self: &Rc<Self>, element: &Element) -> adw::PreferencesPage {
         let style = &element.style;
         let page = adw::PreferencesPage::new();
@@ -898,15 +932,6 @@ impl Editor {
         boxed.set_title("Background");
         let whole = adw::PreferencesGroup::new();
         whole.set_title("Element");
-
-        let spin = |title: &str, subtitle: &str, range: (f64, f64), step: f64, value: f64| {
-            let row = adw::SpinRow::with_range(range.0, range.1, step);
-            row.set_title(title);
-            row.set_subtitle(subtitle);
-            row.set_value(value);
-            row
-        };
-        let percent = |title: &str, subtitle: &str, value: f64| spin(title, subtitle, (0.0, 100.0), 5.0, (value * 100.0).round());
 
         let family = adw::ActionRow::builder().title("Font").subtitle("The family of the font").build();
         let font = gtk::FontDialogButton::new(Some(gtk::FontDialog::new()));
@@ -1000,38 +1025,29 @@ impl Editor {
         });
         whole.add(&min_height);
 
-        let fade = adw::SwitchRow::builder().title("Fade in and out").subtitle("Otherwise it appears and goes at once").active(element.fade).build();
-        let fade_time = spin("Fade time", "In milliseconds", (f64::from(FADE_RANGE.0), f64::from(FADE_RANGE.1)), 50.0, f64::from(element.fade_ms));
-        fade_time.set_sensitive(element.fade);
-        fade.connect_active_notify({
-            let editor = self.clone();
-            let fade_time = fade_time.clone();
-            move |row| {
-                fade_time.set_sensitive(row.is_active());
-                editor.edit(|element| element.fade = row.is_active());
-            }
-        });
-        fade_time.connect_value_notify({
-            let editor = self.clone();
-            move |row| editor.edit(|element| element.fade_ms = row.value() as i32)
-        });
-        whole.add(&fade);
-        whole.add(&fade_time);
+        page.add(&text);
+        page.add(&boxed);
+        page.add(&whole);
+        page
+    }
 
-        // The outline round the letters, and the shadows under the text and the background.
-        let effects = adw::PreferencesGroup::new();
-        effects.set_title("Stroke and shadow");
+    /// The outline round the letters, the shadows under the text and the background, and the fade in and out.
+    fn effects_tab(self: &Rc<Self>, element: &Element) -> adw::PreferencesPage {
+        let style = &element.style;
+        let page = adw::PreferencesPage::new();
+        let outline = adw::PreferencesGroup::new();
+        outline.set_title("Stroke");
         let stroke_on = adw::SwitchRow::builder().title("Stroke").subtitle("An outline round the letters").active(style.stroke_on).build();
-        effects.add(&stroke_on);
+        outline.add(&stroke_on);
         let stroke = spin("Stroke width", "In pixels", STROKE_RANGE, 0.5, style.stroke_width);
         stroke.set_digits(1);
         stroke.connect_value_notify({
             let editor = self.clone();
             move |row| editor.edit(|element| element.style.stroke_width = row.value())
         });
-        effects.add(&stroke);
+        outline.add(&stroke);
         let stroke_color = self.color_row("Stroke colour", &style.stroke_color, |element, color| element.style.stroke_color = color);
-        effects.add(&stroke_color);
+        outline.add(&stroke_color);
         let stroke_rows = [stroke.clone().upcast::<gtk::Widget>(), stroke_color.upcast()];
         for row in &stroke_rows {
             row.set_sensitive(style.stroke_on);
@@ -1045,47 +1061,49 @@ impl Editor {
                 editor.edit(|element| element.style.stroke_on = row.is_active());
             }
         });
+        let shadow = adw::PreferencesGroup::new();
+        shadow.set_title("Shadow");
         let shadow_on = adw::SwitchRow::builder().title("Shadow").subtitle("A drop shadow under the text and the background").active(style.shadow_on).build();
-        effects.add(&shadow_on);
+        shadow.add(&shadow_on);
 
         let text_shadow = adw::SwitchRow::builder().title("Shadow under the text").active(style.text_shadow).build();
         text_shadow.connect_active_notify({
             let editor = self.clone();
             move |row| editor.edit(|element| element.style.text_shadow = row.is_active())
         });
-        effects.add(&text_shadow);
+        shadow.add(&text_shadow);
         let box_shadow = adw::SwitchRow::builder().title("Shadow under the background").active(style.box_shadow).build();
         box_shadow.connect_active_notify({
             let editor = self.clone();
             move |row| editor.edit(|element| element.style.box_shadow = row.is_active())
         });
-        effects.add(&box_shadow);
+        shadow.add(&box_shadow);
         let shadow_x = spin("Shadow across", "How far right it falls, in pixels", SHADOW_OFFSET_RANGE, 1.0, style.shadow_x);
         shadow_x.connect_value_notify({
             let editor = self.clone();
             move |row| editor.edit(|element| element.style.shadow_x = row.value())
         });
-        effects.add(&shadow_x);
+        shadow.add(&shadow_x);
         let shadow_y = spin("Shadow down", "How far down it falls, in pixels", SHADOW_OFFSET_RANGE, 1.0, style.shadow_y);
         shadow_y.connect_value_notify({
             let editor = self.clone();
             move |row| editor.edit(|element| element.style.shadow_y = row.value())
         });
-        effects.add(&shadow_y);
+        shadow.add(&shadow_y);
         let shadow_blur = spin("Shadow blur", "In pixels", SHADOW_BLUR_RANGE, 1.0, style.shadow_blur);
         shadow_blur.connect_value_notify({
             let editor = self.clone();
             move |row| editor.edit(|element| element.style.shadow_blur = row.value())
         });
-        effects.add(&shadow_blur);
+        shadow.add(&shadow_blur);
         let shadow_color = self.color_row("Shadow colour", &style.shadow_color, |element, color| element.style.shadow_color = color);
-        effects.add(&shadow_color);
+        shadow.add(&shadow_color);
         let shadow_opacity = percent("Shadow opacity", "In percent", style.shadow_opacity);
         shadow_opacity.connect_value_notify({
             let editor = self.clone();
             move |row| editor.edit(|element| element.style.shadow_opacity = row.value() / 100.0)
         });
-        effects.add(&shadow_opacity);
+        shadow.add(&shadow_opacity);
         let shadow_rows = [
             text_shadow.clone().upcast::<gtk::Widget>(),
             box_shadow.clone().upcast(),
@@ -1108,10 +1126,28 @@ impl Editor {
             }
         });
 
-        page.add(&text);
-        page.add(&boxed);
-        page.add(&effects);
-        page.add(&whole);
+        page.add(&outline);
+        page.add(&shadow);
+        let fading = adw::PreferencesGroup::new();
+        fading.set_title("Fade");
+        let fade = adw::SwitchRow::builder().title("Fade in and out").subtitle("Otherwise it appears and goes at once").active(element.fade).build();
+        let fade_time = spin("Fade time", "In milliseconds", (f64::from(FADE_RANGE.0), f64::from(FADE_RANGE.1)), 50.0, f64::from(element.fade_ms));
+        fade_time.set_sensitive(element.fade);
+        fade.connect_active_notify({
+            let editor = self.clone();
+            let fade_time = fade_time.clone();
+            move |row| {
+                fade_time.set_sensitive(row.is_active());
+                editor.edit(|element| element.fade = row.is_active());
+            }
+        });
+        fade_time.connect_value_notify({
+            let editor = self.clone();
+            move |row| editor.edit(|element| element.fade_ms = row.value() as i32)
+        });
+        fading.add(&fade);
+        fading.add(&fade_time);
+        page.add(&fading);
         page
     }
 
@@ -1131,6 +1167,28 @@ impl Editor {
         row.add_suffix(&button);
         row
     }
+}
+
+/// A number row.
+fn spin(title: &str, subtitle: &str, range: (f64, f64), step: f64, value: f64) -> adw::SpinRow {
+    let row = adw::SpinRow::with_range(range.0, range.1, step);
+    row.set_title(title);
+    row.set_subtitle(subtitle);
+    row.set_value(value);
+    row
+}
+
+/// A number row for a share from 0 to 1, shown in percent.
+fn percent(title: &str, subtitle: &str, value: f64) -> adw::SpinRow {
+    spin(title, subtitle, (0.0, 100.0), 5.0, (value * 100.0).round())
+}
+
+/// The group at the top of an element's own tab: what the element is, and a preview of the text it makes.
+fn intro_group(description: &str, preview: &adw::ActionRow) -> adw::PreferencesGroup {
+    let group = adw::PreferencesGroup::new();
+    group.set_description(Some(description));
+    group.add(preview);
+    group
 }
 
 /// A row that lists the properties a template can read and how to write them.
@@ -1156,6 +1214,22 @@ fn reference() -> adw::ExpanderRow {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    /// Each kind of element has the tabs for its options.
+    pub(crate) fn run_scenarios() {
+        let editor = build_editor(&crate::settings::app_settings());
+        let slot = Slot::all().next().expect("a place");
+        for kind in Kind::ALL {
+            editor.open_new(kind, slot);
+            let tabs = editor.editor_view.content().and_downcast::<adw::ViewStack>().expect("the editor shows tabs");
+            for name in ["general", "look", "effects"] {
+                assert!(tabs.child_by_name(name).is_some(), "{kind:?} has {name}");
+            }
+            assert_eq!(tabs.child_by_name("content").is_some(), kind != Kind::Messages, "{kind:?}'s own tab");
+            assert_eq!(tabs.child_by_name("filename").is_some(), kind == Kind::Status, "{kind:?}'s filename tab");
+            editor.close_editor();
+        }
+    }
 
     /// The samples cover every property the page lists.
     #[test]

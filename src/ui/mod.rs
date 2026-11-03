@@ -66,6 +66,7 @@ mod tests {
         super::message_overlay::tests::run_scenarios();
         super::navigation_bar::tests::run_scenarios();
         super::preferences::tests::run_scenarios();
+        super::overlay_editor::tests::run_scenarios();
         super::browse_view::tests::run_scenarios();
         super::media_viewer::tests::run_scenarios();
         super::window::tests::run_scenarios();
