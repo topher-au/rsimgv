@@ -119,6 +119,20 @@ mod imp {
         #[template_child]
         pub playlist_fetch_row: TemplateChild<adw::SwitchRow>,
         #[template_child]
+        pub playlist_repeat_row: TemplateChild<adw::SwitchRow>,
+        #[template_child]
+        pub playlist_column_position_row: TemplateChild<adw::SwitchRow>,
+        #[template_child]
+        pub playlist_column_name_row: TemplateChild<adw::SwitchRow>,
+        #[template_child]
+        pub playlist_column_length_row: TemplateChild<adw::SwitchRow>,
+        #[template_child]
+        pub playlist_column_filename_row: TemplateChild<adw::SwitchRow>,
+        #[template_child]
+        pub show_images_row: TemplateChild<adw::SwitchRow>,
+        #[template_child]
+        pub show_videos_row: TemplateChild<adw::SwitchRow>,
+        #[template_child]
         pub playlist_window_headerbar_row: TemplateChild<adw::ComboRow>,
         #[template_child]
         pub default_sort_by_row: TemplateChild<adw::ComboRow>,
@@ -644,7 +658,14 @@ impl PreferencesDialog {
 fn bind_switches(settings: &Settings, imp: &imp::PreferencesDialog) {
     let switches = [
         ("browse.sort.remember-per-folder", &imp.remember_folder_sort_row),
+        ("browse.show-images", &imp.show_images_row),
+        ("browse.show-videos", &imp.show_videos_row),
         ("playlist.fetch-in-background", &imp.playlist_fetch_row),
+        ("playlist.repeat", &imp.playlist_repeat_row),
+        ("playlist.columns.position", &imp.playlist_column_position_row),
+        ("playlist.columns.name", &imp.playlist_column_name_row),
+        ("playlist.columns.length", &imp.playlist_column_length_row),
+        ("playlist.columns.filename", &imp.playlist_column_filename_row),
         ("viewer.open-fullscreen", &imp.open_fullscreen_row),
         ("viewer.auto-hide-cursor", &imp.auto_hide_cursor_row),
         ("image.smooth-scrolling", &imp.smooth_scrolling_row),
@@ -903,6 +924,24 @@ pub(crate) mod tests {
         imp.remember_folder_sort_row.set_active(true);
         assert!(settings.boolean("browse.sort.remember-per-folder"));
         settings.reset("browse.sort.remember-per-folder");
+
+        // The rows for settings also changed from the header bar and the playlist's menu are bound both ways.
+        for (key, row) in [
+            ("browse.show-images", &imp.show_images_row),
+            ("browse.show-videos", &imp.show_videos_row),
+            ("playlist.repeat", &imp.playlist_repeat_row),
+            ("playlist.columns.position", &imp.playlist_column_position_row),
+            ("playlist.columns.name", &imp.playlist_column_name_row),
+            ("playlist.columns.length", &imp.playlist_column_length_row),
+            ("playlist.columns.filename", &imp.playlist_column_filename_row),
+        ] {
+            assert!(row.is_active(), "{key} is on by default");
+            row.set_active(false);
+            assert!(!settings.boolean(key), "the row writes {key}");
+            settings.set_boolean(key, true).unwrap();
+            assert!(row.is_active(), "the row follows {key}");
+            settings.reset(key);
+        }
     }
 }
 

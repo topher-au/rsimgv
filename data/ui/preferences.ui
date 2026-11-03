@@ -387,6 +387,16 @@
                                   </object>
                                 </child>
                                 <child>
+                                  <object class="AdwSwitchRow" id="show_images_row">
+                                    <property name="title">Show pictures</property>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="AdwSwitchRow" id="show_videos_row">
+                                    <property name="title">Show videos</property>
+                                  </object>
+                                </child>
+                                <child>
                                   <object class="AdwSwitchRow" id="media_only_row">
                                     <property name="title">Only show compatible media files</property>
                                     <property name="subtitle">Hides files that are neither pictures nor videos</property>
@@ -491,6 +501,12 @@
                             <child>
                               <object class="AdwPreferencesGroup">
                                 <child>
+                                  <object class="AdwSwitchRow" id="playlist_repeat_row">
+                                    <property name="title">Repeat the playlist</property>
+                                    <property name="subtitle">Goes back to the first item after the last, and the other way round</property>
+                                  </object>
+                                </child>
+                                <child>
                                   <object class="AdwSwitchRow" id="playlist_fetch_row">
                                     <property name="title">Read playlist lengths in the background</property>
                                     <property name="subtitle">Off reads an item's length only when it is first played</property>
@@ -509,6 +525,31 @@
                                         </items>
                                       </object>
                                     </property>
+                                  </object>
+                                </child>
+                              </object>
+                            </child>
+                            <child>
+                              <object class="AdwPreferencesGroup">
+                                <property name="title">Columns</property>
+                                <child>
+                                  <object class="AdwSwitchRow" id="playlist_column_position_row">
+                                    <property name="title">Position column</property>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="AdwSwitchRow" id="playlist_column_name_row">
+                                    <property name="title">Name column</property>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="AdwSwitchRow" id="playlist_column_length_row">
+                                    <property name="title">Length column</property>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="AdwSwitchRow" id="playlist_column_filename_row">
+                                    <property name="title">Filename column</property>
                                   </object>
                                 </child>
                               </object>
