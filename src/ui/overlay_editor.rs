@@ -12,7 +12,7 @@ use gtk::{gdk, gio, glib};
 use super::media_overlay::{layout_from_settings, set_preview, Preview};
 use crate::overlay::template::Template;
 use crate::overlay::{
-    sample, Element, FilenameWrap, IconStyle, Items, Kind, Layout, Overflow, Slot, Visibility, BAR_WIDTH_RANGE, FILENAME_CHARS_RANGE, FONT_SIZE_RANGE, MARGIN_RANGE, SHADOW_BLUR_RANGE, SHADOW_OFFSET_RANGE, STROKE_RANGE, MAX_NOTIFICATIONS_RANGE, PADDING_RANGE, PROPERTIES, RADIUS_RANGE,
+    sample, Element, FilenameWrap, IconStyle, Items, Kind, Layout, Overflow, Slot, Visibility, BAR_WIDTH_RANGE, FADE_RANGE, FILENAME_CHARS_RANGE, FONT_SIZE_RANGE, MARGIN_RANGE, SHADOW_BLUR_RANGE, SHADOW_OFFSET_RANGE, STROKE_RANGE, MAX_NOTIFICATIONS_RANGE, PADDING_RANGE, PROPERTIES, RADIUS_RANGE,
     SECONDS_RANGE, STATUS_PARTS, TIME_FORMATS,
 };
 
@@ -777,6 +777,24 @@ impl Editor {
             move |row| editor.edit(|element| element.style.opacity = row.value() / 100.0)
         });
         whole.add(&opacity);
+
+        let fade = adw::SwitchRow::builder().title("Fade in and out").subtitle("Otherwise it appears and goes at once").active(element.fade).build();
+        let fade_time = spin("Fade time", "In milliseconds", (f64::from(FADE_RANGE.0), f64::from(FADE_RANGE.1)), 50.0, f64::from(element.fade_ms));
+        fade_time.set_sensitive(element.fade);
+        fade.connect_active_notify({
+            let editor = self.clone();
+            let fade_time = fade_time.clone();
+            move |row| {
+                fade_time.set_sensitive(row.is_active());
+                editor.edit(|element| element.fade = row.is_active());
+            }
+        });
+        fade_time.connect_value_notify({
+            let editor = self.clone();
+            move |row| editor.edit(|element| element.fade_ms = row.value() as i32)
+        });
+        whole.add(&fade);
+        whole.add(&fade_time);
 
         // The outline round the letters, and the shadows under the text and the background.
         let effects = adw::PreferencesGroup::new();

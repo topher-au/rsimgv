@@ -1,3 +1,4 @@
+#![recursion_limit = "256"]
 mod atomic_file;
 mod fs;
 mod ipc;

@@ -15,7 +15,7 @@ use std::time::Duration;
 use gtk::glib;
 use gtk::prelude::*;
 
-use super::media_overlay::{effects_css, set_edge_margins, align_label, horizontal_align, style_css, unique_class, Sheet};
+use super::media_overlay::{set_fade, effects_css, set_edge_margins, align_label, horizontal_align, style_css, unique_class, Sheet};
 use crate::overlay::{Layout, DEFAULT_MARGIN, Element, Kind, Overflow, Slot, Style, DEFAULT_MAX_NOTIFICATIONS};
 
 /// How long a temporary message stays up unless it says otherwise.
@@ -386,8 +386,13 @@ impl MessageOverlay {
         }
 
         let revealer = gtk::Revealer::new();
-        revealer.set_transition_type(gtk::RevealerTransitionType::Crossfade);
-        revealer.set_transition_duration(FADE.as_millis() as u32);
+        match self.inner.look.borrow().as_ref() {
+            Some(look) => set_fade(&revealer, &look.element),
+            None => {
+                revealer.set_transition_type(gtk::RevealerTransitionType::Crossfade);
+                revealer.set_transition_duration(FADE.as_millis() as u32);
+            }
+        }
         revealer.set_child(Some(&card));
         revealer.set_halign(horizontal_align(align));
         // A message that has faded out is taken off the window.

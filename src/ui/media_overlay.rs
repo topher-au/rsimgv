@@ -16,8 +16,6 @@ use crate::overlay::{DEFAULT_MARGIN, plain_icon, sample, Element, FilenameWrap, 
 
 /// The space between one element and the next, in pixels.
 const SPACING: i32 = 6;
-/// How long an element takes to fade in and out, in milliseconds.
-const FADE: u32 = 150;
 /// The width of a media status's state icon, in characters, and the gap between it and the text, in pixels.
 const ICON_CHARS: i32 = 2;
 const ICON_GAP: i32 = 10;
@@ -60,6 +58,12 @@ pub fn clock(micros: i64) -> String {
     } else {
         format!("{minutes}:{seconds:02}")
     }
+}
+
+/// Makes `revealer` fade in and out as `element` says, or appear and go at once.
+pub fn set_fade(revealer: &gtk::Revealer, element: &Element) {
+    revealer.set_transition_type(if element.fade { gtk::RevealerTransitionType::Crossfade } else { gtk::RevealerTransitionType::None });
+    revealer.set_transition_duration(element.fade_ms.max(0) as u32);
 }
 
 /// How far through the video `position` is, from 0 to 1, or 0 while the duration is unknown.
@@ -509,8 +513,7 @@ fn build(index: usize, element: &Element) -> Placed {
     }
 
     let revealer = gtk::Revealer::new();
-    revealer.set_transition_type(gtk::RevealerTransitionType::Crossfade);
-    revealer.set_transition_duration(FADE);
+    set_fade(&revealer, element);
     revealer.set_child(Some(&card));
     revealer.set_opacity(element.style.opacity);
     revealer.set_halign(horizontal_align(align));

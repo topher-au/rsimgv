@@ -210,6 +210,10 @@ pub const FILENAME_CHARS_RANGE: (i32, i32) = (10, 200);
 /// How see-through a filename line is unless the element says otherwise.
 pub const DEFAULT_FILENAME_OPACITY: f64 = 0.75;
 
+/// How long an element takes to fade in and out unless it says otherwise, and the longest it can be set to.
+pub const DEFAULT_FADE_MS: i32 = 200;
+pub const FADE_RANGE: (i32, i32) = (0, 3000);
+
 /// How a media status draws the playback state.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum IconStyle {
@@ -296,6 +300,9 @@ pub struct Element {
     pub filename_font_size: f64,
     pub filename_color: String,
     pub filename_opacity: f64,
+    /// Whether the element fades in and out rather than appearing at once, and how long the fade takes, in milliseconds.
+    pub fade: bool,
+    pub fade_ms: i32,
     pub style: Style,
 }
 
@@ -411,6 +418,8 @@ impl Element {
             filename_font_size: 0.0,
             filename_color: String::new(),
             filename_opacity: DEFAULT_FILENAME_OPACITY,
+            fade: true,
+            fade_ms: DEFAULT_FADE_MS,
             style: Style::default(),
         };
         match kind {
@@ -479,6 +488,8 @@ impl Element {
             "fullscreen-only": self.fullscreen_only,
             "max-notifications": self.max_notifications,
             "overflow": match self.overflow { Overflow::PushOut => "push-out", Overflow::Wait => "wait" },
+            "fade": self.fade,
+            "fade-ms": self.fade_ms,
             "filename-template": self.filename_template,
             "filename-wrap": self.filename_wrap.name(),
             "filename-max-chars": self.filename_chars,
@@ -554,6 +565,8 @@ impl Element {
         element.seconds = number("seconds", element.seconds, SECONDS_RANGE);
         element.fullscreen_only = flag("fullscreen-only", false);
         element.max_notifications = whole("max-notifications", element.max_notifications, MAX_NOTIFICATIONS_RANGE);
+        element.fade = flag("fade", element.fade);
+        element.fade_ms = whole("fade-ms", element.fade_ms, FADE_RANGE);
         if let Some(template) = text("filename-template") {
             element.filename_template = template.to_owned();
         }
@@ -811,6 +824,14 @@ mod tests {
         let layout = Layout::from_json(r#"{"elements":[{"kind":"messages","max-notifications":99,"overflow":"wait"},{"kind":"messages"}]}"#).unwrap();
         assert_eq!((layout.elements[0].max_notifications, layout.elements[0].overflow), (MAX_NOTIFICATIONS_RANGE.1, Overflow::Wait));
         assert_eq!((layout.elements[1].max_notifications, layout.elements[1].overflow), (DEFAULT_MAX_NOTIFICATIONS, Overflow::PushOut));
+        assert_eq!(Layout::from_json(&layout.to_json()), Some(layout));
+    }
+
+    #[test]
+    fn the_fade_is_kept_and_held_in_range() {
+        let layout = Layout::from_json(r#"{"elements":[{"fade":false,"fade-ms":99999},{}]}"#).unwrap();
+        assert_eq!((layout.elements[0].fade, layout.elements[0].fade_ms), (false, FADE_RANGE.1));
+        assert_eq!((layout.elements[1].fade, layout.elements[1].fade_ms), (true, DEFAULT_FADE_MS));
         assert_eq!(Layout::from_json(&layout.to_json()), Some(layout));
     }
 
