@@ -88,8 +88,8 @@ mod imp {
         pub(super) frame_size: Cell<(i32, i32)>,
         /// The size frames are rendered at, in device pixels: the size shown, so mpv's OSD is drawn sharp.
         pub(super) render_size: Cell<(i32, i32)>,
-        /// The display's scale factor, which turns the size shown into device pixels.
-        pub(super) scale: Cell<i32>,
+        /// The display's scale, which may be fractional, and turns the size shown into device pixels.
+        pub(super) scale: Cell<f64>,
         pub(super) pixels: RefCell<Vec<u8>>,
         /// The size of the area the stream was last drawn into, and the blurred pieces of the backdrop for the bare strips of
         /// it, each with the strip it fills.
@@ -578,10 +578,11 @@ impl MpvStream {
         self.invalidate_size();
     }
 
-    /// Sets the display's scale factor, so frames are rendered at device pixels.
-    pub fn set_scale(&self, scale: i32) {
-        self.imp().scale.set(scale);
-        self.invalidate_contents();
+    /// Sets the display's scale, so frames are rendered at device pixels. The next snapshot renders at the new size.
+    pub fn set_scale(&self, scale: f64) {
+        if self.imp().scale.replace(scale) != scale {
+            self.invalidate_contents();
+        }
     }
 
     /// Renders the picture at the size it is shown at in the area `width` by `height`, in device pixels, when that has
@@ -589,7 +590,7 @@ impl MpvStream {
     /// text; the OSD sits in the picture's corner.
     fn fit_render(&self, width: f64, height: f64) {
         let imp = self.imp();
-        let scale = f64::from(imp.scale.get().max(1));
+        let scale = imp.scale.get().max(1.0);
         let area_changed = imp.area.replace((width, height)) != (width, height);
         // The frame is the picture alone, as big as fits the area, so no pixels are rendered or uploaded for the bars round it.
         let (width, height) = match imp.frame_size.get() {
@@ -628,7 +629,7 @@ impl MpvStream {
         if area_width <= 0.0 || area_height <= 0.0 || width <= 0 || height <= 0 {
             return;
         }
-        let scale = f64::from(imp.scale.get().max(1));
+        let scale = imp.scale.get().max(1.0);
         let fitted = framing::fitted(area_width, area_height, f64::from(width), f64::from(height));
         let (cover_x, cover_y, cover_width, _) = framing::covering(area_width, area_height, f64::from(width), f64::from(height), backdrop.zoom);
         // Area units per pixel of the frame, when it covers the area.

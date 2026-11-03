@@ -450,6 +450,8 @@ mod imp {
         pub(super) backdrop: Backdrop,
         /// The band that shows which edge the thumbnail bar would go to if it were dropped, while it is dragged.
         pub(super) drop_indicator: OnceCell<gtk::Box>,
+        /// The surface whose scale the video's frames follow, and the handler that watches it.
+        pub(super) scale_watch: RefCell<Option<(gdk::Surface, glib::SignalHandlerId)>>,
         /// The timer that keeps the overlay up to date while any element is on.
         pub(super) overlay_tick: RefCell<Option<glib::SourceId>>,
         /// Where the last skip went and when, so the overlay shows that while the video catches up with it.
@@ -512,6 +514,15 @@ mod imp {
             video_page.add_overlay(&*self.picture);
             self.pages.add_child(&video_page);
             let _ = self.video_page.set(video_page);
+            // Frames follow the scale of the surface the picture is on, which changes when the window moves between displays.
+            self.picture.connect_map({
+                let weak = weak.clone();
+                move |_| {
+                    if let Some(viewer) = weak.upgrade() {
+                        viewer.watch_display_scale();
+                    }
+                }
+            });
             obj.setup_controls_placement();
             let weak_viewer = obj.downgrade();
             crate::ui::media_overlay::watch_preview(move || {
@@ -2055,6 +2066,40 @@ impl MediaViewer {
         });
     }
 
+    /// The scale of the surface the picture is on, which may be fractional, or the widget's whole-number scale before it has one.
+    fn display_scale(&self) -> f64 {
+        let picture = &self.imp().picture;
+        picture.native().and_then(|native| native.surface()).map_or_else(|| f64::from(picture.scale_factor()), |surface| surface.scale())
+    }
+
+    /// Gives the video shown the display's scale.
+    fn apply_display_scale(&self) {
+        let stream = self.imp().media.borrow().as_ref().and_then(|media| media.downcast_ref::<crate::mpv::MpvStream>().cloned());
+        if let Some(stream) = stream {
+            stream.set_scale(self.display_scale());
+        }
+    }
+
+    /// Follows the scale of the surface the picture is on, so a video is rendered at the right size after the window moves to
+    /// a display with another scale.
+    fn watch_display_scale(&self) {
+        let imp = self.imp();
+        let Some(surface) = imp.picture.native().and_then(|native| native.surface()) else { return };
+        if imp.scale_watch.borrow().as_ref().is_some_and(|(watched, _)| *watched == surface) {
+            return;
+        }
+        let weak = self.downgrade();
+        let handler = surface.connect_scale_notify(move |_| {
+            if let Some(viewer) = weak.upgrade() {
+                viewer.apply_display_scale();
+            }
+        });
+        if let Some((old, old_handler)) = imp.scale_watch.replace(Some((surface, handler))) {
+            old.disconnect(old_handler);
+        }
+        self.apply_display_scale();
+    }
+
     /// Shows the item at `index`, replacing the one before it.
     fn load(&self, index: usize) {
         let imp = self.imp();
@@ -2126,7 +2171,7 @@ impl MediaViewer {
                     }
                     self.start_svp(&stream);
                     // Frames are rendered at device pixels, so the video and its OSD are drawn at the display's scale.
-                    stream.set_scale(imp.picture.scale_factor());
+                    stream.set_scale(self.display_scale());
                     stream.upcast()
                 })
                 .unwrap_or_else(|| gtk::MediaFile::for_filename(&path).upcast());
