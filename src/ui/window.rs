@@ -45,14 +45,8 @@ mod imp {
         pub messages: std::cell::OnceCell<MessageOverlay>,
         /// The list of the keybindings in force, made when it is first wanted.
         pub(super) keybinds: std::cell::OnceCell<KeybindsOverlay>,
-        /// The message naming the folder the viewer moved to, while it is up, so the next one replaces it.
-        pub(super) folder_notice: Cell<Option<MessageId>>,
         /// The sample notification shown while the notification element is being edited.
         pub(super) message_preview: Cell<Option<MessageId>>,
-        /// The message naming the pane the focus moved to, while it is up, so the next one replaces it.
-        pub(super) focus_notice: Cell<Option<MessageId>>,
-        /// The last message about the playlist, while it is up, so the next one replaces it.
-        pub(super) playlist_notice: Cell<Option<MessageId>>,
         #[template_child]
         pub viewer: TemplateChild<MediaViewer>,
         #[template_child]
@@ -1191,12 +1185,7 @@ impl Window {
             });
         }
         pulse(&widget);
-        let messages = self.messages();
-        if let Some(previous) = imp.focus_notice.take() {
-            messages.dismiss(previous);
-        }
-        let notice = messages.show(Message::notification(format!("Focus: {name}")).level(Level::Info).lasting(FOCUS_NOTICE));
-        imp.focus_notice.set(Some(notice));
+        self.messages().show(Message::notification(format!("Focus: {name}")).level(Level::Info).lasting(FOCUS_NOTICE));
     }
 
     /// Asks `pane` to take the keyboard focus. Returns whether it did.
@@ -2106,15 +2095,10 @@ impl Window {
         adw::prelude::AdwDialogExt::present(&dialog, Some(self));
     }
 
-    /// Says `text` over the window. A message still up from the last time is
-    /// taken down, so going through the playlist quickly does not stack them.
+    /// Says `text` over the window. Going through the playlist quickly stacks them, and the notification element's limit
+    /// says how many show at once.
     fn announce_playlist(&self, text: &str) {
-        let messages = self.messages();
-        if let Some(previous) = self.imp().playlist_notice.take() {
-            messages.dismiss(previous);
-        }
-        let notice = messages.show(Message::notification(text));
-        self.imp().playlist_notice.set(Some(notice));
+        self.messages().show(Message::notification(text));
     }
 
     /// Tells the user, and the terminal, what went wrong with a playlist file.
@@ -2628,15 +2612,10 @@ impl Window {
         self.messages().show(Message::notification(message).level(level).lasting(std::time::Duration::from_secs_f64(seconds)))
     }
 
-    /// Names `folder` over the window, as the viewer moves to it. A name still up from the last move is taken down.
+    /// Names `folder` over the window, as the viewer moves to it.
     fn announce_folder(&self, folder: &Path) {
         let name = folder.file_name().map_or_else(|| folder.display().to_string(), |name| name.to_string_lossy().into_owned());
-        let messages = self.messages();
-        if let Some(previous) = self.imp().folder_notice.take() {
-            messages.dismiss(previous);
-        }
-        let notice = messages.show(Message::notification(name));
-        self.imp().folder_notice.set(Some(notice));
+        self.messages().show(Message::notification(name));
     }
 
     /// Shows `text` over the window for a few seconds, as something that went wrong.

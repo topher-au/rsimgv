@@ -318,6 +318,18 @@ pub struct Style {
     pub padding: i32,
     /// How opaque the element as a whole is, from 0 to 1.
     pub opacity: f64,
+    /// An outline round the letters: how thick, in pixels (0 for none), and its colour.
+    pub stroke_width: f64,
+    pub stroke_color: String,
+    /// A drop shadow under the text and under the background, and how it falls: how far across and down, how blurred, its
+    /// colour and how opaque it is.
+    pub text_shadow: bool,
+    pub box_shadow: bool,
+    pub shadow_x: f64,
+    pub shadow_y: f64,
+    pub shadow_blur: f64,
+    pub shadow_color: String,
+    pub shadow_opacity: f64,
 }
 
 impl Default for Style {
@@ -333,6 +345,15 @@ impl Default for Style {
             radius: 10,
             padding: 8,
             opacity: 1.0,
+            stroke_width: 0.0,
+            stroke_color: "rgb(0, 0, 0)".to_owned(),
+            text_shadow: true,
+            box_shadow: false,
+            shadow_x: 0.0,
+            shadow_y: 1.0,
+            shadow_blur: 3.0,
+            shadow_color: "rgb(0, 0, 0)".to_owned(),
+            shadow_opacity: 0.9,
         }
     }
 }
@@ -340,6 +361,9 @@ impl Default for Style {
 pub const FONT_SIZE_RANGE: (f64, f64) = (6.0, 96.0);
 pub const RADIUS_RANGE: (i32, i32) = (0, 40);
 pub const PADDING_RANGE: (i32, i32) = (0, 60);
+pub const STROKE_RANGE: (f64, f64) = (0.0, 8.0);
+pub const SHADOW_OFFSET_RANGE: (f64, f64) = (-30.0, 30.0);
+pub const SHADOW_BLUR_RANGE: (f64, f64) = (0.0, 30.0);
 pub const BAR_WIDTH_RANGE: (i32, i32) = (60, 1200);
 pub const SECONDS_RANGE: (f64, f64) = (0.5, 30.0);
 
@@ -472,6 +496,15 @@ impl Element {
             "radius": self.style.radius,
             "padding": self.style.padding,
             "opacity": self.style.opacity,
+            "stroke-width": self.style.stroke_width,
+            "stroke-color": self.style.stroke_color,
+            "text-shadow": self.style.text_shadow,
+            "box-shadow": self.style.box_shadow,
+            "shadow-x": self.style.shadow_x,
+            "shadow-y": self.style.shadow_y,
+            "shadow-blur": self.style.shadow_blur,
+            "shadow-color": self.style.shadow_color,
+            "shadow-opacity": self.style.shadow_opacity,
         })
     }
 
@@ -556,6 +589,19 @@ impl Element {
         style.radius = whole("radius", style.radius, RADIUS_RANGE);
         style.padding = whole("padding", style.padding, PADDING_RANGE);
         style.opacity = number("opacity", style.opacity, (0.1, 1.0));
+        style.stroke_width = number("stroke-width", style.stroke_width, STROKE_RANGE);
+        if let Some(color) = text("stroke-color") {
+            style.stroke_color = color.to_owned();
+        }
+        style.text_shadow = flag("text-shadow", style.text_shadow);
+        style.box_shadow = flag("box-shadow", style.box_shadow);
+        style.shadow_x = number("shadow-x", style.shadow_x, SHADOW_OFFSET_RANGE);
+        style.shadow_y = number("shadow-y", style.shadow_y, SHADOW_OFFSET_RANGE);
+        style.shadow_blur = number("shadow-blur", style.shadow_blur, SHADOW_BLUR_RANGE);
+        if let Some(color) = text("shadow-color") {
+            style.shadow_color = color.to_owned();
+        }
+        style.shadow_opacity = number("shadow-opacity", style.shadow_opacity, (0.0, 1.0));
         Some(element)
     }
 }
@@ -807,6 +853,15 @@ mod tests {
 
         let layout = Layout::from_legacy(&Legacy { seek_time: false, ..legacy() });
         assert_eq!(layout.elements[0].text_template(), "");
+    }
+
+    #[test]
+    fn the_stroke_and_shadows_are_kept_and_held_in_range() {
+        let layout = Layout::from_json(r#"{"elements":[{"stroke-width":99,"box-shadow":true,"shadow-x":-99,"text-shadow":false}]}"#).unwrap();
+        let style = &layout.elements[0].style;
+        assert_eq!((style.stroke_width, style.box_shadow, style.shadow_x, style.text_shadow), (STROKE_RANGE.1, true, SHADOW_OFFSET_RANGE.0, false));
+        assert_eq!(Layout::from_json(&layout.to_json()), Some(layout));
+        assert!(Style::default().text_shadow && !Style::default().box_shadow && Style::default().stroke_width == 0.0);
     }
 
     #[test]

@@ -12,7 +12,7 @@ use gtk::{gdk, gio, glib};
 use super::media_overlay::{layout_from_settings, set_preview, Preview};
 use crate::overlay::template::Template;
 use crate::overlay::{
-    sample, Element, FilenameWrap, IconStyle, Items, Kind, Layout, Overflow, Slot, Visibility, BAR_WIDTH_RANGE, FILENAME_CHARS_RANGE, FONT_SIZE_RANGE, MARGIN_RANGE, MAX_NOTIFICATIONS_RANGE, PADDING_RANGE, PROPERTIES, RADIUS_RANGE,
+    sample, Element, FilenameWrap, IconStyle, Items, Kind, Layout, Overflow, Slot, Visibility, BAR_WIDTH_RANGE, FILENAME_CHARS_RANGE, FONT_SIZE_RANGE, MARGIN_RANGE, SHADOW_BLUR_RANGE, SHADOW_OFFSET_RANGE, STROKE_RANGE, MAX_NOTIFICATIONS_RANGE, PADDING_RANGE, PROPERTIES, RADIUS_RANGE,
     SECONDS_RANGE, STATUS_PARTS, TIME_FORMATS,
 };
 
@@ -778,8 +778,59 @@ impl Editor {
         });
         whole.add(&opacity);
 
+        // The outline round the letters, and the shadows under the text and the background.
+        let effects = adw::PreferencesGroup::new();
+        effects.set_title("Stroke and shadow");
+        let stroke = spin("Text stroke", "The width of an outline round the letters, in pixels; 0 for none", STROKE_RANGE, 0.5, style.stroke_width);
+        stroke.set_digits(1);
+        stroke.connect_value_notify({
+            let editor = self.clone();
+            move |row| editor.edit(|element| element.style.stroke_width = row.value())
+        });
+        effects.add(&stroke);
+        effects.add(&self.color_row("Stroke colour", &style.stroke_color, |element, color| element.style.stroke_color = color));
+
+        let text_shadow = adw::SwitchRow::builder().title("Shadow under the text").active(style.text_shadow).build();
+        text_shadow.connect_active_notify({
+            let editor = self.clone();
+            move |row| editor.edit(|element| element.style.text_shadow = row.is_active())
+        });
+        effects.add(&text_shadow);
+        let box_shadow = adw::SwitchRow::builder().title("Shadow under the background").active(style.box_shadow).build();
+        box_shadow.connect_active_notify({
+            let editor = self.clone();
+            move |row| editor.edit(|element| element.style.box_shadow = row.is_active())
+        });
+        effects.add(&box_shadow);
+        let shadow_x = spin("Shadow across", "How far right it falls, in pixels", SHADOW_OFFSET_RANGE, 1.0, style.shadow_x);
+        shadow_x.connect_value_notify({
+            let editor = self.clone();
+            move |row| editor.edit(|element| element.style.shadow_x = row.value())
+        });
+        effects.add(&shadow_x);
+        let shadow_y = spin("Shadow down", "How far down it falls, in pixels", SHADOW_OFFSET_RANGE, 1.0, style.shadow_y);
+        shadow_y.connect_value_notify({
+            let editor = self.clone();
+            move |row| editor.edit(|element| element.style.shadow_y = row.value())
+        });
+        effects.add(&shadow_y);
+        let shadow_blur = spin("Shadow blur", "In pixels", SHADOW_BLUR_RANGE, 1.0, style.shadow_blur);
+        shadow_blur.connect_value_notify({
+            let editor = self.clone();
+            move |row| editor.edit(|element| element.style.shadow_blur = row.value())
+        });
+        effects.add(&shadow_blur);
+        effects.add(&self.color_row("Shadow colour", &style.shadow_color, |element, color| element.style.shadow_color = color));
+        let shadow_opacity = percent("Shadow opacity", "In percent", style.shadow_opacity);
+        shadow_opacity.connect_value_notify({
+            let editor = self.clone();
+            move |row| editor.edit(|element| element.style.shadow_opacity = row.value() / 100.0)
+        });
+        effects.add(&shadow_opacity);
+
         page.add(&text);
         page.add(&boxed);
+        page.add(&effects);
         page.add(&whole);
         page
     }

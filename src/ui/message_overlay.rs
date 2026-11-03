@@ -15,7 +15,7 @@ use std::time::Duration;
 use gtk::glib;
 use gtk::prelude::*;
 
-use super::media_overlay::{set_edge_margins, align_label, horizontal_align, style_css, unique_class, Sheet};
+use super::media_overlay::{effects_css, set_edge_margins, align_label, horizontal_align, style_css, unique_class, Sheet};
 use crate::overlay::{Layout, DEFAULT_MARGIN, Element, Kind, Overflow, Slot, Style, DEFAULT_MAX_NOTIFICATIONS};
 
 /// How long a temporary message stays up unless it says otherwise.
@@ -184,6 +184,9 @@ struct Shown {
 
 /// How messages look, from the notification element.
 struct Look {
+    /// The element the look is from, so the same look is not made again, which would drop the stylesheet of the messages
+    /// already up.
+    element: Element,
     class: String,
     blur: bool,
     _sheet: Sheet,
@@ -246,15 +249,20 @@ impl MessageOverlay {
         let element = element.filter(|element| element.kind == Kind::Messages && element.enabled);
         self.inner.default_slot.set(element.map_or(Slot::BOTTOM_MIDDLE, |element| element.slot));
         self.set_limit(element.map_or(DEFAULT_MAX_NOTIFICATIONS as usize, |element| element.max_notifications.max(1) as usize), element.map_or_else(Overflow::default, |element| element.overflow));
+        // The messages up keep the look they were made with, so the same look is left as it is.
+        if self.inner.look.borrow().as_ref().map(|look| &look.element) == element {
+            return;
+        }
         let look = element.map(|element| {
             let class = unique_class("message-el");
             let Style { font_size, .. } = element.style;
             // A plain message has no background, so only the rest of the look applies to it.
             let css = format!(
-                "{} .message-plain.{class} {{ font-size: {font_size}pt; }}",
-                style_css(&format!(".message.{class}:not(.message-plain)"), &element.style)
+                "{} .message-plain.{class} {{ font-size: {font_size}pt; }} {}",
+                style_css(&format!(".message.{class}:not(.message-plain)"), &element.style),
+                effects_css(&format!(".message.{class}:not(.message-plain)"), &format!(".message.{class} label"), &element.style),
             );
-            Look { class, blur: element.style.blur, _sheet: Sheet::new(&css) }
+            Look { element: element.clone(), class, blur: element.style.blur, _sheet: Sheet::new(&css) }
         });
         self.inner.look.replace(look);
     }

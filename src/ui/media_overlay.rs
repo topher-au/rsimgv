@@ -96,6 +96,39 @@ pub fn style_css(selector: &str, style: &Style) -> String {
     css
 }
 
+/// The CSS for the stroke and shadows of `style`: the text of what matches `text_selector` is outlined and shadowed, and
+/// what matches `box_selector` is shadowed behind its background. A stroke is made of copies of the letters shadowed round
+/// them, as CSS has no stroke for text.
+pub fn effects_css(box_selector: &str, text_selector: &str, style: &Style) -> String {
+    let color = |text: &str, opacity: f64| {
+        gdk::RGBA::parse(text).ok().map(|color| {
+            let alpha = (color.alpha() * opacity as f32).clamp(0.0, 1.0);
+            gdk::RGBA::new(color.red(), color.green(), color.blue(), alpha).to_str().to_string()
+        })
+    };
+    let mut text_shadows = Vec::new();
+    if style.stroke_width > 0.0 {
+        if let Some(stroke) = color(&style.stroke_color, 1.0) {
+            // Copies all the way round, closer together the wider the stroke, so it has no gaps.
+            let copies = if style.stroke_width > 2.0 { 24 } else { 12 };
+            for step in 0..copies {
+                let angle = f64::from(step) / f64::from(copies) * std::f64::consts::TAU;
+                text_shadows.push(format!("{:.2}px {:.2}px 0 {stroke}", angle.cos() * style.stroke_width, angle.sin() * style.stroke_width));
+            }
+        }
+    }
+    let shadow = color(&style.shadow_color, style.shadow_opacity).map(|color| format!("{}px {}px {}px {color}", style.shadow_x, style.shadow_y, style.shadow_blur));
+    if let (true, Some(shadow)) = (style.text_shadow, &shadow) {
+        text_shadows.push(shadow.clone());
+    }
+    let text_shadow = if text_shadows.is_empty() { "none".to_owned() } else { text_shadows.join(", ") };
+    let box_shadow = match (style.box_shadow, shadow) {
+        (true, Some(shadow)) => shadow,
+        _ => "none".to_owned(),
+    };
+    format!("{text_selector} {{ text-shadow: {text_shadow}; }} {box_selector} {{ box-shadow: {box_shadow}; }}")
+}
+
 /// A stylesheet added to the display for as long as it is held.
 pub struct Sheet(gtk::CssProvider);
 
@@ -477,8 +510,9 @@ fn build(index: usize, element: &Element) -> Placed {
     revealer.set_halign(horizontal_align(align));
     revealer.set_can_target(false);
     let sheet = Sheet::new(&format!(
-        "{} {}",
+        "{} {} {}",
         style_css(&format!(".overlay-element.{class}"), &element.style),
+        effects_css(&format!(".overlay-element.{class}"), &format!(".overlay-element.{class} .overlay-text"), &element.style),
         filename_css(&format!(".overlay-element.{class} .overlay-subtext"), element),
     ));
     Placed {
