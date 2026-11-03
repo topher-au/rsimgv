@@ -813,6 +813,7 @@ impl Window {
         imp.viewer.show(paths, index);
         imp.viewer_open.set(true);
         self.place_playlist();
+        self.refresh_message_host();
         self.refresh_keybinds_overlay();
         imp.pages.set_visible_child(&*imp.viewer);
         imp.viewer.grab_focus();
@@ -849,6 +850,7 @@ impl Window {
         self.place_playlist();
         imp.playlist_playing.set(false);
         self.apply_folder_end();
+        self.refresh_message_host();
         self.refresh_keybinds_overlay();
         imp.pages.set_visible_child(&*imp.split);
         if imp.viewer_fullscreened.take() {
@@ -2601,6 +2603,12 @@ impl Window {
     fn keybinds_host(&self) -> gtk::Overlay {
         let imp = self.imp();
         if self.viewer_is_open() { imp.viewer.overlay() } else { (*imp.message_layer).clone() }
+    }
+
+    /// Puts the notifications over the viewer's frame while the viewer is open, so they stay clear of the status bar,
+    /// the playlist and the thumbnail bar, and over the whole window otherwise.
+    fn refresh_message_host(&self) {
+        self.messages().move_to(&self.keybinds_host());
     }
 
     /// Makes the list of keybindings, if it is up, the ones in force now, as the viewer opened or closed or showed

@@ -2,7 +2,8 @@
 //! edges, and is either temporary, going away by itself after a while, or persistent, staying until it is dismissed
 //! by the code that showed it or by its close button. A persistent message can have its text changed while it is up.
 //!
-//! The messages are added to a `gtk::Overlay` as a column for each place. A message that names no place goes where the
+//! The messages are added to a `gtk::Overlay` as a column for each place, which is the window's, or the viewer's frame
+//! while the viewer is open. A message that names no place goes where the
 //! overlay's notification element is, and takes its look. A column is only as big as its messages,
 //! so the rest of the window under the overlay still takes the clicks.
 
@@ -191,6 +192,8 @@ struct Look {
 struct Inner {
     /// The column of messages at each place.
     columns: HashMap<Slot, gtk::Box>,
+    /// The overlay the columns are on.
+    host: RefCell<gtk::Overlay>,
     /// Where a message goes that names no place.
     default_slot: Cell<Slot>,
     look: RefCell<Option<Look>>,
@@ -225,6 +228,7 @@ impl MessageOverlay {
         Self {
             inner: Rc::new(Inner {
                 columns,
+                host: RefCell::new(overlay.clone()),
                 default_slot: Cell::new(Slot::BOTTOM_MIDDLE),
                 look: RefCell::new(None),
                 limit: Cell::new(DEFAULT_MAX_NOTIFICATIONS as usize),
@@ -253,6 +257,18 @@ impl MessageOverlay {
             Look { class, blur: element.style.blur, _sheet: Sheet::new(&css) }
         });
         self.inner.look.replace(look);
+    }
+
+    /// Moves the messages to `overlay`, such as the viewer's frame, so they stay within it and clear of what is beside it.
+    pub fn move_to(&self, overlay: &gtk::Overlay) {
+        if *self.inner.host.borrow() == *overlay {
+            return;
+        }
+        let old = self.inner.host.replace(overlay.clone());
+        for column in self.inner.columns.values() {
+            old.remove_overlay(column);
+            overlay.add_overlay(column);
+        }
     }
 
     /// Keeps each place's messages as far from the edges as the layout says.
