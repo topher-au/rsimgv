@@ -426,6 +426,8 @@ impl Player {
                 // shader mixes the scaled picture with a copy that is not in linear light, so the picture must not be either.
                 player.set_option("hwdec", "auto-safe")?;
                 player.set_option("linear-downscaling", "no")?;
+                // Upscaling is in linear light by default too, for sigmoidizing, and it would brighten the backdrop.
+                player.set_option("sigmoid-upscaling", "no")?;
             }
             // Other programs can drive the player through mpv's JSON IPC on this socket, unless the user's
             // options name another.

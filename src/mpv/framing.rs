@@ -172,10 +172,10 @@ pub fn shrink_region(pixels: &[u8], width: usize, height: usize, region: (f64, f
 }
 
 /// The shader that has libmpv draw `backdrop` round the picture, on a display of this `scale`. The output is shrunk to an eighth
-/// to be blurred, as `blur_and_dim` does it, and a Gaussian of this spread looks about as blurred as its two box passes.
+/// to be blurred, as `blur_and_dim` does it, with a Gaussian that spreads further than its two box passes do.
 pub fn backdrop_shader(backdrop: Backdrop, scale: f64) -> String {
     let box_radius = (f64::from(backdrop.blur.max(1)) * 4.0 * scale / 8.0).round().max(1.0);
-    let sigma = box_radius * 0.8;
+    let sigma = box_radius * 1.2;
     let radius = ((sigma * 2.5).ceil() as i32).clamp(1, 64);
     include_str!("backdrop.glsl")
         .replace("@ZOOM@", &format!("{:.4}", backdrop.zoom.max(1.0)))
@@ -556,7 +556,7 @@ mod tests {
     fn the_backdrop_shader_has_every_value_filled_in() {
         let shader = backdrop_shader(Backdrop { zoom: 1.5, blur: 8, dim: 0.25 }, 2.0);
         assert!(!shader.contains('@'));
-        assert!(shader.contains("* 1.5000;") && shader.contains("* 0.2500,") && shader.contains("int i = -16;") && shader.contains("6.4000"));
+        assert!(shader.contains("* 1.5000;") && shader.contains("* 0.2500,") && shader.contains("int i = -24;") && shader.contains("9.6000"));
     }
 
     #[test]
