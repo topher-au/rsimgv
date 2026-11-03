@@ -32,7 +32,7 @@
     }
 
     &.boost-bar progress {
-      background-color: #{"shade(@accent_bg_color, 0.65)"};
+      background-color: #{"shade(@accent_bg_color, 0.82)"};
     }
   }
 }
@@ -126,7 +126,7 @@ thumbnail-bar.dragging {
 // The volume slider in the video controls: past full volume it is a darker colour, and while muted the fill shows
 // the volume that unmuting brings back, with the knob at silence.
 scale.boosted trough highlight {
-  background-color: #{"shade(@accent_bg_color, 0.65)"};
+  background-color: #{"shade(@accent_bg_color, 0.82)"};
 }
 
 scale trough fill {

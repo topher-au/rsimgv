@@ -109,6 +109,87 @@ pub fn covering(area_width: f64, area_height: f64, width: f64, height: f64, zoom
     ((area_width - covered_width) / 2.0, (area_height - covered_height) / 2.0, covered_width, covered_height)
 }
 
+/// The strips of an `area_width` by `area_height` area that a picture at `fitted` (as `fitted` returns it) leaves bare, as
+/// (x, y, width, height): at the sides, or above and below.
+pub fn bars(area_width: f64, area_height: f64, fitted: (f64, f64, f64, f64)) -> Vec<(f64, f64, f64, f64)> {
+    let (x, y, width, height) = fitted;
+    if x > 0.5 {
+        vec![(0.0, 0.0, x, area_height), (x + width, 0.0, area_width - x - width, area_height)]
+    } else if y > 0.5 {
+        vec![(0.0, 0.0, area_width, y), (0.0, y + height, area_width, area_height - y - height)]
+    } else {
+        Vec::new()
+    }
+}
+
+/// The part `region` (x0, y0, x1, y1, in pixels) of a `width` by `height` picture of 4-byte pixels, averaged down to
+/// `out_width` by `out_height`. A few samples are taken for each pixel out, so the cost follows the size out.
+pub fn shrink_region(pixels: &[u8], width: usize, height: usize, region: (f64, f64, f64, f64), out_width: usize, out_height: usize) -> Vec<u8> {
+    const SAMPLES: usize = 4;
+    let mut out = vec![0u8; out_width * out_height * 4];
+    if width == 0 || height == 0 || pixels.len() < width * height * 4 {
+        return out;
+    }
+    let (x0, y0, x1, y1) = region;
+    let (step_x, step_y) = ((x1 - x0) / (out_width * SAMPLES) as f64, (y1 - y0) / (out_height * SAMPLES) as f64);
+    for oy in 0..out_height {
+        for ox in 0..out_width {
+            let mut sum = [0u32; 4];
+            for sy in 0..SAMPLES {
+                let y = ((y0 + ((oy * SAMPLES + sy) as f64 + 0.5) * step_y) as usize).min(height - 1);
+                for sx in 0..SAMPLES {
+                    let x = ((x0 + ((ox * SAMPLES + sx) as f64 + 0.5) * step_x) as usize).min(width - 1);
+                    let at = (y * width + x) * 4;
+                    for (total, byte) in sum.iter_mut().zip(&pixels[at..at + 4]) {
+                        *total += u32::from(*byte);
+                    }
+                }
+            }
+            let at = (oy * out_width + ox) * 4;
+            for (byte, total) in out[at..at + 4].iter_mut().zip(sum) {
+                *byte = (total / (SAMPLES * SAMPLES) as u32) as u8;
+            }
+        }
+    }
+    out
+}
+
+/// Blurs 4-byte pixels `width` by `height` with two passes of a box `radius` pixels either side (clamped at the edges), and
+/// scales them to `dim` of their brightness.
+pub fn blur_and_dim(pixels: &mut [u8], width: usize, height: usize, radius: usize, dim: f64) {
+    if width == 0 || height == 0 || pixels.len() < width * height * 4 {
+        return;
+    }
+    let mut scratch = vec![0u8; pixels.len()];
+    for _ in 0..2 {
+        box_pass(pixels, &mut scratch, width, height, radius, true);
+        box_pass(&scratch, pixels, width, height, radius, false);
+    }
+    let dim = dim.clamp(0.0, 1.0);
+    for pixel in pixels.chunks_exact_mut(4) {
+        for byte in &mut pixel[..3] {
+            *byte = (f64::from(*byte) * dim) as u8;
+        }
+    }
+}
+
+fn box_pass(from: &[u8], to: &mut [u8], width: usize, height: usize, radius: usize, horizontal: bool) {
+    let (length, lines, along, across) = if horizontal { (width, height, 1, width) } else { (height, width, width, 1) };
+    let window = (2 * radius + 1) as u32;
+    for line in 0..lines {
+        for i in 0..length {
+            for channel in 0..4 {
+                let mut total = 0u32;
+                for k in i as isize - radius as isize..=(i + radius) as isize {
+                    let k = k.clamp(0, length as isize - 1) as usize;
+                    total += u32::from(from[(line * across + k * along) * 4 + channel]);
+                }
+                to[(line * across + i * along) * 4 + channel] = (total / window) as u8;
+            }
+        }
+    }
+}
+
 // -- finding the picture -----------------------------------------------------
 
 fn column_means(gray: &[u8], width: usize, height: usize) -> Vec<f64> {
@@ -342,6 +423,19 @@ mod tests {
         // Zoomed in, it is bigger, and still centred.
         let (x, _, width, _) = covering(400.0, 800.0, 200.0, 100.0, 2.0);
         assert!((width - 3200.0).abs() < 1e-9 && (x + 1400.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn the_bare_strips_are_shrunk_blurred_and_dimmed() {
+        assert_eq!(bars(400.0, 800.0, (0.0, 300.0, 400.0, 200.0)), vec![(0.0, 0.0, 400.0, 300.0), (0.0, 500.0, 400.0, 300.0)]);
+        assert!(bars(400.0, 200.0, (0.0, 0.0, 400.0, 200.0)).is_empty());
+        // A 4 by 4 picture, white on the left half and black on the right, averaged to 2 by 1.
+        let pixels: Vec<u8> = (0..16).flat_map(|i| if i % 4 < 2 { [255; 4] } else { [0; 4] }).collect();
+        let small = shrink_region(&pixels, 4, 4, (0.0, 0.0, 4.0, 4.0), 2, 1);
+        assert_eq!(small, vec![255, 255, 255, 255, 0, 0, 0, 0]);
+        let mut blurred = small;
+        blur_and_dim(&mut blurred, 2, 1, 1, 0.5);
+        assert!(blurred[0] < 128 && blurred[0] > blurred[4]);
     }
 
     #[test]

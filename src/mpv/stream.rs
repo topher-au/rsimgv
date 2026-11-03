@@ -36,31 +36,9 @@ const CROP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 /// How far apart, in seconds, the two frames are that the area that moves is found from.
 const MOTION_GAP: f64 = 0.1;
 
-/// How much smaller than the area the backdrop is drawn and blurred, and then scaled up: the blur of a small picture costs
-/// little and looks the same once it is spread out again.
-const BACKDROP_SHRINK: f32 = 8.0;
-
-/// Draws `frame` covering a `width` by `height` area, cropped to it, blurred and dimmed as `backdrop` says.
-fn draw_backdrop(snapshot: &gtk::Snapshot, frame: &gdk::Texture, backdrop: framing::Backdrop, width: f64, height: f64) {
-    let (frame_width, frame_height) = (f64::from(frame.width()), f64::from(frame.height()));
-    if width <= 0.0 || height <= 0.0 || frame_width <= 0.0 || frame_height <= 0.0 {
-        return;
-    }
-    let (x, y, cover_width, cover_height) = framing::covering(width, height, frame_width, frame_height, backdrop.zoom);
-    let whole = gtk::graphene::Rect::new(0.0, 0.0, width as f32, height as f32);
-    // The blur radius is in pixels of the area, as the blur setting gives it in steps of four.
-    let radius = f64::from(backdrop.blur.max(1)) * 4.0 / f64::from(BACKDROP_SHRINK);
-    snapshot.push_clip(&whole);
-    snapshot.save();
-    snapshot.scale(BACKDROP_SHRINK, BACKDROP_SHRINK);
-    snapshot.push_blur(radius);
-    let rect = gtk::graphene::Rect::new(x as f32 / BACKDROP_SHRINK, y as f32 / BACKDROP_SHRINK, cover_width as f32 / BACKDROP_SHRINK, cover_height as f32 / BACKDROP_SHRINK);
-    snapshot.append_scaled_texture(frame, gtk::gsk::ScalingFilter::Linear, &rect);
-    snapshot.pop();
-    snapshot.restore();
-    snapshot.append_color(&gdk::RGBA::new(0.0, 0.0, 0.0, (1.0 - backdrop.dim.clamp(0.0, 1.0)) as f32), &whole);
-    snapshot.pop();
-}
+/// How much smaller than the bare strip it fills the backdrop is made, in pixels: it is blurred at that size, which costs
+/// little, and the display scales it up as it draws it.
+const BACKDROP_SHRINK: f64 = 8.0;
 
 /// One greyscale frame of the video at `path`, `seconds` in, decoded at the size `width` by `height`.
 fn grab_gray(path: &Path, seconds: f64, width: i32, height: i32) -> Option<Vec<u8>> {
@@ -113,6 +91,10 @@ mod imp {
         /// The display's scale factor, which turns the size shown into device pixels.
         pub(super) scale: Cell<i32>,
         pub(super) pixels: RefCell<Vec<u8>>,
+        /// The size of the area the stream was last drawn into, and the blurred pieces of the backdrop for the bare strips of
+        /// it, each with the strip it fills.
+        pub(super) area: Cell<(f64, f64)>,
+        pub(super) backdrop: RefCell<Vec<(gdk::Texture, gtk::graphene::Rect)>>,
         pub(super) duration: Cell<i64>,
         /// Whether a seek is under way, to report when it lands.
         pub(super) seeking: Cell<bool>,
@@ -200,15 +182,16 @@ mod imp {
             stream.fit_render(width, height);
             let Some(frame) = self.frame.borrow().clone() else { return };
             let snapshot = snapshot.downcast_ref::<gtk::Snapshot>().expect("a GTK snapshot");
-            let Some(backdrop) = self.framing.get().backdrop else {
+            if self.framing.get().backdrop.is_none() {
                 snapshot.append_texture(&frame, &gtk::graphene::Rect::new(0.0, 0.0, width as f32, height as f32));
                 return;
-            };
-            // The frame is the picture alone, as big as fits. A blurred, dimmed copy of it, cropped to the shape of the whole
-            // area, fills the background, and the frame itself goes over it, in the middle.
+            }
+            // The frame is the picture alone, as big as fits. The blurred, dimmed pieces of it fill the bare strips round it.
             let (frame_width, frame_height) = (f64::from(frame.width()), f64::from(frame.height()));
             let (x, y, shown_width, shown_height) = framing::fitted(width, height, frame_width, frame_height);
-            draw_backdrop(snapshot, &frame, backdrop, width, height);
+            for (piece, strip) in self.backdrop.borrow().iter() {
+                snapshot.append_scaled_texture(piece, gtk::gsk::ScalingFilter::Linear, strip);
+            }
             snapshot.append_texture(&frame, &gtk::graphene::Rect::new(x as f32, y as f32, shown_width as f32, shown_height as f32));
         }
 
@@ -609,6 +592,7 @@ impl MpvStream {
     fn fit_render(&self, width: f64, height: f64) {
         let imp = self.imp();
         let scale = f64::from(imp.scale.get().max(1));
+        let area_changed = imp.area.replace((width, height)) != (width, height);
         // With a backdrop the frame is the picture alone, as big as fits the area, and the backdrop fills the rest.
         let (width, height) = match (imp.framing.get().backdrop, imp.frame_size.get()) {
             (Some(_), (video_width, video_height)) if video_width > 0 && video_height > 0 => {
@@ -618,12 +602,52 @@ impl MpvStream {
             _ => (width, height),
         };
         let (width, height) = capped((width * scale).round().max(1.0) as i32, (height * scale).round().max(1.0) as i32);
-        if width <= 0 || height <= 0 || imp.render_size.get() == (width, height) || !self.is_prepared() {
+        if width <= 0 || height <= 0 || !self.is_prepared() {
+            return;
+        }
+        if imp.render_size.get() == (width, height) {
+            // The frame is as it was, but the strips round it are not.
+            if area_changed {
+                self.update_backdrop(&imp.pixels.borrow(), width, height);
+            }
             return;
         }
         imp.render_size.set((width, height));
         imp.pixels.replace(vec![0; width as usize * height as usize * 4]);
         self.render_frame(true);
+    }
+
+    /// Makes the backdrop from the `width` by `height` frame in `pixels`: for each bare strip of the area round the picture,
+    /// the part of the frame that, covering the area, lies under it, shrunk to an eighth, blurred and dimmed. They are drawn
+    /// as they are, so only the small pixels are ever blurred.
+    fn update_backdrop(&self, pixels: &[u8], width: i32, height: i32) {
+        let imp = self.imp();
+        let Some(backdrop) = imp.framing.get().backdrop else {
+            imp.backdrop.borrow_mut().clear();
+            return;
+        };
+        let (area_width, area_height) = imp.area.get();
+        if area_width <= 0.0 || area_height <= 0.0 || width <= 0 || height <= 0 {
+            return;
+        }
+        let scale = f64::from(imp.scale.get().max(1));
+        let fitted = framing::fitted(area_width, area_height, f64::from(width), f64::from(height));
+        let (cover_x, cover_y, cover_width, _) = framing::covering(area_width, area_height, f64::from(width), f64::from(height), backdrop.zoom);
+        // Area units per pixel of the frame, when it covers the area.
+        let per_pixel = cover_width / f64::from(width);
+        let radius = (f64::from(backdrop.blur.max(1)) * 4.0 * scale / BACKDROP_SHRINK).round().max(1.0) as usize;
+        let mut pieces = Vec::new();
+        for (x, y, strip_width, strip_height) in framing::bars(area_width, area_height, fitted) {
+            let out_width = ((strip_width * scale / BACKDROP_SHRINK).ceil() as usize).max(1);
+            let out_height = ((strip_height * scale / BACKDROP_SHRINK).ceil() as usize).max(1);
+            let region = ((x - cover_x) / per_pixel, (y - cover_y) / per_pixel, (x + strip_width - cover_x) / per_pixel, (y + strip_height - cover_y) / per_pixel);
+            let mut small = framing::shrink_region(pixels, width as usize, height as usize, region, out_width, out_height);
+            framing::blur_and_dim(&mut small, out_width, out_height, radius, backdrop.dim);
+            let bytes = glib::Bytes::from_owned(small);
+            let texture = gdk::MemoryTexture::new(out_width as i32, out_height as i32, gdk::MemoryFormat::B8g8r8x8, &bytes, out_width * 4);
+            pieces.push((texture.upcast(), gtk::graphene::Rect::new(x as f32, y as f32, strip_width as f32, strip_height as f32)));
+        }
+        imp.backdrop.replace(pieces);
     }
 
     /// Renders the new frame, if there is one, or the current frame when `force` is set, and shows it.
@@ -642,6 +666,7 @@ impl MpvStream {
         }
         let bytes = glib::Bytes::from(&pixels[..]);
         let texture = gdk::MemoryTexture::new(width, height, gdk::MemoryFormat::B8g8r8x8, &bytes, width as usize * 4);
+        self.update_backdrop(&pixels, width, height);
         drop(pixels);
         imp.frame.replace(Some(texture.upcast()));
         self.invalidate_contents();
