@@ -30,7 +30,31 @@ if [ "${1:-}" = "gdb" ]; then
     shift
     # gdb starts the program without the session's D-Bus and runtime variables, so they are given to it here.
     runtime_dir="/run/user/$(id -u)"
+    # gdb can crash indexing the debug info of every library, so it is given only that of the libraries worth reading,
+    # which is downloaded once into builddir/.
+    symbols="$PWD/builddir/gdb-symbols"
+    server="${DEBUGINFOD_URLS:-https://debuginfod.archlinux.org}"
+    server="${server%% *}"
+    for library in libgtk-4.so.1 libadwaita-1.so.0 libgio-2.0.so.0 libgobject-2.0.so.0 libglib-2.0.so.0; do
+        id="$(readelf -n "/usr/lib/$library" | awk '/Build ID/ { print $3 }')"
+        rest="${id#??}"
+        file="$symbols/.build-id/${id%"$rest"}/$rest.debug"
+        [ -f "$file" ] && continue
+        echo "Downloading the debug info of $library..."
+        mkdir -p "$(dirname "$file")"
+        if curl -fL --progress-bar -o "$file.part" "$server/buildid/$id/debuginfo"; then
+            mv "$file.part" "$file"
+        else
+            rm -f "$file.part"
+            echo "Could not download the debug info of $library; its frames will have no names." >&2
+        fi
+    done
+    # gdb normally starts the program through $SHELL, which fails when that is systemd's fallback shell, so it starts it
+    # directly.
     exec rust-gdb \
+        -ex "set startup-with-shell off" \
+        -ex "set debuginfod enabled off" \
+        -ex "set debug-file-directory $symbols" \
         -ex "set environment DBUS_SESSION_BUS_ADDRESS unix:path=$runtime_dir/bus" \
         -ex "set environment XDG_RUNTIME_DIR $runtime_dir" \
         -ex run -ex bt -ex "info threads" \
