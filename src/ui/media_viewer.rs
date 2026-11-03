@@ -630,6 +630,9 @@ mod imp {
             });
             obj.add_controller(motion);
 
+            // The overlay's elements are added to the overlay first, so the thumbnail bar and the drop indicator, added
+            // after, lie over them.
+            obj.media_overlay();
             self.bar_revealer.set_transition_duration(BAR_SLIDE_MS);
             self.overlay.add_overlay(&self.bar_revealer);
             self.pin_button.connect_toggled({
