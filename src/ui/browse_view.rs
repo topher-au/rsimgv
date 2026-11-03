@@ -1729,6 +1729,11 @@ impl BrowseView {
         self.imp().grid.update_selected_classes();
     }
 
+    /// Moves the keyboard focus to the grid of items. Returns whether it took it.
+    pub fn focus_grid(&self) -> bool {
+        self.imp().grid.grab_focus()
+    }
+
     /// Opens the item under the cursor.
     pub fn activate_selected(&self) {
         self.imp().grid.activate_selected();

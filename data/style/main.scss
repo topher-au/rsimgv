@@ -10,6 +10,23 @@
 
 @import "content_pane";
 
+// The outline that fades around the pane the focus moved to.
+@keyframes focus-pulse {
+  from {
+    outline-color: #{"var(--accent-bg-color)"};
+  }
+
+  to {
+    outline-color: #{"color-mix(in srgb, var(--accent-bg-color) 0%, transparent)"};
+  }
+}
+
+.focus-pulse {
+  outline: 3px solid transparent;
+  outline-offset: -3px;
+  animation: focus-pulse 700ms ease-out;
+}
+
 // The scope of an action in the keybindings editor's action picker.
 .action-scope {
   font-style: italic;

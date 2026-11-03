@@ -46,6 +46,8 @@ mod imp {
         pub(super) keybinds: std::cell::OnceCell<KeybindsOverlay>,
         /// The message naming the folder the viewer moved to, while it is up, so the next one replaces it.
         pub(super) folder_notice: Cell<Option<MessageId>>,
+        /// The message naming the pane the focus moved to, while it is up, so the next one replaces it.
+        pub(super) focus_notice: Cell<Option<MessageId>>,
         /// The last message about the playlist, while it is up, so the next one replaces it.
         pub(super) playlist_notice: Cell<Option<MessageId>>,
         #[template_child]
@@ -911,6 +913,10 @@ impl Window {
         bound_action(self, &weak, "playlist-load-url", Window::ask_playlist_url);
         bound_action(self, &weak, "playlist-pause", |window| window.imp().viewer.pause());
         bound_action(self, &weak, "toggle-playlist", Window::toggle_playlist_panel);
+        bound_action(self, &weak, "focus-tree", |window| window.focus_pane(FocusPane::Tree));
+        bound_action(self, &weak, "focus-playlist", |window| window.focus_pane(FocusPane::Playlist));
+        bound_action(self, &weak, "focus-viewer", |window| window.focus_pane(FocusPane::Content));
+        bound_action(self, &weak, "focus-cycle", Window::cycle_focus);
         bound_action(self, &weak, "toggle-sidebar", |window| {
             let split = &window.imp().split;
             split.set_show_sidebar(!split.show_sidebar());
@@ -1000,6 +1006,106 @@ impl Window {
         bound_action(&playlist, &weak, "toggle-search", |window| window.with_playlist(PlaylistPanel::toggle_search));
         bound_action(&playlist, &weak, "focus-search", |window| window.with_playlist(PlaylistPanel::focus_search));
         self.insert_action_group("playlist", Some(&playlist));
+
+        let tree = gio::SimpleActionGroup::new();
+        bound_action(&tree, &weak, "cursor-up", |window| window.imp().tree.move_selection(-1));
+        bound_action(&tree, &weak, "cursor-down", |window| window.imp().tree.move_selection(1));
+        bound_action(&tree, &weak, "first", |window| window.imp().tree.select_edge(false));
+        bound_action(&tree, &weak, "last", |window| window.imp().tree.select_edge(true));
+        bound_action(&tree, &weak, "activate", |window| window.imp().tree.toggle_selected());
+        bound_action(&tree, &weak, "expand", |window| window.imp().tree.set_selected_expanded(true));
+        bound_action(&tree, &weak, "collapse", |window| window.imp().tree.set_selected_expanded(false));
+        self.insert_action_group("tree", Some(&tree));
+    }
+
+    /// Where the keyboard focus is: in the folder tree, in the playlist, or else in the content, the browse view or the
+    /// viewer.
+    fn focused_pane(&self) -> FocusPane {
+        let imp = self.imp();
+        if self.focus_is_within(&*imp.tree) {
+            FocusPane::Tree
+        } else if imp.playlist_panel.get().is_some_and(PlaylistPanel::has_focus) {
+            FocusPane::Playlist
+        } else {
+            FocusPane::Content
+        }
+    }
+
+    /// Whether the keyboard focus is in `widget` or one of its descendants.
+    fn focus_is_within(&self, widget: &impl IsA<gtk::Widget>) -> bool {
+        gtk::prelude::GtkWindowExt::focus(self).is_some_and(|focus| focus == *widget.upcast_ref::<gtk::Widget>() || focus.is_ancestor(widget))
+    }
+
+    /// Whether `pane` is on screen, so cycling the focus can land on it.
+    fn pane_shown(&self, pane: FocusPane) -> bool {
+        let imp = self.imp();
+        match pane {
+            FocusPane::Tree => imp.split.show_sidebar(),
+            FocusPane::Content => true,
+            FocusPane::Playlist => imp.playlist_window.borrow().is_some() || self.active_playlist_split().show_sidebar(),
+        }
+    }
+
+    /// Moves the focus to the next pane that is shown: the folder tree, the content, then the playlist.
+    fn cycle_focus(&self) {
+        const ORDER: [FocusPane; 3] = [FocusPane::Tree, FocusPane::Content, FocusPane::Playlist];
+        let current = self.focused_pane();
+        let start = ORDER.iter().position(|pane| *pane == current).unwrap_or(1);
+        let next = (1..=ORDER.len()).map(|step| ORDER[(start + step) % ORDER.len()]).find(|pane| self.pane_shown(*pane));
+        self.focus_pane(next.unwrap_or(FocusPane::Content));
+    }
+
+    /// Moves the focus to `pane`, showing it first if it is hidden, then outlines it for a moment and names it over the
+    /// window.
+    fn focus_pane(&self, pane: FocusPane) {
+        let imp = self.imp();
+        let (widget, name): (gtk::Widget, &str) = match pane {
+            FocusPane::Tree => {
+                self.set_show_sidebar(true);
+                (imp.tree.clone().upcast(), "Folder Tree")
+            }
+            FocusPane::Playlist => {
+                let Some(panel) = imp.playlist_panel.get() else { return };
+                let detached = imp.playlist_window.borrow().clone();
+                match detached {
+                    Some(detached) => gtk::prelude::GtkWindowExt::present(&detached),
+                    None => self.active_playlist_split().set_show_sidebar(true),
+                }
+                (panel.content().clone().upcast(), "Playlist")
+            }
+            FocusPane::Content if self.viewer_is_open() => (imp.viewer.clone().upcast(), "Viewer"),
+            FocusPane::Content => match self.active_browse() {
+                Some(browse) => (browse.upcast(), "Browser"),
+                None => return,
+            },
+        };
+        // A pane that was hidden may not be on screen yet, so the focus is tried again once it is.
+        if !self.give_focus(pane) {
+            let weak = self.downgrade();
+            glib::idle_add_local_once(move || {
+                if let Some(window) = weak.upgrade() {
+                    window.give_focus(pane);
+                }
+            });
+        }
+        pulse(&widget);
+        let messages = self.messages();
+        if let Some(previous) = imp.focus_notice.take() {
+            messages.dismiss(previous);
+        }
+        let notice = messages.show(Message::notification(format!("Focus: {name}")).level(Level::Plain).lasting(FOCUS_NOTICE));
+        imp.focus_notice.set(Some(notice));
+    }
+
+    /// Asks `pane` to take the keyboard focus. Returns whether it did.
+    fn give_focus(&self, pane: FocusPane) -> bool {
+        let imp = self.imp();
+        match pane {
+            FocusPane::Tree => imp.tree.focus_list(),
+            FocusPane::Playlist => imp.playlist_panel.get().is_some_and(PlaylistPanel::focus_list),
+            FocusPane::Content if self.viewer_is_open() => imp.viewer.grab_focus(),
+            FocusPane::Content => self.active_browse().is_some_and(|browse| browse.focus_grid()),
+        }
     }
 
     /// Runs `f` on the playlist panel.
@@ -2292,7 +2398,7 @@ impl Window {
 
     /// The scopes a key press can be bound in right now: the browse context while the media viewer is closed,
     /// and while it is open, the video or image context for the item it shows, plus the viewer's own actions.
-    /// The playlist context is added while the playlist has the focus. Global applies everywhere and is not listed.
+    /// The playlist or folder tree context is added while that has the focus. Global applies everywhere and is not listed.
     pub(super) fn active_scopes(&self) -> Vec<Scope> {
         let imp = self.imp();
         let mut scopes = if !imp.viewer_open.get() {
@@ -2303,6 +2409,9 @@ impl Window {
         };
         if imp.playlist_panel.get().is_some_and(PlaylistPanel::has_focus) {
             scopes.push(Scope::Playlist);
+        }
+        if self.focus_is_within(&*imp.tree) {
+            scopes.push(Scope::Tree);
         }
         scopes
     }
@@ -3995,6 +4104,31 @@ fn bookmark_icon(path: &Path) -> &'static str {
     } else {
         "folder-symbolic"
     }
+}
+
+/// The parts of the window the keyboard focus moves between.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FocusPane {
+    Tree,
+    /// The viewer while it is open, else the browse view.
+    Content,
+    Playlist,
+}
+
+/// How long the outline around a pane the focus moved to stays up, and how long its name does.
+const FOCUS_PULSE: std::time::Duration = std::time::Duration::from_millis(700);
+const FOCUS_NOTICE: std::time::Duration = std::time::Duration::from_millis(1200);
+
+/// Outlines `widget` for a moment, which the style sheet fades out.
+fn pulse(widget: &gtk::Widget) {
+    widget.remove_css_class("focus-pulse");
+    widget.add_css_class("focus-pulse");
+    let widget = widget.downgrade();
+    glib::timeout_add_local_once(FOCUS_PULSE, move || {
+        if let Some(widget) = widget.upgrade() {
+            widget.remove_css_class("focus-pulse");
+        }
+    });
 }
 
 fn bound_action(map: &impl IsA<gio::ActionMap>, window: &glib::WeakRef<Window>, name: &str, run: fn(&Window)) {

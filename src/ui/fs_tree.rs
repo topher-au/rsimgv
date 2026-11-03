@@ -585,6 +585,60 @@ impl FsTree {
             .map(|node| node.path().to_path_buf())
     }
 
+    /// Moves the keyboard focus to the tree's rows. Returns whether it took it.
+    pub fn focus_list(&self) -> bool {
+        self.imp().list_view.grab_focus()
+    }
+
+    /// Selects the row `step` rows from the selected one, stopping at the ends. With none selected, a step forward
+    /// selects the first row and a step back the last.
+    pub fn move_selection(&self, step: i32) {
+        let Some(selection) = self.imp().selection.borrow().clone() else { return };
+        let rows = selection.n_items();
+        if rows == 0 {
+            return;
+        }
+        let position = match selection.selected() {
+            gtk::INVALID_LIST_POSITION if step < 0 => rows - 1,
+            gtk::INVALID_LIST_POSITION => 0,
+            selected => selected.saturating_add_signed(step).min(rows - 1),
+        };
+        self.select_position(&selection, position);
+    }
+
+    /// Selects the first row, or the last one.
+    pub fn select_edge(&self, last: bool) {
+        let Some(selection) = self.imp().selection.borrow().clone() else { return };
+        let rows = selection.n_items();
+        if rows > 0 {
+            self.select_position(&selection, if last { rows - 1 } else { 0 });
+        }
+    }
+
+    fn select_position(&self, selection: &gtk::SingleSelection, position: u32) {
+        selection.set_selected(position);
+        self.imp().list_view.scroll_to(position, gtk::ListScrollFlags::NONE, None);
+    }
+
+    /// Expands the selected row if it is collapsed, or collapses it if it is expanded.
+    pub fn toggle_selected(&self) {
+        let selected = self.imp().selection.borrow().as_ref().map(|selection| selection.selected());
+        if let Some(position) = selected.filter(|position| *position != gtk::INVALID_LIST_POSITION) {
+            self.toggle_row_at(position);
+        }
+    }
+
+    /// Expands or collapses the selected row, if it is not that already.
+    pub fn set_selected_expanded(&self, expanded: bool) {
+        let row = self.imp().selection.borrow().as_ref().and_then(|selection| {
+            let position = selection.selected();
+            selection.selected_item().and_downcast::<gtk::TreeListRow>().map(|row| (position, row))
+        });
+        if let Some((position, _)) = row.filter(|(_, row)| row.is_expanded() != expanded) {
+            self.toggle_row_at(position);
+        }
+    }
+
     /// Whether the row for `path` is expanded. False if it is not visible.
     pub fn is_expanded(&self, path: &Path) -> bool {
         let model = self.imp().tree_model.borrow().clone();

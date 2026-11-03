@@ -16,10 +16,12 @@ pub enum Scope {
     Video,
     /// The playlist has the focus. It applies on top of browsing or the viewer.
     Playlist,
+    /// The folder tree has the focus. It applies on top of browsing or the viewer.
+    Tree,
 }
 
 impl Scope {
-    /// The scope's id in the IPC and the keybindings file: `global`, `browse`, `view`, `image`, `video` or `playlist`.
+    /// The scope's id in the IPC and the keybindings file: `global`, `browse`, `view`, `image`, `video`, `playlist` or `tree`.
     pub fn id(self) -> &'static str {
         match self {
             Scope::Global => "global",
@@ -28,11 +30,13 @@ impl Scope {
             Scope::Image => "image",
             Scope::Video => "video",
             Scope::Playlist => "playlist",
+            Scope::Tree => "tree",
         }
     }
 
     /// Every scope, in the order the editor offers them.
-    pub const ALL: [Scope; 6] = [Scope::Global, Scope::Browse, Scope::View, Scope::Image, Scope::Video, Scope::Playlist];
+    pub const ALL: [Scope; 7] =
+        [Scope::Global, Scope::Browse, Scope::View, Scope::Image, Scope::Video, Scope::Playlist, Scope::Tree];
 
     /// The scope with the id `id`, if there is one.
     pub fn from_id(id: &str) -> Option<Scope> {
@@ -47,6 +51,7 @@ impl Scope {
             Scope::Image => "Picture",
             Scope::Video => "Video",
             Scope::Playlist => "Playlist",
+            Scope::Tree => "Folder Tree",
         }
     }
 
@@ -59,6 +64,7 @@ impl Scope {
             Scope::Image => "image-x-generic-symbolic",
             Scope::Video => "video-x-generic-symbolic",
             Scope::Playlist => "view-list-symbolic",
+            Scope::Tree => "folder-open-symbolic",
         }
     }
 
@@ -68,17 +74,17 @@ impl Scope {
             Scope::Global => 0,
             Scope::Browse | Scope::View => 1,
             Scope::Image | Scope::Video => 2,
-            Scope::Playlist => 3,
+            Scope::Playlist | Scope::Tree => 3,
         }
     }
 
     /// Whether a chord bound in one scope could also be pressed in the other, so binding it in both is a
-    /// conflict. Global overlaps everything, and so does the playlist, which has the focus while browsing or viewing;
+    /// conflict. Global overlaps everything, and so do the playlist and the folder tree, which have the focus while browsing or viewing;
     /// the viewer overlaps the picture and video scopes inside it.
     pub fn overlaps(self, other: Scope) -> bool {
         self == other
-            || matches!(self, Scope::Global | Scope::Playlist)
-            || matches!(other, Scope::Global | Scope::Playlist)
+            || matches!(self, Scope::Global | Scope::Playlist | Scope::Tree)
+            || matches!(other, Scope::Global | Scope::Playlist | Scope::Tree)
             || matches!((self, other), (Scope::View, Scope::Image | Scope::Video) | (Scope::Image | Scope::Video, Scope::View))
     }
 }
@@ -119,7 +125,7 @@ impl ActionInfo {
         self.name == NOTIFY_ACTION
     }
 
-    /// The scope the action belongs to, which its name gives: `browse.`, `view.`, `image.`, `video.` and `playlist.` actions to
+    /// The scope the action belongs to, which its name gives: `browse.`, `view.`, `image.`, `video.`, `playlist.` and `tree.` actions to
     /// their own, and the rest, which act on the window, to Global.
     fn home(&self) -> Scope {
         match self.name.split_once('.').map(|(group, _)| group) {
@@ -128,6 +134,7 @@ impl ActionInfo {
             Some("image") => Scope::Image,
             Some("video") => Scope::Video,
             Some("playlist") => Scope::Playlist,
+            Some("tree") => Scope::Tree,
             _ => Scope::Global,
         }
     }
@@ -149,6 +156,7 @@ impl ActionInfo {
             (Scope::Image, _) => &[Scope::Global, Scope::Image],
             (Scope::Video, _) => &[Scope::Global, Scope::Video],
             (Scope::Playlist, _) => &[Scope::Global, Scope::Playlist],
+            (Scope::Tree, _) => &[Scope::Global, Scope::Tree],
         };
         contexts
     }
@@ -306,6 +314,18 @@ pub const ACTIONS: &[ActionInfo] = &[
         name: "win.toggle-sidebar", description: "Show or hide the sidebar.", icon: "sidebar-show-symbolic", label: "Toggle Sidebar", defaults: &["f9"],
     },
     ActionInfo {
+        name: "win.focus-tree", description: "Move the keyboard focus to the folder tree, showing the sidebar if it is hidden.", icon: "folder-open-symbolic", label: "Focus Folder Tree", defaults: &[],
+    },
+    ActionInfo {
+        name: "win.focus-playlist", description: "Move the keyboard focus to the playlist, showing it if it is hidden.", icon: "view-list-symbolic", label: "Focus Playlist", defaults: &[],
+    },
+    ActionInfo {
+        name: "win.focus-viewer", description: "Move the keyboard focus to the viewer while it is open, or else to the browse view.", icon: "view-reveal-symbolic", label: "Focus Browser / Viewer", defaults: &[],
+    },
+    ActionInfo {
+        name: "win.focus-cycle", description: "Move the keyboard focus to the next of the folder tree, the browse view or viewer, and the playlist, skipping any that is hidden.", icon: "media-playlist-repeat-symbolic", label: "Cycle Focus", defaults: &["f6"],
+    },
+    ActionInfo {
         name: "win.toggle-keybinds", description: "Show or hide a list of the keybindings in force where you are: the ones for browsing, or for the viewer, a picture or a video, and the global ones.", icon: "input-keyboard-symbolic", label: "Toggle Keybinds Overlay", defaults: &["f1"],
     },
     ActionInfo {
@@ -394,6 +414,27 @@ pub const ACTIONS: &[ActionInfo] = &[
     },
     ActionInfo {
         name: "playlist.focus-search", description: "Show the playlist's search field if it is hidden, and move the focus to it.", icon: "edit-find-symbolic", label: "Focus Search", defaults: &[],
+    },
+    ActionInfo {
+        name: "tree.cursor-up", description: "Select the folder above the selected one in the folder tree, or the last one if none is selected.", icon: "go-up-symbolic", label: "Select Previous Folder", defaults: &["up"],
+    },
+    ActionInfo {
+        name: "tree.cursor-down", description: "Select the folder below the selected one in the folder tree, or the first one if none is selected.", icon: "go-down-symbolic", label: "Select Next Folder", defaults: &["down"],
+    },
+    ActionInfo {
+        name: "tree.first", description: "Select the first row of the folder tree.", icon: "go-first-symbolic", label: "First Folder", defaults: &["home"],
+    },
+    ActionInfo {
+        name: "tree.last", description: "Select the last visible row of the folder tree.", icon: "go-last-symbolic", label: "Last Folder", defaults: &["end"],
+    },
+    ActionInfo {
+        name: "tree.activate", description: "Expand the selected folder in the folder tree, or collapse it if it is expanded.", icon: "go-next-symbolic", label: "Toggle Folder", defaults: &["return"],
+    },
+    ActionInfo {
+        name: "tree.expand", description: "Expand the selected folder in the folder tree.", icon: "pan-end-symbolic", label: "Expand Folder", defaults: &["right"],
+    },
+    ActionInfo {
+        name: "tree.collapse", description: "Collapse the selected folder in the folder tree.", icon: "pan-down-symbolic", label: "Collapse Folder", defaults: &["left"],
     },
     ActionInfo {
         name: "view.previous", description: "Show the picture or video before this one in the folder, or in the playlist while the viewer shows that.", icon: "go-previous-symbolic", label: "Previous Item", defaults: &["comma"],
@@ -552,6 +593,15 @@ mod tests {
             assert_eq!(contexts(name), [Scope::Global, Scope::Playlist], "{name}");
             assert_eq!(find(name).unwrap().default_context(), Scope::Playlist, "{name}");
         }
+    }
+
+    #[test]
+    fn tree_actions_are_bound_in_the_tree_or_globally() {
+        for name in ["tree.cursor-up", "tree.activate", "tree.collapse"] {
+            assert_eq!(contexts(name), [Scope::Global, Scope::Tree], "{name}");
+            assert_eq!(find(name).unwrap().default_context(), Scope::Tree, "{name}");
+        }
+        assert_eq!(contexts("win.focus-cycle"), Scope::ALL);
     }
 
     #[test]

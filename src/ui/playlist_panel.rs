@@ -313,6 +313,11 @@ impl PlaylistPanel {
         })
     }
 
+    /// Moves the keyboard focus to the list. Returns whether it took it.
+    pub fn focus_list(&self) -> bool {
+        self.view.grab_focus()
+    }
+
     /// Selects the item `step` rows from the selected one in the view, stopping at the ends. With none selected, a step
     /// forward selects the first row and a step back the last.
     pub fn select_step(&self, step: i32) {
