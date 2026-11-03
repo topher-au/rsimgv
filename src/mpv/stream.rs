@@ -30,6 +30,12 @@ const ESTIMATED_FPS: u64 = 5;
 /// The widest a frame is rendered, in pixels; wider sizes are scaled down to keep software rendering quick.
 const MAX_FRAME_WIDTH: i32 = 2560;
 
+/// The widest a video can be and still be rendered at its own size, however much bigger it is shown: it is rendered by the CPU,
+/// which scales every pixel it is asked for, and GTK scales the frame up on the GPU for little cost. What mpv draws in the frame,
+/// such as subtitles and its OSD, is scaled up with it, so it is softer than if it were drawn at the size shown. Wider videos
+/// are rendered at the size shown, so that text stays sharp.
+const OWN_SIZE_MAX_WIDTH: i32 = 1280;
+
 const MICROS: f64 = 1_000_000.0;
 
 /// How often the video is looked at for where to crop it, at first, and the longest wait between looks once what is found has
@@ -787,8 +793,8 @@ impl MpvStream {
         }
     }
 
-    /// Renders the picture at the size it is shown at in the area `width` by `height`, in device pixels, when that has
-    /// changed. Mpv draws its OSD at the size it renders, so rendering at the video's size and scaling it up would blur the
+    /// Renders the picture at the size it is shown at in the area `width` by `height`, in device pixels (or at its own size,
+    /// if it is small), when that has changed. Mpv draws its OSD at the size it renders, so rendering at the video's size and scaling it up would blur the
     /// text; the OSD sits in the picture's corner.
     fn fit_render(&self, width: f64, height: f64) {
         let imp = self.imp();
@@ -803,6 +809,11 @@ impl MpvStream {
             _ => (width, height),
         };
         let (width, height) = capped((width * scale).round().max(1.0) as i32, (height * scale).round().max(1.0) as i32);
+        // A small video is not rendered bigger than it is.
+        let (width, height) = match imp.frame_size.get() {
+            (own_width, own_height) if own_width > 0 && own_width <= OWN_SIZE_MAX_WIDTH && own_width < width => (own_width, own_height),
+            _ => (width, height),
+        };
         if width <= 0 || height <= 0 || !self.is_prepared() {
             return;
         }

@@ -419,6 +419,10 @@ impl Player {
                 // Rendering must not wait for a frame's display time on the main thread, which libmpv does for up to
                 // this long a frame. A frame is shown when it is drawn.
                 ("video-timing-offset", "0"),
+                // The software renderer scales on the CPU, where the default lanczos costs a lot for a frame that is scaled to
+                // the size shown. Bicubic is much cheaper and hard to tell apart from it at the sizes a video is shown.
+                ("zimg-scaler", "bicubic"),
+                ("sws-scaler", "bicubic"),
             ] {
                 player.set_option(name, value)?;
             }
