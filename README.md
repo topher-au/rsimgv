@@ -1,16 +1,40 @@
+<div align="center">
+
 # rsimgv
 
-An integrated file explorer and media viewer for GNOME, written in Rust with GTK 4 and libadwaita.
+**An integrated file explorer and media viewer for GNOME.**
 
-rsimgv puts a folder tree, a browse grid, and a navigation history side by side, so you can move through a
-library of pictures and videos without leaving the window. The media viewer is not built yet.
+Written in Rust with GTK 4 and libadwaita.
 
-> **Status:** early development. The file explorer works; the media viewer, thumbnails, and file
-> operations are still to come.
+<p>
+  <a href="https://www.repostatus.org/#wip"><img src="https://www.repostatus.org/badges/latest/wip.svg" alt="Project status: work in progress"></a>
+  <a href="https://www.gnu.org/licenses/gpl-3.0.html"><img src="https://img.shields.io/badge/License-GPL--3.0--or--later-blue?style=for-the-badge" alt="License: GPL-3.0-or-later"></a>
+  <a href="https://www.rust-lang.org"><img src="https://img.shields.io/badge/Rust-stable-b7410e?style=for-the-badge&logo=rust&logoColor=white" alt="Rust"></a>
+  <a href="https://www.gtk.org"><img src="https://img.shields.io/badge/GTK-4.22+-4a86cf?style=for-the-badge&logo=gtk&logoColor=white" alt="GTK 4.22+"></a>
+  <a href="https://gnome.pages.gitlab.gnome.org/libadwaita/"><img src="https://img.shields.io/badge/libadwaita-1.9+-3584e4?style=for-the-badge" alt="libadwaita 1.9+"></a>
+  <a href="https://www.kernel.org"><img src="https://img.shields.io/badge/Linux-platform-fcc624?style=for-the-badge&logo=linux&logoColor=black" alt="Linux"></a>
+</p>
 
-## Screenshots
+</div>
+
+rsimgv puts a folder tree, a browse grid and a navigation history side by side, so you can move through a
+library of pictures and videos without leaving the window.
+
+> **Status:** early development. The file explorer, media viewer and thumbnails are implemented, but the
+> project is still changing quickly.
 
 ![rsimgv showing the folder tree, the home folder, and the navigation and path bar](docs/screenshots/main-window.png)
+
+## Contents
+
+- [Features](#features)
+- [Requirements](#requirements)
+- [Building and running](#building-and-running)
+- [Command line](#command-line)
+- [Settings](#settings)
+- [Project layout](#project-layout)
+- [Application ID](#application-id)
+- [License](#license)
 
 ## Features
 
@@ -26,7 +50,7 @@ library of pictures and videos without leaving the window. The media viewer is n
 - **Media filter**: only pictures and videos are listed by default. Turn it off to see every file.
 - **Path bar** in the header with clickable breadcrumbs. It starts at home when you are inside it, and at
   `/` otherwise. Middle-click or Ctrl-click opens a new tab or window (currently both navigate in place).
-- **Navigation** with back, forward, and up buttons. Long-pressing back or forward lists the history in
+- **Navigation** with back, forward and up buttons. Long-pressing back or forward lists the history in
   that direction.
 - **Manual location entry**: click the current folder in the path bar to type a path. A leading `~` means
   your home folder.
@@ -58,7 +82,7 @@ For development, `dev.sh` sets up the build directory if needed, rebuilds, and r
 ./dev.sh test     # rebuild and run the test suite
 ```
 
-Tests need a display; on a machine without one, run them under `xvfb-run -a`.
+Tests need a display. On a machine without one, run them under `xvfb-run -a`.
 
 To build and install with Meson:
 
@@ -69,8 +93,8 @@ meson install -C builddir
 ```
 
 Installing copies the GSettings schema and the application icons into the system data directories. The
-program itself embeds its user interface, stylesheets, and icons in a GResource bundle, so it does not need
-them installed separately.
+program embeds its user interface, stylesheets and icons in a GResource bundle, so it does not need them
+installed separately.
 
 ## Command line
 
@@ -143,9 +167,9 @@ thumbnails:
   unload-offscreen: true
 ```
 
-They are read and written through GSettings, using a backend that stores them in that file, so changes
-made in the preferences dialog, from the menu, or by editing the file while the app runs all take effect
-straight away. The schema is `data/au.topher.rimgv.gschema.xml`.
+They are read and written through GSettings, using a backend that stores them in that file. Changes made in
+the preferences dialog, from the menu, or by editing the file while the app runs all take effect straight
+away. The schema is `data/au.topher.rimgv.gschema.xml`.
 
 ## Project layout
 
