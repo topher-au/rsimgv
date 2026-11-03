@@ -157,6 +157,10 @@ mod imp {
         #[template_child]
         pub svp_group: TemplateChild<adw::PreferencesGroup>,
         #[template_child]
+        pub svp_rate_group: TemplateChild<adw::PreferencesGroup>,
+        #[template_child]
+        pub svp_seek_group: TemplateChild<adw::PreferencesGroup>,
+        #[template_child]
         pub overlay_page: TemplateChild<gtk::Box>,
         #[template_child]
         pub video_crop_row: TemplateChild<adw::SwitchRow>,
@@ -314,7 +318,13 @@ impl PreferencesDialog {
                 let _ = settings.set_string("video.backend", "mpv");
             }
         });
-        let groups = [("visible", &imp.mpv_group, "mpv"), ("visible", &imp.gstreamer_group, "gtk"), ("sensitive", &imp.svp_group, "mpv")];
+        let groups = [
+            ("visible", &imp.mpv_group, "mpv"),
+            ("visible", &imp.gstreamer_group, "gtk"),
+            ("sensitive", &imp.svp_group, "mpv"),
+            ("sensitive", &imp.svp_rate_group, "mpv"),
+            ("sensitive", &imp.svp_seek_group, "mpv"),
+        ];
         for (property, group, backend) in groups {
             settings
                 .bind("video.backend", &**group, property)
@@ -842,12 +852,22 @@ pub(crate) mod tests {
         assert_eq!(settings.string("video.backend"), "gtk");
         assert!(!imp.mpv_group.get_visible() && imp.gstreamer_group.get_visible(), "GStreamer's options replace mpv's");
         assert!(!imp.svp_group.is_sensitive(), "SVP needs mpv");
+        assert!(!imp.svp_rate_group.is_sensitive() && !imp.svp_seek_group.is_sensitive(), "as do its frame rate and seeking");
         assert!(imp.svp_banner.is_revealed(), "the banner offers mpv while another backend is chosen");
         imp.svp_banner.emit_by_name::<()>("button-clicked", &[]);
         assert_eq!(settings.string("video.backend"), "mpv", "its button chooses mpv");
         assert!(!imp.svp_banner.is_revealed());
         settings.reset("video.backend");
         assert!(imp.mpv_group.get_visible() && imp.svp_group.is_sensitive());
+
+        // Every section is a stack of tabs under the name the sidebar gives it, and each tab has a title.
+        for (name, _, _) in SECTIONS {
+            let stack = imp.section_stack.child_by_name(name).and_downcast::<adw::ViewStack>().expect("a section is a stack of tabs");
+            assert!(stack.pages().iter::<adw::ViewStackPage>().flatten().all(|tab| tab.title().is_some_and(|title| !title.is_empty())), "{name}");
+        }
+        dialog.show_section("keybindings");
+        assert_eq!(imp.section_stack.visible_child_name().as_deref(), Some("keybindings"), "the keybindings action still finds its section");
+        dialog.show_section("general");
 
         // Every page with groups stacks them with no gap.
         let columns = group_columns(imp.section_stack.upcast_ref());
@@ -894,8 +914,8 @@ const SECTIONS: [(&str, &str, &str); 9] = [
     ("images", "Images", "image-x-generic-symbolic"),
     ("videos", "Videos", "video-x-generic-symbolic"),
     ("keybindings", "Controls", "input-keyboard-symbolic"),
-    ("scripts", "Scripts", "utilities-terminal-symbolic"),
-    ("advanced", "Advanced", "applications-engineering-symbolic"),
+    ("integration", "Integration", "utilities-terminal-symbolic"),
+    ("performance", "Performance", "applications-engineering-symbolic"),
     ("about", "About", "help-about-symbolic"),
 ];
 

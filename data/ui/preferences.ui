@@ -133,6 +133,7 @@
                             <property name="icon-name">preferences-system-symbolic</property>
                             <child>
                               <object class="AdwPreferencesGroup">
+                                <property name="title">Startup</property>
                                 <child>
                                   <object class="AdwComboRow" id="start_location_row">
                                     <property name="title">Start location</property>
@@ -168,128 +169,6 @@
                             </child>
                             <child>
                               <object class="AdwPreferencesGroup">
-                                <property name="title">Folder Navigation</property>
-                                <child>
-                                  <object class="AdwComboRow" id="folder_end_row">
-                                    <property name="title">When reaching the end</property>
-                                    <property name="subtitle">What stepping past the first or last item in the viewer does</property>
-                                    <property name="model">
-                                      <object class="GtkStringList">
-                                        <items>
-                                          <item>Stop</item>
-                                          <item>Loop folder</item>
-                                          <item>Go to next folder</item>
-                                        </items>
-                                      </object>
-                                    </property>
-                                  </object>
-                                </child>
-                                <child>
-                                  <object class="AdwSwitchRow" id="remember_folder_sort_row">
-                                    <property name="title">Remember folder sort settings</property>
-                                    <property name="subtitle">The sort menu changes only the folder shown, which keeps that sort</property>
-                                  </object>
-                                </child>
-                                <child>
-                                  <object class="AdwSwitchRow" id="playlist_fetch_row">
-                                    <property name="title">Read playlist lengths in the background</property>
-                                    <property name="subtitle">Off reads an item's length only when it is first played</property>
-                                  </object>
-                                </child>
-                                <child>
-                                  <object class="AdwComboRow" id="playlist_window_headerbar_row">
-                                    <property name="title">Playlist window header</property>
-                                    <property name="subtitle">The header of the playlist when it is in its own window</property>
-                                    <property name="model">
-                                      <object class="GtkStringList">
-                                        <items>
-                                          <item>Full</item>
-                                          <item>Compact</item>
-                                          <item>None</item>
-                                        </items>
-                                      </object>
-                                    </property>
-                                  </object>
-                                </child>
-                                <child>
-                                  <object class="AdwComboRow" id="default_sort_by_row">
-                                    <property name="title">Default sorting</property>
-                                    <property name="subtitle">How folders with no remembered sort are sorted</property>
-                                    <property name="model">
-                                      <object class="GtkStringList">
-                                        <items>
-                                          <item>Alphabetical</item>
-                                          <item>Modification Time</item>
-                                          <item>Size</item>
-                                          <item>Type</item>
-                                        </items>
-                                      </object>
-                                    </property>
-                                  </object>
-                                </child>
-                                <child>
-                                  <object class="AdwComboRow" id="default_sort_order_row">
-                                    <property name="title">Default sort order</property>
-                                    <property name="model">
-                                      <object class="GtkStringList">
-                                        <items>
-                                          <item>Ascending</item>
-                                          <item>Descending</item>
-                                        </items>
-                                      </object>
-                                    </property>
-                                  </object>
-                                </child>
-                              </object>
-                            </child>
-                            <child>
-                              <object class="AdwPreferencesGroup">
-                                <property name="title">File settings</property>
-                                <child>
-                                  <object class="AdwSwitchRow" id="remember_file_settings_row">
-                                    <property name="title">Remember settings for each file</property>
-                                    <property name="subtitle">Keeps the settings below for each picture and video by its contents, so they follow the file when it is moved or renamed</property>
-                                  </object>
-                                </child>
-                                <child>
-                                  <object class="AdwSwitchRow" id="remember_position_row">
-                                    <property name="title">Playback position</property>
-                                    <property name="subtitle">Starts a video again from where it was left</property>
-                                  </object>
-                                </child>
-                                <child>
-                                  <object class="AdwSwitchRow" id="remember_speed_row">
-                                    <property name="title">Playback speed</property>
-                                  </object>
-                                </child>
-                                <child>
-                                  <object class="AdwSwitchRow" id="remember_volume_row">
-                                    <property name="title">Volume</property>
-                                    <property name="subtitle">Keeps the volume and whether the video was muted</property>
-                                  </object>
-                                </child>
-                                <child>
-                                  <object class="AdwSwitchRow" id="remember_rotation_row">
-                                    <property name="title">Rotation and mirroring</property>
-                                    <property name="subtitle">Keeps how a picture or video was turned and flipped</property>
-                                  </object>
-                                </child>
-                                <child>
-                                  <object class="AdwSwitchRow" id="remember_zoom_row">
-                                    <property name="title">Zoom level</property>
-                                    <property name="subtitle">Keeps how a picture was zoomed, or its fit mode</property>
-                                  </object>
-                                </child>
-                                <child>
-                                  <object class="AdwSwitchRow" id="remember_pan_row">
-                                    <property name="title">Zoom position</property>
-                                    <property name="subtitle">Keeps where a zoomed picture was panned to</property>
-                                  </object>
-                                </child>
-                              </object>
-                            </child>
-                            <child>
-                              <object class="AdwPreferencesGroup">
                                 <property name="title">Animations</property>
                                 <child>
                                   <object class="AdwSwitchRow" id="sidebar_animations_row">
@@ -317,63 +196,60 @@
                         </child>
                         <child>
                           <object class="AdwPreferencesPage">
-                            <property name="title">Remote control</property>
-                            <property name="icon-name">network-server-symbolic</property>
+                            <property name="title">Remembered</property>
+                            <property name="icon-name">document-open-recent-symbolic</property>
                             <child>
                               <object class="AdwPreferencesGroup">
-                                <property name="description">The remote control server lets other programs drive rsimgv by sending it JSON requests: to list and open tabs, move between folders, run actions and read what is shown. Each request is answered with a JSON response. See the &lt;a href="https://github.com/topher-au/rsimgv/blob/main/src/services/ipc.rs"&gt;documentation&lt;/a&gt; for the requests it takes.</property>
+                                <property name="title">File settings</property>
                                 <child>
-                                  <object class="AdwSwitchRow" id="ipc_socket_row">
-                                    <property name="title">Unix socket</property>
-                                    <property name="subtitle">Accepts commands from programs on this computer</property>
+                                  <object class="AdwSwitchRow" id="remember_file_settings_row">
+                                    <property name="title">Remember settings for each file</property>
+                                    <property name="subtitle">Keeps the settings below for each picture and video by its contents, so they follow the file when it is moved or renamed</property>
+                                  </object>
+                                </child>
+                              </object>
+                            </child>
+                            <child>
+                              <object class="AdwPreferencesGroup">
+                                <property name="title">Playback</property>
+                                <child>
+                                  <object class="AdwSwitchRow" id="remember_position_row">
+                                    <property name="title">Playback position</property>
+                                    <property name="subtitle">Starts a video again from where it was left</property>
                                   </object>
                                 </child>
                                 <child>
-                                  <object class="AdwEntryRow" id="ipc_socket_path_row">
-                                    <property name="title">Socket path, blank for the default</property>
-                                    <property name="show-apply-button">true</property>
+                                  <object class="AdwSwitchRow" id="remember_speed_row">
+                                    <property name="title">Playback speed</property>
                                   </object>
                                 </child>
                                 <child>
-                                  <object class="AdwSwitchRow" id="ipc_tcp_switch_row">
-                                    <property name="title">TCP socket</property>
-                                    <property name="subtitle">Accepts commands on a TCP port</property>
+                                  <object class="AdwSwitchRow" id="remember_volume_row">
+                                    <property name="title">Volume</property>
+                                    <property name="subtitle">Keeps the volume and whether the video was muted</property>
+                                  </object>
+                                </child>
+                              </object>
+                            </child>
+                            <child>
+                              <object class="AdwPreferencesGroup">
+                                <property name="title">View</property>
+                                <child>
+                                  <object class="AdwSwitchRow" id="remember_rotation_row">
+                                    <property name="title">Rotation and mirroring</property>
+                                    <property name="subtitle">Keeps how a picture or video was turned and flipped</property>
                                   </object>
                                 </child>
                                 <child>
-                                  <object class="AdwSpinRow" id="ipc_tcp_row">
-                                    <property name="title">TCP port</property>
-                                    <property name="adjustment">
-                                      <object class="GtkAdjustment">
-                                        <property name="lower">1</property>
-                                        <property name="upper">65535</property>
-                                        <property name="step-increment">1</property>
-                                      </object>
-                                    </property>
+                                  <object class="AdwSwitchRow" id="remember_zoom_row">
+                                    <property name="title">Zoom level</property>
+                                    <property name="subtitle">Keeps how a picture was zoomed, or its fit mode</property>
                                   </object>
                                 </child>
                                 <child>
-                                  <object class="AdwSwitchRow" id="ipc_http_switch_row">
-                                    <property name="title">HTTP</property>
-                                    <property name="subtitle">Accepts commands as HTTP POST requests</property>
-                                  </object>
-                                </child>
-                                <child>
-                                  <object class="AdwSpinRow" id="ipc_http_row">
-                                    <property name="title">HTTP port</property>
-                                    <property name="adjustment">
-                                      <object class="GtkAdjustment">
-                                        <property name="lower">1</property>
-                                        <property name="upper">65535</property>
-                                        <property name="step-increment">1</property>
-                                      </object>
-                                    </property>
-                                  </object>
-                                </child>
-                                <child>
-                                  <object class="AdwSwitchRow" id="ipc_external_row">
-                                    <property name="title">Allow other machines to control rsimgv</property>
-                                    <property name="subtitle">Applies to the TCP and HTTP ports, which otherwise accept only localhost. Anyone who can reach them can control rsimgv.</property>
+                                  <object class="AdwSwitchRow" id="remember_pan_row">
+                                    <property name="title">Zoom position</property>
+                                    <property name="subtitle">Keeps where a zoomed picture was panned to</property>
                                   </object>
                                 </child>
                               </object>
@@ -391,6 +267,7 @@
                             <property name="icon-name">view-grid-symbolic</property>
                             <child>
                               <object class="AdwPreferencesGroup">
+                                <property name="title">Layout</property>
                                 <child>
                                   <object class="AdwSpinRow" id="item_size_row">
                                     <property name="title">Item size</property>
@@ -463,14 +340,9 @@
                                 </child>
                               </object>
                             </child>
-                          </object>
-                        </child>
-                        <child>
-                          <object class="AdwPreferencesPage">
-                            <property name="title">Thumbnails</property>
-                            <property name="icon-name">image-x-generic-symbolic</property>
                             <child>
                               <object class="AdwPreferencesGroup">
+                                <property name="title">Thumbnails</property>
                                 <child>
                                   <object class="AdwSwitchRow" id="thumbnail_crop_row">
                                     <property name="title">Crop thumbnails to a square</property>
@@ -493,6 +365,7 @@
                             <property name="icon-name">folder-symbolic</property>
                             <child>
                               <object class="AdwPreferencesGroup">
+                                <property name="title">Contents</property>
                                 <child>
                                   <object class="AdwComboRow" id="show_directories_row">
                                     <property name="title">Show folders</property>
@@ -519,6 +392,51 @@
                                     <property name="subtitle">Hides files that are neither pictures nor videos</property>
                                   </object>
                                 </child>
+                              </object>
+                            </child>
+                            <child>
+                              <object class="AdwPreferencesGroup">
+                                <property name="title">Sorting</property>
+                                <child>
+                                  <object class="AdwComboRow" id="default_sort_by_row">
+                                    <property name="title">Default sorting</property>
+                                    <property name="subtitle">How folders with no remembered sort are sorted</property>
+                                    <property name="model">
+                                      <object class="GtkStringList">
+                                        <items>
+                                          <item>Alphabetical</item>
+                                          <item>Modification Time</item>
+                                          <item>Size</item>
+                                          <item>Type</item>
+                                        </items>
+                                      </object>
+                                    </property>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="AdwComboRow" id="default_sort_order_row">
+                                    <property name="title">Default sort order</property>
+                                    <property name="model">
+                                      <object class="GtkStringList">
+                                        <items>
+                                          <item>Ascending</item>
+                                          <item>Descending</item>
+                                        </items>
+                                      </object>
+                                    </property>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="AdwSwitchRow" id="remember_folder_sort_row">
+                                    <property name="title">Remember folder sort settings</property>
+                                    <property name="subtitle">The sort menu changes only the folder shown, which keeps that sort</property>
+                                  </object>
+                                </child>
+                              </object>
+                            </child>
+                            <child>
+                              <object class="AdwPreferencesGroup">
+                                <property name="title">Folder tree</property>
                                 <child>
                                   <object class="AdwSwitchRow" id="collapse_on_navigate_row">
                                     <property name="title">Collapse other folders when navigating</property>
@@ -538,7 +456,7 @@
                                 </child>
                                 <child>
                                   <object class="AdwSpinRow" id="folder_preview_count_row">
-                                    <property name="title">Folder previews</property>
+                                    <property name="title">Number of previews</property>
                                     <property name="subtitle">The most pictures and videos shown over a folder's icon</property>
                                     <property name="adjustment">
                                       <object class="GtkAdjustment">
@@ -566,6 +484,37 @@
                             </child>
                           </object>
                         </child>
+                        <child>
+                          <object class="AdwPreferencesPage">
+                            <property name="title">Playlist</property>
+                            <property name="icon-name">view-list-symbolic</property>
+                            <child>
+                              <object class="AdwPreferencesGroup">
+                                <child>
+                                  <object class="AdwSwitchRow" id="playlist_fetch_row">
+                                    <property name="title">Read playlist lengths in the background</property>
+                                    <property name="subtitle">Off reads an item's length only when it is first played</property>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="AdwComboRow" id="playlist_window_headerbar_row">
+                                    <property name="title">Playlist window header</property>
+                                    <property name="subtitle">The header of the playlist when it is in its own window</property>
+                                    <property name="model">
+                                      <object class="GtkStringList">
+                                        <items>
+                                          <item>Full</item>
+                                          <item>Compact</item>
+                                          <item>None</item>
+                                        </items>
+                                      </object>
+                                    </property>
+                                  </object>
+                                </child>
+                              </object>
+                            </child>
+                          </object>
+                        </child>
                       </object>
                     </child>
                     <child>
@@ -573,10 +522,11 @@
                         <property name="vexpand">true</property>
                         <child>
                           <object class="AdwPreferencesPage">
-                            <property name="title">Viewer</property>
+                            <property name="title">Display</property>
                             <property name="icon-name">applications-multimedia-symbolic</property>
                             <child>
                               <object class="AdwPreferencesGroup">
+                                <property name="title">Window</property>
                                 <child>
                                   <object class="AdwSwitchRow" id="open_fullscreen_row">
                                     <property name="title">Open in fullscreen</property>
@@ -603,6 +553,32 @@
                                 </child>
                               </object>
                             </child>
+                            <child>
+                              <object class="AdwPreferencesGroup">
+                                <property name="title">Navigation</property>
+                                <child>
+                                  <object class="AdwComboRow" id="folder_end_row">
+                                    <property name="title">When reaching the end</property>
+                                    <property name="subtitle">What stepping past the first or last item in the viewer does</property>
+                                    <property name="model">
+                                      <object class="GtkStringList">
+                                        <items>
+                                          <item>Stop</item>
+                                          <item>Loop folder</item>
+                                          <item>Go to next folder</item>
+                                        </items>
+                                      </object>
+                                    </property>
+                                  </object>
+                                </child>
+                              </object>
+                            </child>
+                          </object>
+                        </child>
+                        <child>
+                          <object class="AdwPreferencesPage">
+                            <property name="title">Thumbnails</property>
+                            <property name="icon-name">image-x-generic-symbolic</property>
                             <child>
                               <object class="AdwPreferencesGroup">
                                 <property name="title">Thumbnail Bar</property>
@@ -669,72 +645,123 @@
                       </object>
                     </child>
                     <child>
-                      <object class="AdwPreferencesPage">
-                        <property name="title">Images</property>
-                        <property name="icon-name">image-x-generic-symbolic</property>
+                      <object class="AdwViewStack">
+                        <property name="vexpand">true</property>
                         <child>
-                          <object class="AdwPreferencesGroup">
-                            <property name="title">Fit</property>
+                          <object class="AdwPreferencesPage">
+                            <property name="title">Fit and zoom</property>
+                            <property name="icon-name">zoom-fit-best-symbolic</property>
                             <child>
-                              <object class="AdwComboRow" id="image_fit_row">
-                                <property name="title">Default fit</property>
-                                <property name="subtitle">How a picture is sized when it opens</property>
-                                <property name="model">
-                                  <object class="GtkStringList">
-                                    <items>
-                                      <item>Fit to window</item>
-                                      <item>Stretch to width</item>
-                                      <item>Stretch to height</item>
-                                      <item>Stretch to window</item>
-                                      <item>One-to-one</item>
-                                    </items>
-                                  </object>
-                                </property>
-                              </object>
-                            </child>
-                            <child>
-                              <object class="AdwSwitchRow" id="keep_fit_mode_row">
-                                <property name="title">Maintain fit mode when switching images</property>
-                                <property name="subtitle">Otherwise each image opens in the default fit. Zoom is always reset.</property>
-                              </object>
-                            </child>
-                            <child>
-                              <object class="AdwComboRow" id="original_focus_row">
-                                <property name="title">One-to-one focus</property>
-                                <property name="subtitle">Where a picture sits when shown at its own size: its top, its centre, or the point under the pointer</property>
-                                <property name="model">
-                                  <object class="GtkStringList">
-                                    <items>
-                                      <item>Top</item>
-                                      <item>Center</item>
-                                      <item>At cursor</item>
-                                    </items>
-                                  </object>
-                                </property>
-                              </object>
-                            </child>
-                            <child>
-                              <object class="AdwActionRow">
-                                <property name="title">Expand images up to</property>
-                                <property name="subtitle">The most that fitting to the window enlarges small images</property>
-                                <child type="suffix">
-                                  <object class="GtkScale" id="expand_up_to_scale">
-                                    <property name="orientation">horizontal</property>
-                                    <property name="width-request">200</property>
-                                    <property name="valign">center</property>
-                                    <property name="draw-value">true</property>
-                                    <property name="value-pos">left</property>
-                                    <property name="digits">0</property>
-                                    <property name="round-digits">0</property>
-                                    <property name="adjustment">
-                                      <object class="GtkAdjustment">
-                                        <property name="lower">0</property>
-                                        <property name="upper">4</property>
-                                        <property name="step-increment">1</property>
-                                        <property name="page-increment">1</property>
-                                        <property name="value">0</property>
+                              <object class="AdwPreferencesGroup">
+                                <property name="title">Fit</property>
+                                <child>
+                                  <object class="AdwComboRow" id="image_fit_row">
+                                    <property name="title">Default fit</property>
+                                    <property name="subtitle">How a picture is sized when it opens</property>
+                                    <property name="model">
+                                      <object class="GtkStringList">
+                                        <items>
+                                          <item>Fit to window</item>
+                                          <item>Stretch to width</item>
+                                          <item>Stretch to height</item>
+                                          <item>Stretch to window</item>
+                                          <item>One-to-one</item>
+                                        </items>
                                       </object>
                                     </property>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="AdwSwitchRow" id="keep_fit_mode_row">
+                                    <property name="title">Maintain fit mode when switching images</property>
+                                    <property name="subtitle">Otherwise each image opens in the default fit. Zoom is always reset.</property>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="AdwComboRow" id="original_focus_row">
+                                    <property name="title">One-to-one focus</property>
+                                    <property name="subtitle">Where a picture sits when shown at its own size: its top, its centre, or the point under the pointer</property>
+                                    <property name="model">
+                                      <object class="GtkStringList">
+                                        <items>
+                                          <item>Top</item>
+                                          <item>Center</item>
+                                          <item>At cursor</item>
+                                        </items>
+                                      </object>
+                                    </property>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="AdwActionRow">
+                                    <property name="title">Expand images up to</property>
+                                    <property name="subtitle">The most that fitting to the window enlarges small images</property>
+                                    <child type="suffix">
+                                      <object class="GtkScale" id="expand_up_to_scale">
+                                        <property name="orientation">horizontal</property>
+                                        <property name="width-request">200</property>
+                                        <property name="valign">center</property>
+                                        <property name="draw-value">true</property>
+                                        <property name="value-pos">left</property>
+                                        <property name="digits">0</property>
+                                        <property name="round-digits">0</property>
+                                        <property name="adjustment">
+                                          <object class="GtkAdjustment">
+                                            <property name="lower">0</property>
+                                            <property name="upper">4</property>
+                                            <property name="step-increment">1</property>
+                                            <property name="page-increment">1</property>
+                                            <property name="value">0</property>
+                                          </object>
+                                        </property>
+                                      </object>
+                                    </child>
+                                  </object>
+                                </child>
+                              </object>
+                            </child>
+                            <child>
+                              <object class="AdwPreferencesGroup">
+                                <property name="title">Zoom</property>
+                                <child>
+                                  <object class="AdwSwitchRow" id="unlock_minimum_zoom_row">
+                                    <property name="title">Unlock minimum zoom</property>
+                                    <property name="subtitle">Off, zooming out stops at 100%, the picture's own size</property>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="AdwSpinRow" id="zoom_step_row">
+                                    <property name="title">Zoom step</property>
+                                    <property name="subtitle">How much, in percent, each zoom in or out changes the size</property>
+                                    <property name="adjustment">
+                                      <object class="GtkAdjustment">
+                                        <property name="lower">5</property>
+                                        <property name="upper">100</property>
+                                        <property name="step-increment">5</property>
+                                        <property name="page-increment">25</property>
+                                      </object>
+                                    </property>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="AdwComboRow" id="zoom_indicator_row">
+                                    <property name="title">Zoom indicator</property>
+                                    <property name="subtitle">Shows the zoom level, or only once you have zoomed a picture</property>
+                                    <property name="model">
+                                      <object class="GtkStringList">
+                                        <items>
+                                          <item>On</item>
+                                          <item>Off</item>
+                                          <item>Auto</item>
+                                        </items>
+                                      </object>
+                                    </property>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="AdwSwitchRow" id="smooth_scrolling_row">
+                                    <property name="title">Animate zoom and pan</property>
+                                    <property name="subtitle">Eases to the new view, rather than jumping there</property>
                                   </object>
                                 </child>
                               </object>
@@ -742,86 +769,46 @@
                           </object>
                         </child>
                         <child>
-                          <object class="AdwPreferencesGroup">
-                            <property name="title">Zoom</property>
+                          <object class="AdwPreferencesPage">
+                            <property name="title">Display</property>
+                            <property name="icon-name">image-x-generic-symbolic</property>
                             <child>
-                              <object class="AdwSwitchRow" id="unlock_minimum_zoom_row">
-                                <property name="title">Unlock minimum zoom</property>
-                                <property name="subtitle">Off, zooming out stops at 100%, the picture's own size</property>
-                              </object>
-                            </child>
-                            <child>
-                              <object class="AdwSpinRow" id="zoom_step_row">
-                                <property name="title">Zoom step</property>
-                                <property name="subtitle">How much, in percent, each zoom in or out changes the size</property>
-                                <property name="adjustment">
-                                  <object class="GtkAdjustment">
-                                    <property name="lower">5</property>
-                                    <property name="upper">100</property>
-                                    <property name="step-increment">5</property>
-                                    <property name="page-increment">25</property>
+                              <object class="AdwPreferencesGroup">
+                                <property name="title">Scaling</property>
+                                <child>
+                                  <object class="AdwComboRow" id="scaling_filter_row">
+                                    <property name="title">Scaling quality</property>
+                                    <property name="subtitle">The filter pictures are drawn with. Nearest neighbor keeps pixels sharp; the others smooth them, bicubic with more detail. Sharpening and bicubic are made once the picture has stopped moving, and shrinking uses area averaging.</property>
+                                    <property name="model">
+                                      <object class="GtkStringList">
+                                        <items>
+                                          <item>Nearest neighbor</item>
+                                          <item>Bilinear</item>
+                                          <item>Bilinear with sharpening</item>
+                                          <item>Bicubic</item>
+                                          <item>Bicubic with sharpening</item>
+                                        </items>
+                                      </object>
+                                    </property>
                                   </object>
-                                </property>
-                              </object>
-                            </child>
-                            <child>
-                              <object class="AdwComboRow" id="zoom_indicator_row">
-                                <property name="title">Zoom indicator</property>
-                                <property name="subtitle">Shows the zoom level, or only once you have zoomed a picture</property>
-                                <property name="model">
-                                  <object class="GtkStringList">
-                                    <items>
-                                      <item>On</item>
-                                      <item>Off</item>
-                                      <item>Auto</item>
-                                    </items>
+                                </child>
+                                <child>
+                                  <object class="AdwSwitchRow" id="smooth_upscaling_row">
+                                    <property name="title">Smooth upscaling</property>
+                                    <property name="subtitle">Off draws enlarged pictures with sharp pixels, whatever the filter</property>
                                   </object>
-                                </property>
+                                </child>
                               </object>
                             </child>
                             <child>
-                              <object class="AdwSwitchRow" id="smooth_scrolling_row">
-                                <property name="title">Animate zoom and pan</property>
-                                <property name="subtitle">Eases to the new view, rather than jumping there</property>
-                              </object>
-                            </child>
-                          </object>
-                        </child>
-                        <child>
-                          <object class="AdwPreferencesGroup">
-                            <property name="title">Scaling</property>
-                            <child>
-                              <object class="AdwComboRow" id="scaling_filter_row">
-                                <property name="title">Scaling quality</property>
-                                <property name="subtitle">The filter pictures are drawn with. Nearest neighbor keeps pixels sharp; the others smooth them, bicubic with more detail. Sharpening and bicubic are made once the picture has stopped moving, and shrinking uses area averaging.</property>
-                                <property name="model">
-                                  <object class="GtkStringList">
-                                    <items>
-                                      <item>Nearest neighbor</item>
-                                      <item>Bilinear</item>
-                                      <item>Bilinear with sharpening</item>
-                                      <item>Bicubic</item>
-                                      <item>Bicubic with sharpening</item>
-                                    </items>
+                              <object class="AdwPreferencesGroup">
+                                <property name="title">Background</property>
+                                <child>
+                                  <object class="AdwSwitchRow" id="blurred_background_row">
+                                    <property name="title">Blurred background behind images</property>
+                                    <property name="subtitle">A zoomed, cropped, dimmed and blurred copy of the picture fills the viewer behind it.</property>
                                   </object>
-                                </property>
-                              </object>
-                            </child>
-                            <child>
-                              <object class="AdwSwitchRow" id="smooth_upscaling_row">
-                                <property name="title">Smooth upscaling</property>
-                                <property name="subtitle">Off draws enlarged pictures with sharp pixels, whatever the filter</property>
-                              </object>
-                            </child>
-                          </object>
-                        </child>
-                        <child>
-                          <object class="AdwPreferencesGroup">
-                            <property name="title">Background</property>
-                            <child>
-                              <object class="AdwSwitchRow" id="blurred_background_row">
-                                <property name="title">Blurred background behind images</property>
-                                <property name="subtitle">A zoomed, cropped, dimmed and blurred copy of the picture fills the viewer behind it.</property>
+                                </child>
                               </object>
                             </child>
                           </object>
@@ -833,10 +820,11 @@
                         <property name="vexpand">true</property>
                         <child>
                           <object class="AdwPreferencesPage">
-                            <property name="title">Player</property>
+                            <property name="title">Playback</property>
                             <property name="icon-name">video-x-generic-symbolic</property>
                             <child>
                               <object class="AdwPreferencesGroup">
+                                <property name="title">Player</property>
                                 <child>
                                   <object class="AdwComboRow" id="video_backend_row">
                                     <property name="title">Player backend</property>
@@ -893,8 +881,37 @@
                             </child>
                             <child>
                               <object class="AdwPreferencesGroup">
-                                <property name="title">Video framing</property>
-                                <property name="description">Filters for videos played by mpv.</property>
+                                <property name="title">Video controls</property>
+                                <child>
+                                  <object class="AdwSwitchRow" id="controls_locked_row">
+                                    <property name="title">Lock the controls</property>
+                                    <property name="subtitle">Unlock them to drag the controls to a new place over the video, and drag their left or right edge to change their width</property>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="AdwActionRow" id="controls_reset_row">
+                                    <property name="title">Reset the controls</property>
+                                    <property name="subtitle">Puts them back at the bottom of the video, as wide as they need</property>
+                                    <child type="suffix">
+                                      <object class="GtkButton" id="controls_reset_button">
+                                        <property name="label">Reset</property>
+                                        <property name="valign">center</property>
+                                      </object>
+                                    </child>
+                                  </object>
+                                </child>
+                              </object>
+                            </child>
+                          </object>
+                        </child>
+                        <child>
+                          <object class="AdwPreferencesPage">
+                            <property name="title">Framing</property>
+                            <property name="icon-name">view-fullscreen-symbolic</property>
+                            <child>
+                              <object class="AdwPreferencesGroup">
+                                <property name="title">Cropping</property>
+                                <property name="description">For videos played by mpv.</property>
                                 <child>
                                   <object class="AdwSwitchRow" id="video_crop_row">
                                     <property name="title">Crop black bars and backdrops</property>
@@ -930,6 +947,12 @@
                                     </property>
                                   </object>
                                 </child>
+                              </object>
+                            </child>
+                            <child>
+                              <object class="AdwPreferencesGroup">
+                                <property name="title">Backdrop</property>
+                                <property name="description">For videos played by mpv.</property>
                                 <child>
                                   <object class="AdwSwitchRow" id="video_backdrop_row">
                                     <property name="title">Blurred backdrop</property>
@@ -980,29 +1003,6 @@
                                 </child>
                               </object>
                             </child>
-                            <child>
-                              <object class="AdwPreferencesGroup">
-                                <property name="title">Video controls</property>
-                                <child>
-                                  <object class="AdwSwitchRow" id="controls_locked_row">
-                                    <property name="title">Lock the controls</property>
-                                    <property name="subtitle">Unlock them to drag the controls to a new place over the video, and drag their left or right edge to change their width</property>
-                                  </object>
-                                </child>
-                                <child>
-                                  <object class="AdwActionRow" id="controls_reset_row">
-                                    <property name="title">Reset the controls</property>
-                                    <property name="subtitle">Puts them back at the bottom of the video, as wide as they need</property>
-                                    <child type="suffix">
-                                      <object class="GtkButton" id="controls_reset_button">
-                                        <property name="label">Reset</property>
-                                        <property name="valign">center</property>
-                                      </object>
-                                    </child>
-                                  </object>
-                                </child>
-                              </object>
-                            </child>
                           </object>
                         </child>
                         <child>
@@ -1028,6 +1028,17 @@
                                     <property name="subtitle">Smooths the motion of videos played by libmpv, using SVP's plugins</property>
                                   </object>
                                 </child>
+                                <child>
+                                  <object class="AdwSwitchRow" id="svp_nvof_row">
+                                    <property name="title">NVIDIA optical flow</property>
+                                    <property name="subtitle">Motion analysis on the GPU, rather than the CPU</property>
+                                  </object>
+                                </child>
+                              </object>
+                            </child>
+                            <child>
+                              <object class="AdwPreferencesGroup" id="svp_rate_group">
+                                <property name="title">Frame rate</property>
                                 <child>
                                   <object class="AdwComboRow" id="svp_fps_mode_row">
                                     <property name="title">Output frame rate</property>
@@ -1081,12 +1092,11 @@
                                     </property>
                                   </object>
                                 </child>
-                                <child>
-                                  <object class="AdwSwitchRow" id="svp_nvof_row">
-                                    <property name="title">NVIDIA optical flow</property>
-                                    <property name="subtitle">Motion analysis on the GPU, rather than the CPU</property>
-                                  </object>
-                                </child>
+                              </object>
+                            </child>
+                            <child>
+                              <object class="AdwPreferencesGroup" id="svp_seek_group">
+                                <property name="title">Seeking</property>
                                 <child>
                                   <object class="AdwSwitchRow" id="svp_seek_bypass_row">
                                     <property name="title">Pause SVP while seeking</property>
@@ -1224,41 +1234,111 @@
                       </object>
                     </child>
                     <child>
-                      <object class="AdwPreferencesPage" id="scripts_page">
-                        <property name="title">Scripts</property>
-                        <property name="icon-name">utilities-terminal-symbolic</property>
+                      <object class="AdwViewStack">
+                        <property name="vexpand">true</property>
                         <child>
-                          <object class="AdwPreferencesGroup">
-                            <property name="description">Each script is a command. %file% in a command stands for the path of the item.</property>
+                          <object class="AdwPreferencesPage" id="scripts_page">
+                            <property name="title">Scripts</property>
+                            <property name="icon-name">utilities-terminal-symbolic</property>
                             <child>
-                              <object class="GtkBox">
-                                <property name="spacing">6</property>
-                                <property name="margin-bottom">6</property>
+                              <object class="AdwPreferencesGroup">
+                                <property name="description">Each script is a command. %file% in a command stands for the path of the item.</property>
                                 <child>
-                                  <object class="GtkButton" id="add_script_button">
-                                    <property name="label">Add</property>
+                                  <object class="GtkBox">
+                                    <property name="spacing">6</property>
+                                    <property name="margin-bottom">6</property>
+                                    <child>
+                                      <object class="GtkButton" id="add_script_button">
+                                        <property name="label">Add</property>
+                                      </object>
+                                    </child>
+                                    <child>
+                                      <object class="GtkButton" id="edit_script_button">
+                                        <property name="label">Edit</property>
+                                        <property name="sensitive">false</property>
+                                      </object>
+                                    </child>
+                                    <child>
+                                      <object class="GtkButton" id="remove_script_button">
+                                        <property name="label">Remove</property>
+                                        <property name="sensitive">false</property>
+                                      </object>
+                                    </child>
                                   </object>
                                 </child>
                                 <child>
-                                  <object class="GtkButton" id="edit_script_button">
-                                    <property name="label">Edit</property>
-                                    <property name="sensitive">false</property>
-                                  </object>
-                                </child>
-                                <child>
-                                  <object class="GtkButton" id="remove_script_button">
-                                    <property name="label">Remove</property>
-                                    <property name="sensitive">false</property>
+                                  <object class="GtkListBox" id="scripts_list">
+                                    <property name="selection-mode">single</property>
+                                    <style>
+                                      <class name="boxed-list"/>
+                                    </style>
                                   </object>
                                 </child>
                               </object>
                             </child>
+                          </object>
+                        </child>
+                        <child>
+                          <object class="AdwPreferencesPage">
+                            <property name="title">Remote control</property>
+                            <property name="icon-name">network-server-symbolic</property>
                             <child>
-                              <object class="GtkListBox" id="scripts_list">
-                                <property name="selection-mode">single</property>
-                                <style>
-                                  <class name="boxed-list"/>
-                                </style>
+                              <object class="AdwPreferencesGroup">
+                                <property name="description">The remote control server lets other programs drive rsimgv by sending it JSON requests: to list and open tabs, move between folders, run actions and read what is shown. Each request is answered with a JSON response. See the &lt;a href="https://github.com/topher-au/rsimgv/blob/main/src/services/ipc.rs"&gt;documentation&lt;/a&gt; for the requests it takes.</property>
+                                <child>
+                                  <object class="AdwSwitchRow" id="ipc_socket_row">
+                                    <property name="title">Unix socket</property>
+                                    <property name="subtitle">Accepts commands from programs on this computer</property>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="AdwEntryRow" id="ipc_socket_path_row">
+                                    <property name="title">Socket path, blank for the default</property>
+                                    <property name="show-apply-button">true</property>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="AdwSwitchRow" id="ipc_tcp_switch_row">
+                                    <property name="title">TCP socket</property>
+                                    <property name="subtitle">Accepts commands on a TCP port</property>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="AdwSpinRow" id="ipc_tcp_row">
+                                    <property name="title">TCP port</property>
+                                    <property name="adjustment">
+                                      <object class="GtkAdjustment">
+                                        <property name="lower">1</property>
+                                        <property name="upper">65535</property>
+                                        <property name="step-increment">1</property>
+                                      </object>
+                                    </property>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="AdwSwitchRow" id="ipc_http_switch_row">
+                                    <property name="title">HTTP</property>
+                                    <property name="subtitle">Accepts commands as HTTP POST requests</property>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="AdwSpinRow" id="ipc_http_row">
+                                    <property name="title">HTTP port</property>
+                                    <property name="adjustment">
+                                      <object class="GtkAdjustment">
+                                        <property name="lower">1</property>
+                                        <property name="upper">65535</property>
+                                        <property name="step-increment">1</property>
+                                      </object>
+                                    </property>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="AdwSwitchRow" id="ipc_external_row">
+                                    <property name="title">Allow other machines to control rsimgv</property>
+                                    <property name="subtitle">Applies to the TCP and HTTP ports, which otherwise accept only localhost. Anyone who can reach them can control rsimgv.</property>
+                                  </object>
+                                </child>
                               </object>
                             </child>
                           </object>
@@ -1266,19 +1346,9 @@
                       </object>
                     </child>
                     <child>
-                      <object class="AdwPreferencesPage" id="advanced_page">
-                        <property name="title">Advanced</property>
+                      <object class="AdwPreferencesPage" id="performance_page">
+                        <property name="title">Performance</property>
                         <property name="icon-name">applications-engineering-symbolic</property>
-                        <child>
-                          <object class="AdwPreferencesGroup">
-                            <child>
-                              <object class="AdwSwitchRow" id="image_preloading_row">
-                                <property name="title">Enable image preloading</property>
-                                <property name="subtitle">When viewing an image, preload the adjacent images in the background</property>
-                              </object>
-                            </child>
-                          </object>
-                        </child>
                         <child>
                           <object class="AdwPreferencesGroup">
                             <property name="title">Thumbnail generator</property>
@@ -1323,6 +1393,17 @@
                               <object class="AdwSwitchRow" id="thumbnail_unload_offscreen_row">
                                 <property name="title">Unload offscreen thumbnails</property>
                                 <property name="subtitle">Frees the memory of thumbnails scrolled out of view, and loads them again when they come back</property>
+                              </object>
+                            </child>
+                          </object>
+                        </child>
+                        <child>
+                          <object class="AdwPreferencesGroup">
+                            <property name="title">Images</property>
+                            <child>
+                              <object class="AdwSwitchRow" id="image_preloading_row">
+                                <property name="title">Enable image preloading</property>
+                                <property name="subtitle">When viewing an image, preload the adjacent images in the background</property>
                               </object>
                             </child>
                           </object>
