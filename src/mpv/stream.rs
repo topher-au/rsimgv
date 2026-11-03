@@ -1,5 +1,6 @@
 //! A GTK media stream played by libmpv, so a `GtkPicture` and the viewer's controls can use it like a
-//! `GtkMediaFile`. libmpv decodes and renders each frame in software into memory, which becomes a texture.
+//! `GtkMediaFile`. libmpv decodes each frame and renders it in software into memory on a render thread, and the frame becomes a
+//! texture here.
 //!
 //! One player serves every stream: it is made for the first video, and each later video is loaded into it. The
 //! stream made last is the current one; the player's events and frames go to it, and older streams let go of
@@ -9,7 +10,7 @@ use std::cell::{Cell, RefCell};
 use std::path::Path;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use gtk::glib::subclass::Signal;
 use gtk::prelude::*;
@@ -17,7 +18,7 @@ use gtk::subclass::prelude::*;
 use gtk::{gdk, gio, glib};
 
 use super::framing::{self, CropMethod, CropRect, Framing};
-use super::{config_generation, Event, Player};
+use super::{config_generation, Event, Player, RenderedFrame};
 use crate::orientation::Orientation;
 
 /// The ids observed properties are reported under.
@@ -54,9 +55,6 @@ const BACKDROP_SHRINK: f64 = 8.0;
 /// often than this, such as while the window is dragged, is followed once it settles, with the frame rendered before scaled
 /// to fit meanwhile.
 const RESIZE_SETTLE: std::time::Duration = std::time::Duration::from_millis(120);
-
-/// The most buffers kept to render frames into.
-const POOL_SIZE: usize = 4;
 
 /// How often the position is reported to GTK, and so to the controls, while the video plays.
 const POSITION_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
@@ -104,44 +102,6 @@ fn capped(width: i32, height: i32) -> (i32, i32) {
     (width, height)
 }
 
-/// The pixels of a frame, which go back to the pool they came from once nothing refers to them, such as when GTK is done with the
-/// texture made from them. So a frame is rendered into a buffer that already exists, and handed to GTK as it is, not copied.
-struct Pooled {
-    pixels: Vec<u8>,
-    pool: Arc<Mutex<Vec<Vec<u8>>>>,
-}
-
-impl Pooled {
-    /// A buffer of `len` bytes from `pool`, or a new one. Its contents are whatever it held, as a render fills all of it.
-    fn take(pool: &Arc<Mutex<Vec<Vec<u8>>>>, len: usize) -> Self {
-        let mut buffers = pool.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        let at = buffers.iter().position(|buffer| buffer.len() == len);
-        let mut pixels = match at {
-            Some(at) => buffers.swap_remove(at),
-            None => buffers.pop().unwrap_or_default(),
-        };
-        drop(buffers);
-        pixels.resize(len, 0);
-        Self { pixels, pool: pool.clone() }
-    }
-}
-
-impl AsRef<[u8]> for Pooled {
-    fn as_ref(&self) -> &[u8] {
-        &self.pixels
-    }
-}
-
-impl Drop for Pooled {
-    fn drop(&mut self) {
-        let pixels = std::mem::take(&mut self.pixels);
-        let mut buffers = self.pool.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        if buffers.len() < POOL_SIZE {
-            buffers.push(pixels);
-        }
-    }
-}
-
 mod imp {
     use super::*;
 
@@ -162,8 +122,7 @@ mod imp {
         pub(super) render_size: Cell<(i32, i32)>,
         /// The display's scale, which may be fractional, and turns the size shown into device pixels.
         pub(super) scale: Cell<f64>,
-        /// The buffers frames are rendered into, and the latest frame with its size, which the backdrop is made from.
-        pub(super) pool: Arc<Mutex<Vec<Vec<u8>>>>,
+        /// The latest frame with its size, which the backdrop is made from.
         pub(super) last_frame: RefCell<Option<(glib::Bytes, i32, i32)>>,
         /// The size to render at once the window's size settles, when it was last rendered at a new size, and the timer that waits
         /// for it to settle.
@@ -185,8 +144,6 @@ mod imp {
         pub(super) speed: Cell<Option<f64>>,
         pub(super) container_fps: Cell<Option<f64>>,
         pub(super) estimated_fps: Cell<Option<f64>>,
-        /// Whether a frame was ready when the player did not allow rendering, so it is rendered once it does.
-        pub(super) frame_pending: Cell<bool>,
         /// Whether a seek is under way, to report when it lands.
         pub(super) seeking: Cell<bool>,
         /// The latest position mpv gave, in microseconds; when GTK was last given one; and the timer that gives it the latest
@@ -371,7 +328,15 @@ fn shared_player(options: &str) -> Option<Rc<Player>> {
         }
     };
     player.set_wakeup(main_thread_waker(MpvStream::handle_events));
-    player.set_render_update(main_thread_waker(|stream| stream.render_frame(false)));
+    // Frames are rendered on a thread of their own, and made into textures here.
+    let id = player.id();
+    player.start_renderer(move |frame| {
+        glib::MainContext::default().invoke(move || {
+            if let Some(stream) = CURRENT.with(|current| current.borrow().upgrade()) {
+                stream.frame_rendered(id, frame);
+            }
+        });
+    });
     player.observe_double(DURATION, "duration");
     player.observe_double(TIME_POS, "time-pos");
     player.observe_flag(EOF_REACHED, "eof-reached");
@@ -675,9 +640,9 @@ impl MpvStream {
             let Some(event) = event else { break };
             self.handle_event(event);
         }
-        // Rendering waited for the events, which have all been read now.
-        if self.imp().frame_pending.take() {
-            self.render_frame(true);
+        // Rendering waits while events do, so the render thread is told these have all been read.
+        if let Some(player) = self.imp().player.borrow().as_ref() {
+            player.wake_renderer();
         }
     }
 
@@ -793,9 +758,9 @@ impl MpvStream {
         }
     }
 
-    /// Renders the picture at the size it is shown at in the area `width` by `height`, in device pixels (or at its own size,
-    /// if it is small), when that has changed. Mpv draws its OSD at the size it renders, so rendering at the video's size and scaling it up would blur the
-    /// text; the OSD sits in the picture's corner.
+    /// Has the picture rendered at the size it is shown at in the area `width` by `height`, in device pixels (or at its own
+    /// size, if it is small), when that has changed. Mpv draws its OSD at the size it renders, so rendering at the video's size
+    /// and scaling it up would blur the text; the OSD sits in the picture's corner.
     fn fit_render(&self, width: f64, height: f64) {
         let imp = self.imp();
         let scale = imp.scale.get().max(1.0);
@@ -856,7 +821,9 @@ impl MpvStream {
         imp.render_size.set(imp.wanted_size.get());
         imp.resized_at.set(Some(std::time::Instant::now()));
         imp.backdrop_stale.set(true);
-        self.render_frame(true);
+        if let Some(player) = imp.player.borrow().as_ref() {
+            player.render_at(imp.render_size.get().0, imp.render_size.get().1);
+        }
     }
 
     /// Makes the backdrop, now, from the latest frame: for each bare strip of the area round the picture,
@@ -896,29 +863,17 @@ impl MpvStream {
         imp.backdrop.replace(pieces);
     }
 
-    /// Renders the new frame, if there is one, or the current frame when `force` is set, and shows it.
-    fn render_frame(&self, force: bool) {
+    /// Shows a frame the render thread rendered for the player with `player_id`, unless that is not the player any more.
+    fn frame_rendered(&self, player_id: u64, frame: RenderedFrame) {
         let imp = self.imp();
-        let (width, height) = imp.render_size.get();
-        let player = imp.player.borrow();
-        let Some(player) = player.as_ref() else { return };
-        if (!force && !player.frame_ready()) || width <= 0 || height <= 0 {
+        if imp.player.borrow().as_ref().map(|player| player.id()) != Some(player_id) {
             return;
         }
-        let mut frame = Pooled::take(&imp.pool, width as usize * height as usize * 4);
-        match player.render(width, height, &mut frame.pixels) {
-            Ok(true) => {}
-            Ok(false) => {
-                imp.frame_pending.set(true);
-                return;
-            }
-            Err(err) => {
-                eprintln!("rsimgv: mpv: could not render a frame: {err}");
-                return;
-            }
-        }
-        let bytes = glib::Bytes::from_owned(frame);
+        let RenderedFrame { pixels, width, height, ticket } = frame;
+        let bytes = glib::Bytes::from_owned(pixels);
         let texture = gdk::MemoryTexture::new(width, height, gdk::MemoryFormat::B8g8r8x8, &bytes, width as usize * 4);
+        // The render thread may render the next frame now.
+        drop(ticket);
         imp.last_frame.replace(Some((bytes, width, height)));
         if imp.framing.get().backdrop.is_some() && (imp.backdrop_stale.get() || imp.backdrop_at.get().is_none_or(|at| at.elapsed() >= BACKDROP_INTERVAL)) {
             self.update_backdrop();
@@ -926,13 +881,7 @@ impl MpvStream {
         let first = imp.frame.replace(Some(texture.upcast())).is_none();
         self.invalidate_contents();
         if first {
-            // Not from inside a snapshot, which this may be in.
-            let weak = self.downgrade();
-            glib::idle_add_local_once(move || {
-                if let Some(stream) = weak.upgrade() {
-                    stream.emit_by_name::<()>("first-frame", &[]);
-                }
-            });
+            self.emit_by_name::<()>("first-frame", &[]);
         }
     }
 }

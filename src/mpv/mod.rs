@@ -1,12 +1,14 @@
 //! A small, safe wrapper over libmpv: a player that loads files, takes commands and properties, reports
-//! events, and renders frames in software into memory for GTK to show. Each player listens for mpv JSON IPC on
-//! `/tmp/rsimgv-mpv-<pid in hex>`. See `stream` for the GTK side.
+//! events, and renders frames in software into memory, on a thread of its own (see `render`), for GTK to show. Each player
+//! listens for mpv JSON IPC on `/tmp/rsimgv-mpv-<pid in hex>`. See `stream` for the GTK side.
 
 pub mod framing;
+mod render;
 mod stream;
 mod sys;
 
 pub use framing::{CropRect, Framing};
+pub use render::RenderedFrame;
 pub use stream::MpvStream;
 
 use std::cell::{Cell, RefCell};
@@ -16,7 +18,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::raw::{c_char, c_int, c_void};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -24,6 +26,7 @@ use gtk::gio;
 use gtk::gio::prelude::*;
 
 use crate::orientation::Orientation;
+use render::{RenderGate, RenderThread};
 
 /// An event from the player, as `Player::next_event` reports it.
 #[derive(Debug)]
@@ -54,29 +57,11 @@ const REPLY_ROTATION: u64 = 1 << 34;
 /// rendering until the video is reconfigured.
 const ROTATION_RETRIES: u32 = 2;
 
-/// Whether frames may be rendered, kept by the player and read by whatever renders. A frame is rendered only when no event from
-/// libmpv is waiting, so that a reconfiguration that came before it has been seen, and when the output is known not to be
-/// rotated: libmpv's software renderer aborts the whole process on a rotated frame (see `Player::new`).
-#[derive(Default)]
-struct RenderGate {
-    /// Set by libmpv's wakeup, which comes with every event, and cleared once the events waiting have all been read.
-    events_pending: AtomicBool,
-    /// Cleared when the video is reconfigured or its rotation changes, until a check made since then finds no rotation.
-    rotation_unconfirmed: AtomicBool,
-}
-
-impl RenderGate {
-    /// Whether a frame may be rendered now.
-    fn open(&self) -> bool {
-        !self.events_pending.load(Ordering::Acquire) && !self.rotation_unconfirmed.load(Ordering::Acquire)
-    }
-}
-
 /// A callback libmpv calls from its own threads.
 type Wakeup = Box<dyn Fn() + Send + Sync>;
 
 unsafe extern "C" fn call_wakeup(data: *mut c_void) {
-    // SAFETY: `data` is the `Wakeup` boxed in `set_wakeup` or `set_render_update`, which outlives the player.
+    // SAFETY: `data` is the `Wakeup` boxed in `set_wakeup`, which outlives the player.
     let callback = unsafe { &*(data as *const Wakeup) };
     callback();
 }
@@ -366,13 +351,19 @@ unsafe fn read_crop(node: &sys::mpv_node) -> Option<CropRect> {
     Some(CropRect { width: width?, height: height?, left: left?, top: top? }).filter(|rect| rect.width > 0 && rect.height > 0)
 }
 
+/// The number the next player is given as its id.
+static NEXT_PLAYER_ID: AtomicU64 = AtomicU64::new(1);
+
 /// A libmpv player with a software render context.
 pub struct Player {
+    /// Tells this player from the ones before and after it.
+    id: u64,
     handle: *mut sys::mpv_handle,
     render: *mut sys::mpv_render_context,
-    /// The callbacks handed to libmpv, freed once it is gone.
+    /// The thread that renders frames, once `start_renderer` has started it.
+    renderer: Option<RenderThread>,
+    /// The callback handed to libmpv, freed once it is gone.
     wakeup: Option<*mut Wakeup>,
-    render_update: Option<*mut Wakeup>,
     /// The rotation, in degrees, that the upright filter now undoes.
     rotation: Cell<i64>,
     /// The turn and mirror the user gave the video, which the orientation filter applies.
@@ -400,7 +391,7 @@ impl Player {
             if handle.is_null() {
                 return Err("could not create the mpv player".to_owned());
             }
-            let mut player = Self { handle, render: std::ptr::null_mut(), wakeup: None, render_update: None, rotation: Cell::new(0), orientation: Cell::new(Orientation::default()), interpolation: Default::default(), crop: Cell::new(None), detector: Cell::new(false), gate: Arc::default(), rotation_checks: Cell::new(0) };
+            let mut player = Self { id: NEXT_PLAYER_ID.fetch_add(1, Ordering::Relaxed), handle, render: std::ptr::null_mut(), renderer: None, wakeup: None, rotation: Cell::new(0), orientation: Cell::new(Orientation::default()), interpolation: Default::default(), crop: Cell::new(None), detector: Cell::new(false), gate: Arc::default(), rotation_checks: Cell::new(0) };
             for (name, value) in [
                 ("vo", "libmpv"),
                 // The software renderer has no way to share a hardware decoder's surfaces, so decoding in hardware means copying
@@ -416,8 +407,8 @@ impl Player {
                 ("osd-scale-by-window", "no"),
                 // The volume goes up to 200%; mpv stops at 130% unless it is told otherwise.
                 ("volume-max", "200"),
-                // Rendering must not wait for a frame's display time on the main thread, which libmpv does for up to
-                // this long a frame. A frame is shown when it is drawn.
+                // Rendering does not wait for a frame's display time, which libmpv does for up to this long a frame. A frame is
+                // shown when it is rendered.
                 ("video-timing-offset", "0"),
                 // The software renderer scales on the CPU, where the default lanczos costs a lot for a frame that is scaled to
                 // the size shown. Bicubic is much cheaper and hard to tell apart from it at the sizes a video is shown.
@@ -770,63 +761,50 @@ impl Player {
         }
     }
 
-    /// Calls `callback`, from a libmpv thread, whenever a new frame may be ready to render.
-    pub fn set_render_update(&mut self, callback: impl Fn() + Send + Sync + 'static) {
-        let data = Box::into_raw(Box::new(Box::new(callback) as Wakeup));
-        // SAFETY: as for `set_wakeup`.
-        unsafe { sys::mpv_render_context_set_update_callback(self.render, Some(call_wakeup), data as *mut c_void) };
-        if let Some(old) = self.render_update.replace(data) {
-            // SAFETY: libmpv no longer holds the old callback.
-            drop(unsafe { Box::from_raw(old) });
+    /// Starts rendering frames on a thread of its own, calling `deliver`, from that thread, with each. It renders at the size
+    /// given to `render_at`.
+    pub fn start_renderer(&mut self, deliver: impl Fn(RenderedFrame) + Send + 'static) {
+        self.renderer = Some(RenderThread::start(self.render, self.gate.clone(), deliver));
+    }
+
+    /// Renders the current frame at `width` by `height` now, and the frames after it at that size.
+    pub fn render_at(&self, width: i32, height: i32) {
+        if let Some(renderer) = &self.renderer {
+            renderer.render_at(width, height);
         }
     }
 
-    /// Whether a new frame is ready to render.
-    pub fn frame_ready(&self) -> bool {
-        // SAFETY: the render context is live.
-        unsafe { sys::mpv_render_context_update(self.render) & sys::MPV_RENDER_UPDATE_FRAME != 0 }
+    /// Tells the render thread that the events waiting have been read, which may let it render a frame it held back.
+    pub fn wake_renderer(&self) {
+        if let Some(renderer) = &self.renderer {
+            renderer.wake();
+        }
     }
 
-    /// Renders the current frame at `width` by `height` into `pixels`, as 4 bytes a pixel in BGRx order. Returns whether it did:
-    /// it does not while the gate is shut, and the caller renders again once the events waiting have been read.
-    pub fn render(&self, width: i32, height: i32, pixels: &mut [u8]) -> Result<bool, String> {
-        let stride = width as usize * 4;
-        if width <= 0 || height <= 0 || pixels.len() < stride * height as usize {
-            return Err("the frame buffer is too small".to_owned());
-        }
-        // Rendering a rotated frame can abort the process (see `new`), and a client on the IPC socket or a changed mpv.conf can
-        // still ask for rotation while the player runs.
-        if !self.gate.open() {
-            return Ok(false);
-        }
-        let mut size = [width as c_int, height as c_int];
-        let format = CString::new("bgr0").expect("no nul");
-        let mut stride = stride;
-        let mut params = [
-            sys::mpv_render_param { type_: sys::MPV_RENDER_PARAM_SW_SIZE, data: size.as_mut_ptr() as *mut c_void },
-            sys::mpv_render_param { type_: sys::MPV_RENDER_PARAM_SW_FORMAT, data: format.as_ptr() as *mut c_void },
-            sys::mpv_render_param { type_: sys::MPV_RENDER_PARAM_SW_STRIDE, data: &mut stride as *mut usize as *mut c_void },
-            sys::mpv_render_param { type_: sys::MPV_RENDER_PARAM_SW_POINTER, data: pixels.as_mut_ptr() as *mut c_void },
-            sys::mpv_render_param { type_: sys::MPV_RENDER_PARAM_INVALID, data: std::ptr::null_mut() },
-        ];
-        // SAFETY: every parameter points at data that outlives the call, and `pixels` holds the whole frame.
-        check(unsafe { sys::mpv_render_context_render(self.render, params.as_mut_ptr()) })?;
-        Ok(true)
+    /// Tells this player from the ones before and after it.
+    pub fn id(&self) -> u64 {
+        self.id
     }
 }
 
 impl Drop for Player {
     fn drop(&mut self) {
-        // SAFETY: the render context goes before the handle, as libmpv requires; then the callbacks, which
-        // libmpv no longer calls.
+        // The render thread stops first, as nothing may render while the context is freed; then the render context goes before
+        // the handle, as libmpv requires; then the callbacks, which libmpv no longer calls.
+        if let Some(renderer) = &mut self.renderer {
+            renderer.stop();
+        }
+        // SAFETY: as above.
         unsafe {
             if !self.render.is_null() {
                 sys::mpv_render_context_free(self.render);
             }
+            // The render thread's callback data goes with the context.
+            self.renderer.take();
             sys::mpv_terminate_destroy(self.handle);
             // mpv removes its socket when it ends, unless it was stopped; the socket is not needed once it has ended.
             let _ = std::fs::remove_file(ipc_socket_path());
-            for callback in [self.wakeup.take(), self.render_update.take()].into_iter().flatten() {
+            if let Some(callback) = self.wakeup.take() {
                 drop(Box::from_raw(callback));
             }
         }
