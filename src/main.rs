@@ -1,6 +1,7 @@
 mod atomic_file;
 mod fs;
 mod ipc;
+mod orientation;
 mod remote;
 mod resample;
 mod scripts;

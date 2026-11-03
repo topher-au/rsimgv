@@ -175,6 +175,8 @@ pub enum Unit {
     Percent,
     /// A multiple, shown as `n×`.
     Times,
+    /// An angle, shown as `n°`.
+    Degrees,
 }
 
 /// The value a binding passes to an action that takes one: what it is called and counts, the range it is kept
@@ -203,6 +205,7 @@ impl ValueInfo {
             Unit::Seconds => format!("{signed}s"),
             Unit::Percent => format!("{signed}%"),
             Unit::Times => format!("{number}\u{d7}"),
+            Unit::Degrees => format!("{number}\u{b0}"),
         }
     }
 }
@@ -213,6 +216,7 @@ pub fn value_info(name: &str) -> Option<ValueInfo> {
         "video.seek" => Some(ValueInfo { label: "Seconds", unit: Unit::Seconds, min: -3600.0, max: 3600.0, step: 1.0, digits: 1, default: 10.0 }),
         "video.volume" => Some(ValueInfo { label: "Change", unit: Unit::Percent, min: -100.0, max: 100.0, step: 1.0, digits: 0, default: 5.0 }),
         "video.set-speed" => Some(ValueInfo { label: "Speed", unit: Unit::Times, min: MIN_SPEED, max: MAX_SPEED, step: 0.25, digits: 2, default: 1.0 }),
+        "view.set-rotation" => Some(ValueInfo { label: "Degrees", unit: Unit::Degrees, min: 0.0, max: 270.0, step: 90.0, digits: 0, default: 0.0 }),
         "video.adjust-speed" => Some(ValueInfo {
             label: "Change",
             unit: Unit::Percent,
@@ -477,6 +481,21 @@ pub const ACTIONS: &[ActionInfo] = &[
     },
     ActionInfo {
         name: "view.toggle-status-bar", description: "Show or hide the status bar under the viewer's item.", icon: "view-continuous-symbolic", label: "Toggle Status Bar", defaults: &[],
+    },
+    ActionInfo {
+        name: "view.rotate-clockwise", description: "Turn the picture or video a quarter turn clockwise.", icon: "object-rotate-right-symbolic", label: "Rotate Clockwise", defaults: &[],
+    },
+    ActionInfo {
+        name: "view.rotate-counter-clockwise", description: "Turn the picture or video a quarter turn counter-clockwise.", icon: "object-rotate-left-symbolic", label: "Rotate Counter-Clockwise", defaults: &[],
+    },
+    ActionInfo {
+        name: "view.set-rotation", description: "Turn the picture or video to the angle bound, clockwise from how the file has it: 0, 90, 180 or 270 degrees.", icon: "object-rotate-right-symbolic", label: "Set Rotation", defaults: &[],
+    },
+    ActionInfo {
+        name: "view.flip-vertical", description: "Mirror the picture or video from top to bottom.", icon: "object-flip-vertical-symbolic", label: "Flip Top-Bottom", defaults: &[],
+    },
+    ActionInfo {
+        name: "view.flip-horizontal", description: "Mirror the picture or video from left to right.", icon: "object-flip-horizontal-symbolic", label: "Flip Left-Right", defaults: &[],
     },
     ActionInfo {
         name: "image.zoom-in", description: "Enlarge the picture.", icon: "zoom-in-symbolic", label: "Zoom In", defaults: &["shift+equal", "equal"],

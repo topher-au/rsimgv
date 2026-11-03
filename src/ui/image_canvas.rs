@@ -9,6 +9,7 @@ use gtk::prelude::*;
 use gtk::subclass::prelude::*;
 use gtk::{gdk, gio, glib, graphene, gsk};
 
+use crate::orientation::Orientation;
 use crate::resample::{self, Picture, Quality};
 
 /// How much one zoom step changes the scale.
@@ -188,6 +189,9 @@ mod imp {
     #[derive(Default)]
     pub struct ImageCanvas {
         pub(super) texture: RefCell<Option<gdk::Texture>>,
+        /// The picture as the file has it, of which `texture` is the turned and mirrored copy.
+        pub(super) original: RefCell<Option<gdk::Texture>>,
+        pub(super) orientation: Cell<Orientation>,
         /// The fit mode, or `None` once the user has zoomed.
         pub(super) fit: Cell<Option<Fit>>,
         /// The fit mode last chosen, which a new picture gets, and whether it does rather than fitting the window.
@@ -366,6 +370,21 @@ mod imp {
     }
 }
 
+/// The pixels of `texture`, as premultiplied RGBA with no padding between rows.
+fn texture_picture(texture: &gdk::Texture) -> Picture {
+    let mut downloader = gdk::TextureDownloader::new(texture);
+    downloader.set_format(gdk::MemoryFormat::R8g8b8a8Premultiplied);
+    let (bytes, stride) = downloader.download_bytes();
+    let (width, height) = (texture.width(), texture.height());
+    let row = width as usize * 4;
+    let pixels = if stride == row {
+        bytes.to_vec()
+    } else {
+        bytes.chunks(stride).take(height as usize).flat_map(|line| line[..row].iter().copied()).collect()
+    };
+    Picture { width, height, pixels }
+}
+
 glib::wrapper! {
     /// A picture drawn to fit or zoomed within its view, and panned by dragging or by `pan`.
     pub struct ImageCanvas(ObjectSubclass<imp::ImageCanvas>)
@@ -387,12 +406,43 @@ impl ImageCanvas {
         let default = imp.default_fit.get();
         let fit = if imp.keep_fit.get() { imp.last_fit.get().unwrap_or(default) } else { default };
         imp.fit.set(Some(fit));
+        imp.original.replace(texture.clone());
+        imp.orientation.set(Orientation::default());
         imp.texture.replace(texture);
         imp.serial.set(imp.serial.get() + 1);
         imp.source.take();
         imp.resampled.take();
         imp.offset.set(self.fit_offset(fit, None));
         self.snap();
+    }
+
+    /// Turns and mirrors the picture as `orientation` says, from how the file has it. The picture is placed again in
+    /// its fit mode, or centred if it is zoomed.
+    pub fn set_orientation(&self, orientation: Orientation) {
+        let imp = self.imp();
+        let Some(original) = imp.original.borrow().clone() else { return };
+        if imp.orientation.replace(orientation) == orientation {
+            return;
+        }
+        let texture = if orientation.is_identity() {
+            original
+        } else {
+            let picture = texture_picture(&original);
+            let (width, height) = orientation.oriented_size(picture.width, picture.height);
+            let bytes = glib::Bytes::from_owned(orientation.apply(&picture.pixels, picture.width, picture.height));
+            gdk::MemoryTexture::new(width, height, gdk::MemoryFormat::R8g8b8a8Premultiplied, &bytes, width as usize * 4).upcast()
+        };
+        imp.texture.replace(Some(texture));
+        imp.serial.set(imp.serial.get() + 1);
+        imp.source.take();
+        imp.resampled.take();
+        imp.offset.set(imp.fit.get().map_or((0.0, 0.0), |fit| self.fit_offset(fit, None)));
+        self.snap();
+    }
+
+    /// The turn and mirror the picture is shown with.
+    pub fn orientation(&self) -> Orientation {
+        self.imp().orientation.get()
     }
 
     /// Fits the picture to the view in `fit` mode, placed again: centred, or as the focus says at its own size.
@@ -491,9 +541,9 @@ impl ImageCanvas {
         self.snap();
     }
 
-    /// The picture shown, at its own size, if there is one.
+    /// The picture shown, at its own size and as the file has it, if there is one.
     pub fn texture(&self) -> Option<gdk::Texture> {
-        self.imp().texture.borrow().clone()
+        self.imp().original.borrow().clone()
     }
 
     /// Calls `callback` with the scale the picture is drawn at, relative to its own size, when it changes.
@@ -777,17 +827,7 @@ impl ImageCanvas {
             return Some(source.clone());
         }
         let texture = imp.texture.borrow().clone()?;
-        let mut downloader = gdk::TextureDownloader::new(&texture);
-        downloader.set_format(gdk::MemoryFormat::R8g8b8a8Premultiplied);
-        let (bytes, stride) = downloader.download_bytes();
-        let (width, height) = (texture.width(), texture.height());
-        let row = width as usize * 4;
-        let pixels = if stride == row {
-            bytes.to_vec()
-        } else {
-            bytes.chunks(stride).take(height as usize).flat_map(|line| line[..row].iter().copied()).collect()
-        };
-        let source = Arc::new(Picture { width, height, pixels });
+        let source = Arc::new(texture_picture(&texture));
         imp.source.replace(Some(source.clone()));
         Some(source)
     }

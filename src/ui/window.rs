@@ -23,6 +23,7 @@ use super::{Level, Message};
 use super::message_overlay::{MessageId, Position};
 use super::keybinds_overlay::KeybindsOverlay;
 use super::playlist_panel::{stamp, PlaylistPanel, SortColumn};
+use crate::orientation::Orientation;
 use crate::fs::metadata::MediaInfo;
 
 mod imp {
@@ -961,6 +962,11 @@ impl Window {
         bound_action(&view, &weak, "pin", |window| window.imp().viewer.toggle_pinned());
         bound_action(&view, &weak, "toggle-thumbnail-bar", |window| window.toggle_setting("viewer-thumbnail-bar-shown"));
         bound_action(&view, &weak, "toggle-status-bar", |window| window.toggle_setting("viewer-status-bar"));
+        bound_action(&view, &weak, "rotate-clockwise", |window| window.imp().viewer.reorient(Orientation::rotated_clockwise));
+        bound_action(&view, &weak, "rotate-counter-clockwise", |window| window.imp().viewer.reorient(Orientation::rotated_counter_clockwise));
+        valued_action(&view, &weak, "view.set-rotation", |window, degrees| window.imp().viewer.reorient(|orientation| orientation.with_rotation(degrees)));
+        bound_action(&view, &weak, "flip-vertical", |window| window.imp().viewer.reorient(Orientation::flipped_vertically));
+        bound_action(&view, &weak, "flip-horizontal", |window| window.imp().viewer.reorient(Orientation::flipped_horizontally));
         bound_action(&view, &weak, "toggle-thumbnail-bar-pin", |window| window.toggle_setting("viewer-thumbnail-bar-pinned"));
         bound_action(&view, &weak, "toggle-thumbnail-bar-overlay", |window| window.toggle_setting("viewer-thumbnail-bar-overlay"));
         self.insert_action_group("view", Some(&view));

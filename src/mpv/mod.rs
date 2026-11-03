@@ -19,6 +19,8 @@ use std::time::Duration;
 use gtk::gio;
 use gtk::gio::prelude::*;
 
+use crate::orientation::Orientation;
+
 /// An event from the player, as `Player::next_event` reports it.
 #[derive(Debug)]
 pub enum Event {
@@ -228,6 +230,9 @@ pub fn parse_options(text: &str) -> Vec<(String, String)> {
 /// The label of the filter that turns a rotated video upright, so it can be replaced on its own.
 const UPRIGHT_FILTER_LABEL: &str = "@rsimgv-upright";
 
+/// The label of the filter that turns and mirrors the video as the user asked.
+const ORIENTATION_FILTER_LABEL: &str = "@rsimgv-orientation";
+
 /// The filter that turns upright a video stored `rotation` degrees clockwise of how it should be shown, if it needs
 /// one.
 fn upright_filter(rotation: i64) -> Option<String> {
@@ -296,6 +301,8 @@ pub struct Player {
     render_update: Option<*mut Wakeup>,
     /// The rotation, in degrees, that the upright filter now undoes.
     rotation: Cell<i64>,
+    /// The turn and mirror the user gave the video, which the orientation filter applies.
+    orientation: Cell<Orientation>,
     /// The filter that `set_interpolation_filter` last put in the chain.
     interpolation: std::cell::RefCell<Option<String>>,
 }
@@ -313,7 +320,7 @@ impl Player {
             if handle.is_null() {
                 return Err("could not create the mpv player".to_owned());
             }
-            let mut player = Self { handle, render: std::ptr::null_mut(), wakeup: None, render_update: None, rotation: Cell::new(0), interpolation: Default::default() };
+            let mut player = Self { handle, render: std::ptr::null_mut(), wakeup: None, render_update: None, rotation: Cell::new(0), orientation: Cell::new(Orientation::default()), interpolation: Default::default() };
             for (name, value) in [
                 ("vo", "libmpv"),
                 ("hwdec", "auto-safe"),
@@ -383,6 +390,26 @@ impl Player {
             eprintln!("rsimgv: mpv: could not remove the rotation filter: {err}");
         }
         self.add_upright_filter();
+        // The frame shown already passed the filters, and a paused video would stay that way, so it is decoded again.
+        let _ = self.command(&["seek", "0", "relative+exact"]);
+    }
+
+    /// Turns and mirrors the video as `orientation` says, after the upright filter, which has made it upright.
+    pub fn set_orientation(&self, orientation: Orientation) {
+        let before = self.orientation.replace(orientation);
+        if before == orientation {
+            return;
+        }
+        if before.filter_graph().is_some() {
+            if let Err(err) = self.command(&["vf", "remove", ORIENTATION_FILTER_LABEL]) {
+                eprintln!("rsimgv: mpv: could not remove the orientation filter: {err}");
+            }
+        }
+        if let Some(graph) = orientation.filter_graph() {
+            if let Err(err) = self.command(&["vf", "add", &format!("{ORIENTATION_FILTER_LABEL}:lavfi=[{graph}]")]) {
+                eprintln!("rsimgv: mpv: could not add the orientation filter: {err}");
+            }
+        }
         // The frame shown already passed the filters, and a paused video would stay that way, so it is decoded again.
         let _ = self.command(&["seek", "0", "relative+exact"]);
     }

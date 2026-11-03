@@ -17,6 +17,7 @@ use gtk::{gdk, gio, glib};
 use super::drag;
 use super::image_canvas::{Fit, ImageCanvas, OriginalFocus, Placement, Scaling};
 use crate::file_settings::FileSettings;
+use crate::orientation::Orientation;
 use crate::fs::metadata::MediaInfo;
 use crate::fs::thumbnail::Pixels;
 use super::media_controls::MediaControls;
@@ -859,6 +860,18 @@ impl MediaViewer {
     /// Changes the volume of the video shown by `delta`.
     pub fn adjust_volume(&self, delta: f64) {
         self.imp().controls.adjust_volume(delta);
+    }
+
+    /// Changes the turn and mirror of the picture or video shown with `change`. A picture is redrawn from its pixels
+    /// and a video gets a filter.
+    pub fn reorient(&self, change: impl FnOnce(Orientation) -> Orientation) {
+        let imp = self.imp();
+        let stream = imp.media.borrow().as_ref().and_then(|media| media.downcast_ref::<crate::mpv::MpvStream>().cloned());
+        match stream {
+            Some(stream) => stream.set_orientation(change(stream.orientation())),
+            None if imp.media.borrow().is_none() => imp.canvas.set_orientation(change(imp.canvas.orientation())),
+            None => {}
+        }
     }
 
     /// Zooms the picture shown in, or out.
