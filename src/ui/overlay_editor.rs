@@ -13,7 +13,7 @@ use super::media_overlay::{layout_from_settings, set_preview, Preview};
 use crate::overlay::template::Template;
 use crate::overlay::{
     sample, Element, FilenameWrap, IconStyle, Items, Kind, Layout, Overflow, Slot, Visibility, BAR_WIDTH_RANGE, FADE_RANGE, FILENAME_CHARS_RANGE, MIN_SIZE_RANGE, TEXT_ROTATION_RANGE, FONT_SIZE_RANGE, MARGIN_RANGE, SHADOW_BLUR_RANGE, SHADOW_OFFSET_RANGE, STROKE_RANGE, MAX_NOTIFICATIONS_RANGE, PADDING_RANGE, PROPERTIES, RADIUS_RANGE,
-    SECONDS_RANGE, STATUS_PARTS, TIME_FORMATS, RotationFormat, SpeedFormat, TextPosition,
+    SECONDS_RANGE, STATUS_PARTS, TIME_FORMATS, RotationFormat, SpeedFormat, TextPosition, ChildAlign, Justify, SPACING_RANGE,
 };
 
 /// The element being edited, and where it goes back to.
@@ -447,6 +447,7 @@ impl Editor {
             }
         });
         group.add(&template);
+        self.add_layout_rows(&group, element, None, None);
         group.add(&preview);
         page.add(&group);
 
@@ -454,6 +455,48 @@ impl Editor {
         help.add(&reference());
         page.add(&help);
         page
+    }
+
+    /// Adds to `group` the rows for how the things in an element are spaced and line up: the space between them, how they line
+    /// up across the way they are stacked (each named by its title, or left out for `None`), and how lines of text line up.
+    fn add_layout_rows(self: &Rc<Self>, group: &adw::PreferencesGroup, element: &Element, spacing: Option<&str>, align: Option<&str>) {
+        if let Some(title) = spacing {
+            let row = adw::SpinRow::with_range(f64::from(SPACING_RANGE.0), f64::from(SPACING_RANGE.1), 1.0);
+            row.set_title(title);
+            row.set_subtitle("In pixels");
+            row.set_value(f64::from(element.spacing));
+            row.connect_value_notify({
+                let editor = self.clone();
+                move |row| editor.edit(|element| element.spacing = row.value() as i32)
+            });
+            group.add(&row);
+        }
+        if let Some(title) = align {
+            let titles: Vec<&str> = ChildAlign::ALL.iter().map(|align| align.title()).collect();
+            let row = adw::ComboRow::builder().title(title).model(&gtk::StringList::new(&titles)).build();
+            row.set_selected(ChildAlign::ALL.iter().position(|candidate| *candidate == element.child_align).unwrap_or(0) as u32);
+            row.connect_selected_notify({
+                let editor = self.clone();
+                move |row| {
+                    if let Some(&align) = ChildAlign::ALL.get(row.selected() as usize) {
+                        editor.edit(|element| element.child_align = align);
+                    }
+                }
+            });
+            group.add(&row);
+        }
+        let titles: Vec<&str> = Justify::ALL.iter().map(|justify| justify.title()).collect();
+        let row = adw::ComboRow::builder().title("Text justification").subtitle("How lines of text line up with each other").model(&gtk::StringList::new(&titles)).build();
+        row.set_selected(Justify::ALL.iter().position(|candidate| *candidate == element.justify).unwrap_or(0) as u32);
+        row.connect_selected_notify({
+            let editor = self.clone();
+            move |row| {
+                if let Some(&justify) = Justify::ALL.get(row.selected() as usize) {
+                    editor.edit(|element| element.justify = justify);
+                }
+            }
+        });
+        group.add(&row);
     }
 
     /// Adds to `group` the rows for a display with a bar and text: each can be turned off, the bar can stand upright, and
@@ -523,6 +566,7 @@ impl Editor {
         group.add(&length);
         group.add(&text);
         group.add(&position);
+        self.add_layout_rows(group, element, Some("Space between bar and text"), Some("Bar and text alignment"));
     }
 
     fn seek_tab(self: &Rc<Self>, element: &Element) -> adw::PreferencesPage {
@@ -649,6 +693,7 @@ impl Editor {
             move |row| editor.edit(|element| element.icon_style = if row.selected() == 1 { IconStyle::Characters } else { IconStyle::Emoji })
         });
         group.add(&icons);
+        self.add_layout_rows(&group, element, Some("Space after the icon"), Some("Icon alignment"));
         group.add(&preview);
         page.add(&group);
         page.add(&self.filename_group(element));
@@ -856,7 +901,7 @@ impl Editor {
         });
         family.add_suffix(&font);
         text.add(&family);
-        let font_size = spin("Font size", "In points", FONT_SIZE_RANGE, 1.0, style.font_size);
+        let font_size = spin("Text size", "The size of the font, in points", FONT_SIZE_RANGE, 1.0, style.font_size);
         font_size.connect_value_notify({
             let editor = self.clone();
             move |row| editor.edit(|element| element.style.font_size = row.value())

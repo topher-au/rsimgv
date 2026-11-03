@@ -206,6 +206,96 @@ impl Kind {
     }
 }
 
+/// How the things in an element, such as a bar and its text, line up across the way they are stacked.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ChildAlign {
+    /// As the element's place makes them: the text toward the nearest edge, and a bar centred.
+    #[default]
+    Auto,
+    Start,
+    Center,
+    End,
+    Fill,
+}
+
+impl ChildAlign {
+    pub const ALL: [ChildAlign; 5] = [ChildAlign::Auto, ChildAlign::Start, ChildAlign::Center, ChildAlign::End, ChildAlign::Fill];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            ChildAlign::Auto => "auto",
+            ChildAlign::Start => "start",
+            ChildAlign::Center => "center",
+            ChildAlign::End => "end",
+            ChildAlign::Fill => "fill",
+        }
+    }
+
+    pub fn title(self) -> &'static str {
+        match self {
+            ChildAlign::Auto => "By its place",
+            ChildAlign::Start => "At the start",
+            ChildAlign::Center => "Centred",
+            ChildAlign::End => "At the end",
+            ChildAlign::Fill => "Filling the room",
+        }
+    }
+
+    fn from_name(name: &str) -> Self {
+        Self::ALL.into_iter().find(|align| align.name() == name).unwrap_or_default()
+    }
+}
+
+/// How lines of text line up with each other.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Justify {
+    /// Toward the nearest edge of the item, as the element's place says.
+    #[default]
+    Auto,
+    Left,
+    Center,
+    Right,
+}
+
+impl Justify {
+    pub const ALL: [Justify; 4] = [Justify::Auto, Justify::Left, Justify::Center, Justify::Right];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Justify::Auto => "auto",
+            Justify::Left => "left",
+            Justify::Center => "center",
+            Justify::Right => "right",
+        }
+    }
+
+    pub fn title(self) -> &'static str {
+        match self {
+            Justify::Auto => "By its place",
+            Justify::Left => "Left",
+            Justify::Center => "Centre",
+            Justify::Right => "Right",
+        }
+    }
+
+    fn from_name(name: &str) -> Self {
+        Self::ALL.into_iter().find(|justify| justify.name() == name).unwrap_or_default()
+    }
+
+    /// How the text lines up in `slot`, unless this says otherwise.
+    pub fn text_align(self, slot: Slot) -> TextAlign {
+        match self {
+            Justify::Auto => slot.text_align(),
+            Justify::Left => TextAlign::Left,
+            Justify::Center => TextAlign::Center,
+            Justify::Right => TextAlign::Right,
+        }
+    }
+}
+
+/// The most space that can be set between the things in an element, in pixels.
+pub const SPACING_RANGE: (i32, i32) = (0, 100);
+
 /// Where the text of a bar display sits beside its bar.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum TextPosition {
@@ -506,6 +596,12 @@ pub struct Element {
     pub bar_vertical: bool,
     pub show_text: bool,
     pub text_position: TextPosition,
+    /// The space between the things in the element, such as a bar and its text or an icon and its text, in pixels, and how
+    /// they line up across the way they are stacked.
+    pub spacing: i32,
+    pub child_align: ChildAlign,
+    /// How lines of the element's text line up with each other.
+    pub justify: Justify,
     pub speed_format: SpeedFormat,
     pub rotation_format: RotationFormat,
     /// What a media status shows, from `STATUS_PARTS`.
@@ -651,6 +747,9 @@ impl Element {
             bar_vertical: false,
             show_text: true,
             text_position: TextPosition::default(),
+            spacing: 4,
+            child_align: ChildAlign::default(),
+            justify: Justify::default(),
             speed_format: SpeedFormat::default(),
             rotation_format: RotationFormat::default(),
             parts: ["state", "time", "percent"].map(str::to_owned).to_vec(),
@@ -691,7 +790,11 @@ impl Element {
                 element.visibility = Visibility::Seek;
                 element.items = Items::Pictures;
             }
-            Kind::Status => element.items = Items::Videos,
+            Kind::Status => {
+                element.items = Items::Videos;
+                // The gap between the icon and the text.
+                element.spacing = 10;
+            }
             Kind::Template => element.template = "${filename}".to_owned(),
             Kind::Messages => {}
         }
@@ -752,6 +855,9 @@ impl Element {
             "bar-vertical": self.bar_vertical,
             "show-text": self.show_text,
             "text-position": self.text_position.name(),
+            "spacing": self.spacing,
+            "child-align": self.child_align.name(),
+            "justify": self.justify.name(),
             "speed-format": self.speed_format.name(),
             "rotation-format": self.rotation_format.name(),
             "parts": self.parts,
@@ -826,6 +932,13 @@ impl Element {
         element.bar_width = whole("bar-width", element.bar_width, BAR_WIDTH_RANGE);
         element.bar_vertical = flag("bar-vertical", element.bar_vertical);
         element.show_text = flag("show-text", element.show_text);
+        element.spacing = whole("spacing", element.spacing, SPACING_RANGE);
+        if let Some(align) = text("child-align") {
+            element.child_align = ChildAlign::from_name(align);
+        }
+        if let Some(justify) = text("justify") {
+            element.justify = Justify::from_name(justify);
+        }
         if let Some(position) = text("text-position") {
             element.text_position = TextPosition::from_name(position);
         }
@@ -1152,6 +1265,17 @@ mod tests {
         assert_eq!((element.style.min_width, element.style.min_height, element.text_rotation), (MIN_SIZE_RANGE.1, 120, TEXT_ROTATION_RANGE.0));
         assert_eq!((layout.elements[1].style.min_width, layout.elements[1].text_rotation), (0, 0.0));
         assert_eq!(Layout::from_json(&layout.to_json()), Some(layout));
+    }
+
+    #[test]
+    fn spacing_alignment_and_justification_are_kept() {
+        let layout = Layout::from_json(r#"{"elements":[{"kind":"volume","spacing":9999,"child-align":"fill","justify":"right"},{"kind":"status"}]}"#).unwrap();
+        let element = &layout.elements[0];
+        assert_eq!((element.spacing, element.child_align, element.justify), (SPACING_RANGE.1, ChildAlign::Fill, Justify::Right));
+        assert_eq!((layout.elements[1].spacing, layout.elements[1].child_align, layout.elements[1].justify), (10, ChildAlign::Auto, Justify::Auto));
+        assert_eq!(Layout::from_json(&layout.to_json()), Some(layout));
+        assert_eq!(Justify::Auto.text_align(Slot::TOP_RIGHT), TextAlign::Right);
+        assert_eq!(Justify::Left.text_align(Slot::TOP_RIGHT), TextAlign::Left);
     }
 
     #[test]

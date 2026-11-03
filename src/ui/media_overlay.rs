@@ -14,13 +14,12 @@ use gtk::{gdk, gio};
 use super::rotated_label::RotatedLabel;
 
 use crate::overlay::template::Template;
-use crate::overlay::{TRIGGERS, DEFAULT_MARGIN, plain_icon, sample, Element, FilenameWrap, IconStyle, Items, Kind, Layout, Legacy, Slot, Style, TextAlign, Visibility};
+use crate::overlay::{ChildAlign, TRIGGERS, DEFAULT_MARGIN, plain_icon, sample, Element, FilenameWrap, IconStyle, Items, Kind, Layout, Legacy, Slot, Style, TextAlign, Visibility};
 
 /// The space between one element and the next, in pixels.
 const SPACING: i32 = 6;
-/// The width of a media status's state icon, in characters, and the gap between it and the text, in pixels.
+/// The width of a media status's state icon, in characters.
 const ICON_CHARS: i32 = 2;
-const ICON_GAP: i32 = 10;
 
 /// The layout the settings say: the one saved by the configuration page, or the older settings' while none is saved.
 pub fn layout_from_settings(settings: &gio::Settings) -> Layout {
@@ -526,8 +525,8 @@ fn filename_css(selector: &str, element: &Element) -> String {
 
 fn build(index: usize, element: &Element) -> Placed {
     let class = unique_class("overlay-el");
-    let align = element.slot.text_align();
-    let card = gtk::Box::new(gtk::Orientation::Vertical, 4);
+    let align = element.justify.text_align(element.slot);
+    let card = gtk::Box::new(gtk::Orientation::Vertical, element.spacing);
     card.add_css_class("overlay-element");
     card.add_css_class(&class);
     // A bar can stand upright, and its text sits above, below or beside it.
@@ -550,6 +549,22 @@ fn build(index: usize, element: &Element) -> Placed {
         }
         bar
     });
+    // Unless the element says otherwise, a bar is centred and the text lines up by the element's place; otherwise both
+    // line up across the way they are stacked as it says.
+    let across = match element.child_align {
+        ChildAlign::Auto => None,
+        ChildAlign::Start => Some(gtk::Align::Start),
+        ChildAlign::Center => Some(gtk::Align::Center),
+        ChildAlign::End => Some(gtk::Align::End),
+        ChildAlign::Fill => Some(gtk::Align::Fill),
+    };
+    if let (Some(bar), Some(across)) = (&bar, across) {
+        if beside {
+            bar.set_valign(across);
+        } else {
+            bar.set_halign(across);
+        }
+    }
     let label = TextLabel::new(element);
     label.widget().add_css_class("overlay-text");
     match &label {
@@ -557,7 +572,9 @@ fn build(index: usize, element: &Element) -> Placed {
         TextLabel::Turned(_) => label.widget().set_halign(horizontal_align(align)),
     }
     if beside {
-        label.widget().set_valign(gtk::Align::Center);
+        label.widget().set_valign(across.unwrap_or(gtk::Align::Center));
+    } else if let Some(across) = across {
+        label.widget().set_halign(across);
     }
     // The text goes before the bar above it or to its left, and after it otherwise.
     let text_first = element.text_position.is_first();
@@ -575,7 +592,7 @@ fn build(index: usize, element: &Element) -> Placed {
         let icon = gtk::Label::new(None);
         icon.add_css_class("overlay-text");
         icon.add_css_class("overlay-icon");
-        icon.set_valign(gtk::Align::Start);
+        icon.set_valign(across.unwrap_or(gtk::Align::Start));
         // Every state takes the same width, so the text does not move as the state changes.
         icon.set_width_chars(ICON_CHARS);
         icon.set_xalign(0.5);
@@ -590,7 +607,7 @@ fn build(index: usize, element: &Element) -> Placed {
         filename
     });
     if is_status {
-        let grid = gtk::Grid::builder().column_spacing(ICON_GAP).row_spacing(2).build();
+        let grid = gtk::Grid::builder().column_spacing(element.spacing).row_spacing(2).build();
         let column = i32::from(icon.is_some());
         if let Some(icon) = &icon {
             grid.attach(icon, 0, 0, 1, 1);
