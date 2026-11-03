@@ -534,6 +534,16 @@ impl OverlaySplitView {
         }
     }
 
+    /// Lights the drag handle, to show that the sidebar holds the keyboard focus.
+    pub fn set_handle_active(&self, active: bool) {
+        let handle = &self.imp().handle;
+        if active {
+            handle.add_css_class("active");
+        } else {
+            handle.remove_css_class("active");
+        }
+    }
+
     /// Keeps the handle on the sidebar's inner edge: right of it, or left for an end sidebar.
     fn update_handle_side(&self) {
         let imp = self.imp();

@@ -326,6 +326,9 @@ pub const ACTIONS: &[ActionInfo] = &[
         name: "win.focus-cycle", description: "Move the keyboard focus to the next of the folder tree, the browse view or viewer, and the playlist, skipping any that is hidden.", icon: "media-playlist-repeat-symbolic", label: "Cycle Focus", defaults: &["f6"],
     },
     ActionInfo {
+        name: "win.focus-cycle-reverse", description: "Move the keyboard focus to the previous of the playlist, the browse view or viewer, and the folder tree, skipping any that is hidden.", icon: "media-playlist-repeat-symbolic", label: "Cycle Focus Backwards", defaults: &["shift+f6"],
+    },
+    ActionInfo {
         name: "win.toggle-keybinds", description: "Show or hide a list of the keybindings in force where you are: the ones for browsing, or for the viewer, a picture or a video, and the global ones.", icon: "input-keyboard-symbolic", label: "Toggle Keybinds Overlay", defaults: &["f1"],
     },
     ActionInfo {

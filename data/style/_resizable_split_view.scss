@@ -6,4 +6,9 @@
   &:hover {
     background-color: rgba(128, 128, 128, 0.35);
   }
+
+  // The sidebar's context is active: the focus is in it.
+  &.active {
+    background-color: color-mix(in srgb, #{"var(--accent-bg-color)"} 70%, transparent);
+  }
 }

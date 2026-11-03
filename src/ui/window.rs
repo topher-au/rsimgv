@@ -289,6 +289,7 @@ impl Window {
         let panel = PlaylistPanel::new(settings);
         let _ = window.imp().playlist_panel.set(panel);
         window.setup_playlist_splits(settings);
+        GtkWindowExt::connect_focus_widget_notify(&window, |window| window.update_handle_highlights());
         if settings.boolean("playlist-detached") {
             window.detach_playlist(settings);
         }
@@ -916,7 +917,8 @@ impl Window {
         bound_action(self, &weak, "focus-tree", |window| window.focus_pane(FocusPane::Tree));
         bound_action(self, &weak, "focus-playlist", |window| window.focus_pane(FocusPane::Playlist));
         bound_action(self, &weak, "focus-viewer", |window| window.focus_pane(FocusPane::Content));
-        bound_action(self, &weak, "focus-cycle", Window::cycle_focus);
+        bound_action(self, &weak, "focus-cycle", |window| window.cycle_focus(false));
+        bound_action(self, &weak, "focus-cycle-reverse", |window| window.cycle_focus(true));
         bound_action(self, &weak, "toggle-sidebar", |window| {
             let split = &window.imp().split;
             split.set_show_sidebar(!split.show_sidebar());
@@ -1018,6 +1020,16 @@ impl Window {
         self.insert_action_group("tree", Some(&tree));
     }
 
+    /// Lights the drag handle of the sidebar that holds the focus: the folder tree's or the playlist's.
+    fn update_handle_highlights(&self) {
+        let imp = self.imp();
+        let scopes = self.active_scopes();
+        imp.split.set_handle_active(scopes.contains(&Scope::Tree));
+        let playlist = scopes.contains(&Scope::Playlist);
+        imp.playlist_split.set_handle_active(playlist);
+        imp.viewer.playlist_split().set_handle_active(playlist);
+    }
+
     /// Where the keyboard focus is: in the folder tree, in the playlist, or else in the content, the browse view or the
     /// viewer.
     fn focused_pane(&self) -> FocusPane {
@@ -1046,12 +1058,14 @@ impl Window {
         }
     }
 
-    /// Moves the focus to the next pane that is shown: the folder tree, the content, then the playlist.
-    fn cycle_focus(&self) {
+    /// Moves the focus to the next pane that is shown: the folder tree, the content, then the playlist. Backwards, it
+    /// goes the other way round.
+    fn cycle_focus(&self, reverse: bool) {
         const ORDER: [FocusPane; 3] = [FocusPane::Tree, FocusPane::Content, FocusPane::Playlist];
         let current = self.focused_pane();
         let start = ORDER.iter().position(|pane| *pane == current).unwrap_or(1);
-        let next = (1..=ORDER.len()).map(|step| ORDER[(start + step) % ORDER.len()]).find(|pane| self.pane_shown(*pane));
+        let len = ORDER.len();
+        let next = (1..=len).map(|step| ORDER[(start + if reverse { len - step } else { step }) % len]).find(|pane| self.pane_shown(*pane));
         self.focus_pane(next.unwrap_or(FocusPane::Content));
     }
 
