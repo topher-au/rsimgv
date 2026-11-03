@@ -70,6 +70,57 @@ pub const VOLUME_STEP: f64 = 0.05;
 /// The share of the viewer's height, from its bottom edge, where a video's controls appear.
 const REVEAL_FRACTION: f64 = 0.2;
 
+/// The space kept between the video controls and the edge of the frame, and how far from their left and right edges they
+/// are grabbed to change their width, in pixels.
+const CONTROLS_EDGE: f64 = 12.0;
+const CONTROLS_GRAB: f64 = 14.0;
+/// How far around the controls the pointer brings them up, in pixels.
+const CONTROLS_REVEAL_MARGIN: f64 = 48.0;
+/// The narrowest the controls are made by dragging, as a share of the frame's width.
+const CONTROLS_MIN_WIDTH: f64 = 0.2;
+
+/// Where the video controls sit over the frame, and how wide they are.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ControlsLayout {
+    /// Whether the controls stay where they are, rather than being dragged.
+    pub locked: bool,
+    /// The centre of the controls, as a share of the frame's width and height.
+    pub x: f64,
+    pub y: f64,
+    /// Their width as a share of the frame's width, or 0 for the width they need.
+    pub width: f64,
+}
+
+impl Default for ControlsLayout {
+    fn default() -> Self {
+        Self { locked: true, x: 0.5, y: 0.92, width: 0.0 }
+    }
+}
+
+/// How wide the controls are in a frame `frame_width` wide, when they need `natural` pixels.
+fn controls_width(frame_width: f64, natural: f64, layout: &ControlsLayout) -> f64 {
+    let room = (frame_width - 2.0 * CONTROLS_EDGE).max(1.0);
+    let width = if layout.width > 0.0 { frame_width * layout.width } else { natural };
+    width.min(room)
+}
+
+/// The left and top of controls `size` big in a frame `frame` big, centred where the layout says and kept within the frame.
+fn controls_origin(frame: (f64, f64), size: (f64, f64), layout: &ControlsLayout) -> (f64, f64) {
+    let place = |frame: f64, size: f64, centre: f64| {
+        let most = (frame - size - CONTROLS_EDGE).max(CONTROLS_EDGE);
+        (frame * centre - size / 2.0).clamp(CONTROLS_EDGE, most)
+    };
+    (place(frame.0, size.0, layout.x), place(frame.1, size.1, layout.y))
+}
+
+/// What dragging the controls changes.
+#[derive(Debug, Clone, Copy)]
+enum ControlsDrag {
+    Move,
+    ResizeLeft,
+    ResizeRight,
+}
+
 /// How near, in seconds, a video's start or end its position must be to start it from the beginning next time.
 const POSITION_MARGIN: f64 = 2.0;
 
@@ -328,6 +379,9 @@ mod imp {
         pub(super) cursor_hide: RefCell<Option<glib::SourceId>>,
         /// Whether the status bar under the item is shown.
         pub(super) status_shown: Cell<bool>,
+        /// Where the video controls sit, and the drag that is moving them, with the layout and width it started from.
+        pub(super) controls_layout: Cell<ControlsLayout>,
+        pub(super) controls_drag: Cell<Option<(ControlsDrag, ControlsLayout, f64)>>,
         /// The overlay of elements over the item, made when it is first wanted.
         pub(super) media_overlay: OnceCell<MediaOverlay>,
         /// The timer that keeps the overlay up to date while any element is on.
@@ -376,6 +430,14 @@ mod imp {
             let obj = self.obj();
             let weak = obj.downgrade();
             self.video_start_delay.set(DEFAULT_VIDEO_START_DELAY);
+            obj.setup_controls_placement();
+            let weak_viewer = obj.downgrade();
+            crate::ui::media_overlay::watch_preview(move || {
+                if let Some(viewer) = weak_viewer.upgrade() {
+                    viewer.sync_overlay_tick();
+                    viewer.refresh_overlay();
+                }
+            });
 
             // The picture sits in a column of its own, so a thumbnail bar beside it can run the full height with the
             // status bar under the picture alone.
@@ -525,7 +587,7 @@ mod imp {
         fn signals() -> &'static [Signal] {
             use std::sync::LazyLock;
             static SIGNALS: LazyLock<Vec<Signal>> =
-                LazyLock::new(|| vec![Signal::builder("back-requested").build(), Signal::builder("item-changed").param_types([String::static_type()]).build(), Signal::builder("file-dropped").param_types([String::static_type()]).build(), Signal::builder("thumbnail-side-requested").param_types([String::static_type()]).build(), Signal::builder("thumbnail-size-requested").param_types([i32::static_type()]).build(), Signal::builder("folder-end-reached").param_types([bool::static_type()]).build()]);
+                LazyLock::new(|| vec![Signal::builder("back-requested").build(), Signal::builder("item-changed").param_types([String::static_type()]).build(), Signal::builder("file-dropped").param_types([String::static_type()]).build(), Signal::builder("thumbnail-side-requested").param_types([String::static_type()]).build(), Signal::builder("thumbnail-size-requested").param_types([i32::static_type()]).build(), Signal::builder("folder-end-reached").param_types([bool::static_type()]).build(), Signal::builder("controls-layout-changed").param_types([f64::static_type(), f64::static_type(), f64::static_type()]).build()]);
             SIGNALS.as_ref()
         }
     }
@@ -1251,7 +1313,6 @@ impl MediaViewer {
 
     /// Sets the layout of the overlay over the item.
     pub fn set_overlay_layout(&self, layout: Layout) {
-        let imp = self.imp();
         let overlay = self.media_overlay();
         if overlay.has_layout(&layout) {
             return;
@@ -1260,7 +1321,18 @@ impl MediaViewer {
         // What an element shows of the file is read only while an element is on.
         self.refresh_status();
         self.refresh_overlay();
-        if !overlay.any_enabled() {
+        self.sync_overlay_tick();
+    }
+
+    /// Whether the overlay has anything to keep up to date: an element that is on, or one being edited.
+    fn overlay_active(&self) -> bool {
+        self.media_overlay().any_enabled() || super::media_overlay::preview().is_some()
+    }
+
+    /// Starts the timer that keeps the overlay up to date while there is something to, and stops it when there is not.
+    fn sync_overlay_tick(&self) {
+        let imp = self.imp();
+        if !self.overlay_active() {
             if let Some(tick) = imp.overlay_tick.take() {
                 tick.remove();
             }
@@ -1268,7 +1340,7 @@ impl MediaViewer {
             let weak = self.downgrade();
             let tick = glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
                 let Some(viewer) = weak.upgrade() else { return glib::ControlFlow::Break };
-                if !viewer.media_overlay().any_enabled() {
+                if !viewer.overlay_active() {
                     // Ended on its own, so there is nothing to cancel.
                     viewer.imp().overlay_tick.take();
                     return glib::ControlFlow::Break;
@@ -1341,7 +1413,7 @@ impl MediaViewer {
     fn refresh_overlay(&self) {
         let imp = self.imp();
         let overlay = self.media_overlay();
-        if !overlay.any_enabled() {
+        if !self.overlay_active() {
             return;
         }
         if self.shown_path().is_none() {
@@ -1373,6 +1445,153 @@ impl MediaViewer {
         if let Some(overlay) = imp.media_overlay.get() {
             overlay.hide_all();
         }
+    }
+
+    /// Places the video controls by the layout instead of at the bottom, and lets them be dragged when it is unlocked:
+    /// pressing in the middle moves them, and pressing at the left or right edge changes their width.
+    fn setup_controls_placement(&self) {
+        let imp = self.imp();
+        let weak = self.downgrade();
+        imp.overlay.connect_get_child_position({
+            let weak = weak.clone();
+            move |_, widget| {
+                let viewer = weak.upgrade()?;
+                if widget != viewer.imp().controls_revealer.upcast_ref::<gtk::Widget>() {
+                    return None;
+                }
+                let (x, y, width, height) = viewer.controls_rect()?;
+                Some(gdk::Rectangle::new(x as i32, y as i32, width.ceil() as i32, height.ceil() as i32))
+            }
+        });
+
+        let drag = gtk::GestureDrag::new();
+        drag.set_propagation_phase(gtk::PropagationPhase::Capture);
+        drag.connect_drag_begin({
+            let weak = weak.clone();
+            move |gesture, x, _| {
+                let Some(viewer) = weak.upgrade() else { return };
+                let imp = viewer.imp();
+                let layout = imp.controls_layout.get();
+                if layout.locked {
+                    return;
+                }
+                let width = f64::from(imp.controls_revealer.width());
+                let mode = if x < CONTROLS_GRAB {
+                    ControlsDrag::ResizeLeft
+                } else if x > width - CONTROLS_GRAB {
+                    ControlsDrag::ResizeRight
+                } else {
+                    ControlsDrag::Move
+                };
+                imp.controls_drag.set(Some((mode, layout, width)));
+                // The controls are only moved while they are unlocked, so their buttons do not get the press.
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+            }
+        });
+        drag.connect_drag_update({
+            let weak = weak.clone();
+            move |_, dx, dy| {
+                let Some(viewer) = weak.upgrade() else { return };
+                let imp = viewer.imp();
+                let Some((mode, start, start_width)) = imp.controls_drag.get() else { return };
+                let (frame_width, frame_height) = (f64::from(imp.overlay.width()).max(1.0), f64::from(imp.overlay.height()).max(1.0));
+                let mut layout = start;
+                match mode {
+                    ControlsDrag::Move => {
+                        layout.x = (start.x + dx / frame_width).clamp(0.0, 1.0);
+                        layout.y = (start.y + dy / frame_height).clamp(0.0, 1.0);
+                    }
+                    ControlsDrag::ResizeLeft | ControlsDrag::ResizeRight => {
+                        // The controls grow around their centre, so the edge moves half as far as the width changes.
+                        let grow = if matches!(mode, ControlsDrag::ResizeRight) { 2.0 * dx } else { -2.0 * dx };
+                        layout.width = ((start_width + grow) / frame_width).clamp(CONTROLS_MIN_WIDTH, 1.0);
+                    }
+                }
+                imp.controls_layout.set(layout);
+                imp.overlay.queue_resize();
+            }
+        });
+        drag.connect_drag_end({
+            let weak = weak.clone();
+            move |_, _, _| {
+                let Some(viewer) = weak.upgrade() else { return };
+                if viewer.imp().controls_drag.take().is_some() {
+                    let layout = viewer.imp().controls_layout.get();
+                    viewer.emit_by_name::<()>("controls-layout-changed", &[&layout.x, &layout.y, &layout.width]);
+                }
+            }
+        });
+        imp.controls_revealer.add_controller(drag);
+
+        // While unlocked, the pointer shows what a press would do.
+        let motion = gtk::EventControllerMotion::new();
+        motion.connect_motion({
+            let weak = weak.clone();
+            move |_, x, _| {
+                let Some(viewer) = weak.upgrade() else { return };
+                let imp = viewer.imp();
+                let cursor = if imp.controls_layout.get().locked {
+                    None
+                } else if x < CONTROLS_GRAB || x > f64::from(imp.controls_revealer.width()) - CONTROLS_GRAB {
+                    Some("ew-resize")
+                } else {
+                    Some("move")
+                };
+                imp.controls_revealer.set_cursor_from_name(cursor);
+            }
+        });
+        imp.controls_revealer.add_controller(motion);
+    }
+
+    /// Sets where the video controls sit and whether they can be dragged.
+    pub fn set_controls_layout(&self, layout: ControlsLayout) {
+        let imp = self.imp();
+        if imp.controls_layout.get() == layout {
+            return;
+        }
+        imp.controls_layout.set(layout);
+        if layout.locked {
+            imp.controls.remove_css_class("controls-unlocked");
+        } else {
+            imp.controls.add_css_class("controls-unlocked");
+        }
+        imp.controls_revealer.set_cursor_from_name(None);
+        imp.overlay.queue_resize();
+        self.reveal_near(imp.pointer.get());
+    }
+
+    /// Calls `callback` with the centre and width of the video controls, as shares of the frame, when dragging them ends.
+    pub fn connect_controls_layout_changed<F: Fn(&Self, f64, f64, f64) + 'static>(&self, callback: F) -> glib::SignalHandlerId {
+        self.connect_local("controls-layout-changed", false, move |values| {
+            let viewer = values[0].get::<MediaViewer>().expect("viewer argument");
+            callback(&viewer, values[1].get().unwrap_or(0.5), values[2].get().unwrap_or(0.92), values[3].get().unwrap_or(0.0));
+            None
+        })
+    }
+
+    /// The left, top, width and height of the video controls in the frame that holds them, or `None` while it has no
+    /// size yet.
+    fn controls_rect(&self) -> Option<(f64, f64, f64, f64)> {
+        let imp = self.imp();
+        let frame = (f64::from(imp.overlay.width()), f64::from(imp.overlay.height()));
+        if frame.0 <= 0.0 || frame.1 <= 0.0 {
+            return None;
+        }
+        let layout = imp.controls_layout.get();
+        let (_, natural, _, _) = imp.controls.measure(gtk::Orientation::Horizontal, -1);
+        let width = controls_width(frame.0, f64::from(natural), &layout);
+        let (_, height, _, _) = imp.controls.measure(gtk::Orientation::Vertical, width.ceil() as i32);
+        let height = f64::from(height);
+        let (x, y) = controls_origin(frame, (width, height), &layout);
+        Some((x, y, width, height))
+    }
+
+    /// Whether the pointer at `(x, y)` in the viewer is near enough to the video controls to bring them up.
+    fn near_controls(&self, x: f64, y: f64) -> bool {
+        let Some((left, top, width, height)) = self.controls_rect() else { return false };
+        let Some(point) = self.compute_point(&*self.imp().overlay, &gtk::graphene::Point::new(x as f32, y as f32)) else { return false };
+        let (x, y) = (f64::from(point.x()), f64::from(point.y()));
+        x > left - CONTROLS_REVEAL_MARGIN && x < left + width + CONTROLS_REVEAL_MARGIN && y > top - CONTROLS_REVEAL_MARGIN && y < top + height + CONTROLS_REVEAL_MARGIN
     }
 
     /// Calls `callback` with the path of each item the viewer shows, when it changes to it.
@@ -1856,13 +2075,16 @@ impl MediaViewer {
         let imp = self.imp();
         imp.pointer.set(pointer);
         let (width, height) = (f64::from(self.width()), f64::from(self.height()));
+        let layout = imp.controls_layout.get();
         let bottom = match pointer {
             _ if imp.pinned.get() => true,
-            Some((_, y)) => y > height * (1.0 - REVEAL_FRACTION),
+            // Near the controls wherever they are, and as before anywhere along the bottom while they are down there.
+            Some((x, y)) => self.near_controls(x, y) || (layout.y > 0.66 && y > height * (1.0 - REVEAL_FRACTION)),
             None => false,
         };
         self.reveal_header(pointer);
-        imp.controls_revealer.set_reveal_child(bottom || imp.controls.is_volume_open());
+        // Unlocked, the controls stay up to be dragged.
+        imp.controls_revealer.set_reveal_child(bottom || imp.controls.is_volume_open() || !layout.locked);
 
         if !imp.bar_overlay.get() {
             // Beside the picture, the bar is always shown.

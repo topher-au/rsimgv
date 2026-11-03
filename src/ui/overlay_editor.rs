@@ -9,34 +9,12 @@ use std::rc::Rc;
 use adw::prelude::*;
 use gtk::{gdk, gio, glib};
 
-use super::media_overlay::layout_from_settings;
+use super::media_overlay::{layout_from_settings, set_preview, Preview};
 use crate::overlay::template::Template;
 use crate::overlay::{
-    Element, Items, Kind, Layout, Slot, Style, Visibility, BAR_WIDTH_RANGE, FONT_SIZE_RANGE, PADDING_RANGE, PROPERTIES, RADIUS_RANGE,
+    sample, Element, Items, Kind, Layout, Slot, Style, Visibility, BAR_WIDTH_RANGE, FONT_SIZE_RANGE, PADDING_RANGE, PROPERTIES, RADIUS_RANGE,
     SECONDS_RANGE, STATUS_PARTS, TIME_FORMATS,
 };
-
-/// What a property reads as in the editor's preview.
-fn sample(name: &str) -> Option<String> {
-    let value = match name {
-        "state" => "Playing",
-        "time-pos" => "1:23",
-        "duration" => "4:56",
-        "time-remaining" => "3:33",
-        "percent-pos" => "28",
-        "speed" => "1.5",
-        "volume" => "80",
-        "fps" => "29.97",
-        "filename" => "example.mp4",
-        "path" => "/home/user/Videos/example.mp4",
-        "playlist-pos" => "3",
-        "playlist-count" => "12",
-        "resolution" => "1920 × 1080",
-        "file-size" => "48.2 MB",
-        _ => return None,
-    };
-    Some(value.to_owned())
-}
 
 /// The element being edited, and where it goes back to.
 struct Draft {
@@ -138,6 +116,17 @@ pub fn build(settings: &gio::Settings) -> gtk::Widget {
 
     editor.refresh_map();
 
+    // The preview is up only while the editor is on screen: leaving the page or closing the dialog ends it.
+    editor.pages.connect_unmap(|_| set_preview(None));
+    editor.pages.connect_map({
+        let weak = Rc::downgrade(&editor);
+        move |_| {
+            if let Some(editor) = weak.upgrade() {
+                editor.publish_preview();
+            }
+        }
+    });
+
     // A change to the setting from outside, such as an edit of the settings file, is shown.
     let weak = Rc::downgrade(&editor);
     settings.connect_changed(Some("overlay-layout"), move |_, _| {
@@ -165,6 +154,12 @@ impl Editor {
         if let Some(draft) = self.draft.borrow_mut().as_mut() {
             change(&mut draft.element);
         }
+        self.publish_preview();
+    }
+
+    /// Shows the element being edited over the item, as it is now, with the other elements faded.
+    fn publish_preview(&self) {
+        set_preview(self.draft.borrow().as_ref().map(|draft| Preview { index: draft.index, element: draft.element.clone() }));
     }
 
     /// Opens the editor on the element at `index`.
@@ -206,11 +201,13 @@ impl Editor {
         self.switcher.set_stack(Some(&tabs));
         self.editor_view.set_content(Some(&tabs));
         self.pages.set_visible_child_name(EDITOR_PAGE);
+        self.publish_preview();
     }
 
     /// Goes back to the map, dropping what was changed in the editor.
     fn close_editor(self: &Rc<Self>) {
         self.draft.replace(None);
+        set_preview(None);
         self.refresh_map();
         self.pages.set_visible_child_name(MAP_PAGE);
     }

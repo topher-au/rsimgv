@@ -3,6 +3,7 @@
 //! goes. The overlay only shows things, so the item under it takes the clicks.
 
 use std::cell::RefCell;
+use std::rc::Rc;
 use std::time::Duration;
 
 use gtk::prelude::*;
@@ -11,7 +12,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use gtk::{gdk, gio};
 
 use crate::overlay::template::Template;
-use crate::overlay::{Element, Items, Kind, Layout, Legacy, Slot, Style, TextAlign, Visibility};
+use crate::overlay::{sample, Element, Items, Kind, Layout, Legacy, Slot, Style, TextAlign, Visibility};
 
 /// The space between the edge of the item and the elements, and between one element and the next, in pixels.
 const MARGIN: i32 = 12;
@@ -137,7 +138,48 @@ pub fn horizontal_align(align: TextAlign) -> gtk::Align {
     }
 }
 
+/// An element being edited, shown over the item as it is now, whether or not it is saved. Every other element is faded.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Preview {
+    /// Its index in the saved layout, or `None` for an element that is new.
+    pub index: Option<usize>,
+    pub element: Element,
+}
+
+thread_local! {
+    static PREVIEW: RefCell<Option<Preview>> = const { RefCell::new(None) };
+    static WATCHERS: RefCell<Vec<Rc<dyn Fn()>>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Shows `preview` over the item, or ends the preview. Whoever watches for it is told.
+pub fn set_preview(preview: Option<Preview>) {
+    let changed = PREVIEW.with(|current| {
+        let changed = *current.borrow() != preview;
+        *current.borrow_mut() = preview;
+        changed
+    });
+    if changed {
+        let watchers: Vec<Rc<dyn Fn()>> = WATCHERS.with(|watchers| watchers.borrow().clone());
+        for watcher in watchers {
+            watcher();
+        }
+    }
+}
+
+pub fn preview() -> Option<Preview> {
+    PREVIEW.with(|current| current.borrow().clone())
+}
+
+/// Calls `callback` whenever the preview starts, changes or ends.
+pub fn watch_preview(callback: impl Fn() + 'static) {
+    WATCHERS.with(|watchers| watchers.borrow_mut().push(Rc::new(callback)));
+}
+
+/// How much of its own opacity an element keeps while another is being edited.
+const FADED: f64 = 0.2;
+
 /// What the overlay is drawn from.
+#[derive(Clone, Copy)]
 pub struct Frame<'a> {
     /// The value of each property a template reads, or `None` while it has none.
     pub values: &'a dyn Fn(&str) -> Option<String>,
@@ -169,6 +211,8 @@ impl Element {
 
 /// An element that is on the item.
 struct Placed {
+    /// Its index in the layout.
+    index: usize,
     element: Element,
     template: Template,
     revealer: gtk::Revealer,
@@ -185,6 +229,8 @@ struct Placed {
 pub struct MediaOverlay {
     columns: Vec<(Slot, gtk::Box)>,
     placed: RefCell<Vec<Placed>>,
+    /// The element being edited, built from the preview, and the preview it was built from.
+    previewed: RefCell<Option<(Preview, Placed)>>,
     layout: RefCell<Layout>,
 }
 
@@ -205,7 +251,7 @@ impl MediaOverlay {
                 (slot, column)
             })
             .collect();
-        Self { columns, placed: RefCell::new(Vec::new()), layout: RefCell::new(Layout::default()) }
+        Self { columns, placed: RefCell::new(Vec::new()), previewed: RefCell::new(None), layout: RefCell::new(Layout::default()) }
     }
 
     /// Whether the overlay is set to a layout, so it has this one already.
@@ -220,6 +266,7 @@ impl MediaOverlay {
 
     /// Replaces the elements with those of `layout`, all hidden until the next update.
     pub fn set_layout(&self, layout: &Layout) {
+        self.drop_preview();
         for placed in self.placed.borrow_mut().drain(..) {
             if let Some(column) = placed.revealer.parent().and_downcast::<gtk::Box>() {
                 column.remove(&placed.revealer);
@@ -227,40 +274,66 @@ impl MediaOverlay {
         }
         let mut placed = self.placed.borrow_mut();
         // Messages are shown by the window's message overlay, not over the item.
-        for element in layout.elements.iter().filter(|element| element.enabled && element.kind != Kind::Messages) {
+        for (index, element) in layout.elements.iter().enumerate().filter(|(_, element)| element.enabled && element.kind != Kind::Messages) {
             let Some((_, column)) = self.columns.iter().find(|(slot, _)| *slot == element.slot) else { continue };
-            let item = build(element);
+            let item = build(index, element);
             column.append(&item.revealer);
             placed.push(item);
         }
         self.layout.replace(layout.clone());
     }
 
-    /// Brings each element up or down for `frame`, and writes the text of those that are up.
+    /// Brings each element up or down for `frame`, and writes the text of those that are up. While an element is being
+    /// edited it is shown whatever its settings say, with sample values where the item has none, and the others fade.
     pub fn update(&self, frame: &Frame) {
+        let preview = preview();
+        self.sync_preview(preview.as_ref());
         for item in self.placed.borrow().iter() {
-            let mut up = item.element.is_up(frame);
-            if up {
-                let text = item.template.render(frame.values);
-                let state_icon = item.icon.as_ref().and_then(|_| (frame.values)("state-icon"));
-                if let (Some(icon), Some(text)) = (&item.icon, &state_icon) {
-                    icon.set_text(text);
-                }
-                if let Some(label) = &item.filename {
-                    label.set_text(&(frame.values)("filename").unwrap_or_default());
-                }
-                // An element with nothing to show does not show its background either.
-                up = item.bar.is_some() || !text.trim().is_empty() || state_icon.is_some() || item.filename.as_ref().is_some_and(|label| !label.text().is_empty());
-                if item.label.text() != text {
-                    item.label.set_text(&text);
-                }
-                item.label.set_visible(!text.is_empty());
-                if let Some(bar) = &item.bar {
-                    bar.set_fraction(frame.fraction);
-                }
-            }
+            let edited = preview.as_ref().is_some_and(|preview| preview.index == Some(item.index));
+            let faded = if preview.is_some() { FADED } else { 1.0 };
+            item.revealer.set_opacity(item.element.style.opacity * faded);
+            // The saved version of the element being edited gives way to the preview of it.
+            let up = !edited && item.element.is_up(frame) && fill(item, frame);
             if item.revealer.reveals_child() != up {
                 item.revealer.set_reveal_child(up);
+            }
+        }
+        if let Some((_, item)) = self.previewed.borrow().as_ref() {
+            let sampled = |name: &str| (frame.values)(name).or_else(|| sample(name));
+            let shown = Frame { values: &sampled, fraction: frame.fraction.max(0.28), ..*frame };
+            fill(item, &shown);
+            if !item.revealer.reveals_child() {
+                item.revealer.set_reveal_child(true);
+            }
+        }
+    }
+
+    /// Makes the element built for the preview the one being previewed, or takes it away when there is none.
+    fn sync_preview(&self, preview: Option<&Preview>) {
+        let Some(preview) = preview else {
+            self.drop_preview();
+            return;
+        };
+        if self.previewed.borrow().as_ref().is_some_and(|(built, _)| built == preview) {
+            return;
+        }
+        self.drop_preview();
+        let Some((_, column)) = self.columns.iter().find(|(slot, _)| *slot == preview.element.slot) else { return };
+        let item = build(preview.index.unwrap_or(usize::MAX), &preview.element);
+        // It appears at once, and in the stack where the saved element is, if it is in the same place.
+        item.revealer.set_transition_duration(0);
+        let saved = self.placed.borrow().iter().find(|placed| Some(placed.index) == preview.index && placed.element.slot == preview.element.slot).map(|placed| placed.revealer.clone());
+        match saved {
+            Some(saved) => column.insert_child_after(&item.revealer, Some(&saved)),
+            None => column.append(&item.revealer),
+        }
+        self.previewed.replace(Some((preview.clone(), item)));
+    }
+
+    fn drop_preview(&self) {
+        if let Some((_, item)) = self.previewed.take() {
+            if let Some(column) = item.revealer.parent().and_downcast::<gtk::Box>() {
+                column.remove(&item.revealer);
             }
         }
     }
@@ -277,13 +350,35 @@ impl MediaOverlay {
 
     /// Takes every element down now, as the item they were over is gone.
     pub fn hide_all(&self) {
+        self.drop_preview();
         for item in self.placed.borrow().iter() {
             item.revealer.set_reveal_child(false);
         }
     }
 }
 
-fn build(element: &Element) -> Placed {
+/// Writes `frame`'s text, icon, filename and bar into the element, and returns whether there is anything of it to show.
+fn fill(item: &Placed, frame: &Frame) -> bool {
+    let text = item.template.render(frame.values);
+    let state_icon = item.icon.as_ref().and_then(|_| (frame.values)("state-icon"));
+    if let (Some(icon), Some(text)) = (&item.icon, &state_icon) {
+        icon.set_text(text);
+    }
+    if let Some(label) = &item.filename {
+        label.set_text(&(frame.values)("filename").unwrap_or_default());
+    }
+    if item.label.text() != text {
+        item.label.set_text(&text);
+    }
+    item.label.set_visible(!text.is_empty());
+    if let Some(bar) = &item.bar {
+        bar.set_fraction(frame.fraction);
+    }
+    // An element with nothing to show does not show its background either.
+    item.bar.is_some() || !text.trim().is_empty() || state_icon.is_some() || item.filename.as_ref().is_some_and(|label| !label.text().is_empty())
+}
+
+fn build(index: usize, element: &Element) -> Placed {
     let class = unique_class("overlay-el");
     let align = element.slot.text_align();
     let card = gtk::Box::new(gtk::Orientation::Vertical, 4);
@@ -343,7 +438,7 @@ fn build(element: &Element) -> Placed {
     revealer.set_halign(horizontal_align(align));
     revealer.set_can_target(false);
     let sheet = Sheet::new(&style_css(&format!(".overlay-element.{class}"), &element.style));
-    Placed { element: element.clone(), template: Template::parse(&element.text_template()), revealer, label, bar, icon, filename, _sheet: sheet }
+    Placed { index, element: element.clone(), template: Template::parse(&element.text_template()), revealer, label, bar, icon, filename, _sheet: sheet }
 }
 
 #[cfg(test)]

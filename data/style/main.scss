@@ -108,6 +108,12 @@ keybind {
   margin: 8px;
 }
 
+// While the video controls can be dragged, a dashed outline shows where they are.
+.media-controls.controls-unlocked {
+  outline: 2px dashed #{"var(--accent-bg-color)"};
+  outline-offset: 2px;
+}
+
 preferencespage box.vertical {
   margin: 6px 0;
 }

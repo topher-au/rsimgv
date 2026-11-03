@@ -26,6 +26,29 @@ pub const PROPERTIES: &[(&str, &str)] = &[
     ("file-size", "The size of the file"),
 ];
 
+/// What a property reads as where there is no item to read it from, such as in the editor's preview.
+pub fn sample(name: &str) -> Option<String> {
+    let value = match name {
+        "state" => "Playing",
+        "state-icon" => "▶️",
+        "time-pos" => "1:23",
+        "duration" => "4:56",
+        "time-remaining" => "3:33",
+        "percent-pos" => "28",
+        "speed" => "1.5",
+        "volume" => "80",
+        "fps" => "29.97",
+        "filename" => "example.mp4",
+        "path" => "/home/user/Videos/example.mp4",
+        "playlist-pos" => "3",
+        "playlist-count" => "12",
+        "resolution" => "1920 × 1080",
+        "file-size" => "48.2 MB",
+        _ => return None,
+    };
+    Some(value.to_owned())
+}
+
 /// The version the saved layout is written as, to tell a later layout from this one.
 const VERSION: i64 = 1;
 

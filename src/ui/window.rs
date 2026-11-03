@@ -47,6 +47,8 @@ mod imp {
         pub(super) keybinds: std::cell::OnceCell<KeybindsOverlay>,
         /// The message naming the folder the viewer moved to, while it is up, so the next one replaces it.
         pub(super) folder_notice: Cell<Option<MessageId>>,
+        /// The sample notification shown while the notification element is being edited.
+        pub(super) message_preview: Cell<Option<MessageId>>,
         /// The message naming the pane the focus moved to, while it is up, so the next one replaces it.
         pub(super) focus_notice: Cell<Option<MessageId>>,
         /// The last message about the playlist, while it is up, so the next one replaces it.
@@ -402,6 +404,22 @@ impl Window {
             let settings = settings.clone();
             move |_, on| {
                 let _ = settings.set_boolean("viewer-thumbnail-bar-overlay", on);
+            }
+        });
+        super::media_overlay::watch_preview({
+            let weak = window.downgrade();
+            move || {
+                if let Some(window) = weak.upgrade() {
+                    window.preview_messages();
+                }
+            }
+        });
+        imp.viewer.connect_controls_layout_changed({
+            let settings = settings.clone();
+            move |_, x, y, width| {
+                let _ = settings.set_double("video-controls-x", x);
+                let _ = settings.set_double("video-controls-y", y);
+                let _ = settings.set_double("video-controls-width", width);
             }
         });
         imp.viewer.connect_thumbnail_size_requested({
@@ -832,6 +850,12 @@ impl Window {
         viewer.set_status_bar(settings.boolean("viewer-status-bar"));
         viewer.set_svp(crate::svp::Config::from_settings(settings));
         self.apply_folder_end();
+        viewer.set_controls_layout(super::media_viewer::ControlsLayout {
+            locked: settings.boolean("video-controls-locked"),
+            x: settings.double("video-controls-x"),
+            y: settings.double("video-controls-y"),
+            width: settings.double("video-controls-width"),
+        });
         let layout = super::media_overlay::layout_from_settings(settings);
         self.messages().configure(layout.elements.iter().find(|element| element.kind == crate::overlay::Kind::Messages));
         viewer.set_overlay_layout(layout);
@@ -2503,6 +2527,32 @@ impl Window {
         self.imp().messages.get_or_init(|| MessageOverlay::new(&self.imp().message_layer))
     }
 
+    /// Shows the notification element being edited, if that is what is, by a sample notification that looks as it is
+    /// set, and goes back to the saved look when the edit ends.
+    fn preview_messages(&self) {
+        let Some(settings) = self.imp().settings.get() else { return };
+        let messages = self.messages();
+        let previous = self.imp().message_preview.take();
+        if let Some(previous) = previous {
+            messages.dismiss(previous);
+        }
+        match super::media_overlay::preview().filter(|preview| preview.element.kind == crate::overlay::Kind::Messages) {
+            Some(preview) => {
+                let mut element = preview.element;
+                element.enabled = true;
+                messages.configure(Some(&element));
+                let sample = messages.show(Message::persistent("A notification looks like this").dismissible(false));
+                self.imp().message_preview.set(Some(sample));
+            }
+            // Only a sample that was up has changed the look, so only then does it go back.
+            None if previous.is_some() => {
+                let layout = super::media_overlay::layout_from_settings(settings);
+                messages.configure(layout.elements.iter().find(|element| element.kind == crate::overlay::Kind::Messages));
+            }
+            None => {}
+        }
+    }
+
     /// Shows `text` over the window for a few seconds.
     pub fn notify(&self, text: &str) {
         self.messages().show(Message::notification(text));
@@ -3392,7 +3442,11 @@ const WHEEL_VOLUME_STEP: f64 = 5.0;
 const WHEEL_SEEK_STEP: f64 = 5.0;
 
 /// The settings the viewer and the window title are set from, applied again whenever one changes.
-const VIEWER_SETTINGS: [&str; 35] = [
+const VIEWER_SETTINGS: [&str; 39] = [
+    "video-controls-locked",
+    "video-controls-x",
+    "video-controls-y",
+    "video-controls-width",
     "overlay-layout",
     "seek-overlay",
     "seek-overlay-bar",

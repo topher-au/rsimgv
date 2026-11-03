@@ -820,6 +820,29 @@
                                 <property name="description">GStreamer has no options of its own here. Which videos it plays depends on the plugins installed on the system.</property>
                               </object>
                             </child>
+                            <child>
+                              <object class="AdwPreferencesGroup">
+                                <property name="title">Video controls</property>
+                                <child>
+                                  <object class="AdwSwitchRow" id="controls_locked_row">
+                                    <property name="title">Lock the controls</property>
+                                    <property name="subtitle">Unlock them to drag the controls to a new place over the video, and drag their left or right edge to change their width</property>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="AdwActionRow" id="controls_reset_row">
+                                    <property name="title">Reset the controls</property>
+                                    <property name="subtitle">Puts them back at the bottom of the video, as wide as they need</property>
+                                    <child type="suffix">
+                                      <object class="GtkButton" id="controls_reset_button">
+                                        <property name="label">Reset</property>
+                                        <property name="valign">center</property>
+                                      </object>
+                                    </child>
+                                  </object>
+                                </child>
+                              </object>
+                            </child>
                           </object>
                         </child>
                         <child>

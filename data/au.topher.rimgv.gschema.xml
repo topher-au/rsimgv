@@ -391,6 +391,25 @@
       <default>false</default>
       <summary>Keep the seek overlay up while a video plays, rather than only after a skip</summary>
     </key>
+    <key name="video-controls-locked" type="b">
+      <default>true</default>
+      <summary>Keep the video controls where they are. Unlocked, they can be dragged to a new place over the video, and their left or right edge dragged to change their width</summary>
+    </key>
+    <key name="video-controls-x" type="d">
+      <range min="0.0" max="1.0"/>
+      <default>0.5</default>
+      <summary>The centre of the video controls across the video frame, from 0 at the left to 1 at the right</summary>
+    </key>
+    <key name="video-controls-y" type="d">
+      <range min="0.0" max="1.0"/>
+      <default>0.92</default>
+      <summary>The centre of the video controls down the video frame, from 0 at the top to 1 at the bottom</summary>
+    </key>
+    <key name="video-controls-width" type="d">
+      <range min="0.0" max="1.0"/>
+      <default>0.0</default>
+      <summary>The width of the video controls as a share of the video frame, or 0 for the width they need</summary>
+    </key>
     <key name="mpv-args" type="s">
       <default>""</default>
       <summary>Extra mpv command line options for the mpv player, such as --hwdec=auto-copy</summary>

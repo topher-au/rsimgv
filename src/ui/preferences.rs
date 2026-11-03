@@ -159,6 +159,10 @@ mod imp {
         #[template_child]
         pub overlay_page: TemplateChild<gtk::Box>,
         #[template_child]
+        pub controls_locked_row: TemplateChild<adw::SwitchRow>,
+        #[template_child]
+        pub controls_reset_button: TemplateChild<gtk::Button>,
+        #[template_child]
         pub svp_banner: TemplateChild<adw::Banner>,
         #[template_child]
         pub mpv_args_row: TemplateChild<adw::EntryRow>,
@@ -365,6 +369,14 @@ impl PreferencesDialog {
 
         bind_switches(settings, dialog.imp());
         bind_choices(settings, dialog.imp());
+        imp.controls_reset_button.connect_clicked({
+            let settings = settings.clone();
+            move |_| {
+                for key in ["video-controls-x", "video-controls-y", "video-controls-width"] {
+                    settings.reset(key);
+                }
+            }
+        });
         imp.overlay_page.append(&super::overlay_editor::build(settings));
         dialog.bind_start_directory(settings);
         bind_info_fields(settings, &dialog);
@@ -572,6 +584,7 @@ fn bind_switches(settings: &gio::Settings, imp: &imp::PreferencesDialog) {
         ("auto-hide-cursor", &imp.auto_hide_cursor_row),
         ("smooth-scrolling", &imp.smooth_scrolling_row),
         ("image-info-in-title", &imp.image_info_in_title_row),
+        ("video-controls-locked", &imp.controls_locked_row),
         ("keep-fit-mode", &imp.keep_fit_mode_row),
         ("unlock-minimum-zoom", &imp.unlock_minimum_zoom_row),
         ("smooth-upscaling", &imp.smooth_upscaling_row),
