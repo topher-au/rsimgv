@@ -150,18 +150,18 @@ pub fn script(plugins: &Plugins, source: f64, target: f64, nvof: bool) -> String
          \n\
          def interpolate(clip):\n\
          \x20   input_um = clip.resize.Point(format=vs.YUV420P8, dither_type='random')\n\
-         \x20   input_m = input_um\n\
-         \x20   # SVP's optical flow analyses at least 160x128 pixels, so smaller videos are scaled up for it.\n\
-         \x20   analyse_width = input_m.width // nvof_block * 4\n\
-         \x20   analyse_height = input_m.height // nvof_block * 4\n\
-         \x20   analyse_scale = max(1, 160 / analyse_width, 128 / analyse_height)\n\
-         \x20   input_m8 = input_m.resize.Bicubic(\n\
-         \x20       width=math.ceil(analyse_width * analyse_scale / 4) * 4,\n\
-         \x20       height=math.ceil(analyse_height * analyse_scale / 4) * 4,\n\
-         \x20       src_width=input_m.width - (input_m.width % nvof_block),\n\
-         \x20       src_height=input_m.height - (input_m.height % nvof_block),\n\
-         \x20       format=vs.YUV420P8,\n\
-         \x20   )\n\
+         \x20   # SVP's optical flow analyses a picture exactly half the size of the video, at least 160x128, so the video is\n\
+         \x20   # made a whole number of 8 pixels across and high, and scaled up first if it is too small for that.\n\
+         \x20   scale = max(1, 2 * 160 / input_um.width, 2 * 128 / input_um.height)\n\
+         \x20   width = math.ceil(input_um.width * scale / nvof_block) * nvof_block\n\
+         \x20   height = math.ceil(input_um.height * scale / nvof_block) * nvof_block\n\
+         \x20   if scale > 1:\n\
+         \x20       input_m = input_um.resize.Bicubic(width=width, height=height, format=vs.YUV420P8)\n\
+         \x20   else:\n\
+         \x20       width = input_um.width // nvof_block * nvof_block\n\
+         \x20       height = input_um.height // nvof_block * nvof_block\n\
+         \x20       input_m = input_um.std.Crop(right=input_um.width - width, bottom=input_um.height - height)\n\
+         \x20   input_m8 = input_m.resize.Bicubic(width=width // 2, height=height // 2, format=vs.YUV420P8)\n\
          {interpolate}\n\
          \x20   return smooth\n\
          \n\
