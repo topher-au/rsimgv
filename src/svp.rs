@@ -132,7 +132,8 @@ pub fn script(plugins: &Plugins, source: f64, target: f64, nvof: bool) -> String
         )
     };
     format!(
-        "import vapoursynth as vs\n\
+        "import math\n\
+         import vapoursynth as vs\n\
          \n\
          core = vs.core\n\
          core.num_threads = {threads}\n\
@@ -150,9 +151,13 @@ pub fn script(plugins: &Plugins, source: f64, target: f64, nvof: bool) -> String
          def interpolate(clip):\n\
          \x20   input_um = clip.resize.Point(format=vs.YUV420P8, dither_type='random')\n\
          \x20   input_m = input_um\n\
+         \x20   # SVP's optical flow analyses at least 160x128 pixels, so smaller videos are scaled up for it.\n\
+         \x20   analyse_width = input_m.width // nvof_block * 4\n\
+         \x20   analyse_height = input_m.height // nvof_block * 4\n\
+         \x20   analyse_scale = max(1, 160 / analyse_width, 128 / analyse_height)\n\
          \x20   input_m8 = input_m.resize.Bicubic(\n\
-         \x20       width=input_m.width // nvof_block * 4,\n\
-         \x20       height=input_m.height // nvof_block * 4,\n\
+         \x20       width=math.ceil(analyse_width * analyse_scale / 4) * 4,\n\
+         \x20       height=math.ceil(analyse_height * analyse_scale / 4) * 4,\n\
          \x20       src_width=input_m.width - (input_m.width % nvof_block),\n\
          \x20       src_height=input_m.height - (input_m.height % nvof_block),\n\
          \x20       format=vs.YUV420P8,\n\
@@ -179,7 +184,7 @@ pub fn script_name(script: &str) -> String {
 pub fn filter(path: &Path) -> String {
     let path = path.display().to_string();
     format!(
-        "@{FILTER_LABEL}:vapoursynth=file=%{}%{path}:buffered-frames={BUFFERED_FRAMES}:concurrent-frames={CONCURRENT_FRAMES}",
+        "{FILTER_LABEL}:vapoursynth=file=%{}%{path}:buffered-frames={BUFFERED_FRAMES}:concurrent-frames={CONCURRENT_FRAMES}",
         path.len()
     )
 }
