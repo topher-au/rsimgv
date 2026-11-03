@@ -872,6 +872,13 @@ impl Window {
         viewer.set_status_bar(settings.boolean("viewer-status-bar"));
         viewer.set_svp(crate::svp::Config::from_settings(settings));
         self.apply_folder_end();
+        let (animated, millis) = (settings.boolean("sidebar-animations"), settings.int("sidebar-animation-ms").max(0) as u32);
+        let imp = self.imp();
+        for split in [(*imp.split).clone(), (*imp.playlist_split).clone(), viewer.playlist_split()] {
+            split.set_animation(animated, millis);
+        }
+        viewer.set_bar_animation(animated, millis);
+        imp.content_revealer.set_transition_duration(if animated { millis } else { 0 });
         viewer.set_controls_layout(super::media_viewer::ControlsLayout {
             locked: settings.boolean("video-controls-locked"),
             x: settings.double("video-controls-x"),
@@ -3463,7 +3470,9 @@ const WHEEL_VOLUME_STEP: f64 = 5.0;
 const WHEEL_SEEK_STEP: f64 = 5.0;
 
 /// The settings the viewer and the window title are set from, applied again whenever one changes.
-const VIEWER_SETTINGS: [&str; 39] = [
+const VIEWER_SETTINGS: [&str; 41] = [
+    "sidebar-animations",
+    "sidebar-animation-ms",
     "video-controls-locked",
     "video-controls-x",
     "video-controls-y",

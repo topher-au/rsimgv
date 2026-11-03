@@ -3,7 +3,7 @@
 //!
 //! The sizing and allocation follow the C layout functions: an uncollapsed split pins the sidebar
 //! beside the content, a collapsed one overlays it, and both clamp to the min/max width. The
-//! show/hide animation is a spring, and clicking the shield or pressing Escape hides a collapsed
+//! show/hide animation is timed, and clicking the shield or pressing Escape hides a collapsed
 //! sidebar. Not ported: the swipe gestures, the shadow, and focus hand-off between panes.
 
 use std::cell::{Cell, RefCell};
@@ -20,6 +20,9 @@ use std::sync::LazyLock;
 /// Width of the grip between the sidebar and the content, in pixels.
 pub const HANDLE_WIDTH: i32 = 6;
 
+/// How long the sidebar takes to slide in and out unless it is set otherwise, in milliseconds.
+const DEFAULT_ANIMATION_MS: u32 = 250;
+
 mod imp {
     use super::*;
 
@@ -29,7 +32,9 @@ mod imp {
         pub(super) sidebar_box: gtk::Box,
         pub(super) sidebar_slot: adw::Bin,
         pub(super) handle: gtk::Box,
-        pub(super) animation: RefCell<Option<adw::SpringAnimation>>,
+        pub(super) animation: RefCell<Option<adw::TimedAnimation>>,
+        /// Whether the sidebar slides in and out, and how long that takes, in milliseconds.
+        pub(super) animated: Cell<bool>,
         pub(super) sidebar_position: Cell<gtk::PackType>,
         pub(super) show_sidebar: Cell<bool>,
         pub(super) collapsed: Cell<bool>,
@@ -72,6 +77,7 @@ mod imp {
                 sidebar_slot,
                 handle,
                 animation: RefCell::new(None),
+                animated: Cell::new(true),
                 sidebar_position: Cell::new(gtk::PackType::Start),
                 show_sidebar: Cell::new(true),
                 collapsed: Cell::new(false),
@@ -152,13 +158,8 @@ mod imp {
                     view.set_show_progress(progress);
                 }
             });
-            let animation = adw::SpringAnimation::new(
-                &*obj,
-                0.0,
-                0.0,
-                adw::SpringParams::new(1.0, 0.5, 500.0),
-                target,
-            );
+            let animation = adw::TimedAnimation::new(&*obj, 0.0, 0.0, DEFAULT_ANIMATION_MS, target);
+            animation.set_easing(adw::Easing::EaseOutCubic);
             let weak = obj.downgrade();
             animation.connect_done(move |_| {
                 if let Some(view) = weak.upgrade() {
@@ -379,7 +380,7 @@ impl OverlaySplitView {
         self.imp().show_sidebar.get()
     }
 
-    /// Shows or hides the sidebar with the same spring animation the C widget uses.
+    /// Shows or hides the sidebar, sliding it unless animation is off.
     /// Calls `callback(view, shown)` whenever the sidebar starts opening or closing.
     pub fn connect_show_sidebar_changed<F>(&self, callback: F) -> glib::SignalHandlerId
     where
@@ -483,8 +484,19 @@ impl OverlaySplitView {
         wanted.clamp(min, max)
     }
 
+    /// Sets whether the sidebar slides in and out, and how long that takes, in milliseconds. With no time it appears and goes
+    /// at once.
+    pub fn set_animation(&self, enabled: bool, millis: u32) {
+        let imp = self.imp();
+        imp.animated.set(enabled && millis > 0);
+        if let Some(animation) = imp.animation.borrow().as_ref() {
+            animation.set_duration(millis);
+        }
+    }
+
     fn set_show_sidebar_inner(&self, show: bool, animate: bool) {
         let imp = self.imp();
+        let animate = animate && imp.animated.get();
         if imp.show_sidebar.get() == show {
             return;
         }

@@ -159,6 +159,10 @@ mod imp {
         #[template_child]
         pub overlay_page: TemplateChild<gtk::Box>,
         #[template_child]
+        pub sidebar_animations_row: TemplateChild<adw::SwitchRow>,
+        #[template_child]
+        pub sidebar_animation_ms_row: TemplateChild<adw::SpinRow>,
+        #[template_child]
         pub controls_locked_row: TemplateChild<adw::SwitchRow>,
         #[template_child]
         pub controls_reset_button: TemplateChild<gtk::Button>,
@@ -360,6 +364,8 @@ impl PreferencesDialog {
         bind_port(settings, &imp.svp_fps_maximum_row, "svp-fps-maximum");
         settings.bind("viewer-status-bar", &*imp.viewer_status_bar_row, "active").build();
         bind_port(settings, &imp.zoom_step_row, "zoom-step");
+        bind_port(settings, &imp.sidebar_animation_ms_row, "sidebar-animation-ms");
+        settings.bind("sidebar-animations", &*imp.sidebar_animation_ms_row, "sensitive").get_only().build();
         bind_port(settings, &imp.video_start_delay_row, "video-start-delay");
         bind_port(settings, &imp.scroll_speed_row, "scroll-speed");
         bind_port(settings, &imp.thumbnail_bar_size_row, "viewer-thumbnail-bar-size");
@@ -585,6 +591,7 @@ fn bind_switches(settings: &gio::Settings, imp: &imp::PreferencesDialog) {
         ("smooth-scrolling", &imp.smooth_scrolling_row),
         ("image-info-in-title", &imp.image_info_in_title_row),
         ("video-controls-locked", &imp.controls_locked_row),
+        ("sidebar-animations", &imp.sidebar_animations_row),
         ("keep-fit-mode", &imp.keep_fit_mode_row),
         ("unlock-minimum-zoom", &imp.unlock_minimum_zoom_row),
         ("smooth-upscaling", &imp.smooth_upscaling_row),

@@ -391,6 +391,15 @@
       <default>false</default>
       <summary>Keep the seek overlay up while a video plays, rather than only after a skip</summary>
     </key>
+    <key name="sidebar-animations" type="b">
+      <default>true</default>
+      <summary>Slide the sidebars and the thumbnail bar in and out, rather than showing and hiding them at once</summary>
+    </key>
+    <key name="sidebar-animation-ms" type="i">
+      <range min="0" max="2000"/>
+      <default>250</default>
+      <summary>How long the sidebars and the thumbnail bar take to slide in and out, in milliseconds</summary>
+    </key>
     <key name="video-controls-locked" type="b">
       <default>true</default>
       <summary>Keep the video controls where they are. Unlocked, they can be dragged to a new place over the video, and their left or right edge dragged to change their width</summary>

@@ -931,6 +931,11 @@ impl MediaViewer {
         }
     }
 
+    /// Sets whether the thumbnail bar slides in and out, and how long that takes, in milliseconds.
+    pub fn set_bar_animation(&self, enabled: bool, millis: u32) {
+        self.imp().bar_revealer.set_transition_duration(if enabled { millis } else { 0 });
+    }
+
     /// Plays later videos with libmpv, or with GTK's own media backend.
     pub fn set_use_mpv(&self, use_mpv: bool) {
         self.imp().use_mpv.set(use_mpv);

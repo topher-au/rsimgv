@@ -248,6 +248,31 @@
                                 </child>
                               </object>
                             </child>
+                            <child>
+                              <object class="AdwPreferencesGroup">
+                                <property name="title">Animations</property>
+                                <child>
+                                  <object class="AdwSwitchRow" id="sidebar_animations_row">
+                                    <property name="title">Animate the sidebars and thumbnail bar</property>
+                                    <property name="subtitle">Slides them in and out, rather than showing and hiding them at once</property>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="AdwSpinRow" id="sidebar_animation_ms_row">
+                                    <property name="title">Animation time</property>
+                                    <property name="subtitle">In milliseconds</property>
+                                    <property name="digits">0</property>
+                                    <property name="adjustment">
+                                      <object class="GtkAdjustment">
+                                        <property name="lower">0</property>
+                                        <property name="upper">2000</property>
+                                        <property name="step-increment">50</property>
+                                      </object>
+                                    </property>
+                                  </object>
+                                </child>
+                              </object>
+                            </child>
                           </object>
                         </child>
                         <child>

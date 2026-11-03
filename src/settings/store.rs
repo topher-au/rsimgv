@@ -128,6 +128,8 @@ const LAYOUT: &[(&str, &str, &str)] = &[
     ("seek-overlay-seconds", "video", "seek-overlay-seconds"),
     ("seek-overlay-width", "video", "seek-overlay-width"),
     ("seek-overlay-always", "video", "seek-overlay-always"),
+    ("sidebar-animations", "window", "sidebar-animations"),
+    ("sidebar-animation-ms", "window", "sidebar-animation-ms"),
     ("video-controls-locked", "video", "controls.locked"),
     ("video-controls-x", "video", "controls.x"),
     ("video-controls-y", "video", "controls.y"),
