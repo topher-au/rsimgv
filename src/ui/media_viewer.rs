@@ -2059,8 +2059,9 @@ impl MediaViewer {
             let stamp = crate::fs::thumbnail::stamp(&path);
             let Some(texture) = Thumbnails::shared().best_existing(&path, stamp).await else { return };
             let Some(viewer) = weak.upgrade() else { return };
-            // Only if the video is still the one shown.
-            if viewer.shown_path().as_deref() == Some(path.as_path()) && viewer.imp().media.borrow().is_some() {
+            // Only if the video is still the one shown, and does not already cover the view with its own frames.
+            let covered = viewer.imp().media.borrow().as_ref().and_then(|media| media.downcast_ref::<crate::mpv::MpvStream>()).is_some_and(|stream| stream.has_frame());
+            if viewer.shown_path().as_deref() == Some(path.as_path()) && viewer.imp().media.borrow().is_some() && !covered {
                 viewer.imp().backdrop.set_texture(Some(&texture));
             }
         });
@@ -2166,6 +2167,18 @@ impl MediaViewer {
                     let speed = settings.as_ref().filter(|_| imp.remember.get().speed).and_then(|settings| settings.get_f64("speed")).unwrap_or(1.0);
                     stream.set_speed(speed);
                     stream.set_framing(imp.framing.get());
+                    // Once its frames are up the stream fills the view itself, with the picture over its backdrop or black, so the
+                    // thumbnail behind it is not drawn under every frame. GTK's own player leaves bars, which the thumbnail fills.
+                    stream.connect_first_frame({
+                        let weak = self.downgrade();
+                        move |stream| {
+                            let Some(viewer) = weak.upgrade() else { return };
+                            let shown = viewer.imp().media.borrow().as_ref().is_some_and(|media| media == stream.upcast_ref::<gtk::MediaStream>());
+                            if shown {
+                                viewer.imp().backdrop.set_texture(None);
+                            }
+                        }
+                    });
                     if let Some(orientation) = settings.as_ref().filter(|_| imp.remember.get().rotation).and_then(saved_orientation) {
                         stream.set_orientation(orientation);
                     }

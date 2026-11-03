@@ -9,7 +9,7 @@ use std::cell::{Cell, RefCell};
 use std::path::Path;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use gtk::glib::subclass::Signal;
 use gtk::prelude::*;
@@ -43,6 +43,14 @@ const MOTION_GAP: f64 = 0.1;
 /// How much smaller than the bare strip it fills the backdrop is made, in pixels: it is blurred at that size, which costs
 /// little, and the display scales it up as it draws it.
 const BACKDROP_SHRINK: f64 = 8.0;
+
+/// How long the window's size must stay as it is before the video is rendered again at the size shown. A size that changes more
+/// often than this, such as while the window is dragged, is followed once it settles, with the frame rendered before scaled
+/// to fit meanwhile.
+const RESIZE_SETTLE: std::time::Duration = std::time::Duration::from_millis(120);
+
+/// The most buffers kept to render frames into.
+const POOL_SIZE: usize = 4;
 
 /// How often the position is reported to GTK, and so to the controls, while the video plays.
 const POSITION_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
@@ -90,6 +98,44 @@ fn capped(width: i32, height: i32) -> (i32, i32) {
     (width, height)
 }
 
+/// The pixels of a frame, which go back to the pool they came from once nothing refers to them, such as when GTK is done with the
+/// texture made from them. So a frame is rendered into a buffer that already exists, and handed to GTK as it is, not copied.
+struct Pooled {
+    pixels: Vec<u8>,
+    pool: Arc<Mutex<Vec<Vec<u8>>>>,
+}
+
+impl Pooled {
+    /// A buffer of `len` bytes from `pool`, or a new one. Its contents are whatever it held, as a render fills all of it.
+    fn take(pool: &Arc<Mutex<Vec<Vec<u8>>>>, len: usize) -> Self {
+        let mut buffers = pool.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let at = buffers.iter().position(|buffer| buffer.len() == len);
+        let mut pixels = match at {
+            Some(at) => buffers.swap_remove(at),
+            None => buffers.pop().unwrap_or_default(),
+        };
+        drop(buffers);
+        pixels.resize(len, 0);
+        Self { pixels, pool: pool.clone() }
+    }
+}
+
+impl AsRef<[u8]> for Pooled {
+    fn as_ref(&self) -> &[u8] {
+        &self.pixels
+    }
+}
+
+impl Drop for Pooled {
+    fn drop(&mut self) {
+        let pixels = std::mem::take(&mut self.pixels);
+        let mut buffers = self.pool.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if buffers.len() < POOL_SIZE {
+            buffers.push(pixels);
+        }
+    }
+}
+
 mod imp {
     use super::*;
 
@@ -110,7 +156,14 @@ mod imp {
         pub(super) render_size: Cell<(i32, i32)>,
         /// The display's scale, which may be fractional, and turns the size shown into device pixels.
         pub(super) scale: Cell<f64>,
-        pub(super) pixels: RefCell<Vec<u8>>,
+        /// The buffers frames are rendered into, and the latest frame with its size, which the backdrop is made from.
+        pub(super) pool: Arc<Mutex<Vec<Vec<u8>>>>,
+        pub(super) last_frame: RefCell<Option<(glib::Bytes, i32, i32)>>,
+        /// The size to render at once the window's size settles, when it was last rendered at a new size, and the timer that waits
+        /// for it to settle.
+        pub(super) wanted_size: Cell<(i32, i32)>,
+        pub(super) resized_at: Cell<Option<std::time::Instant>>,
+        pub(super) resize_timer: RefCell<Option<glib::SourceId>>,
         /// The size of the area the stream was last drawn into, and the blurred pieces of the backdrop for the bare strips of
         /// it, each with the strip it fills.
         pub(super) area: Cell<(f64, f64)>,
@@ -160,7 +213,7 @@ mod imp {
     impl ObjectImpl for MpvStream {
         fn signals() -> &'static [Signal] {
             use std::sync::LazyLock;
-            static SIGNALS: LazyLock<Vec<Signal>> = LazyLock::new(|| vec![Signal::builder("seek-requested").build()]);
+            static SIGNALS: LazyLock<Vec<Signal>> = LazyLock::new(|| vec![Signal::builder("seek-requested").build(), Signal::builder("first-frame").build()]);
             SIGNALS.as_ref()
         }
 
@@ -228,7 +281,10 @@ mod imp {
             let Some(frame) = self.frame.borrow().clone() else { return };
             let snapshot = snapshot.downcast_ref::<gtk::Snapshot>().expect("a GTK snapshot");
             // The frame is the picture alone, as big as fits. The blurred, dimmed pieces of it, if there is a backdrop, fill the
-            // bare strips round it.
+            // bare strips round it, and otherwise they are black.
+            if self.framing.get().backdrop.is_none() {
+                snapshot.append_color(&gdk::RGBA::BLACK, &gtk::graphene::Rect::new(0.0, 0.0, width as f32, height as f32));
+            }
             let (frame_width, frame_height) = (f64::from(frame.width()), f64::from(frame.height()));
             let (x, y, shown_width, shown_height) = framing::fitted(width, height, frame_width, frame_height);
             for (piece, strip) in self.backdrop.borrow().iter() {
@@ -323,7 +379,7 @@ fn shared_player(options: &str) -> Option<Rc<Player>> {
 impl MpvStream {
     /// Stops the video and lets go of the player, which stays alive for the next video. Nothing plays after this.
     pub fn stop(&self) {
-        for timer in [self.imp().crop_timer.take(), self.imp().position_timer.take()].into_iter().flatten() {
+        for timer in [self.imp().crop_timer.take(), self.imp().position_timer.take(), self.imp().resize_timer.take()].into_iter().flatten() {
             timer.remove();
         }
         let Some(player) = self.imp().player.take() else { return };
@@ -370,8 +426,7 @@ impl MpvStream {
         let backdrop_changed = imp.framing.get().backdrop != framing.backdrop;
         imp.framing.set(framing);
         if backdrop_changed {
-            let (width, height) = imp.render_size.get();
-            self.update_backdrop(&imp.pixels.borrow(), width, height);
+            self.update_backdrop();
         }
         self.invalidate_contents();
         imp.crop.set(None);
@@ -500,6 +555,20 @@ impl MpvStream {
             self.apply_framing_filters();
         }
         differs
+    }
+
+    /// Calls `callback` once the first frame is shown, from when the stream covers everything it is drawn into.
+    pub fn connect_first_frame<F: Fn(&Self) + 'static>(&self, callback: F) -> glib::SignalHandlerId {
+        self.connect_local("first-frame", false, move |values| {
+            let stream = values[0].get::<MpvStream>().expect("stream argument");
+            callback(&stream);
+            None
+        })
+    }
+
+    /// Whether a frame has been shown yet.
+    pub fn has_frame(&self) -> bool {
+        self.imp().frame.borrow().is_some()
     }
 
     /// Calls `callback` before each seek is sent to the player.
@@ -738,27 +807,57 @@ impl MpvStream {
             return;
         }
         if imp.render_size.get() == (width, height) {
+            // Back at the size rendered, so there is nothing to wait for.
+            if let Some(timer) = imp.resize_timer.take() {
+                timer.remove();
+            }
             // The frame is as it was, but the strips round it are not.
             if area_changed {
-                self.update_backdrop(&imp.pixels.borrow(), width, height);
+                self.update_backdrop();
             }
             return;
         }
-        imp.render_size.set((width, height));
-        imp.pixels.replace(vec![0; width as usize * height as usize * 4]);
+        imp.wanted_size.set((width, height));
+        if area_changed {
+            self.update_backdrop();
+        }
+        let settling = imp.frame.borrow().is_some() && imp.resized_at.get().is_some_and(|at| at.elapsed() < RESIZE_SETTLE);
+        if !settling {
+            self.render_wanted();
+            return;
+        }
+        if let Some(timer) = imp.resize_timer.take() {
+            timer.remove();
+        }
+        let weak = self.downgrade();
+        let timer = glib::timeout_add_local_once(RESIZE_SETTLE, move || {
+            if let Some(stream) = weak.upgrade() {
+                stream.imp().resize_timer.take();
+                stream.render_wanted();
+            }
+        });
+        imp.resize_timer.replace(Some(timer));
+    }
+
+    /// Renders at the size wanted, now.
+    fn render_wanted(&self) {
+        let imp = self.imp();
+        imp.render_size.set(imp.wanted_size.get());
+        imp.resized_at.set(Some(std::time::Instant::now()));
         imp.backdrop_stale.set(true);
         self.render_frame(true);
     }
 
-    /// Makes the backdrop, now, from the `width` by `height` frame in `pixels`: for each bare strip of the area round the picture,
+    /// Makes the backdrop, now, from the latest frame: for each bare strip of the area round the picture,
     /// the part of the frame that, covering the area, lies under it, shrunk to an eighth, blurred and dimmed. They are drawn
     /// as they are, so only the small pixels are ever blurred.
-    fn update_backdrop(&self, pixels: &[u8], width: i32, height: i32) {
+    fn update_backdrop(&self) {
         let imp = self.imp();
         let Some(backdrop) = imp.framing.get().backdrop else {
             imp.backdrop.borrow_mut().clear();
             return;
         };
+        let Some((pixels, width, height)) = imp.last_frame.borrow().clone() else { return };
         let (area_width, area_height) = imp.area.get();
         if area_width <= 0.0 || area_height <= 0.0 || width <= 0 || height <= 0 {
             return;
@@ -777,7 +876,7 @@ impl MpvStream {
             let out_width = ((strip_width * scale / BACKDROP_SHRINK).ceil() as usize).max(1);
             let out_height = ((strip_height * scale / BACKDROP_SHRINK).ceil() as usize).max(1);
             let region = ((x - cover_x) / per_pixel, (y - cover_y) / per_pixel, (x + strip_width - cover_x) / per_pixel, (y + strip_height - cover_y) / per_pixel);
-            let mut small = framing::shrink_region(pixels, width as usize, height as usize, region, out_width, out_height);
+            let mut small = framing::shrink_region(&pixels, width as usize, height as usize, region, out_width, out_height);
             framing::blur_and_dim(&mut small, &mut scratch, out_width, out_height, radius, backdrop.dim);
             let bytes = glib::Bytes::from_owned(small);
             let texture = gdk::MemoryTexture::new(out_width as i32, out_height as i32, gdk::MemoryFormat::B8g8r8x8, &bytes, out_width * 4);
@@ -795,8 +894,8 @@ impl MpvStream {
         if (!force && !player.frame_ready()) || width <= 0 || height <= 0 {
             return;
         }
-        let mut pixels = imp.pixels.borrow_mut();
-        match player.render(width, height, &mut pixels) {
+        let mut frame = Pooled::take(&imp.pool, width as usize * height as usize * 4);
+        match player.render(width, height, &mut frame.pixels) {
             Ok(true) => {}
             Ok(false) => {
                 imp.frame_pending.set(true);
@@ -807,14 +906,23 @@ impl MpvStream {
                 return;
             }
         }
-        let bytes = glib::Bytes::from(&pixels[..]);
+        let bytes = glib::Bytes::from_owned(frame);
         let texture = gdk::MemoryTexture::new(width, height, gdk::MemoryFormat::B8g8r8x8, &bytes, width as usize * 4);
+        imp.last_frame.replace(Some((bytes, width, height)));
         if imp.framing.get().backdrop.is_some() && (imp.backdrop_stale.get() || imp.backdrop_at.get().is_none_or(|at| at.elapsed() >= BACKDROP_INTERVAL)) {
-            self.update_backdrop(&pixels, width, height);
+            self.update_backdrop();
         }
-        drop(pixels);
-        imp.frame.replace(Some(texture.upcast()));
+        let first = imp.frame.replace(Some(texture.upcast())).is_none();
         self.invalidate_contents();
+        if first {
+            // Not from inside a snapshot, which this may be in.
+            let weak = self.downgrade();
+            glib::idle_add_local_once(move || {
+                if let Some(stream) = weak.upgrade() {
+                    stream.emit_by_name::<()>("first-frame", &[]);
+                }
+            });
+        }
     }
 }
 
