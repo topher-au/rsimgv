@@ -136,34 +136,35 @@ The playlist is kept in `playlist.m3u8` beside the settings file. Other programs
 
 Settings are stored as YAML in `~/.config/rsimgv/rsimgv.conf`. Set `RSIMGV_CONFIG` to use another file.
 
-The file is nested by each setting's GSettings key path, and each setting records its exact GVariant type:
+The file is nested by each setting's GSettings key path below the schema's path, `/au/topher/rsimgv/`, and each setting
+records its exact GVariant type:
 
 ```yaml
-au:
-  topher:
-    rsimgv:
-      window-width:
-        type: i
-        value: "960"
-      show-hidden:
-        type: b
-        value: "false"
-      info-fields:
-        type: as
-        value: "['size', 'modified']"
+window:
+  height:
+    type: i
+    value: "640"
+  sidebar:
+    width:
+      type: i
+      value: "-1"
+browse:
+  info:
+    fields:
+      type: as
+      value: "['size', 'modified']"
 ```
 
-A setting that is not valid for its type is kept in the file as written and ignored. A file in the older grouped
-layout (`window:` with `width:` under it) still loads: its values are converted to the types in the schema, and the next
-save writes the typed layout. Settings in the old file that match no schema key are not carried over.
+A setting that is not valid for its type is kept in the file as written and ignored.
 
 Settings are read and written through GSettings, using a backend the application creates and passes to
 `gio::Settings`. Changes made in the preferences dialog, from the menu, or by editing the file while the app runs all
 take effect straight away. A file that cannot be parsed makes the settings read-only until it is fixed and the app is
 restarted, so it is never overwritten. The schema is `data/au.topher.rsimgv.gschema.xml`.
 
-Nesting goes by path: GSettings key names cannot contain `--`, so a setting nested below another is saved by opening a
-relocatable schema at the nested path, such as `/au/topher/rsimgv/group/parent/`.
+Each group is a child schema in the schema file, such as `au.topher.rsimgv.window.sidebar` at
+`/au/topher/rsimgv/window/sidebar/`. GSettings key names cannot contain `.`, so code names a setting by its dotted path
+through `settings::Settings`, as in `settings.int("window.sidebar.width")`, and that picks the child schema to use.
 
 ## Project layout
 
