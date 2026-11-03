@@ -457,6 +457,17 @@ impl Window {
         self.imp().current_path.borrow().clone()
     }
 
+    /// Records `folder` and the `file` in it as the last ones shown, for the window to open at when `start-location` is
+    /// `last`. A folder with no file in it clears `last-file`.
+    fn remember_location(&self, folder: &Path, file: Option<&Path>) {
+        let Some(settings) = self.imp().settings.get() else { return };
+        if settings.string("start-location") != "last" {
+            return;
+        }
+        let _ = settings.set_string("last-directory", &folder.to_string_lossy());
+        let _ = settings.set_string("last-file", &file.map(|file| file.to_string_lossy().into_owned()).unwrap_or_default());
+    }
+
     /// Makes `path` the window's folder. This is the only way the folder changes: it records the
     /// visit in the history and sets the path on the path bar, the tree, the browse list and its
     /// label. Returns `false`, changing nothing, if `path` is not a directory.
@@ -476,6 +487,7 @@ impl Window {
             eprintln!("rsimgv: {} is not a folder", path.display());
             return false;
         }
+        self.remember_location(path, None);
 
         // With no tab open, navigating opens one at the folder and activates it.
         if imp.tab_view.n_pages() == 0 {
@@ -736,6 +748,9 @@ impl Window {
     fn open_viewer(&self, view: &BrowseView, path: &Path) {
         let paths = view.media_paths();
         let Some(index) = paths.iter().position(|listed| listed == path) else { return };
+        if let Some(folder) = path.parent() {
+            self.remember_location(folder, Some(path));
+        }
         self.show_in_viewer(paths, index, false);
     }
 
@@ -2996,6 +3011,9 @@ impl Window {
                 if window.imp().playlist_playing.get() {
                     window.playlist_item_shown(path);
                 } else if let Some(view) = window.active_browse() {
+                    if let Some(folder) = path.parent() {
+                        window.remember_location(folder, Some(path));
+                    }
                     view.select_named(&path.to_string_lossy());
                 }
             }
