@@ -182,11 +182,8 @@ mod imp {
             stream.fit_render(width, height);
             let Some(frame) = self.frame.borrow().clone() else { return };
             let snapshot = snapshot.downcast_ref::<gtk::Snapshot>().expect("a GTK snapshot");
-            if self.framing.get().backdrop.is_none() {
-                snapshot.append_texture(&frame, &gtk::graphene::Rect::new(0.0, 0.0, width as f32, height as f32));
-                return;
-            }
-            // The frame is the picture alone, as big as fits. The blurred, dimmed pieces of it fill the bare strips round it.
+            // The frame is the picture alone, as big as fits. The blurred, dimmed pieces of it, if there is a backdrop, fill the
+            // bare strips round it.
             let (frame_width, frame_height) = (f64::from(frame.width()), f64::from(frame.height()));
             let (x, y, shown_width, shown_height) = framing::fitted(width, height, frame_width, frame_height);
             for (piece, strip) in self.backdrop.borrow().iter() {
@@ -323,11 +320,11 @@ impl MpvStream {
     /// video before is let go, and looked for again. The player is shared, so each stream sets this when it starts.
     pub fn set_framing(&self, framing: Framing) {
         let imp = self.imp();
-        let backdrop_changed = imp.framing.get().backdrop.is_some() != framing.backdrop.is_some();
+        let backdrop_changed = imp.framing.get().backdrop != framing.backdrop;
         imp.framing.set(framing);
         if backdrop_changed {
-            // The frame is rendered at another size now, which the next snapshot sets.
-            imp.render_size.set((0, 0));
+            let (width, height) = imp.render_size.get();
+            self.update_backdrop(&imp.pixels.borrow(), width, height);
         }
         self.invalidate_contents();
         imp.crop.set(None);
@@ -587,15 +584,16 @@ impl MpvStream {
         self.invalidate_contents();
     }
 
-    /// Renders at the size `width` by `height` shown at, in device pixels, when that has changed. Mpv draws its OSD
-    /// at the size it renders, so rendering at the video's size and scaling it up would blur the text.
+    /// Renders the picture at the size it is shown at in the area `width` by `height`, in device pixels, when that has
+    /// changed. Mpv draws its OSD at the size it renders, so rendering at the video's size and scaling it up would blur the
+    /// text; the OSD sits in the picture's corner.
     fn fit_render(&self, width: f64, height: f64) {
         let imp = self.imp();
         let scale = f64::from(imp.scale.get().max(1));
         let area_changed = imp.area.replace((width, height)) != (width, height);
-        // With a backdrop the frame is the picture alone, as big as fits the area, and the backdrop fills the rest.
-        let (width, height) = match (imp.framing.get().backdrop, imp.frame_size.get()) {
-            (Some(_), (video_width, video_height)) if video_width > 0 && video_height > 0 => {
+        // The frame is the picture alone, as big as fits the area, so no pixels are rendered or uploaded for the bars round it.
+        let (width, height) = match imp.frame_size.get() {
+            (video_width, video_height) if video_width > 0 && video_height > 0 => {
                 let (_, _, fitted_width, fitted_height) = framing::fitted(width, height, f64::from(video_width), f64::from(video_height));
                 (fitted_width, fitted_height)
             }

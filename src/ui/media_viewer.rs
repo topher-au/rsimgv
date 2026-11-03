@@ -2154,7 +2154,7 @@ impl MediaViewer {
                 imp.pages.set_visible_child(page);
             }
             self.show_backdrop(&path);
-            // mpv fits the video to the area it is given, so that area is the whole picture, and its OSD sits in its corner.
+            // The stream draws the video fitted to the area itself, and renders only the picture, so mpv's OSD sits in the video's corner.
             let fit = if media.is::<crate::mpv::MpvStream>() { gtk::ContentFit::Fill } else { gtk::ContentFit::Contain };
             imp.picture.set_content_fit(fit);
             imp.picture.set_paintable(Some(&media));
