@@ -76,6 +76,15 @@
       <default>true</default>
       <summary>Use NVIDIA optical flow for SVP's motion analysis, rather than the CPU</summary>
     </key>
+    <key name="svp-seek-bypass" type="b">
+      <default>true</default>
+      <summary>Leave SVP out of the video while it is skipped through and just after it starts, as mpv reloads SVP after every seek</summary>
+    </key>
+    <key name="svp-seek-bypass-delay" type="d">
+      <range min="0.1" max="10.0"/>
+      <default>1.0</default>
+      <summary>How many seconds after the last seek SVP comes back</summary>
+    </key>
     <key name="kde-effects" type="b">
       <default>false</default>
       <summary>Use KDE Plasma's effects, such as blur behind floating overlays, where the compositor offers them</summary>

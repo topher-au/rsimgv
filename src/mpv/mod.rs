@@ -296,6 +296,8 @@ pub struct Player {
     render_update: Option<*mut Wakeup>,
     /// The rotation, in degrees, that the upright filter now undoes.
     rotation: Cell<i64>,
+    /// The filter that `set_interpolation_filter` last put in the chain.
+    interpolation: std::cell::RefCell<Option<String>>,
 }
 
 impl Player {
@@ -311,7 +313,7 @@ impl Player {
             if handle.is_null() {
                 return Err("could not create the mpv player".to_owned());
             }
-            let mut player = Self { handle, render: std::ptr::null_mut(), wakeup: None, render_update: None, rotation: Cell::new(0) };
+            let mut player = Self { handle, render: std::ptr::null_mut(), wakeup: None, render_update: None, rotation: Cell::new(0), interpolation: Default::default() };
             for (name, value) in [
                 ("vo", "libmpv"),
                 ("hwdec", "auto-safe"),
@@ -385,10 +387,20 @@ impl Player {
         let _ = self.command(&["seek", "0", "relative+exact"]);
     }
 
-    /// Replaces the video filters with `filter`, or removes them all when it is empty, keeping the video upright.
-    pub fn set_video_filter(&self, filter: &str) -> Result<(), String> {
-        self.command(&["vf", "set", filter])?;
-        self.add_upright_filter();
+    /// Puts `filter`, which is labelled `label`, after the other video filters in place of the one put there before, or
+    /// takes that one out when it is `None`. The upright filter and those from the user's options stay. Nothing happens
+    /// if it is there already, as changing the chain holds up the video.
+    pub fn set_interpolation_filter(&self, label: &str, filter: Option<&str>) -> Result<(), String> {
+        if self.interpolation.borrow().as_deref() == filter {
+            return Ok(());
+        }
+        if self.interpolation.borrow().is_some() {
+            self.command(&["vf", "remove", label])?;
+        }
+        if let Some(filter) = filter {
+            self.command(&["vf", "add", filter])?;
+        }
+        self.interpolation.replace(filter.map(str::to_owned));
         Ok(())
     }
 

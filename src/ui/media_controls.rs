@@ -336,11 +336,11 @@ impl MediaControls {
         })
     }
 
-    /// Moves the playback position by `step` microseconds, within the video. Returns where it moves to, or `None` when
-    /// there is no video.
-    pub fn seek_by(&self, step: i64) -> Option<i64> {
+    /// Moves the playback position by `step` microseconds from `from`, or from where the video is, within the video.
+    /// Returns where it moves to, or `None` when there is no video.
+    pub fn seek_by(&self, from: Option<i64>, step: i64) -> Option<i64> {
         let media = self.imp().media.borrow().clone()?;
-        let target = seek_target(media.timestamp(), step, media.duration());
+        let target = seek_target(from.unwrap_or_else(|| media.timestamp()), step, media.duration());
         media.seek(target);
         Some(target)
     }

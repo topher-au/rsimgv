@@ -968,6 +968,7 @@ impl Window {
         bound_action(&video, &weak, "volume-up", |window| window.imp().viewer.adjust_volume(VOLUME_STEP));
         bound_action(&video, &weak, "volume-down", |window| window.imp().viewer.adjust_volume(-VOLUME_STEP));
         bound_action(&video, &weak, "mute", |window| window.imp().viewer.toggle_mute());
+        bound_action(&video, &weak, "toggle-svp", |window| window.toggle_setting("svp-enabled"));
         bound_action(&video, &weak, "repeat", |window| window.imp().viewer.toggle_repeat());
         bound_action(&video, &weak, "auto-advance", |window| window.imp().viewer.toggle_auto_advance());
         self.insert_action_group("video", Some(&video));
@@ -3181,7 +3182,7 @@ const WHEEL_VOLUME_STEP: f64 = 5.0;
 const WHEEL_SEEK_STEP: f64 = 5.0;
 
 /// The settings the viewer and the window title are set from, applied again whenever one changes.
-const VIEWER_SETTINGS: [&str; 31] = [
+const VIEWER_SETTINGS: [&str; 33] = [
     "seek-overlay",
     "seek-overlay-bar",
     "seek-overlay-time",
@@ -3212,6 +3213,8 @@ const VIEWER_SETTINGS: [&str; 31] = [
     "svp-fps-minimum",
     "svp-fps-maximum",
     "svp-nvof",
+    "svp-seek-bypass",
+    "svp-seek-bypass-delay",
     "image-info-in-title",
 ];
 /// How far a thumbnail size key moves each time, in pixels, and the range it is kept within.

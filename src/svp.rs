@@ -2,10 +2,16 @@
 //! script interpolates the video to a target rate, and mpv loads it through its `vapoursynth` filter. The target
 //! follows the playback speed in the display and variable modes, so slow motion and fast forward keep the output
 //! rate in range.
+//!
+//! mpv reloads the script after every seek, as the filter drops VapourSynth when it is reset. So that skipping through a
+//! video does not wait on that each time, the filter can be left out until the skipping has stopped.
 
+use std::collections::hash_map::DefaultHasher;
 use std::fs::{DirBuilder, Permissions};
+use std::hash::{Hash, Hasher};
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use gtk::gio::prelude::SettingsExt;
 use gtk::{gio, glib};
@@ -14,7 +20,7 @@ use serde_json::{json, Value};
 /// The whole frame rates the output is rounded to.
 const ROUND_TO: f64 = 1.0;
 /// The label of the filter in mpv's chain, and the frames the filter buffers.
-const FILTER_LABEL: &str = "svp";
+pub const FILTER_LABEL: &str = "@svp";
 const BUFFERED_FRAMES: u32 = 4;
 const CONCURRENT_FRAMES: u32 = 8;
 
@@ -160,6 +166,14 @@ pub fn script(plugins: &Plugins, source: f64, target: f64, nvof: bool) -> String
     )
 }
 
+/// The file name for `script`, which differs with its text. mpv keeps a filter whose options have not changed, so a
+/// script with new contents has to be at a new path for mpv to load it, and one with the same contents is not reloaded.
+pub fn script_name(script: &str) -> String {
+    let mut hasher = DefaultHasher::new();
+    script.hash(&mut hasher);
+    format!("video-{:016x}.py", hasher.finish())
+}
+
 /// The mpv filter that runs the script at `path`. The path has mpv's `%length%` quoting, as it can hold the `:` and `,`
 /// that otherwise end a filter option.
 pub fn filter(path: &Path) -> String {
@@ -190,6 +204,8 @@ pub struct Config {
     pub plugin_directory: PathBuf,
     pub rate: Rate,
     pub nvof: bool,
+    /// How long after a seek the filter stays out, or `None` to keep it in through seeks.
+    pub seek_bypass: Option<Duration>,
 }
 
 impl Config {
@@ -204,6 +220,9 @@ impl Config {
                 maximum: f64::from(settings.int("svp-fps-maximum")),
             },
             nvof: settings.boolean("svp-nvof"),
+            seek_bypass: settings
+                .boolean("svp-seek-bypass")
+                .then(|| Duration::from_secs_f64(settings.double("svp-seek-bypass-delay"))),
         }
     }
 }
@@ -276,6 +295,14 @@ mod tests {
         assert_eq!(mode(&directory), 0o700);
 
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn scripts_are_named_by_their_contents() {
+        let plugins = Plugins { svp1: Some(PathBuf::from("/p/svp1.so")), svp2: Some(PathBuf::from("/p/svp2.so")) };
+        let name = |target| script_name(&script(&plugins, 24.0, target, false));
+        assert_eq!(name(60.0), name(60.0));
+        assert_ne!(name(60.0), name(120.0), "mpv only reloads a script at a new path");
     }
 
     #[test]

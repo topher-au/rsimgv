@@ -11,6 +11,7 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+use gtk::glib::subclass::Signal;
 use gtk::prelude::*;
 use gtk::subclass::prelude::*;
 use gtk::{gdk, glib};
@@ -67,6 +68,12 @@ mod imp {
     }
 
     impl ObjectImpl for MpvStream {
+        fn signals() -> &'static [Signal] {
+            use std::sync::LazyLock;
+            static SIGNALS: LazyLock<Vec<Signal>> = LazyLock::new(|| vec![Signal::builder("seek-requested").build()]);
+            SIGNALS.as_ref()
+        }
+
         fn constructed(&self) {
             self.parent_constructed();
             // Looping is done by libmpv, so the end is never reached while it is on.
@@ -101,6 +108,8 @@ mod imp {
         }
 
         fn seek(&self, timestamp: i64) {
+            // Sent before the seek, so a filter taken out in response is out of the way when it lands.
+            self.obj().emit_by_name::<()>("seek-requested", &[]);
             let seconds = format!("{:.6}", timestamp as f64 / MICROS);
             let result = self.player.borrow().as_ref().map(|player| player.command(&["seek", &seconds, "absolute"]));
             if matches!(result, Some(Ok(()))) {
@@ -247,6 +256,15 @@ impl MpvStream {
         Some(stream)
     }
 
+    /// Calls `callback` before each seek is sent to the player.
+    pub fn connect_seek_requested<F: Fn(&Self) + 'static>(&self, callback: F) -> glib::SignalHandlerId {
+        self.connect_local("seek-requested", false, move |values| {
+            let stream = values[0].get::<MpvStream>().expect("stream argument");
+            callback(&stream);
+            None
+        })
+    }
+
     /// Plays at `speed` times normal speed.
     pub fn set_speed(&self, speed: f64) {
         if let Some(player) = self.imp().player.borrow().as_ref() {
@@ -285,11 +303,12 @@ impl MpvStream {
         }
     }
 
-    /// Replaces the video filters with `filter`, or removes them all when it is empty.
-    pub fn set_video_filter(&self, filter: &str) -> Result<(), String> {
+    /// Puts `filter`, which is labelled `label`, after the other video filters in place of the one before, or takes that
+    /// one out when it is `None`.
+    pub fn set_interpolation_filter(&self, label: &str, filter: Option<&str>) -> Result<(), String> {
         let player = self.imp().player.borrow();
         let player = player.as_ref().ok_or("no player")?;
-        player.set_video_filter(filter)
+        player.set_interpolation_filter(label, filter)
     }
 
     /// Turns the video upright, by the rotation its decoder reports, or its container before there is a decoded frame.
