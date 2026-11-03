@@ -136,26 +136,22 @@ The playlist is kept in `playlist.m3u8` beside the settings file. Other programs
 
 Settings are stored as YAML in `~/.config/rsimgv/rsimgv.conf`. Set `RSIMGV_CONFIG` to use another file.
 
-The file is nested by each setting's GSettings key path below the schema's path, `/au/topher/rsimgv/`, and each setting
-records its exact GVariant type:
+The file is nested by each setting's GSettings key path below the schema's path, `/au/topher/rsimgv/`. Each setting holds
+its plain value, and its type comes from the schema:
 
 ```yaml
 window:
-  height:
-    type: i
-    value: "640"
+  height: 640
   sidebar:
-    width:
-      type: i
-      value: "-1"
+    width: -1
 browse:
   info:
     fields:
-      type: as
-      value: "['size', 'modified']"
+      - size
+      - modified
 ```
 
-A setting that is not valid for its type is kept in the file as written and ignored.
+A value that does not fit its setting's type is kept in the file as written and ignored, and the setting uses its default.
 
 Settings are read and written through GSettings, using a backend the application creates and passes to
 `gio::Settings`. Changes made in the preferences dialog, from the menu, or by editing the file while the app runs all

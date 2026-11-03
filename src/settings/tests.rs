@@ -150,8 +150,7 @@ fn nested_paths_nest_in_the_file() {
     settings.set_int("child", 8).unwrap();
 
     let root = saved(&fixture.file());
-    assert_eq!(root["group"]["parent"]["child"]["value"], Value::String("8".into()));
-    assert_eq!(root["group"]["parent"]["child"]["type"], Value::String("i".into()));
+    assert_eq!(root["group"]["parent"]["child"], Value::Number(8.into()));
 
     let reopened = YamlSettingsBackend::new(fixture.file(), ROOT).unwrap();
     let settings = reopened.settings(&fixture.schema("test.rsimgv.nested"), Some("/test/rsimgv/group/parent/"));
@@ -248,7 +247,7 @@ fn an_outside_edit_is_read_and_notified() {
 
     fs::write(
         fixture.file(),
-        "window-width:\n  type: i\n  value: '1500'\n",
+        "window-width: 1500\n",
     )
     .unwrap();
     pump_until(|| *changed.borrow());
@@ -272,12 +271,39 @@ fn a_value_of_another_type_in_the_file_reads_as_the_default() {
     let fixture = Fixture::new("wrong-type");
     fs::write(
         fixture.file(),
-        "window-width:\n  type: s\n  value: \"'wide'\"\n",
+        "window-width: wide\n",
     )
     .unwrap();
     let backend = YamlSettingsBackend::new(fixture.file(), ROOT).unwrap();
     let settings = backend.settings(&fixture.schema("test.rsimgv"), None);
     assert_eq!(settings.int("window-width"), 960);
+}
+
+#[test]
+fn a_value_that_does_not_fit_stays_until_it_is_replaced() {
+    let fixture = Fixture::new("kept");
+    fs::write(fixture.file(), "window-width: wide\ntitle: kept\n").unwrap();
+    let backend = YamlSettingsBackend::new(fixture.file(), ROOT).unwrap();
+    let settings = backend.settings(&fixture.schema("test.rsimgv"), None);
+    settings.set_boolean("show-hidden", true).unwrap();
+    assert_eq!(saved(&fixture.file())["window-width"], Value::String("wide".into()), "another write leaves it");
+
+    settings.set_int("window-width", 1200).unwrap();
+    assert_eq!(saved(&fixture.file())["window-width"], Value::Number(1200.into()));
+    assert_eq!(settings.string("title"), "kept");
+}
+
+#[test]
+fn a_value_replaces_a_group_under_its_name() {
+    let fixture = Fixture::new("group-replaced");
+    fs::write(fixture.file(), "window-width:\n  type: i\n  value: '5'\n").unwrap();
+    let backend = YamlSettingsBackend::new(fixture.file(), ROOT).unwrap();
+    let settings = backend.settings(&fixture.schema("test.rsimgv"), None);
+    assert_eq!(settings.int("window-width"), 960, "a group is not the setting");
+
+    settings.set_int("window-width", 1200).unwrap();
+    assert_eq!(saved(&fixture.file())["window-width"], Value::Number(1200.into()));
+    assert_eq!(settings.int("window-width"), 1200);
 }
 
 #[test]
@@ -315,8 +341,8 @@ fn a_dotted_name_reads_and_writes_the_nested_setting() {
     assert_eq!(settings.int("window.height"), 800);
 
     let root = saved(&fixture.file());
-    assert_eq!(root["window"]["height"]["value"], Value::String("800".into()));
-    assert_eq!(root["window"]["sidebar"]["width"]["value"], Value::String("200".into()));
+    assert_eq!(root["window"]["height"], Value::Number(800.into()));
+    assert_eq!(root["window"]["sidebar"]["width"], Value::Number(200.into()));
 
     settings.reset("window.height");
     assert_eq!(settings.int("window.height"), 640);

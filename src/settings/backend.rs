@@ -85,17 +85,15 @@ impl State {
         self.backend.store(0, Ordering::Release);
     }
 
-    /// The value of the GSettings key `key` as `ty`. `None` when no setting is saved, or the saved one has another type,
+    /// The value of the GSettings key `key` as `ty`. `None` when no setting is saved, or the saved one does not fit `ty`,
     /// so GSettings uses the schema default.
     pub fn read(&self, key: &str, ty: &glib::VariantTy) -> Option<glib::Variant> {
         let inner = self.lock();
-        let variant = inner.document.values.get(key)?;
-        if variant.type_() == ty {
-            Some(variant.clone())
-        } else {
-            eprintln!("rsimgv: {key} is saved as {} but read as {}; using the default", variant.type_().as_str(), ty.as_str());
-            None
+        let variant = storage::to_variant(inner.document.get(key)?, ty);
+        if variant.is_none() {
+            eprintln!("rsimgv: the saved value of {key} does not fit its type {}; using the default", ty.as_str());
         }
+        variant
     }
 
     pub fn is_writable(&self) -> bool {
@@ -113,18 +111,20 @@ impl State {
         );
         let mut next = storage::load(&self.file, &self.root)?;
         for (path, value) in changes {
-            next.invalid.remove(&path);
+            // A group under the setting's own name, left by hand or by an older file, would take its place in the file.
+            let below = format!("{path}/");
+            next.retain(|other, _| !other.starts_with(&below));
             match value {
                 Some(value) => {
-                    next.values.insert(path, value);
+                    next.insert(path, storage::from_variant(&value));
                 }
                 None => {
-                    next.values.remove(&path);
+                    next.remove(&path);
                 }
             }
         }
         storage::save(&self.file, &next, &self.root)?;
-        let changed = changed_paths(&inner.document.values, &next.values);
+        let changed = changed_paths(&inner.document, &next);
         inner.document = next;
         Ok(changed)
     }
@@ -140,7 +140,7 @@ impl State {
                 return Vec::new();
             }
         };
-        let changed = changed_paths(&inner.document.values, &fresh.values);
+        let changed = changed_paths(&inner.document, &fresh);
         inner.document = fresh;
         changed
     }
@@ -179,7 +179,7 @@ impl State {
 }
 
 /// The keys whose value differs between `old` and `new`, where a value that is missing counts as different.
-fn changed_paths(old: &BTreeMap<String, glib::Variant>, new: &BTreeMap<String, glib::Variant>) -> Vec<String> {
+fn changed_paths(old: &Document, new: &Document) -> Vec<String> {
     let paths: BTreeSet<&String> = old.keys().chain(new.keys()).collect();
     paths.into_iter().filter(|path| old.get(*path) != new.get(*path)).cloned().collect()
 }
