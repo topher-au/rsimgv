@@ -315,12 +315,7 @@ impl PreferencesDialog {
 
         dialog.build_keybindings_page();
         dialog.bind_sections();
-        for column in group_columns(imp.section_stack.upcast_ref()) {
-            column.set_layout_manager(Some(TightLayout::default()));
-        }
-        for body in group_bodies(imp.section_stack.upcast_ref()) {
-            body.set_layout_manager(Some(TightLayout::with_first_indent(GROUP_TITLE_INDENT)));
-        }
+        tighten(imp.section_stack.upcast_ref());
         dialog.bind_scripts(settings);
         imp.about_version_row.set_subtitle(env!("CARGO_PKG_VERSION"));
         imp.app_version.set_label(env!("CARGO_PKG_VERSION"));
@@ -942,6 +937,17 @@ fn group_columns(widget: &gtk::Widget) -> Vec<gtk::Widget> {
         child = current.next_sibling();
     }
     columns
+}
+
+/// Stacks the groups of each preferences page under `widget` with no gap, and sets each group's title in from its rows,
+/// as on every page of the dialog.
+pub(super) fn tighten(widget: &gtk::Widget) {
+    for column in group_columns(widget) {
+        column.set_layout_manager(Some(TightLayout::default()));
+    }
+    for body in group_bodies(widget) {
+        body.set_layout_manager(Some(TightLayout::with_first_indent(GROUP_TITLE_INDENT)));
+    }
 }
 
 /// How far a group's title is set in from its rows, in pixels.

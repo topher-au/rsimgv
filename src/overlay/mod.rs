@@ -9,6 +9,7 @@ use serde_json::{json, Map, Value};
 /// The properties a template can read, with what each is, for the configuration page to list.
 pub const PROPERTIES: &[(&str, &str)] = &[
     ("state", "Playing, Paused or Ended"),
+    ("state-icon", "▶️ while playing, ⏸️ paused, ⏭️ or ⏮️ while skipping, ⏮️ ended"),
     ("time-pos", "The time into the video, such as 1:23"),
     ("duration", "The length of the video"),
     ("time-remaining", "The time left in the video"),
@@ -173,28 +174,36 @@ pub struct Element {
     pub style: Style,
 }
 
-/// How an element looks. The colours are CSS colours, such as `rgba(0, 0, 0, 0.55)`; no colour is none.
+/// How an element looks. The colours are CSS colours without transparency, such as `rgb(0, 0, 0)`; how see-through each
+/// is, and the whole element, is set apart.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Style {
-    /// The size of the text, in points.
+    /// The family of the font, or none for the usual one, and its size in points.
+    pub font_family: String,
     pub font_size: f64,
     pub text_color: String,
+    /// How opaque the text is, from 0 to 1.
+    pub text_opacity: f64,
     pub background: String,
+    pub background_opacity: f64,
     /// Whether KDE blurs what is behind the element, which needs the KDE effects setting and a Wayland session.
     pub blur: bool,
     /// How round the corners of the background are, and the space between it and the text, in pixels.
     pub radius: i32,
     pub padding: i32,
-    /// How see-through the element is, from 0 to 1.
+    /// How opaque the element as a whole is, from 0 to 1.
     pub opacity: f64,
 }
 
 impl Default for Style {
     fn default() -> Self {
         Self {
+            font_family: String::new(),
             font_size: 13.0,
             text_color: "rgb(255, 255, 255)".to_owned(),
-            background: "rgba(0, 0, 0, 0.55)".to_owned(),
+            text_opacity: 1.0,
+            background: "rgb(0, 0, 0)".to_owned(),
+            background_opacity: 0.55,
             blur: false,
             radius: 10,
             padding: 8,
@@ -299,9 +308,12 @@ impl Element {
             "seconds": self.seconds,
             "items": match self.items { Items::All => "all", Items::Videos => "videos", Items::Pictures => "pictures" },
             "fullscreen-only": self.fullscreen_only,
+            "font": self.style.font_family,
             "font-size": self.style.font_size,
             "text-color": self.style.text_color,
+            "text-opacity": self.style.text_opacity,
             "background": self.style.background,
+            "background-opacity": self.style.background_opacity,
             "blur": self.style.blur,
             "radius": self.style.radius,
             "padding": self.style.padding,
@@ -355,7 +367,12 @@ impl Element {
         element.seconds = number("seconds", element.seconds, SECONDS_RANGE);
         element.fullscreen_only = flag("fullscreen-only", false);
         let style = &mut element.style;
+        if let Some(family) = text("font") {
+            style.font_family = family.to_owned();
+        }
         style.font_size = number("font-size", style.font_size, FONT_SIZE_RANGE);
+        style.text_opacity = number("text-opacity", style.text_opacity, (0.0, 1.0));
+        style.background_opacity = number("background-opacity", style.background_opacity, (0.0, 1.0));
         if let Some(color) = text("text-color") {
             style.text_color = color.to_owned();
         }
@@ -420,7 +437,7 @@ impl Layout {
         let mut info = Element::new("File info", Slot::from_name(&legacy.status_position).unwrap_or(Slot::BOTTOM_MIDDLE), FILE_INFO_TEMPLATE);
         info.enabled = legacy.status_enabled;
         info.fullscreen_only = true;
-        info.style.background = "rgba(0, 0, 0, 0.45)".to_owned();
+        info.style.background_opacity = 0.45;
 
         let mut elements = vec![seek, info, Element::of_kind(Kind::Messages, Slot::BOTTOM_MIDDLE)];
         elements.extend(Self::examples());

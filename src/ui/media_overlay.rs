@@ -52,16 +52,6 @@ pub fn clock(micros: i64) -> String {
     }
 }
 
-/// The icon for the state a media status shows: `Playing`, `Paused` or `Ended`.
-fn state_icon(state: &str) -> Option<&'static str> {
-    match state {
-        "Playing" => Some("media-playback-start-symbolic"),
-        "Paused" => Some("media-playback-pause-symbolic"),
-        "Ended" => Some("media-playback-stop-symbolic"),
-        _ => None,
-    }
-}
-
 /// How far through the video `position` is, from 0 to 1, or 0 while the duration is unknown.
 pub fn fraction(position: i64, duration: i64) -> f64 {
     if duration <= 0 {
@@ -73,17 +63,27 @@ pub fn fraction(position: i64, duration: i64) -> f64 {
 /// The CSS that gives what matches `selector` the look of `style`. A colour that does not parse is left out, so nothing
 /// the settings hold reaches the stylesheet as it was written.
 pub fn style_css(selector: &str, style: &Style) -> String {
-    let color = |text: &str| gdk::RGBA::parse(text).ok().map(|color| color.to_str().to_string());
-    let background = style.background.as_str();
+    // The colour as the settings write it, made as see-through as its opacity says.
+    let color = |text: &str, opacity: f64| {
+        gdk::RGBA::parse(text).ok().map(|color| {
+            let alpha = (color.alpha() * opacity as f32).clamp(0.0, 1.0);
+            gdk::RGBA::new(color.red(), color.green(), color.blue(), alpha).to_str().to_string()
+        })
+    };
     let mut css = format!(
         "{selector} {{ font-size: {}pt; padding: {}px; border-radius: {}px; background-color: {};",
         style.font_size,
         style.padding,
         style.radius,
-        color(background).unwrap_or_else(|| "transparent".to_owned()),
+        color(&style.background, style.background_opacity).unwrap_or_else(|| "transparent".to_owned()),
     );
-    if let Some(color) = color(&style.text_color) {
+    if let Some(color) = color(&style.text_color, style.text_opacity) {
         css.push_str(&format!(" color: {color};"));
+    }
+    // The family is quoted, with what would end the quotes taken out, as it is the user's text.
+    let family = style.font_family.replace(['"', '\\', ';', '{', '}'], "");
+    if !family.is_empty() {
+        css.push_str(&format!(" font-family: \"{family}\";"));
     }
     css.push_str(" }");
     css
@@ -175,7 +175,7 @@ struct Placed {
     label: gtk::Label,
     bar: Option<gtk::ProgressBar>,
     /// A media status's state icon, and the filename under its text.
-    icon: Option<gtk::Image>,
+    icon: Option<gtk::Label>,
     filename: Option<gtk::Label>,
     /// Keeps the element's look on the display.
     _sheet: Sheet,
@@ -242,9 +242,9 @@ impl MediaOverlay {
             let mut up = item.element.is_up(frame);
             if up {
                 let text = item.template.render(frame.values);
-                let state_icon = item.icon.as_ref().and_then(|_| (frame.values)("state")).as_deref().and_then(state_icon);
-                if let (Some(icon), Some(name)) = (&item.icon, state_icon) {
-                    icon.set_icon_name(Some(name));
+                let state_icon = item.icon.as_ref().and_then(|_| (frame.values)("state-icon"));
+                if let (Some(icon), Some(text)) = (&item.icon, &state_icon) {
+                    icon.set_text(text);
                 }
                 if let Some(label) = &item.filename {
                     label.set_text(&(frame.values)("filename").unwrap_or_default());
@@ -303,10 +303,9 @@ fn build(element: &Element) -> Placed {
     // A media status has an icon beside its text, and the filename under the text, lined up with it.
     let is_status = element.kind == Kind::Status;
     let icon = (is_status && element.shows_part("state")).then(|| {
-        let icon = gtk::Image::new();
+        let icon = gtk::Label::new(None);
         icon.add_css_class("overlay-text");
-        // The icon is as tall as the line of text beside it.
-        icon.set_pixel_size((element.style.font_size * 4.0 / 3.0 * 1.2).round() as i32);
+        icon.add_css_class("overlay-icon");
         icon.set_valign(gtk::Align::Start);
         icon
     });

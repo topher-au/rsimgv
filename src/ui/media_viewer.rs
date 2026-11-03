@@ -334,6 +334,8 @@ mod imp {
         pub(super) overlay_tick: RefCell<Option<glib::SourceId>>,
         /// Where the last skip went and when, so the overlay shows that while the video catches up with it.
         pub(super) seek_landing: Cell<Option<(i64, std::time::Instant)>>,
+        /// Whether the last skip went forward.
+        pub(super) seek_forward: Cell<bool>,
         /// When the video was last skipped through, for the elements that show for a while after a skip.
         pub(super) last_seek: Cell<Option<std::time::Instant>>,
         /// The SVP frame interpolation settings, applied to the videos mpv plays.
@@ -1242,6 +1244,7 @@ impl MediaViewer {
             let now = std::time::Instant::now();
             self.imp().seek_landing.set(Some((target, now)));
             self.imp().last_seek.set(Some(now));
+            self.imp().seek_forward.set(micros >= 0);
             self.refresh_overlay();
         }
     }
@@ -1305,6 +1308,15 @@ impl MediaViewer {
         let position = landing.map_or_else(|| media.timestamp(), |(target, _)| target);
         let duration = media.duration();
         values.insert("state", if media.is_ended() { "Ended" } else if media.is_playing() { "Playing" } else { "Paused" }.to_owned());
+        // Skipping shows the way it went, until the video has caught up with it.
+        let icon = match (landing.is_some(), imp.seek_forward.get()) {
+            (true, true) => "⏭️",
+            (true, false) => "⏮️",
+            _ if media.is_ended() => "⏮️",
+            _ if media.is_playing() => "▶️",
+            _ => "⏸️",
+        };
+        values.insert("state-icon", icon.to_owned());
         values.insert("time-pos", clock(position));
         if duration > 0 {
             values.insert("duration", clock(duration));

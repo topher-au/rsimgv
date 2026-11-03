@@ -77,22 +77,17 @@ pub fn build(settings: &gio::Settings) -> gtk::Widget {
     editor.map.set_size_request(-1, 300);
 
     // The map, with what it is for above it and the reset below.
-    let map_page = gtk::Box::new(gtk::Orientation::Vertical, 12);
-    map_page.set_margin_top(12);
-    map_page.set_margin_bottom(12);
-    map_page.set_margin_start(12);
-    map_page.set_margin_end(12);
-    let intro = gtk::Label::new(Some(
+    let map_page = adw::PreferencesPage::new();
+    let layout_group = adw::PreferencesGroup::new();
+    layout_group.set_description(Some(
         "Drag elements between places, or within one, to arrange them. Elements in one place stack, the first on top, and \
          their text lines up toward the nearest edge. Click one to change it, or add one with +.",
     ));
-    intro.set_wrap(true);
-    intro.set_xalign(0.0);
-    intro.add_css_class("dim-label");
-    map_page.append(&intro);
     let frame = gtk::Frame::new(None);
     frame.set_child(Some(&editor.map));
-    map_page.append(&frame);
+    layout_group.add(&frame);
+    map_page.add(&layout_group);
+    let reset_group = adw::PreferencesGroup::new();
     let reset = gtk::Button::with_label("Reset the overlay");
     reset.set_halign(gtk::Align::End);
     reset.add_css_class("destructive-action");
@@ -104,9 +99,10 @@ pub fn build(settings: &gio::Settings) -> gtk::Widget {
             editor.reload();
         }
     });
-    map_page.append(&reset);
-    let scroller = gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).child(&map_page).build();
-    editor.pages.add_named(&scroller, Some(MAP_PAGE));
+    reset_group.add(&reset);
+    map_page.add(&reset_group);
+    super::preferences::tighten(map_page.upcast_ref());
+    editor.pages.add_named(&map_page, Some(MAP_PAGE));
 
     // The element's editor: tabs on top, Save and Cancel at the bottom.
     editor.editor_view.add_top_bar(&editor.switcher);
@@ -203,10 +199,10 @@ impl Editor {
             }
             Kind::Messages => {}
         }
-        if element.kind != Kind::Messages {
-            tabs.add_titled_with_icon(&self.when_tab(&element), Some("when"), "When", "alarm-symbolic");
-        }
         tabs.add_titled_with_icon(&self.look_tab(&element), Some("look"), "Look", "applications-graphics-symbolic");
+        for page in tabs.pages().iter::<adw::ViewStackPage>().flatten() {
+            super::preferences::tighten(&page.child());
+        }
         self.switcher.set_stack(Some(&tabs));
         self.editor_view.set_content(Some(&tabs));
         self.pages.set_visible_child_name(EDITOR_PAGE);
@@ -385,9 +381,9 @@ impl Editor {
         });
         group.add(&enabled);
 
-        let position = adw::ActionRow::builder().title("Position").subtitle("Where it sits over the item").build();
-        position.add_suffix(&self.slot_picker(element.slot));
-        group.add(&position);
+        if element.kind != Kind::Messages {
+            self.add_when_rows(&group, element);
+        }
         page.add(&group);
         page
     }
@@ -485,10 +481,8 @@ impl Editor {
         page
     }
 
-    /// When the element is up, and over what.
-    fn when_tab(self: &Rc<Self>, element: &Element) -> adw::PreferencesPage {
-        let page = adw::PreferencesPage::new();
-        let group = adw::PreferencesGroup::new();
+    /// Adds to `group` the rows for when the element is up, and over what.
+    fn add_when_rows(self: &Rc<Self>, group: &adw::PreferencesGroup, element: &Element) {
         let visibility = adw::ComboRow::builder()
             .title("Show")
             .model(&gtk::StringList::new(&["Always", "After skipping", "While paused"]))
@@ -549,8 +543,6 @@ impl Editor {
             move |row| editor.edit(|element| element.fullscreen_only = row.is_active())
         });
         group.add(&fullscreen);
-        page.add(&group);
-        page
     }
 
     /// The font, colours, corners and blur.
@@ -561,6 +553,8 @@ impl Editor {
         text.set_title("Text");
         let boxed = adw::PreferencesGroup::new();
         boxed.set_title("Background");
+        let whole = adw::PreferencesGroup::new();
+        whole.set_title("Element");
 
         let spin = |title: &str, subtitle: &str, range: (f64, f64), step: f64, value: f64| {
             let row = adw::SpinRow::with_range(range.0, range.1, step);
@@ -569,6 +563,24 @@ impl Editor {
             row.set_value(value);
             row
         };
+        let percent = |title: &str, subtitle: &str, value: f64| spin(title, subtitle, (0.0, 100.0), 5.0, (value * 100.0).round());
+
+        let family = adw::ActionRow::builder().title("Font").subtitle("The family of the font").build();
+        let font = gtk::FontDialogButton::new(Some(gtk::FontDialog::new()));
+        font.set_level(gtk::FontLevel::Family);
+        font.set_valign(gtk::Align::Center);
+        if !style.font_family.is_empty() {
+            font.set_font_desc(&gtk::pango::FontDescription::from_string(&style.font_family));
+        }
+        font.connect_font_desc_notify({
+            let editor = self.clone();
+            move |button| {
+                let family = button.font_desc().and_then(|desc| desc.family()).map(|family| family.to_string()).unwrap_or_default();
+                editor.edit(|element| element.style.font_family = family);
+            }
+        });
+        family.add_suffix(&font);
+        text.add(&family);
         let font_size = spin("Font size", "In points", FONT_SIZE_RANGE, 1.0, style.font_size);
         font_size.connect_value_notify({
             let editor = self.clone();
@@ -576,14 +588,20 @@ impl Editor {
         });
         text.add(&font_size);
         text.add(&self.color_row("Text colour", &style.text_color, |style, color| style.text_color = color));
-        let opacity = spin("Opacity", "Of the whole element, in percent", (10.0, 100.0), 5.0, style.opacity * 100.0);
-        opacity.connect_value_notify({
+        let text_opacity = percent("Text opacity", "In percent", style.text_opacity);
+        text_opacity.connect_value_notify({
             let editor = self.clone();
-            move |row| editor.edit(|element| element.style.opacity = row.value() / 100.0)
+            move |row| editor.edit(|element| element.style.text_opacity = row.value() / 100.0)
         });
-        text.add(&opacity);
+        text.add(&text_opacity);
 
         boxed.add(&self.color_row("Background colour", &style.background, |style, color| style.background = color));
+        let background_opacity = percent("Background opacity", "In percent", style.background_opacity);
+        background_opacity.connect_value_notify({
+            let editor = self.clone();
+            move |row| editor.edit(|element| element.style.background_opacity = row.value() / 100.0)
+        });
+        boxed.add(&background_opacity);
         let blur = adw::SwitchRow::builder()
             .title("Blur behind")
             .subtitle("Blurs the picture behind it. Needs KDE Plasma on Wayland, and the KDE effects setting")
@@ -607,15 +625,23 @@ impl Editor {
         });
         boxed.add(&padding);
 
+        let opacity = spin("Opacity", "Of the whole element, in percent", (10.0, 100.0), 5.0, style.opacity * 100.0);
+        opacity.connect_value_notify({
+            let editor = self.clone();
+            move |row| editor.edit(|element| element.style.opacity = row.value() / 100.0)
+        });
+        whole.add(&opacity);
+
         page.add(&text);
         page.add(&boxed);
+        page.add(&whole);
         page
     }
 
-    /// A row with a button that picks a colour, with its transparency, and calls `set` with the colour picked.
+    /// A row with a button that picks a colour, and calls `set` with the colour picked.
     fn color_row(self: &Rc<Self>, title: &str, current: &str, set: fn(&mut Style, String)) -> adw::ActionRow {
         let row = adw::ActionRow::builder().title(title).build();
-        let button = gtk::ColorDialogButton::new(Some(gtk::ColorDialog::builder().with_alpha(true).build()));
+        let button = gtk::ColorDialogButton::new(Some(gtk::ColorDialog::builder().with_alpha(false).build()));
         button.set_valign(gtk::Align::Center);
         button.set_rgba(&gdk::RGBA::parse(current).unwrap_or(gdk::RGBA::BLACK));
         button.connect_rgba_notify({
@@ -627,33 +653,6 @@ impl Editor {
         });
         row.add_suffix(&button);
         row
-    }
-
-    /// A grid of nine buttons, one for each place, of which the one for `current` is down. Pressing another moves the
-    /// element there.
-    fn slot_picker(self: &Rc<Self>, current: Slot) -> gtk::Grid {
-        let grid = gtk::Grid::builder().row_spacing(2).column_spacing(2).valign(gtk::Align::Center).build();
-        let mut first: Option<gtk::ToggleButton> = None;
-        for slot in Slot::all() {
-            let button = gtk::ToggleButton::new();
-            button.set_size_request(28, 20);
-            button.set_tooltip_text(Some(&slot.name().replace('-', " ")));
-            match &first {
-                Some(first) => button.set_group(Some(first)),
-                None => first = Some(button.clone()),
-            }
-            button.set_active(slot == current);
-            button.connect_toggled({
-                let editor = self.clone();
-                move |button| {
-                    if button.is_active() {
-                        editor.edit(|element| element.slot = slot);
-                    }
-                }
-            });
-            grid.attach(&button, i32::from(slot.column), i32::from(slot.row), 1, 1);
-        }
-        grid
     }
 }
 
