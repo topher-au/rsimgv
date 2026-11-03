@@ -91,6 +91,9 @@ const SEEK_SETTLE: std::time::Duration = std::time::Duration::from_millis(400);
 const SVP_SPEED_SETTLE: std::time::Duration = std::time::Duration::from_millis(300);
 /// How long the OSD says what SVP is doing, in milliseconds.
 const SVP_OSD_MILLIS: u32 = 2500;
+/// How long a video waits to start after the viewer moves to it from another item, so skipping over several in a row
+/// does not start each one.
+const VIDEO_START_DELAY: std::time::Duration = std::time::Duration::from_millis(150);
 
 /// The pictures decoded ahead of the item shown, at most this many.
 const PREFETCHED: usize = 2;
@@ -320,6 +323,11 @@ mod imp {
         pub(super) fullscreen: Cell<bool>,
         /// Hides the header once the pointer has been away from it for a while.
         pub(super) header_hide: RefCell<Option<glib::SourceId>>,
+        /// Whether an item has been shown since the viewer was opened, so the next video follows another item.
+        pub(super) shown_any: Cell<bool>,
+        /// Whether the video being loaded waits before it starts, and the wait under way.
+        pub(super) delay_video: Cell<bool>,
+        pub(super) video_start: RefCell<Option<glib::SourceId>>,
         /// Whether the zoom level is shown, and whether the pointer is hidden while it is still.
         pub(super) zoom_indicator: Cell<ZoomIndicator>,
         pub(super) auto_hide_cursor: Cell<bool>,
@@ -707,6 +715,7 @@ impl MediaViewer {
     /// Stops any video and drops the items, so the viewer holds nothing once it is hidden.
     pub fn close(&self) {
         self.release();
+        self.imp().shown_any.set(false);
         self.imp().paths.take();
     }
 
@@ -1538,6 +1547,7 @@ impl MediaViewer {
         let Some(path) = imp.paths.borrow().get(index).cloned() else { return };
         let len = imp.paths.borrow().len();
         self.release();
+        imp.delay_video.set(imp.shown_any.get());
         imp.index.set(index);
         imp.thumbnail_bar.select(index);
 
@@ -1571,6 +1581,18 @@ impl MediaViewer {
             return;
         }
         let video = is_video(&path);
+        // A video reached from another item starts after a short wait, which the next step cancels.
+        if video && imp.delay_video.replace(false) {
+            let weak = self.downgrade();
+            let source = glib::timeout_add_local_once(VIDEO_START_DELAY, move || {
+                let Some(viewer) = weak.upgrade() else { return };
+                viewer.imp().video_start.take();
+                viewer.finish_load(index, path, settings);
+            });
+            imp.video_start.replace(Some(source));
+            return;
+        }
+        imp.shown_any.set(true);
         if video {
             // libmpv plays the video if it is chosen and starts; otherwise GTK's media backend does.
             let media: gtk::MediaStream = imp
@@ -1711,6 +1733,9 @@ impl MediaViewer {
     /// Clears the shown item: a video is paused and released, and the picture is emptied.
     fn release(&self) {
         let imp = self.imp();
+        if let Some(source) = imp.video_start.take() {
+            source.remove();
+        }
         self.hide_seek_overlay();
         self.cancel_svp_timer();
         imp.svp_held.set(false);
