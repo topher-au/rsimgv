@@ -17,7 +17,7 @@ use gtk::prelude::*;
 use gtk::subclass::prelude::*;
 use gtk::{gdk, gio, glib};
 
-use super::framing::{self, CropMethod, CropRect, Framing};
+use super::framing::{self, Backdrop, CropMethod, CropRect, Framing};
 use super::{config_generation, Event, Player, RenderedFrame};
 use crate::orientation::Orientation;
 
@@ -66,6 +66,30 @@ const BACKDROP_INTERVAL: std::time::Duration = std::time::Duration::from_millis(
 /// The wait before the next look for the crop, after `settled` looks in a row that found it as it was.
 fn crop_delay(settled: u32) -> std::time::Duration {
     (CROP_INTERVAL * 2u32.saturating_pow(settled.min(4))).min(CROP_INTERVAL_MAX)
+}
+
+/// The backdrop for an area of the size `area`, from a `frame` with its size: for each bare strip of the area round the picture,
+/// the part of the frame that, covering the area, lies under it, shrunk to an eighth, blurred and dimmed, with its size. They are
+/// drawn as they are, so only the small pixels are ever blurred. This takes too long for the main thread while a video plays.
+fn make_backdrop(frame: &(glib::Bytes, i32, i32), area: (f64, f64), scale: f64, backdrop: Backdrop, scratch: &mut Vec<u8>) -> Vec<(Vec<u8>, usize, usize)> {
+    let (pixels, width, height) = frame;
+    let (width, height) = (*width, *height);
+    let (area_width, area_height) = area;
+    let fitted = framing::fitted(area_width, area_height, f64::from(width), f64::from(height));
+    let (cover_x, cover_y, cover_width, _) = framing::covering(area_width, area_height, f64::from(width), f64::from(height), backdrop.zoom);
+    // Area units per pixel of the frame, when it covers the area.
+    let per_pixel = cover_width / f64::from(width);
+    let radius = (f64::from(backdrop.blur.max(1)) * 4.0 * scale / BACKDROP_SHRINK).round().max(1.0) as usize;
+    let mut pieces = Vec::new();
+    for (x, y, strip_width, strip_height) in framing::bars(area_width, area_height, fitted) {
+        let out_width = ((strip_width * scale / BACKDROP_SHRINK).ceil() as usize).max(1);
+        let out_height = ((strip_height * scale / BACKDROP_SHRINK).ceil() as usize).max(1);
+        let region = ((x - cover_x) / per_pixel, (y - cover_y) / per_pixel, (x + strip_width - cover_x) / per_pixel, (y + strip_height - cover_y) / per_pixel);
+        let mut small = framing::shrink_region(pixels, width as usize, height as usize, region, out_width, out_height);
+        framing::blur_and_dim(&mut small, scratch, out_width, out_height, radius, backdrop.dim);
+        pieces.push((small, out_width, out_height));
+    }
+    pieces
 }
 
 /// One greyscale frame of the video at `path`, `seconds` in, scaled by ffmpeg to the size `width` by `height`.
@@ -130,14 +154,18 @@ mod imp {
         pub(super) resized_at: Cell<Option<std::time::Instant>>,
         pub(super) resize_timer: RefCell<Option<glib::SourceId>>,
         /// The size of the area the stream was last drawn into, and the blurred pieces of the backdrop for the bare strips of
-        /// it, each with the strip it fills.
+        /// it, in order. While the next are made, the ones before are stretched to fit the strips as they are now.
         pub(super) area: Cell<(f64, f64)>,
-        pub(super) backdrop: RefCell<Vec<(gdk::Texture, gtk::graphene::Rect)>>,
+        pub(super) backdrop: RefCell<Vec<gdk::Texture>>,
         /// When the backdrop was last made, and whether it must be made again from the next frame whatever the time, such as
         /// after a seek. The scratch space is the blur's, kept between backdrops.
         pub(super) backdrop_at: Cell<Option<std::time::Instant>>,
         pub(super) backdrop_stale: Cell<bool>,
         pub(super) blur_scratch: RefCell<Vec<u8>>,
+        /// Whether a worker thread is making the backdrop, and whether it must be made again once that is done, as the frame,
+        /// the area or the framing changed meanwhile.
+        pub(super) backdrop_busy: Cell<bool>,
+        pub(super) backdrop_again: Cell<bool>,
         pub(super) duration: Cell<i64>,
         /// The speed and frame rate mpv last reported, so they are read without asking the mpv core, which can be busy. The
         /// frame rate is the container's, or the one measured while playing when it declares none.
@@ -250,8 +278,10 @@ mod imp {
             }
             let (frame_width, frame_height) = (f64::from(frame.width()), f64::from(frame.height()));
             let (x, y, shown_width, shown_height) = framing::fitted(width, height, frame_width, frame_height);
-            for (piece, strip) in self.backdrop.borrow().iter() {
-                snapshot.append_scaled_texture(piece, gtk::gsk::ScalingFilter::Linear, strip);
+            let strips = framing::bars(width, height, (x, y, shown_width, shown_height));
+            for (piece, (strip_x, strip_y, strip_width, strip_height)) in self.backdrop.borrow().iter().zip(strips) {
+                let strip = gtk::graphene::Rect::new(strip_x as f32, strip_y as f32, strip_width as f32, strip_height as f32);
+                snapshot.append_scaled_texture(piece, gtk::gsk::ScalingFilter::Linear, &strip);
             }
             snapshot.append_texture(&frame, &gtk::graphene::Rect::new(x as f32, y as f32, shown_width as f32, shown_height as f32));
         }
@@ -826,41 +856,67 @@ impl MpvStream {
         }
     }
 
-    /// Makes the backdrop, now, from the latest frame: for each bare strip of the area round the picture,
-    /// the part of the frame that, covering the area, lies under it, shrunk to an eighth, blurred and dimmed. They are drawn
-    /// as they are, so only the small pixels are ever blurred.
+    /// Makes the backdrop from the latest frame, on a worker thread, and draws it when it is done. Only one is made at a time. With
+    /// none to show yet it is made now, so the strips round the first frame are not left bare.
     fn update_backdrop(&self) {
         let imp = self.imp();
         let Some(backdrop) = imp.framing.get().backdrop else {
             imp.backdrop.borrow_mut().clear();
             return;
         };
-        let Some((pixels, width, height)) = imp.last_frame.borrow().clone() else { return };
-        let (area_width, area_height) = imp.area.get();
-        if area_width <= 0.0 || area_height <= 0.0 || width <= 0 || height <= 0 {
+        let Some(frame) = imp.last_frame.borrow().clone() else { return };
+        let area = imp.area.get();
+        if area.0 <= 0.0 || area.1 <= 0.0 || frame.1 <= 0 || frame.2 <= 0 {
             return;
         }
-        let scale = imp.scale.get().max(1.0);
-        let fitted = framing::fitted(area_width, area_height, f64::from(width), f64::from(height));
-        let (cover_x, cover_y, cover_width, _) = framing::covering(area_width, area_height, f64::from(width), f64::from(height), backdrop.zoom);
-        // Area units per pixel of the frame, when it covers the area.
-        let per_pixel = cover_width / f64::from(width);
-        let radius = (f64::from(backdrop.blur.max(1)) * 4.0 * scale / BACKDROP_SHRINK).round().max(1.0) as usize;
-        imp.backdrop_at.set(Some(std::time::Instant::now()));
-        imp.backdrop_stale.set(false);
-        let mut scratch = imp.blur_scratch.borrow_mut();
-        let mut pieces = Vec::new();
-        for (x, y, strip_width, strip_height) in framing::bars(area_width, area_height, fitted) {
-            let out_width = ((strip_width * scale / BACKDROP_SHRINK).ceil() as usize).max(1);
-            let out_height = ((strip_height * scale / BACKDROP_SHRINK).ceil() as usize).max(1);
-            let region = ((x - cover_x) / per_pixel, (y - cover_y) / per_pixel, (x + strip_width - cover_x) / per_pixel, (y + strip_height - cover_y) / per_pixel);
-            let mut small = framing::shrink_region(&pixels, width as usize, height as usize, region, out_width, out_height);
-            framing::blur_and_dim(&mut small, &mut scratch, out_width, out_height, radius, backdrop.dim);
-            let bytes = glib::Bytes::from_owned(small);
-            let texture = gdk::MemoryTexture::new(out_width as i32, out_height as i32, gdk::MemoryFormat::B8g8r8x8, &bytes, out_width * 4);
-            pieces.push((texture.upcast(), gtk::graphene::Rect::new(x as f32, y as f32, strip_width as f32, strip_height as f32)));
+        if imp.backdrop_busy.get() {
+            imp.backdrop_again.set(true);
+            return;
         }
-        imp.backdrop.replace(pieces);
+        imp.backdrop_stale.set(false);
+        let scale = imp.scale.get().max(1.0);
+        let mut scratch = imp.blur_scratch.take();
+        if imp.backdrop.borrow().is_empty() {
+            let pieces = make_backdrop(&frame, area, scale, backdrop, &mut scratch);
+            imp.blur_scratch.replace(scratch);
+            self.backdrop_made(pieces);
+            return;
+        }
+        imp.backdrop_busy.set(true);
+        let weak = self.downgrade();
+        glib::spawn_future_local(async move {
+            let made = gio::spawn_blocking(move || {
+                let pieces = make_backdrop(&frame, area, scale, backdrop, &mut scratch);
+                (pieces, scratch)
+            })
+            .await
+            .ok();
+            let Some(stream) = weak.upgrade() else { return };
+            let imp = stream.imp();
+            imp.backdrop_busy.set(false);
+            if let Some((pieces, scratch)) = made {
+                imp.blur_scratch.replace(scratch);
+                // It may have been turned off meanwhile.
+                if imp.framing.get().backdrop.is_some() {
+                    stream.backdrop_made(pieces);
+                    stream.invalidate_contents();
+                }
+            }
+            if imp.backdrop_again.replace(false) {
+                stream.update_backdrop();
+            }
+        });
+    }
+
+    /// Makes textures of the pieces of a backdrop, to draw from now on.
+    fn backdrop_made(&self, pieces: Vec<(Vec<u8>, usize, usize)>) {
+        let imp = self.imp();
+        let textures = pieces.into_iter().map(|(pixels, width, height)| {
+            let bytes = glib::Bytes::from_owned(pixels);
+            gdk::MemoryTexture::new(width as i32, height as i32, gdk::MemoryFormat::B8g8r8x8, &bytes, width * 4).upcast()
+        });
+        imp.backdrop.replace(textures.collect());
+        imp.backdrop_at.set(Some(std::time::Instant::now()));
     }
 
     /// Shows a frame the render thread rendered for the player with `player_id`, unless that is not the player any more.
@@ -875,7 +931,8 @@ impl MpvStream {
         // The render thread may render the next frame now.
         drop(ticket);
         imp.last_frame.replace(Some((bytes, width, height)));
-        if imp.framing.get().backdrop.is_some() && (imp.backdrop_stale.get() || imp.backdrop_at.get().is_none_or(|at| at.elapsed() >= BACKDROP_INTERVAL)) {
+        let backdrop_due = !imp.backdrop_busy.get() && imp.backdrop_at.get().is_none_or(|at| at.elapsed() >= BACKDROP_INTERVAL);
+        if imp.framing.get().backdrop.is_some() && (imp.backdrop_stale.get() || backdrop_due) {
             self.update_backdrop();
         }
         let first = imp.frame.replace(Some(texture.upcast())).is_none();
@@ -889,6 +946,19 @@ impl MpvStream {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_backdrop_is_made_for_each_bare_strip_at_an_eighth_of_its_size() {
+        let frame = (glib::Bytes::from_owned(vec![200u8; 100 * 100 * 4]), 100, 100);
+        let backdrop = Backdrop { zoom: 1.0, blur: 8, dim: 0.5 };
+        let mut scratch = Vec::new();
+        let pieces = make_backdrop(&frame, (200.0, 100.0), 1.0, backdrop, &mut scratch);
+        let sizes: Vec<(usize, usize)> = pieces.iter().map(|(_, width, height)| (*width, *height)).collect();
+        assert_eq!(sizes, [(7, 13), (7, 13)]);
+        assert!(pieces.iter().all(|(pixels, width, height)| pixels.len() == width * height * 4 && pixels[0] == 100));
+        // A picture that fills the area leaves no strips.
+        assert!(make_backdrop(&frame, (100.0, 100.0), 1.0, backdrop, &mut scratch).is_empty());
+    }
 
     #[test]
     fn the_wait_for_the_crop_doubles_up_to_a_longest() {
