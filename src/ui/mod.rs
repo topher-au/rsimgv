@@ -16,6 +16,7 @@ mod media_controls;
 mod media_viewer;
 pub mod message_overlay;
 mod media_overlay;
+mod overlay_editor;
 mod fs_tree;
 mod header_bar;
 mod overlay_split_view;

@@ -370,6 +370,7 @@ impl PreferencesDialog {
 
         bind_switches(settings, dialog.imp());
         bind_choices(settings, dialog.imp());
+        imp.overlay_group.add(&super::overlay_editor::build(settings));
         dialog.bind_start_directory(settings);
         bind_info_fields(settings, &dialog);
         // The scale steps through no limit, shown as "-", then 1x to 4x, with a mark at each.
