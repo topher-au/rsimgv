@@ -81,6 +81,9 @@ mod imp {
             list.set_single_click_activate(true);
             list.add_css_class("thumbnail-bar-list");
             let scroller = gtk::ScrolledWindow::builder().child(&list).hexpand(true).vexpand(true).build();
+            // Always shown, as a thin line the stylesheet keeps faint, rather than appearing only while scrolling.
+            scroller.set_overlay_scrolling(false);
+            scroller.add_css_class("thumbnail-bar-scroller");
             let pin_button = gtk::ToggleButton::builder()
                 .icon_name("view-pin-symbolic")
                 .tooltip_text("Keep the thumbnail bar shown")
@@ -272,6 +275,12 @@ impl ThumbnailBar {
     /// Puts the bar on `side` of the viewer: a row along the top or bottom, a column beside.
     pub fn set_side(&self, side: gtk::PositionType) {
         self.imp().side.set(side);
+        // The scrollbar runs along the bar's outer edge, the one at the window's edge.
+        self.imp().scroller.set_placement(match side {
+            gtk::PositionType::Top => gtk::CornerType::BottomLeft,
+            gtk::PositionType::Left => gtk::CornerType::TopRight,
+            _ => gtk::CornerType::TopLeft,
+        });
         self.set_orientation(match side {
             gtk::PositionType::Top | gtk::PositionType::Bottom => gtk::Orientation::Horizontal,
             _ => gtk::Orientation::Vertical,

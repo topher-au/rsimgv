@@ -41,6 +41,27 @@ thumbnail-bar {
   }
 }
 
+// The scrollbar is always there, but thin and faint, and only brightens under the pointer.
+thumbnail-bar .thumbnail-bar-scroller scrollbar {
+  background: none;
+
+  trough {
+    background: none;
+  }
+
+  slider {
+    min-width: 4px;
+    min-height: 4px;
+    border-radius: 2px;
+    background-color: rgba(255, 255, 255, 0.25);
+
+    &:hover,
+    &:active {
+      background-color: rgba(255, 255, 255, 0.55);
+    }
+  }
+}
+
 thumbnail-bar .thumbnail-bar-header {
   padding: 4px;
   color: #fff;
