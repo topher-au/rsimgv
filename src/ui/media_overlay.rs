@@ -18,6 +18,8 @@ const MARGIN: i32 = 12;
 const SPACING: i32 = 6;
 /// How long an element takes to fade in and out, in milliseconds.
 const FADE: u32 = 150;
+/// The widest a media status's filename goes before it is shortened, in characters.
+const FILENAME_WIDTH: i32 = 40;
 
 /// The layout the settings say: the one saved by the configuration page, or the older settings' while none is saved.
 pub fn layout_from_settings(settings: &gio::Settings) -> Layout {
@@ -47,6 +49,16 @@ pub fn clock(micros: i64) -> String {
         format!("{hours}:{minutes:02}:{seconds:02}")
     } else {
         format!("{minutes}:{seconds:02}")
+    }
+}
+
+/// The icon for the state a media status shows: `Playing`, `Paused` or `Ended`.
+fn state_icon(state: &str) -> Option<&'static str> {
+    match state {
+        "Playing" => Some("media-playback-start-symbolic"),
+        "Paused" => Some("media-playback-pause-symbolic"),
+        "Ended" => Some("media-playback-stop-symbolic"),
+        _ => None,
     }
 }
 
@@ -162,6 +174,9 @@ struct Placed {
     revealer: gtk::Revealer,
     label: gtk::Label,
     bar: Option<gtk::ProgressBar>,
+    /// A media status's state icon, and the filename under its text.
+    icon: Option<gtk::Image>,
+    filename: Option<gtk::Label>,
     /// Keeps the element's look on the display.
     _sheet: Sheet,
 }
@@ -227,8 +242,15 @@ impl MediaOverlay {
             let mut up = item.element.is_up(frame);
             if up {
                 let text = item.template.render(frame.values);
-                // An element with no text and no bar has nothing to show, so it does not show its background either.
-                up = item.bar.is_some() || !text.trim().is_empty();
+                let state_icon = item.icon.as_ref().and_then(|_| (frame.values)("state")).as_deref().and_then(state_icon);
+                if let (Some(icon), Some(name)) = (&item.icon, state_icon) {
+                    icon.set_icon_name(Some(name));
+                }
+                if let Some(label) = &item.filename {
+                    label.set_text(&(frame.values)("filename").unwrap_or_default());
+                }
+                // An element with nothing to show does not show its background either.
+                up = item.bar.is_some() || !text.trim().is_empty() || state_icon.is_some() || item.filename.as_ref().is_some_and(|label| !label.text().is_empty());
                 if item.label.text() != text {
                     item.label.set_text(&text);
                 }
@@ -277,7 +299,42 @@ fn build(element: &Element) -> Placed {
     let label = gtk::Label::new(None);
     label.add_css_class("overlay-text");
     align_label(&label, align);
-    card.append(&label);
+
+    // A media status has an icon beside its text, and the filename under the text, lined up with it.
+    let is_status = element.kind == Kind::Status;
+    let icon = (is_status && element.shows_part("state")).then(|| {
+        let icon = gtk::Image::new();
+        icon.add_css_class("overlay-text");
+        // The icon is as tall as the line of text beside it.
+        icon.set_pixel_size((element.style.font_size * 4.0 / 3.0 * 1.2).round() as i32);
+        icon.set_valign(gtk::Align::Start);
+        icon
+    });
+    let filename = (is_status && element.shows_part("filename")).then(|| {
+        let filename = gtk::Label::new(None);
+        filename.add_css_class("overlay-text");
+        filename.add_css_class("overlay-subtext");
+        filename.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
+        filename.set_max_width_chars(FILENAME_WIDTH);
+        align_label(&filename, align);
+        filename
+    });
+    if is_status {
+        let grid = gtk::Grid::builder().column_spacing(8).row_spacing(2).build();
+        let column = i32::from(icon.is_some());
+        if let Some(icon) = &icon {
+            grid.attach(icon, 0, 0, 1, 1);
+        }
+        label.set_hexpand(true);
+        grid.attach(&label, column, 0, 1, 1);
+        if let Some(filename) = &filename {
+            filename.set_hexpand(true);
+            grid.attach(filename, column, 1, 1, 1);
+        }
+        card.append(&grid);
+    } else {
+        card.append(&label);
+    }
 
     let revealer = gtk::Revealer::new();
     revealer.set_transition_type(gtk::RevealerTransitionType::Crossfade);
@@ -287,7 +344,7 @@ fn build(element: &Element) -> Placed {
     revealer.set_halign(horizontal_align(align));
     revealer.set_can_target(false);
     let sheet = Sheet::new(&style_css(&format!(".overlay-element.{class}"), &element.style));
-    Placed { element: element.clone(), template: Template::parse(&element.text_template()), revealer, label, bar, _sheet: sheet }
+    Placed { element: element.clone(), template: Template::parse(&element.text_template()), revealer, label, bar, icon, filename, _sheet: sheet }
 }
 
 #[cfg(test)]

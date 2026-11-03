@@ -110,13 +110,15 @@ impl Kind {
     }
 }
 
-/// The parts a media status element can show, in the order it writes them, with the template that writes each.
+/// The parts a media status element can show, in the order it writes them, with the template that writes each. The state
+/// is an icon and the filename a line under the text, so neither is in the text.
 pub const STATUS_PARTS: &[(&str, &str, &str)] = &[
-    ("state", "State", "${state}"),
+    ("state", "State icon", ""),
     ("time", "Time", "${time-pos}${?duration: / ${duration}}"),
     ("percent", "Percent", "${?percent-pos:(${percent-pos}%)}"),
     ("speed", "Speed", "${?speed:${speed}x}"),
     ("volume", "Volume", "Vol ${volume}%${?mute: (muted)}"),
+    ("filename", "Filename under it", ""),
 ];
 
 /// How a seek display writes the time.
@@ -269,12 +271,17 @@ impl Element {
             Kind::Seek => time_template(&self.time_format).to_owned(),
             Kind::Status => STATUS_PARTS
                 .iter()
-                .filter(|(name, _, _)| self.parts.iter().any(|part| part == name))
+                .filter(|(name, _, template)| !template.is_empty() && self.parts.iter().any(|part| part == name))
                 .map(|(_, _, template)| *template)
                 .collect::<Vec<_>>()
                 .join("  "),
             Kind::Messages => String::new(),
         }
+    }
+
+    /// Whether a media status shows the playback state as an icon, and the filename under its text.
+    pub fn shows_part(&self, part: &str) -> bool {
+        self.parts.iter().any(|shown| shown == part)
     }
 
     fn to_json(&self) -> Value {
@@ -443,6 +450,24 @@ impl Layout {
         Some(Self { elements: elements.iter().filter_map(Element::from_json).collect() })
     }
 
+    /// Moves the element at `from` into `slot`, in front of the element at `before`, or after the last of those already
+    /// in `slot` when there is none. Returns whether anything moved.
+    pub fn move_element(&mut self, from: usize, slot: Slot, before: Option<usize>) -> bool {
+        if from >= self.elements.len() {
+            return false;
+        }
+        let was = self.elements.clone();
+        let mut element = self.elements.remove(from);
+        element.slot = slot;
+        let at = match before {
+            Some(before) if before > from => before - 1,
+            Some(before) => before,
+            None => self.elements.iter().rposition(|other| other.slot == slot).map_or(self.elements.len(), |last| last + 1),
+        };
+        self.elements.insert(at.min(self.elements.len()), element);
+        self.elements != was
+    }
+
     /// Whether any element is on, which is whether the overlay has anything to keep up to date.
     pub fn any_enabled(&self) -> bool {
         self.elements.iter().any(|element| element.enabled)
@@ -532,6 +557,33 @@ mod tests {
     }
 
     #[test]
+    fn an_element_moves_between_places_and_within_one() {
+        let named = |layout: &Layout| layout.elements.iter().map(|element| (element.name.clone(), element.slot)).collect::<Vec<_>>();
+        let mut layout = Layout {
+            elements: vec![
+                Element::new("a", Slot::TOP_LEFT, ""),
+                Element::new("b", Slot::TOP_LEFT, ""),
+                Element::new("c", Slot::TOP_RIGHT, ""),
+            ],
+        };
+        // To the end of another place.
+        assert!(layout.move_element(0, Slot::TOP_RIGHT, None));
+        assert_eq!(named(&layout), [("b".into(), Slot::TOP_LEFT), ("c".into(), Slot::TOP_RIGHT), ("a".into(), Slot::TOP_RIGHT)]);
+        // In front of another element, which can be before or after it in the list.
+        assert!(layout.move_element(2, Slot::TOP_RIGHT, Some(1)));
+        assert_eq!(named(&layout), [("b".into(), Slot::TOP_LEFT), ("a".into(), Slot::TOP_RIGHT), ("c".into(), Slot::TOP_RIGHT)]);
+        assert!(layout.move_element(0, Slot::TOP_RIGHT, Some(2)));
+        assert_eq!(named(&layout), [("a".into(), Slot::TOP_RIGHT), ("b".into(), Slot::TOP_RIGHT), ("c".into(), Slot::TOP_RIGHT)]);
+        // To the end of its own place, or in front of itself, is where it already is.
+        assert!(!layout.move_element(2, Slot::TOP_RIGHT, None));
+        assert!(!layout.move_element(1, Slot::TOP_RIGHT, Some(1)));
+        // To an empty place.
+        assert!(layout.move_element(1, Slot::BOTTOM_MIDDLE, None));
+        assert_eq!(layout.elements.last().map(|element| element.slot), Some(Slot::BOTTOM_MIDDLE));
+        assert!(!layout.move_element(9, Slot::TOP_LEFT, None));
+    }
+
+    #[test]
     fn a_media_status_writes_the_parts_it_is_set_to_show() {
         let mut status = Element::of_kind(Kind::Status, Slot::TOP_LEFT);
         let lookup = |name: &str| match name {
@@ -543,9 +595,10 @@ mod tests {
             _ => None,
         };
         let render = |status: &Element| template::Template::parse(&status.text_template()).render(&lookup);
-        assert_eq!(render(&status), "Playing  1:23 / 4:56  (28%)");
-        status.parts = vec!["speed".to_owned(), "state".to_owned()];
-        assert_eq!(render(&status), "Playing  1.5x", "in the order it writes them, not the order they were chosen");
+        assert_eq!(render(&status), "1:23 / 4:56  (28%)", "the state is an icon, so it is not in the text");
+        status.parts = vec!["speed".to_owned(), "time".to_owned(), "filename".to_owned()];
+        assert_eq!(render(&status), "1:23 / 4:56  1.5x", "in the order it writes them, not the order they were chosen");
+        assert!(status.shows_part("filename") && !status.shows_part("state"));
     }
 
     #[test]

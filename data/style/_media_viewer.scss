@@ -8,6 +8,11 @@
     font-feature-settings: "tnum";
   }
 
+  .overlay-subtext {
+    opacity: 0.75;
+    font-size: 0.85em;
+  }
+
   progressbar.seek-bar {
     trough,
     progress {

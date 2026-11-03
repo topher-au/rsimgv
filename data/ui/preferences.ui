@@ -504,87 +504,101 @@
                       </object>
                     </child>
                     <child>
-                      <object class="AdwPreferencesPage">
-                        <property name="title">Viewer</property>
-                        <property name="icon-name">applications-multimedia-symbolic</property>
+                      <object class="AdwViewStack" id="viewer_stack">
+                        <property name="vexpand">true</property>
                         <child>
-                          <object class="AdwPreferencesGroup">
+                          <object class="AdwPreferencesPage">
+                            <property name="title">Viewer</property>
+                            <property name="icon-name">applications-multimedia-symbolic</property>
                             <child>
-                              <object class="AdwSwitchRow" id="open_fullscreen_row">
-                                <property name="title">Open in fullscreen</property>
-                                <property name="subtitle">Goes fullscreen when the viewer opens, and leaves it when the viewer closes</property>
+                              <object class="AdwPreferencesGroup">
+                                <child>
+                                  <object class="AdwSwitchRow" id="open_fullscreen_row">
+                                    <property name="title">Open in fullscreen</property>
+                                    <property name="subtitle">Goes fullscreen when the viewer opens, and leaves it when the viewer closes</property>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="AdwSwitchRow" id="auto_hide_cursor_row">
+                                    <property name="title">Hide the cursor when idle</property>
+                                    <property name="subtitle">Hides the pointer once it has been still over the viewer for a moment</property>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="AdwSwitchRow" id="image_info_in_title_row">
+                                    <property name="title">Image info in window title</property>
+                                    <property name="subtitle">Shows the file name and size of the item the viewer shows</property>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="AdwSwitchRow" id="viewer_status_bar_row">
+                                    <property name="title">Status bar</property>
+                                    <property name="subtitle">Shows the item's position, name, resolution, frame rate and file size under it. In fullscreen the overlay's Status element shows it instead</property>
+                                  </object>
+                                </child>
                               </object>
                             </child>
                             <child>
-                              <object class="AdwSwitchRow" id="auto_hide_cursor_row">
-                                <property name="title">Hide the cursor when idle</property>
-                                <property name="subtitle">Hides the pointer once it has been still over the viewer for a moment</property>
-                              </object>
-                            </child>
-                            <child>
-                              <object class="AdwSwitchRow" id="image_info_in_title_row">
-                                <property name="title">Image info in window title</property>
-                                <property name="subtitle">Shows the file name and size of the item the viewer shows</property>
-                              </object>
-                            </child>
-                            <child>
-                              <object class="AdwSwitchRow" id="viewer_status_bar_row">
-                                <property name="title">Status bar</property>
-                                <property name="subtitle">Shows the item's position, name, resolution, frame rate and file size under it. In fullscreen the overlay's Status element shows it instead</property>
+                              <object class="AdwPreferencesGroup">
+                                <property name="title">Thumbnail Bar</property>
+                                <child>
+                                  <object class="AdwSwitchRow" id="thumbnail_bar_shown_row">
+                                    <property name="title">Show thumbnail bar</property>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="AdwComboRow" id="thumbnail_bar_row">
+                                    <property name="title">Position</property>
+                                    <property name="subtitle">You can also drag the bar to any edge of the viewer.</property>
+                                    <property name="model">
+                                      <object class="GtkStringList">
+                                        <items>
+                                          <item>Top</item>
+                                          <item>Left</item>
+                                          <item>Bottom</item>
+                                          <item>Right</item>
+                                        </items>
+                                      </object>
+                                    </property>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="AdwSwitchRow" id="thumbnail_bar_overlay_row">
+                                    <property name="title">Float over the picture</property>
+                                    <property name="subtitle">Slides over the picture from its edge, rather than sitting beside it</property>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="AdwSwitchRow" id="thumbnail_bar_pinned_row">
+                                    <property name="title">Keep a floating bar shown</property>
+                                    <property name="subtitle">Otherwise it appears only while the pointer is near its edge</property>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="AdwSpinRow" id="thumbnail_bar_size_row">
+                                    <property name="title">Thumbnail size</property>
+                                    <property name="subtitle">Size in pixels of each thumbnail</property>
+                                    <property name="adjustment">
+                                      <object class="GtkAdjustment">
+                                        <property name="lower">48</property>
+                                        <property name="upper">256</property>
+                                        <property name="step-increment">8</property>
+                                        <property name="page-increment">16</property>
+                                      </object>
+                                    </property>
+                                  </object>
+                                </child>
                               </object>
                             </child>
                           </object>
                         </child>
                         <child>
-                          <object class="AdwPreferencesGroup">
-                            <property name="title">Thumbnail Bar</property>
-                            <child>
-                              <object class="AdwSwitchRow" id="thumbnail_bar_shown_row">
-                                <property name="title">Show thumbnail bar</property>
-                              </object>
-                            </child>
-                            <child>
-                              <object class="AdwComboRow" id="thumbnail_bar_row">
-                                <property name="title">Position</property>
-                                <property name="subtitle">You can also drag the bar to any edge of the viewer.</property>
-                                <property name="model">
-                                  <object class="GtkStringList">
-                                    <items>
-                                      <item>Top</item>
-                                      <item>Left</item>
-                                      <item>Bottom</item>
-                                      <item>Right</item>
-                                    </items>
-                                  </object>
-                                </property>
-                              </object>
-                            </child>
-                            <child>
-                              <object class="AdwSwitchRow" id="thumbnail_bar_overlay_row">
-                                <property name="title">Float over the picture</property>
-                                <property name="subtitle">Slides over the picture from its edge, rather than sitting beside it</property>
-                              </object>
-                            </child>
-                            <child>
-                              <object class="AdwSwitchRow" id="thumbnail_bar_pinned_row">
-                                <property name="title">Keep a floating bar shown</property>
-                                <property name="subtitle">Otherwise it appears only while the pointer is near its edge</property>
-                              </object>
-                            </child>
-                            <child>
-                              <object class="AdwSpinRow" id="thumbnail_bar_size_row">
-                                <property name="title">Thumbnail size</property>
-                                <property name="subtitle">Size in pixels of each thumbnail</property>
-                                <property name="adjustment">
-                                  <object class="GtkAdjustment">
-                                    <property name="lower">48</property>
-                                    <property name="upper">256</property>
-                                    <property name="step-increment">8</property>
-                                    <property name="page-increment">16</property>
-                                  </object>
-                                </property>
-                              </object>
-                            </child>
+                          <object class="AdwViewStackPage">
+                            <property name="title">Overlay</property>
+                            <property name="icon-name">view-reveal-symbolic</property>
+                            <property name="child">
+                              <object class="GtkBox" id="overlay_page"/>
+                            </property>
                           </object>
                         </child>
                       </object>
@@ -914,17 +928,6 @@
                                     </property>
                                   </object>
                                 </child>
-                              </object>
-                            </child>
-                          </object>
-                        </child>
-                        <child>
-                          <object class="AdwPreferencesPage">
-                            <property name="title">Overlay</property>
-                            <property name="icon-name">view-reveal-symbolic</property>
-                            <child>
-                              <object class="AdwPreferencesGroup" id="overlay_group">
-                                <property name="description">Text, status and a progress bar floating over the picture or video.</property>
                               </object>
                             </child>
                           </object>

@@ -1,20 +1,22 @@
-//! The overlay's page in the preferences: a map of the item with its nine places, showing the elements stacked in each,
-//! a button in each place to add one, and a form for the element picked. Every change is saved at once.
+//! The overlay's page in the preferences. It shows a map of the item with its nine places and the elements stacked in
+//! each, which can be dragged to another place or to another spot in their own. Clicking an element, or the + in a
+//! place, swaps the map for the element's editor: tabs for each group of options, and Save and Cancel under them. The
+//! changes to the element are kept apart until it is saved.
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use adw::prelude::*;
-use gtk::gio;
+use gtk::{gdk, gio, glib};
 
 use super::media_overlay::layout_from_settings;
 use crate::overlay::template::Template;
 use crate::overlay::{
-    Element, Items, Kind, Layout, Slot, Visibility, BAR_WIDTH_RANGE, FONT_SIZE_RANGE, PADDING_RANGE, PROPERTIES, RADIUS_RANGE, SECONDS_RANGE,
-    STATUS_PARTS, TIME_FORMATS,
+    Element, Items, Kind, Layout, Slot, Style, Visibility, BAR_WIDTH_RANGE, FONT_SIZE_RANGE, PADDING_RANGE, PROPERTIES, RADIUS_RANGE,
+    SECONDS_RANGE, STATUS_PARTS, TIME_FORMATS,
 };
 
-/// What a property reads as in the form's preview.
+/// What a property reads as in the editor's preview.
 fn sample(name: &str) -> Option<String> {
     let value = match name {
         "state" => "Playing",
@@ -36,41 +38,61 @@ fn sample(name: &str) -> Option<String> {
     Some(value.to_owned())
 }
 
+/// The element being edited, and where it goes back to.
+struct Draft {
+    /// Its index in the layout, or `None` for an element that is new.
+    index: Option<usize>,
+    element: Element,
+}
+
 struct Editor {
     settings: gio::Settings,
     layout: RefCell<Layout>,
-    /// The index in the layout of the element the form edits.
-    selected: Cell<Option<usize>>,
+    draft: RefCell<Option<Draft>>,
+    /// Holds the map and the element's editor, one at a time.
+    pages: gtk::Stack,
     map: gtk::Grid,
-    form: gtk::Box,
+    /// The element's editor: its tabs, and the switcher for them.
+    editor_view: adw::ToolbarView,
+    switcher: adw::ViewSwitcher,
+    delete: gtk::Button,
 }
 
-/// The editor, to put in a preferences page.
+const MAP_PAGE: &str = "map";
+const EDITOR_PAGE: &str = "editor";
+
+/// The page, to put in the preferences.
 pub fn build(settings: &gio::Settings) -> gtk::Widget {
     let editor = Rc::new(Editor {
         settings: settings.clone(),
         layout: RefCell::new(layout_from_settings(settings)),
-        selected: Cell::new(None),
+        draft: RefCell::new(None),
+        pages: gtk::Stack::builder().vexpand(true).hexpand(true).build(),
         map: gtk::Grid::builder().row_homogeneous(true).column_homogeneous(true).row_spacing(6).column_spacing(6).build(),
-        form: gtk::Box::new(gtk::Orientation::Vertical, 12),
+        editor_view: adw::ToolbarView::new(),
+        switcher: adw::ViewSwitcher::builder().policy(adw::ViewSwitcherPolicy::Wide).build(),
+        delete: gtk::Button::with_label("Delete"),
     });
     editor.map.add_css_class("overlay-map");
     editor.map.set_size_request(-1, 300);
 
-    let root = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    // The map, with what it is for above it and the reset below.
+    let map_page = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    map_page.set_margin_top(12);
+    map_page.set_margin_bottom(12);
+    map_page.set_margin_start(12);
+    map_page.set_margin_end(12);
     let intro = gtk::Label::new(Some(
-        "Elements in one place stack, the first on top, and their text lines up toward the nearest edge. Add a seek \
-         display, the playback status, the notification messages, or text of your own from a template.",
+        "Drag elements between places, or within one, to arrange them. Elements in one place stack, the first on top, and \
+         their text lines up toward the nearest edge. Click one to change it, or add one with +.",
     ));
     intro.set_wrap(true);
     intro.set_xalign(0.0);
     intro.add_css_class("dim-label");
-    root.append(&intro);
+    map_page.append(&intro);
     let frame = gtk::Frame::new(None);
     frame.set_child(Some(&editor.map));
-    root.append(&frame);
-    root.append(&editor.form);
-
+    map_page.append(&frame);
     let reset = gtk::Button::with_label("Reset the overlay");
     reset.set_halign(gtk::Align::End);
     reset.add_css_class("destructive-action");
@@ -82,10 +104,43 @@ pub fn build(settings: &gio::Settings) -> gtk::Widget {
             editor.reload();
         }
     });
-    root.append(&reset);
+    map_page.append(&reset);
+    let scroller = gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).child(&map_page).build();
+    editor.pages.add_named(&scroller, Some(MAP_PAGE));
+
+    // The element's editor: tabs on top, Save and Cancel at the bottom.
+    editor.editor_view.add_top_bar(&editor.switcher);
+    let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    buttons.set_margin_top(6);
+    buttons.set_margin_bottom(6);
+    buttons.set_margin_start(12);
+    buttons.set_margin_end(12);
+    editor.delete.add_css_class("destructive-action");
+    editor.delete.connect_clicked({
+        let editor = editor.clone();
+        move |_| editor.delete()
+    });
+    buttons.append(&editor.delete);
+    let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    spacer.set_hexpand(true);
+    buttons.append(&spacer);
+    let cancel = gtk::Button::with_label("Cancel");
+    cancel.connect_clicked({
+        let editor = editor.clone();
+        move |_| editor.close_editor()
+    });
+    buttons.append(&cancel);
+    let save = gtk::Button::with_label("Save");
+    save.add_css_class("suggested-action");
+    save.connect_clicked({
+        let editor = editor.clone();
+        move |_| editor.save_draft()
+    });
+    buttons.append(&save);
+    editor.editor_view.add_bottom_bar(&buttons);
+    editor.pages.add_named(&editor.editor_view, Some(EDITOR_PAGE));
 
     editor.refresh_map();
-    editor.refresh_form();
 
     // A change to the setting from outside, such as an edit of the settings file, is shown.
     let weak = Rc::downgrade(&editor);
@@ -96,70 +151,108 @@ pub fn build(settings: &gio::Settings) -> gtk::Widget {
             }
         }
     });
-    root.upcast()
+    editor.pages.clone().upcast()
 }
 
 impl Editor {
     fn reload(self: &Rc<Self>) {
         self.layout.replace(layout_from_settings(&self.settings));
-        self.selected.set(None);
-        self.refresh_map();
-        self.refresh_form();
+        self.close_editor();
     }
 
     fn save(&self) {
         let _ = self.settings.set_string("overlay-layout", &self.layout.borrow().to_json());
     }
 
-    /// Changes the element picked with `change`, and saves it.
-    fn edit(self: &Rc<Self>, change: impl FnOnce(&mut Element)) {
-        let Some(index) = self.selected.get() else { return };
-        if let Some(element) = self.layout.borrow_mut().elements.get_mut(index) {
-            change(element);
+    /// Changes the element being edited with `change`. Nothing is saved until the editor is.
+    fn edit(&self, change: impl FnOnce(&mut Element)) {
+        if let Some(draft) = self.draft.borrow_mut().as_mut() {
+            change(&mut draft.element);
         }
-        self.save();
-        self.refresh_map();
     }
 
-    fn select(self: &Rc<Self>, index: Option<usize>) {
-        self.selected.set(index);
-        self.refresh_map();
-        self.refresh_form();
+    /// Opens the editor on the element at `index`.
+    fn open(self: &Rc<Self>, index: usize) {
+        let element = self.layout.borrow().elements.get(index).cloned();
+        if let Some(element) = element {
+            self.open_draft(Draft { index: Some(index), element });
+        }
     }
 
-    fn add(self: &Rc<Self>, kind: Kind, slot: Slot) {
-        let element = Element::of_kind(kind, slot);
-        let index = {
+    /// Opens the editor on a new element of `kind` in `slot`, which is added to the layout when it is saved.
+    fn open_new(self: &Rc<Self>, kind: Kind, slot: Slot) {
+        self.open_draft(Draft { index: None, element: Element::of_kind(kind, slot) });
+    }
+
+    fn open_draft(self: &Rc<Self>, draft: Draft) {
+        let element = draft.element.clone();
+        self.delete.set_visible(draft.index.is_some());
+        self.draft.replace(Some(draft));
+
+        let tabs = adw::ViewStack::new();
+        tabs.add_titled_with_icon(&self.general_tab(&element), Some("general"), "General", "preferences-system-symbolic");
+        match element.kind {
+            Kind::Template => {
+                tabs.add_titled_with_icon(&self.template_tab(&element), Some("content"), "Text", "format-text-bold-symbolic");
+            }
+            Kind::Seek => {
+                tabs.add_titled_with_icon(&self.seek_tab(&element), Some("content"), "Seek", "media-seek-forward-symbolic");
+            }
+            Kind::Status => {
+                tabs.add_titled_with_icon(&self.status_tab(&element), Some("content"), "Status", "media-playback-start-symbolic");
+            }
+            Kind::Messages => {}
+        }
+        if element.kind != Kind::Messages {
+            tabs.add_titled_with_icon(&self.when_tab(&element), Some("when"), "When", "alarm-symbolic");
+        }
+        tabs.add_titled_with_icon(&self.look_tab(&element), Some("look"), "Look", "applications-graphics-symbolic");
+        self.switcher.set_stack(Some(&tabs));
+        self.editor_view.set_content(Some(&tabs));
+        self.pages.set_visible_child_name(EDITOR_PAGE);
+    }
+
+    /// Goes back to the map, dropping what was changed in the editor.
+    fn close_editor(self: &Rc<Self>) {
+        self.draft.replace(None);
+        self.refresh_map();
+        self.pages.set_visible_child_name(MAP_PAGE);
+    }
+
+    fn save_draft(self: &Rc<Self>) {
+        if let Some(Draft { index, element }) = self.draft.take() {
+            {
+                let mut layout = self.layout.borrow_mut();
+                match index.filter(|&index| index < layout.elements.len()) {
+                    Some(index) => layout.elements[index] = element,
+                    None => layout.elements.push(element),
+                }
+            }
+            self.save();
+        }
+        self.close_editor();
+    }
+
+    fn delete(self: &Rc<Self>) {
+        if let Some(index) = self.draft.borrow().as_ref().and_then(|draft| draft.index) {
             let mut layout = self.layout.borrow_mut();
-            layout.elements.push(element);
-            layout.elements.len() - 1
-        };
-        self.save();
-        self.select(Some(index));
+            if index < layout.elements.len() {
+                layout.elements.remove(index);
+            }
+            drop(layout);
+            self.save();
+        }
+        self.close_editor();
     }
 
-    /// Moves the element picked up or down among those in its place, which is up or down the stack.
-    fn shift(self: &Rc<Self>, down: bool) {
-        let Some(index) = self.selected.get() else { return };
-        let mut layout = self.layout.borrow_mut();
-        let slot = layout.elements[index].slot;
-        let neighbour = if down {
-            (index + 1..layout.elements.len()).find(|&other| layout.elements[other].slot == slot)
-        } else {
-            (0..index).rev().find(|&other| layout.elements[other].slot == slot)
-        };
-        let Some(neighbour) = neighbour else { return };
-        layout.elements.swap(index, neighbour);
-        drop(layout);
-        self.save();
-        self.select(Some(neighbour));
-    }
-
-    fn remove(self: &Rc<Self>) {
-        let Some(index) = self.selected.get() else { return };
-        self.layout.borrow_mut().elements.remove(index);
-        self.save();
-        self.select(None);
+    /// Moves the element at `from` into `slot`, in front of the element at `before` if there is one, and saves.
+    fn move_element(self: &Rc<Self>, from: usize, slot: Slot, before: Option<usize>) {
+        if self.layout.borrow_mut().move_element(from, slot, before) {
+            self.save();
+        }
+        // The chip that was dragged is part of what is redrawn, so that waits until the drop is over.
+        let editor = self.clone();
+        glib::idle_add_local_once(move || editor.refresh_map());
     }
 
     /// Draws the nine places with the elements in each.
@@ -170,21 +263,23 @@ impl Editor {
         for slot in Slot::all() {
             let cell = gtk::Box::new(gtk::Orientation::Vertical, 4);
             cell.add_css_class("overlay-map-cell");
-            cell.set_valign(gtk::Align::Fill);
             let heading = gtk::Label::new(Some(&slot.name().replace('-', " ")));
             heading.add_css_class("caption");
             heading.add_css_class("dim-label");
             cell.append(&heading);
             for (index, element) in self.layout.borrow().elements.iter().enumerate().filter(|(_, element)| element.slot == slot) {
-                let chip = gtk::ToggleButton::with_label(&element.name);
-                chip.set_active(self.selected.get() == Some(index));
+                let chip = gtk::Button::with_label(&element.name);
+                chip.add_css_class("overlay-chip");
                 if !element.enabled {
                     chip.add_css_class("dim-label");
                 }
+                chip.set_tooltip_text(Some(element.kind.title()));
                 chip.connect_clicked({
                     let editor = self.clone();
-                    move |_| editor.select(Some(index))
+                    move |_| editor.open(index)
                 });
+                self.drag_source(&chip, index);
+                self.drop_target(&chip, slot, Some(index), "drop-before");
                 cell.append(&chip);
             }
             let add = gtk::MenuButton::builder().icon_name("list-add-symbolic").tooltip_text("Add an element here").valign(gtk::Align::End).vexpand(true).build();
@@ -199,7 +294,7 @@ impl Editor {
                     let popover = popover.clone();
                     move |_| {
                         popover.popdown();
-                        editor.add(kind, slot);
+                        editor.open_new(kind, slot);
                     }
                 });
                 choices.append(&choice);
@@ -207,25 +302,74 @@ impl Editor {
             popover.set_child(Some(&choices));
             add.set_popover(Some(&popover));
             cell.append(&add);
+            self.drop_target(&cell, slot, None, "drop-hover");
             self.map.attach(&cell, i32::from(slot.column), i32::from(slot.row), 1, 1);
         }
     }
 
-    /// Draws the form for the element picked, or a note to pick one.
-    fn refresh_form(self: &Rc<Self>) {
-        while let Some(child) = self.form.first_child() {
-            self.form.remove(&child);
-        }
-        let element = self.selected.get().and_then(|index| self.layout.borrow().elements.get(index).cloned());
-        let Some(element) = element else {
-            let note = gtk::Label::new(Some("Pick an element above to change it, or add one to a place with +."));
-            note.add_css_class("dim-label");
-            self.form.append(&note);
-            return;
-        };
+    /// Lets `chip`, the element at `index`, be dragged.
+    fn drag_source(&self, chip: &gtk::Button, index: usize) {
+        let source = gtk::DragSource::builder().actions(gdk::DragAction::MOVE).build();
+        source.connect_prepare(move |_, _, _| Some(gdk::ContentProvider::for_value(&(index as u32).to_value())));
+        source.connect_drag_begin({
+            let chip = chip.clone();
+            move |source, _| source.set_icon(Some(&gtk::WidgetPaintable::new(Some(&chip))), 0, 0)
+        });
+        chip.add_controller(source);
+    }
 
+    /// Lets an element dragged from the map be dropped on `widget`, which moves it into `slot` in front of the element
+    /// at `before`, or to the end of the place. `hover` is the style class that shows where it would land.
+    fn drop_target(self: &Rc<Self>, widget: &impl IsA<gtk::Widget>, slot: Slot, before: Option<usize>, hover: &'static str) {
+        let target = gtk::DropTarget::new(u32::static_type(), gdk::DragAction::MOVE);
+        target.connect_drop({
+            let editor = self.clone();
+            let widget = widget.clone().upcast::<gtk::Widget>();
+            move |_, value, _, _| {
+                widget.remove_css_class(hover);
+                let Ok(from) = value.get::<u32>() else { return false };
+                editor.move_element(from as usize, slot, before);
+                true
+            }
+        });
+        target.connect_enter({
+            let widget = widget.clone().upcast::<gtk::Widget>();
+            move |_, _, _| {
+                widget.add_css_class(hover);
+                gdk::DragAction::MOVE
+            }
+        });
+        target.connect_leave({
+            let widget = widget.clone().upcast::<gtk::Widget>();
+            move |_| widget.remove_css_class(hover)
+        });
+        widget.add_controller(target);
+    }
+
+    /// A row that shows the text the element being edited makes, for sample values, kept up to date by calling what it
+    /// returns.
+    fn preview_row(self: &Rc<Self>) -> (adw::ActionRow, Rc<dyn Fn()>) {
+        let row = adw::ActionRow::builder().title("Preview").build();
+        let label = gtk::Label::new(None);
+        label.set_selectable(true);
+        label.set_wrap(true);
+        row.add_suffix(&label);
+        let editor = self.clone();
+        let update: Rc<dyn Fn()> = Rc::new(move || {
+            let template = editor.draft.borrow().as_ref().map(|draft| draft.element.text_template());
+            label.set_text(&template.map(|template| Template::parse(&template).render(&sample)).unwrap_or_default());
+        });
+        update();
+        (row, update)
+    }
+
+    fn general_tab(self: &Rc<Self>, element: &Element) -> adw::PreferencesPage {
+        let page = adw::PreferencesPage::new();
         let group = adw::PreferencesGroup::new();
         group.set_title(element.kind.title());
+        if element.kind == Kind::Messages {
+            group.set_description(Some("Notification messages appear in this place, and look as set under Look. A message that asks for a place of its own still goes there."));
+        }
 
         let name = adw::EntryRow::builder().title("Name").text(element.name.as_str()).build();
         name.connect_changed({
@@ -244,65 +388,13 @@ impl Editor {
         let position = adw::ActionRow::builder().title("Position").subtitle("Where it sits over the item").build();
         position.add_suffix(&self.slot_picker(element.slot));
         group.add(&position);
-
-        let order = adw::ActionRow::builder().title("Order").subtitle("Where it is among the elements in its place").build();
-        for (icon, down) in [("go-up-symbolic", false), ("go-down-symbolic", true)] {
-            let button = gtk::Button::from_icon_name(icon);
-            button.set_valign(gtk::Align::Center);
-            button.add_css_class("flat");
-            button.connect_clicked({
-                let editor = self.clone();
-                move |_| editor.shift(down)
-            });
-            order.add_suffix(&button);
-        }
-        group.add(&order);
-        self.form.append(&group);
-
-        match element.kind {
-            Kind::Template => self.template_options(&element),
-            Kind::Seek => self.seek_options(&element),
-            Kind::Status => self.status_options(&element),
-            Kind::Messages => {
-                let note = adw::PreferencesGroup::new();
-                note.set_description(Some("Notification messages appear in this place, and look as set below. Messages that ask for a place of their own still go there."));
-                self.form.append(&note);
-            }
-        }
-        if element.kind != Kind::Messages {
-            self.form.append(&self.when_options(&element));
-        }
-        self.form.append(&self.look_options(&element));
-
-        let delete = gtk::Button::with_label("Delete element");
-        delete.set_halign(gtk::Align::Start);
-        delete.add_css_class("destructive-action");
-        delete.connect_clicked({
-            let editor = self.clone();
-            move |_| editor.remove()
-        });
-        self.form.append(&delete);
+        page.add(&group);
+        page
     }
 
-    /// A row that shows the text the element picked makes, for sample values, kept up to date by calling what it returns.
-    fn preview_row(self: &Rc<Self>) -> (adw::ActionRow, Rc<dyn Fn()>) {
-        let row = adw::ActionRow::builder().title("Preview").build();
-        let label = gtk::Label::new(None);
-        label.set_selectable(true);
-        label.set_wrap(true);
-        row.add_suffix(&label);
-        let editor = self.clone();
-        let update: Rc<dyn Fn()> = Rc::new(move || {
-            let template = editor.selected.get().and_then(|index| editor.layout.borrow().elements.get(index).map(Element::text_template));
-            label.set_text(&template.map(|template| Template::parse(&template).render(&sample)).unwrap_or_default());
-        });
-        update();
-        (row, update)
-    }
-
-    fn template_options(self: &Rc<Self>, element: &Element) {
+    fn template_tab(self: &Rc<Self>, element: &Element) -> adw::PreferencesPage {
+        let page = adw::PreferencesPage::new();
         let group = adw::PreferencesGroup::new();
-        group.set_title("Text");
         let template = adw::EntryRow::builder().title("Text template").text(element.template.as_str()).build();
         let (preview, update) = self.preview_row();
         template.connect_changed({
@@ -315,13 +407,17 @@ impl Editor {
         });
         group.add(&template);
         group.add(&preview);
-        group.add(&reference());
-        self.form.append(&group);
+        page.add(&group);
+
+        let help = adw::PreferencesGroup::new();
+        help.add(&reference());
+        page.add(&help);
+        page
     }
 
-    fn seek_options(self: &Rc<Self>, element: &Element) {
+    fn seek_tab(self: &Rc<Self>, element: &Element) -> adw::PreferencesPage {
+        let page = adw::PreferencesPage::new();
         let group = adw::PreferencesGroup::new();
-        group.set_title("Seek display");
         group.set_description(Some("A progress bar and the time, shown for a moment after the video is skipped through."));
         let bar = adw::SwitchRow::builder().title("Progress bar").active(element.bar).build();
         let width = adw::SpinRow::with_range(f64::from(BAR_WIDTH_RANGE.0), f64::from(BAR_WIDTH_RANGE.1), 20.0);
@@ -358,12 +454,13 @@ impl Editor {
         group.add(&width);
         group.add(&format);
         group.add(&preview);
-        self.form.append(&group);
+        page.add(&group);
+        page
     }
 
-    fn status_options(self: &Rc<Self>, element: &Element) {
+    fn status_tab(self: &Rc<Self>, element: &Element) -> adw::PreferencesPage {
+        let page = adw::PreferencesPage::new();
         let group = adw::PreferencesGroup::new();
-        group.set_title("Media status");
         group.set_description(Some("The playback state and time, as mpv writes them on its own display."));
         let (preview, update) = self.preview_row();
         for (part, title, _) in STATUS_PARTS {
@@ -384,13 +481,14 @@ impl Editor {
             group.add(&row);
         }
         group.add(&preview);
-        self.form.append(&group);
+        page.add(&group);
+        page
     }
 
     /// When the element is up, and over what.
-    fn when_options(self: &Rc<Self>, element: &Element) -> adw::PreferencesGroup {
+    fn when_tab(self: &Rc<Self>, element: &Element) -> adw::PreferencesPage {
+        let page = adw::PreferencesPage::new();
         let group = adw::PreferencesGroup::new();
-        group.set_title("When");
         let visibility = adw::ComboRow::builder()
             .title("Show")
             .model(&gtk::StringList::new(&["Always", "After skipping", "While paused"]))
@@ -451,14 +549,18 @@ impl Editor {
             move |row| editor.edit(|element| element.fullscreen_only = row.is_active())
         });
         group.add(&fullscreen);
-        group
+        page.add(&group);
+        page
     }
 
     /// The font, colours, corners and blur.
-    fn look_options(self: &Rc<Self>, element: &Element) -> adw::PreferencesGroup {
+    fn look_tab(self: &Rc<Self>, element: &Element) -> adw::PreferencesPage {
         let style = &element.style;
-        let group = adw::PreferencesGroup::new();
-        group.set_title("Look");
+        let page = adw::PreferencesPage::new();
+        let text = adw::PreferencesGroup::new();
+        text.set_title("Text");
+        let boxed = adw::PreferencesGroup::new();
+        boxed.set_title("Background");
 
         let spin = |title: &str, subtitle: &str, range: (f64, f64), step: f64, value: f64| {
             let row = adw::SpinRow::with_range(range.0, range.1, step);
@@ -472,13 +574,16 @@ impl Editor {
             let editor = self.clone();
             move |row| editor.edit(|element| element.style.font_size = row.value())
         });
-        group.add(&font_size);
+        text.add(&font_size);
+        text.add(&self.color_row("Text colour", &style.text_color, |style, color| style.text_color = color));
+        let opacity = spin("Opacity", "Of the whole element, in percent", (10.0, 100.0), 5.0, style.opacity * 100.0);
+        opacity.connect_value_notify({
+            let editor = self.clone();
+            move |row| editor.edit(|element| element.style.opacity = row.value() / 100.0)
+        });
+        text.add(&opacity);
 
-        let text_color = self.color_row("Text colour", &style.text_color, |style, color| style.text_color = color);
-        group.add(&text_color);
-        let background = self.color_row("Background colour", &style.background, |style, color| style.background = color);
-        group.add(&background);
-
+        boxed.add(&self.color_row("Background colour", &style.background, |style, color| style.background = color));
         let blur = adw::SwitchRow::builder()
             .title("Blur behind")
             .subtitle("Blurs the picture behind it. Needs KDE Plasma on Wayland, and the KDE effects setting")
@@ -488,35 +593,31 @@ impl Editor {
             let editor = self.clone();
             move |row| editor.edit(|element| element.style.blur = row.is_active())
         });
-        group.add(&blur);
-
+        boxed.add(&blur);
         let radius = spin("Corner radius", "In pixels", (f64::from(RADIUS_RANGE.0), f64::from(RADIUS_RANGE.1)), 1.0, f64::from(style.radius));
         radius.connect_value_notify({
             let editor = self.clone();
             move |row| editor.edit(|element| element.style.radius = row.value() as i32)
         });
-        group.add(&radius);
+        boxed.add(&radius);
         let padding = spin("Padding", "In pixels", (f64::from(PADDING_RANGE.0), f64::from(PADDING_RANGE.1)), 1.0, f64::from(style.padding));
         padding.connect_value_notify({
             let editor = self.clone();
             move |row| editor.edit(|element| element.style.padding = row.value() as i32)
         });
-        group.add(&padding);
-        let opacity = spin("Opacity", "In percent", (10.0, 100.0), 5.0, style.opacity * 100.0);
-        opacity.connect_value_notify({
-            let editor = self.clone();
-            move |row| editor.edit(|element| element.style.opacity = row.value() / 100.0)
-        });
-        group.add(&opacity);
-        group
+        boxed.add(&padding);
+
+        page.add(&text);
+        page.add(&boxed);
+        page
     }
 
     /// A row with a button that picks a colour, with its transparency, and calls `set` with the colour picked.
-    fn color_row(self: &Rc<Self>, title: &str, current: &str, set: fn(&mut crate::overlay::Style, String)) -> adw::ActionRow {
+    fn color_row(self: &Rc<Self>, title: &str, current: &str, set: fn(&mut Style, String)) -> adw::ActionRow {
         let row = adw::ActionRow::builder().title(title).build();
         let button = gtk::ColorDialogButton::new(Some(gtk::ColorDialog::builder().with_alpha(true).build()));
         button.set_valign(gtk::Align::Center);
-        button.set_rgba(&gtk::gdk::RGBA::parse(current).unwrap_or(gtk::gdk::RGBA::BLACK));
+        button.set_rgba(&gdk::RGBA::parse(current).unwrap_or(gdk::RGBA::BLACK));
         button.connect_rgba_notify({
             let editor = self.clone();
             move |button| {

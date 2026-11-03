@@ -157,7 +157,7 @@ mod imp {
         #[template_child]
         pub svp_group: TemplateChild<adw::PreferencesGroup>,
         #[template_child]
-        pub overlay_group: TemplateChild<adw::PreferencesGroup>,
+        pub overlay_page: TemplateChild<gtk::Box>,
         #[template_child]
         pub svp_banner: TemplateChild<adw::Banner>,
         #[template_child]
@@ -370,7 +370,7 @@ impl PreferencesDialog {
 
         bind_switches(settings, dialog.imp());
         bind_choices(settings, dialog.imp());
-        imp.overlay_group.add(&super::overlay_editor::build(settings));
+        imp.overlay_page.append(&super::overlay_editor::build(settings));
         dialog.bind_start_directory(settings);
         bind_info_fields(settings, &dialog);
         // The scale steps through no limit, shown as "-", then 1x to 4x, with a mark at each.
