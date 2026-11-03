@@ -425,6 +425,7 @@ impl ItemGrid {
             let grid = self.downgrade();
             move |_, position, _, _| {
                 if let Some(grid) = grid.upgrade() {
+                    grid.hold_view();
                     grid.reset_from(position);
                     grid.prune_marks();
                     grid.queue_resize();
@@ -439,6 +440,17 @@ impl ItemGrid {
                 }
             }
         });
+    }
+
+    /// Has the next layout put the view back where it stands now. Forgetting row heights shrinks the grid to its
+    /// estimate until the rows are measured again, and the scroller would clamp the scroll position, possibly to the top.
+    fn hold_view(&self) {
+        let imp = self.imp();
+        if imp.model.borrow().is_none() || imp.restore.get().is_some() {
+            return;
+        }
+        imp.restore.set(imp.view.get());
+        imp.restore_passes.set(0);
     }
 
     pub fn item_count(&self) -> u32 {
