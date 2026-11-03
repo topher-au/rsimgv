@@ -24,6 +24,8 @@ use crate::orientation::Orientation;
 const DURATION: u64 = 1;
 const TIME_POS: u64 = 2;
 const EOF_REACHED: u64 = 3;
+const SPEED: u64 = 4;
+const ESTIMATED_FPS: u64 = 5;
 
 /// The widest a frame is rendered, in pixels; wider sizes are scaled down to keep software rendering quick.
 const MAX_FRAME_WIDTH: i32 = 2560;
@@ -119,6 +121,13 @@ mod imp {
         pub(super) backdrop_stale: Cell<bool>,
         pub(super) blur_scratch: RefCell<Vec<u8>>,
         pub(super) duration: Cell<i64>,
+        /// The speed and frame rate mpv last reported, so they are read without asking the mpv core, which can be busy. The
+        /// frame rate is the container's, or the one measured while playing when it declares none.
+        pub(super) speed: Cell<Option<f64>>,
+        pub(super) container_fps: Cell<Option<f64>>,
+        pub(super) estimated_fps: Cell<Option<f64>>,
+        /// Whether a frame was ready when the player did not allow rendering, so it is rendered once it does.
+        pub(super) frame_pending: Cell<bool>,
         /// Whether a seek is under way, to report when it lands.
         pub(super) seeking: Cell<bool>,
         /// The latest position mpv gave, in microseconds; when GTK was last given one; and the timer that gives it the latest
@@ -304,6 +313,8 @@ fn shared_player(options: &str) -> Option<Rc<Player>> {
     player.observe_double(DURATION, "duration");
     player.observe_double(TIME_POS, "time-pos");
     player.observe_flag(EOF_REACHED, "eof-reached");
+    player.observe_double(SPEED, "speed");
+    player.observe_double(ESTIMATED_FPS, "estimated-vf-fps");
     let player = Rc::new(player);
     SHARED.with(|shared| shared.replace(Some((options.to_owned(), generation, player.clone()))));
     Some(player)
@@ -512,6 +523,7 @@ impl MpvStream {
     /// Plays at `speed` times normal speed.
     pub fn set_speed(&self, speed: f64) {
         if let Some(player) = self.imp().player.borrow().as_ref() {
+            self.imp().speed.set(Some(speed));
             player.set_double("speed", speed);
         }
     }
@@ -545,7 +557,8 @@ impl MpvStream {
 
     /// The speed it plays at, as a multiple of normal.
     pub fn speed(&self) -> Option<f64> {
-        self.imp().player.borrow().as_ref()?.get_double("speed")
+        self.imp().player.borrow().as_ref()?;
+        self.imp().speed.get()
     }
 
     /// The refresh rate of the display the window is on, which mpv reads from the screen.
@@ -573,9 +586,8 @@ impl MpvStream {
 
     /// The frame rate the video's container declares, or the one mpv measures when it declares none.
     pub fn fps(&self) -> Option<f64> {
-        let player = self.imp().player.borrow();
-        let player = player.as_ref()?;
-        player.get_double("container-fps").or_else(|| player.get_double("estimated-vf-fps"))
+        self.imp().player.borrow().as_ref()?;
+        self.imp().container_fps.get().or(self.imp().estimated_fps.get())
     }
 
     /// Handles the events waiting from libmpv.
@@ -585,8 +597,12 @@ impl MpvStream {
                 Some(player) => player.next_event(),
                 None => return,
             };
-            let Some(event) = event else { return };
+            let Some(event) = event else { break };
             self.handle_event(event);
+        }
+        // Rendering waited for the events, which have all been read now.
+        if self.imp().frame_pending.take() {
+            self.render_frame(true);
         }
     }
 
@@ -603,6 +619,9 @@ impl MpvStream {
                     None => return,
                 };
                 imp.duration.set(duration);
+                if let Some(player) = imp.player.borrow().as_ref() {
+                    imp.container_fps.set(player.get_double("container-fps"));
+                }
                 self.apply_rotation();
                 self.update_frame_size();
                 if !self.is_prepared() {
@@ -616,6 +635,8 @@ impl MpvStream {
                 }
             }
             Event::Crop(found) => self.crop_detected(found),
+            // The speed stays across files.
+            Event::Double(SPEED, speed) => imp.speed.set(speed),
             // Until its own file has loaded, what the player reports is about the file before.
             _ if !imp.loaded.get() => {}
             Event::VideoReconfig => {
@@ -630,6 +651,7 @@ impl MpvStream {
                     self.seek_success();
                 }
             }
+            Event::Double(ESTIMATED_FPS, fps) => imp.estimated_fps.set(fps),
             Event::Double(DURATION, Some(seconds)) => imp.duration.set((seconds * MICROS) as i64),
             Event::Double(TIME_POS, Some(seconds)) => {
                 imp.position.set((seconds * MICROS) as i64);
@@ -774,9 +796,16 @@ impl MpvStream {
             return;
         }
         let mut pixels = imp.pixels.borrow_mut();
-        if let Err(err) = player.render(width, height, &mut pixels) {
-            eprintln!("rsimgv: mpv: could not render a frame: {err}");
-            return;
+        match player.render(width, height, &mut pixels) {
+            Ok(true) => {}
+            Ok(false) => {
+                imp.frame_pending.set(true);
+                return;
+            }
+            Err(err) => {
+                eprintln!("rsimgv: mpv: could not render a frame: {err}");
+                return;
+            }
         }
         let bytes = glib::Bytes::from(&pixels[..]);
         let texture = gdk::MemoryTexture::new(width, height, gdk::MemoryFormat::B8g8r8x8, &bytes, width as usize * 4);

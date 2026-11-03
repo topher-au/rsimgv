@@ -16,6 +16,8 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::raw::{c_char, c_int, c_void};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use gtk::gio;
@@ -42,6 +44,33 @@ pub enum Event {
 
 /// The id the reply to `Player::request_detected_crop` comes back under, apart from the ids of observed properties.
 const REPLY_CROP: u64 = 1 << 32;
+
+/// The id the output's rotation is observed under, and the one the reply that confirms it comes back under. The player
+/// handles both itself, as a frame may not be rendered until the rotation is known to be none.
+const OBSERVE_ROTATION: u64 = 1 << 33;
+const REPLY_ROTATION: u64 = 1 << 34;
+
+/// How many times the player tries to turn rotation back off, after a check finds the output rotated, before it gives up on
+/// rendering until the video is reconfigured.
+const ROTATION_RETRIES: u32 = 2;
+
+/// Whether frames may be rendered, kept by the player and read by whatever renders. A frame is rendered only when no event from
+/// libmpv is waiting, so that a reconfiguration that came before it has been seen, and when the output is known not to be
+/// rotated: libmpv's software renderer aborts the whole process on a rotated frame (see `Player::new`).
+#[derive(Default)]
+struct RenderGate {
+    /// Set by libmpv's wakeup, which comes with every event, and cleared once the events waiting have all been read.
+    events_pending: AtomicBool,
+    /// Cleared when the video is reconfigured or its rotation changes, until a check made since then finds no rotation.
+    rotation_unconfirmed: AtomicBool,
+}
+
+impl RenderGate {
+    /// Whether a frame may be rendered now.
+    fn open(&self) -> bool {
+        !self.events_pending.load(Ordering::Acquire) && !self.rotation_unconfirmed.load(Ordering::Acquire)
+    }
+}
 
 /// A callback libmpv calls from its own threads.
 type Wakeup = Box<dyn Fn() + Send + Sync>;
@@ -346,6 +375,9 @@ pub struct Player {
     /// The crop filter and the detector that finds where to crop that `set_framing_filters` put in the chain.
     crop: Cell<Option<CropRect>>,
     detector: Cell<bool>,
+    /// Whether frames may be rendered, and how many times the output has been found rotated since the video was reconfigured.
+    gate: Arc<RenderGate>,
+    rotation_checks: Cell<u32>,
 }
 
 impl Player {
@@ -361,7 +393,7 @@ impl Player {
             if handle.is_null() {
                 return Err("could not create the mpv player".to_owned());
             }
-            let mut player = Self { handle, render: std::ptr::null_mut(), wakeup: None, render_update: None, rotation: Cell::new(0), orientation: Cell::new(Orientation::default()), interpolation: Default::default(), crop: Cell::new(None), detector: Cell::new(false) };
+            let mut player = Self { handle, render: std::ptr::null_mut(), wakeup: None, render_update: None, rotation: Cell::new(0), orientation: Cell::new(Orientation::default()), interpolation: Default::default(), crop: Cell::new(None), detector: Cell::new(false), gate: Arc::default(), rotation_checks: Cell::new(0) };
             for (name, value) in [
                 ("vo", "libmpv"),
                 ("hwdec", "auto-safe"),
@@ -402,6 +434,8 @@ impl Player {
             // after initializing, so neither the user's options nor mpv.conf can undo it. `set_rotation` turns the
             // video upright with a filter instead.
             player.set_option("video-rotate", "no")?;
+            // If rotation is asked for anyway, through IPC or a changed mpv.conf, rendering waits until it is off again.
+            player.observe(OBSERVE_ROTATION, "video-out-params/rotate", sys::MPV_FORMAT_INT64);
 
             let api = CString::new("sw").expect("no nul");
             let mut params = [
@@ -601,8 +635,60 @@ impl Player {
         unsafe { sys::mpv_observe_property(self.handle, id, name.as_ptr(), format) };
     }
 
-    /// The next waiting event, or `None` once there are none.
+    /// The next waiting event, or `None` once there are none. Frames are not rendered while there are events to read, so the
+    /// caller reads them all.
     pub fn next_event(&self) -> Option<Event> {
+        let event = self.read_event().or_else(|| {
+            // None are waiting. But one may have come since, with a wakeup that this would clear, so look again.
+            self.gate.events_pending.store(false, Ordering::Release);
+            let late = self.read_event();
+            if late.is_some() {
+                self.gate.events_pending.store(true, Ordering::Release);
+            }
+            late
+        })?;
+        Some(event)
+    }
+
+    /// Asks, without waiting, whether the output is rotated; the reply is `rotation_replied`.
+    fn request_rotation(&self) {
+        let name = c"video-out-params/rotate";
+        // SAFETY: the handle is live; libmpv copies the name.
+        let code = unsafe { sys::mpv_get_property_async(self.handle, REPLY_ROTATION, name.as_ptr(), sys::MPV_FORMAT_INT64) };
+        if code < 0 {
+            eprintln!("rsimgv: mpv: could not ask whether the output is rotated: {}", error_text(code));
+            // Without an answer nothing could be confirmed, so rendering stops here.
+        }
+    }
+
+    /// The video was reconfigured, or its output rotation changed to `rotate`: no frame is rendered until a check made after
+    /// this finds the output not rotated. The reply cannot be older than the change, as mpv answers in the order it was asked.
+    fn rotation_unconfirmed(&self, rotate: Option<i64>) {
+        self.gate.rotation_unconfirmed.store(true, Ordering::Release);
+        self.rotation_checks.set(0);
+        if rotate.is_some_and(|rotate| rotate != 0) {
+            self.set_string("video-rotate", "no");
+        }
+        self.request_rotation();
+    }
+
+    /// The reply to `request_rotation`, `None` when the output has no rotation to report, such as with no video.
+    fn rotation_replied(&self, rotate: Option<i64>) {
+        if rotate.is_some_and(|rotate| rotate != 0) {
+            let checks = self.rotation_checks.get() + 1;
+            self.rotation_checks.set(checks);
+            if checks > ROTATION_RETRIES {
+                eprintln!("rsimgv: mpv: the output stays rotated, which the software renderer cannot draw; not rendering");
+                return;
+            }
+            self.set_string("video-rotate", "no");
+            self.request_rotation();
+            return;
+        }
+        self.gate.rotation_unconfirmed.store(false, Ordering::Release);
+    }
+
+    fn read_event(&self) -> Option<Event> {
         // SAFETY: the event is valid until the next call, and is read fully before then.
         unsafe {
             let event = &*sys::mpv_wait_event(self.handle, 0.0);
@@ -611,7 +697,16 @@ impl Player {
                 sys::MPV_EVENT_SHUTDOWN => Event::Shutdown,
                 sys::MPV_EVENT_FILE_LOADED => Event::FileLoaded,
                 sys::MPV_EVENT_PLAYBACK_RESTART => Event::PlaybackRestart,
-                sys::MPV_EVENT_VIDEO_RECONFIG => Event::VideoReconfig,
+                sys::MPV_EVENT_VIDEO_RECONFIG => {
+                    self.rotation_unconfirmed(None);
+                    Event::VideoReconfig
+                }
+                sys::MPV_EVENT_GET_PROPERTY_REPLY if event.reply_userdata == REPLY_ROTATION => {
+                    let property = &*(event.data as *const sys::mpv_event_property);
+                    let rotate = (event.error >= 0 && property.format == sys::MPV_FORMAT_INT64 && !property.data.is_null()).then(|| *(property.data as *const i64));
+                    self.rotation_replied(rotate);
+                    Event::Other
+                }
                 sys::MPV_EVENT_GET_PROPERTY_REPLY if event.reply_userdata == REPLY_CROP => {
                     let property = &*(event.data as *const sys::mpv_event_property);
                     let found = (event.error >= 0 && property.format == sys::MPV_FORMAT_NODE && !property.data.is_null())
@@ -627,6 +722,12 @@ impl Player {
                 sys::MPV_EVENT_PROPERTY_CHANGE => {
                     let property = &*(event.data as *const sys::mpv_event_property);
                     let id = event.reply_userdata;
+                    if id == OBSERVE_ROTATION {
+                        if property.format == sys::MPV_FORMAT_INT64 && !property.data.is_null() {
+                            self.rotation_unconfirmed(Some(*(property.data as *const i64)));
+                        }
+                        return Some(Event::Other);
+                    }
                     match property.format {
                         sys::MPV_FORMAT_DOUBLE => Event::Double(id, Some(*(property.data as *const f64))),
                         sys::MPV_FORMAT_FLAG => Event::Flag(id, Some(*(property.data as *const c_int) != 0)),
@@ -641,6 +742,12 @@ impl Player {
 
     /// Calls `callback`, from a libmpv thread, whenever events are waiting.
     pub fn set_wakeup(&mut self, callback: impl Fn() + Send + Sync + 'static) {
+        let gate = self.gate.clone();
+        let callback = move || {
+            // Before the callback, so what it wakes finds the events marked.
+            gate.events_pending.store(true, Ordering::Release);
+            callback();
+        };
         let data = Box::into_raw(Box::new(Box::new(callback) as Wakeup));
         // SAFETY: `data` stays alive until the player is dropped, after libmpv stops calling it.
         unsafe { sys::mpv_set_wakeup_callback(self.handle, Some(call_wakeup), data as *mut c_void) };
@@ -667,17 +774,17 @@ impl Player {
         unsafe { sys::mpv_render_context_update(self.render) & sys::MPV_RENDER_UPDATE_FRAME != 0 }
     }
 
-    /// Renders the current frame at `width` by `height` into `pixels`, as 4 bytes a pixel in BGRx order.
-    pub fn render(&self, width: i32, height: i32, pixels: &mut [u8]) -> Result<(), String> {
+    /// Renders the current frame at `width` by `height` into `pixels`, as 4 bytes a pixel in BGRx order. Returns whether it did:
+    /// it does not while the gate is shut, and the caller renders again once the events waiting have been read.
+    pub fn render(&self, width: i32, height: i32, pixels: &mut [u8]) -> Result<bool, String> {
         let stride = width as usize * 4;
         if width <= 0 || height <= 0 || pixels.len() < stride * height as usize {
             return Err("the frame buffer is too small".to_owned());
         }
-        // Rendering a rotated frame can abort the process (see `new`), and a client on the IPC socket or a changed
-        // mpv.conf can still ask for rotation while the player runs. So it is turned back off, and this frame skipped.
-        if self.get_i64("video-out-params/rotate").is_some_and(|rotate| rotate != 0) {
-            self.set_string("video-rotate", "no");
-            return Err("the output is rotated, which the software renderer cannot draw".to_owned());
+        // Rendering a rotated frame can abort the process (see `new`), and a client on the IPC socket or a changed mpv.conf can
+        // still ask for rotation while the player runs.
+        if !self.gate.open() {
+            return Ok(false);
         }
         let mut size = [width as c_int, height as c_int];
         let format = CString::new("bgr0").expect("no nul");
@@ -690,7 +797,8 @@ impl Player {
             sys::mpv_render_param { type_: sys::MPV_RENDER_PARAM_INVALID, data: std::ptr::null_mut() },
         ];
         // SAFETY: every parameter points at data that outlives the call, and `pixels` holds the whole frame.
-        check(unsafe { sys::mpv_render_context_render(self.render, params.as_mut_ptr()) })
+        check(unsafe { sys::mpv_render_context_render(self.render, params.as_mut_ptr()) })?;
+        Ok(true)
     }
 }
 
