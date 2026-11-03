@@ -91,9 +91,8 @@ const SEEK_SETTLE: std::time::Duration = std::time::Duration::from_millis(400);
 const SVP_SPEED_SETTLE: std::time::Duration = std::time::Duration::from_millis(300);
 /// How long the OSD says what SVP is doing, in milliseconds.
 const SVP_OSD_MILLIS: u32 = 2500;
-/// How long a video waits to start after the viewer moves to it from another item, so skipping over several in a row
-/// does not start each one.
-const VIDEO_START_DELAY: std::time::Duration = std::time::Duration::from_millis(150);
+/// How long, in milliseconds, a video waits to start by default after the viewer steps to it.
+const DEFAULT_VIDEO_START_DELAY: u64 = 150;
 
 /// The pictures decoded ahead of the item shown, at most this many.
 const PREFETCHED: usize = 2;
@@ -329,6 +328,10 @@ mod imp {
         pub(super) shown_any: Cell<bool>,
         /// Whether the video being loaded waits before it starts, and the wait under way.
         pub(super) delay_video: Cell<bool>,
+        /// Whether the next item shown was stepped to, rather than chosen, so a video there waits to start.
+        pub(super) delay_next: Cell<bool>,
+        /// How long a stepped-to video waits to start, in milliseconds.
+        pub(super) video_start_delay: Cell<u64>,
         pub(super) video_start: RefCell<Option<glib::SourceId>>,
         /// Whether the zoom level is shown, and whether the pointer is hidden while it is still.
         pub(super) zoom_indicator: Cell<ZoomIndicator>,
@@ -384,6 +387,7 @@ mod imp {
             self.parent_constructed();
             let obj = self.obj();
             let weak = obj.downgrade();
+            self.video_start_delay.set(DEFAULT_VIDEO_START_DELAY);
 
             // The picture sits in a column of its own, so a thumbnail bar beside it can run the full height with the
             // status bar under the picture alone.
@@ -748,6 +752,16 @@ impl MediaViewer {
             callback(&viewer);
             None
         })
+    }
+
+    /// Sets how long, in milliseconds, a video waits to start after stepping to it. Choosing a video starts it at once.
+    pub fn set_video_start_delay(&self, millis: i32) {
+        self.imp().video_start_delay.set(millis.max(0) as u64);
+    }
+
+    /// Has the next item shown count as stepped to, so a video there waits to start.
+    pub fn delay_next_video(&self) {
+        self.imp().delay_next.set(true);
     }
 
     /// Shows the item at `index` of the items it has, if there is one.
@@ -1568,7 +1582,7 @@ impl MediaViewer {
         let Some(path) = imp.paths.borrow().get(index).cloned() else { return };
         let len = imp.paths.borrow().len();
         self.release();
-        imp.delay_video.set(imp.shown_any.get());
+        imp.delay_video.set(imp.delay_next.take() && imp.shown_any.get() && imp.video_start_delay.get() > 0);
         imp.index.set(index);
         imp.thumbnail_bar.select(index);
 
@@ -1602,10 +1616,10 @@ impl MediaViewer {
             return;
         }
         let video = is_video(&path);
-        // A video reached from another item starts after a short wait, which the next step cancels.
+        // A video stepped to from another item starts after a short wait, which the next step cancels.
         if video && imp.delay_video.replace(false) {
             let weak = self.downgrade();
-            let source = glib::timeout_add_local_once(VIDEO_START_DELAY, move || {
+            let source = glib::timeout_add_local_once(std::time::Duration::from_millis(imp.video_start_delay.get()), move || {
                 let Some(viewer) = weak.upgrade() else { return };
                 viewer.imp().video_start.take();
                 viewer.finish_load(index, path, settings);
@@ -1804,7 +1818,10 @@ impl MediaViewer {
         let len = imp.paths.borrow().len();
         let end = imp.folder_end.get();
         match step_index(imp.index.get(), len, forward, end) {
-            Some(index) => self.load(index),
+            Some(index) => {
+                self.delay_next_video();
+                self.load(index);
+            }
             None if end == FolderEnd::NextFolder => self.emit_by_name::<()>("folder-end-reached", &[&forward]),
             None => {}
         }

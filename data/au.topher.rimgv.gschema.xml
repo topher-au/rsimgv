@@ -391,6 +391,11 @@
       <default>""</default>
       <summary>Extra mpv command line options for the mpv player, such as --hwdec=auto-copy</summary>
     </key>
+    <key name="video-start-delay" type="i">
+      <default>150</default>
+      <range min="0" max="2000"/>
+      <summary>How long, in milliseconds, a video waits to start after stepping to it with next or previous; 0 starts it at once</summary>
+    </key>
     <key name="zoom-step" type="i">
       <default>25</default>
       <range min="5" max="100"/>

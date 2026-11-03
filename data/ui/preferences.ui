@@ -790,6 +790,20 @@
                                     </property>
                                   </object>
                                 </child>
+                                <child>
+                                  <object class="AdwSpinRow" id="video_start_delay_row">
+                                    <property name="title">Start delay</property>
+                                    <property name="subtitle">Milliseconds a video waits to start after stepping to it with next or previous, so skipping over several is smooth. Choosing a video starts it at once. 0 turns the delay off</property>
+                                    <property name="adjustment">
+                                      <object class="GtkAdjustment">
+                                        <property name="lower">0</property>
+                                        <property name="upper">2000</property>
+                                        <property name="step-increment">50</property>
+                                        <property name="page-increment">250</property>
+                                      </object>
+                                    </property>
+                                  </object>
+                                </child>
                               </object>
                             </child>
                             <child>

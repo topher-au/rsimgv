@@ -800,6 +800,7 @@ impl Window {
     fn apply_viewer_settings(&self, settings: &gio::Settings) {
         let viewer = &self.imp().viewer;
         viewer.set_zoom_step(settings.int("zoom-step"));
+        viewer.set_video_start_delay(settings.int("video-start-delay"));
         viewer.set_expand_limit(settings.int("expand-up-to-factor"));
         viewer.set_keep_fit(settings.boolean("keep-fit-mode"));
         viewer.set_original_focus(OriginalFocus::from_name(&settings.string("original-focus")));
@@ -1420,6 +1421,7 @@ impl Window {
             return;
         }
         if let Some(target) = target.filter(|target| Some(*target) != current) {
+            self.imp().viewer.delay_next_video();
             self.play_playlist_at(target);
         }
     }
@@ -3368,7 +3370,7 @@ const WHEEL_VOLUME_STEP: f64 = 5.0;
 const WHEEL_SEEK_STEP: f64 = 5.0;
 
 /// The settings the viewer and the window title are set from, applied again whenever one changes.
-const VIEWER_SETTINGS: [&str; 33] = [
+const VIEWER_SETTINGS: [&str; 34] = [
     "seek-overlay",
     "seek-overlay-bar",
     "seek-overlay-time",
@@ -3381,6 +3383,7 @@ const VIEWER_SETTINGS: [&str; 33] = [
     "original-focus",
     "unlock-minimum-zoom",
     "zoom-step",
+    "video-start-delay",
     "expand-up-to-factor",
     "keep-fit-mode",
     "image-fit",

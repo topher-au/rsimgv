@@ -151,6 +151,8 @@ mod imp {
         #[template_child]
         pub video_backend_row: TemplateChild<adw::ComboRow>,
         #[template_child]
+        pub video_start_delay_row: TemplateChild<adw::SpinRow>,
+        #[template_child]
         pub mpv_group: TemplateChild<adw::PreferencesGroup>,
         #[template_child]
         pub gstreamer_group: TemplateChild<adw::PreferencesGroup>,
@@ -375,6 +377,7 @@ impl PreferencesDialog {
         bind_port(settings, &imp.svp_fps_maximum_row, "svp-fps-maximum");
         settings.bind("viewer-status-bar", &*imp.viewer_status_bar_row, "active").build();
         bind_port(settings, &imp.zoom_step_row, "zoom-step");
+        bind_port(settings, &imp.video_start_delay_row, "video-start-delay");
         bind_port(settings, &imp.seek_overlay_width_row, "seek-overlay-width");
         settings.bind("seek-overlay-seconds", &*imp.seek_overlay_seconds_row, "value").build();
         bind_port(settings, &imp.scroll_speed_row, "scroll-speed");

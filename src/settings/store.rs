@@ -117,6 +117,7 @@ const LAYOUT: &[(&str, &str, &str)] = &[
     ("scaling-filter", "image", "scaling-filter"),
     ("smooth-upscaling", "image", "smooth-upscaling"),
     ("video-backend", "video", "backend"),
+    ("video-start-delay", "video", "start-delay"),
     ("mpv-args", "video", "mpv-args"),
     ("seek-overlay", "video", "seek-overlay"),
     ("seek-overlay-bar", "video", "seek-overlay-bar"),
