@@ -265,6 +265,8 @@ mod imp {
         pub controls: TemplateChild<MediaControls>,
         #[template_child]
         pub overlay: TemplateChild<gtk::Overlay>,
+        /// The picture over the status bar, beside a thumbnail bar that sits at the left or right.
+        pub(super) picture_column: gtk::Box,
         #[template_child]
         pub status_bar: TemplateChild<gtk::Box>,
         #[template_child]
@@ -382,6 +384,15 @@ mod imp {
             self.parent_constructed();
             let obj = self.obj();
             let weak = obj.downgrade();
+
+            // The picture sits in a column of its own, so a thumbnail bar beside it can run the full height with the
+            // status bar under the picture alone.
+            self.picture_column.set_orientation(gtk::Orientation::Vertical);
+            self.picture_column.set_hexpand(true);
+            self.picture_column.set_vexpand(true);
+            self.body.remove(&*self.overlay);
+            self.picture_column.append(&*self.overlay);
+            self.body.append(&self.picture_column);
 
             // Dragging the shown file carries it to other applications. A zoomed picture is panned by dragging
             // instead, so there is no file drag then.
@@ -566,6 +577,7 @@ impl MediaViewer {
         imp.bar_shown.set(shown);
         imp.bar_overlay.set(overlay);
         imp.bar_pinned.set(pinned);
+        self.place_status_bar();
         let bar = &imp.thumbnail_bar;
         let revealer = &imp.bar_revealer;
         bar.set_side(side);
@@ -1461,14 +1473,23 @@ impl MediaViewer {
         } else {
             bar.set_halign(gtk::Align::Fill);
             bar.set_valign(gtk::Align::Fill);
-            bar.set_margin_start(12);
-            bar.set_margin_end(12);
-            bar.set_margin_top(4);
-            bar.set_margin_bottom(4);
+            bar.set_margin_start(0);
+            bar.set_margin_end(0);
+            bar.set_margin_top(0);
+            bar.set_margin_bottom(0);
             bar.set_can_target(true);
             bar.remove_css_class("status-overlay");
             imp.status_expander.set_visible(true);
-            imp.content_column.append(bar);
+            // Beside a thumbnail bar at the left or right, the status bar shrinks to the picture, as it does beside
+            // the playlist.
+            let beside = imp.bar_shown.get()
+                && !imp.bar_overlay.get()
+                && matches!(imp.bar_side.get(), Some(gtk::PositionType::Left | gtk::PositionType::Right));
+            if beside {
+                imp.picture_column.append(bar);
+            } else {
+                imp.content_column.append(bar);
+            }
         }
     }
 
