@@ -3,6 +3,7 @@
 //! listens for mpv JSON IPC on `/tmp/rsimgv-mpv-<pid in hex>`. See `stream` for the GTK side.
 
 pub mod framing;
+mod gl;
 mod render;
 mod stream;
 mod sys;
@@ -354,12 +355,15 @@ unsafe fn read_crop(node: &sys::mpv_node) -> Option<CropRect> {
 /// The number the next player is given as its id.
 static NEXT_PLAYER_ID: AtomicU64 = AtomicU64::new(1);
 
-/// A libmpv player with a software render context.
+/// A libmpv player with a software or OpenGL render context.
 pub struct Player {
     /// Tells this player from the ones before and after it.
     id: u64,
     handle: *mut sys::mpv_handle,
     render: *mut sys::mpv_render_context,
+    /// The context it renders with, if it uses OpenGL, and the backdrop drawn by a shader: what it was made for, and its file.
+    gl: Option<gtk::gdk::GLContext>,
+    gl_backdrop: RefCell<Option<(framing::Backdrop, f64, std::path::PathBuf)>>,
     /// The thread that renders frames, once `start_renderer` has started it.
     renderer: Option<RenderThread>,
     /// The callback handed to libmpv, freed once it is gone.
@@ -379,9 +383,9 @@ pub struct Player {
 }
 
 impl Player {
-    /// A player set up to play without a window of its own, rendering into memory, with the mpv command line
-    /// options in `extra` applied over rsimgv's own. Options that would give it a window are left out.
-    pub fn new(extra: &str) -> Result<Self, String> {
+    /// A player set up to play without a window of its own, rendering with `gl` if it is given and otherwise into memory, with
+    /// the mpv command line options in `extra` applied over rsimgv's own. Options that would give it a window are left out.
+    pub fn new(extra: &str, gl: Option<gtk::gdk::GLContext>) -> Result<Self, String> {
         // SAFETY: plain libmpv calls on a handle this function owns until it is returned.
         unsafe {
             // libmpv refuses to start unless numbers are formatted the C way, and GTK sets the locale from the
@@ -391,7 +395,7 @@ impl Player {
             if handle.is_null() {
                 return Err("could not create the mpv player".to_owned());
             }
-            let mut player = Self { id: NEXT_PLAYER_ID.fetch_add(1, Ordering::Relaxed), handle, render: std::ptr::null_mut(), renderer: None, wakeup: None, rotation: Cell::new(0), orientation: Cell::new(Orientation::default()), interpolation: Default::default(), crop: Cell::new(None), detector: Cell::new(false), gate: Arc::default(), rotation_checks: Cell::new(0) };
+            let mut player = Self { id: NEXT_PLAYER_ID.fetch_add(1, Ordering::Relaxed), handle, render: std::ptr::null_mut(), gl, gl_backdrop: RefCell::default(), renderer: None, wakeup: None, rotation: Cell::new(0), orientation: Cell::new(Orientation::default()), interpolation: Default::default(), crop: Cell::new(None), detector: Cell::new(false), gate: Arc::default(), rotation_checks: Cell::new(0) };
             for (name, value) in [
                 ("vo", "libmpv"),
                 // The software renderer has no way to share a hardware decoder's surfaces, so decoding in hardware means copying
@@ -417,6 +421,12 @@ impl Player {
             ] {
                 player.set_option(name, value)?;
             }
+            if player.gl.is_some() {
+                // With OpenGL, a hardware decoder's surfaces can be shared, so frames need not be copied back. The backdrop
+                // shader mixes the scaled picture with a copy that is not in linear light, so the picture must not be either.
+                player.set_option("hwdec", "auto-safe")?;
+                player.set_option("linear-downscaling", "no")?;
+            }
             // Other programs can drive the player through mpv's JSON IPC on this socket, unless the user's
             // options name another.
             let socket = ipc_socket_path();
@@ -441,6 +451,10 @@ impl Player {
             // If rotation is asked for anyway, through IPC or a changed mpv.conf, rendering waits until it is off again.
             player.observe(OBSERVE_ROTATION, "video-out-params/rotate", sys::MPV_FORMAT_INT64);
 
+            if let Some(gl) = &player.gl {
+                gl::create_render_context(&mut player.render, handle, gl)?;
+                return Ok(player);
+            }
             let api = CString::new("sw").expect("no nul");
             let mut params = [
                 sys::mpv_render_param { type_: sys::MPV_RENDER_PARAM_API_TYPE, data: api.as_ptr() as *mut c_void },
@@ -764,7 +778,38 @@ impl Player {
     /// Starts rendering frames on a thread of its own, calling `deliver`, from that thread, with each. It renders at the size
     /// given to `render_at`.
     pub fn start_renderer(&mut self, deliver: impl Fn(RenderedFrame) + Send + 'static) {
-        self.renderer = Some(RenderThread::start(self.render, self.gate.clone(), deliver));
+        self.renderer = Some(RenderThread::start(self.render, self.gate.clone(), self.gl.clone().map(gl::SendContext), deliver));
+    }
+
+    /// Whether frames are rendered with OpenGL.
+    pub fn uses_gl(&self) -> bool {
+        self.gl.is_some()
+    }
+
+    /// Has libmpv draw `backdrop` round the picture at the display's `scale`, or stops it. The output is then the whole area, so
+    /// the backdrop covers it at any size. The shader is written to a file of its own for each setting, as libmpv keeps what it
+    /// read from a file name.
+    pub fn set_gl_backdrop(&self, backdrop: Option<framing::Backdrop>, scale: f64) {
+        let mut current = self.gl_backdrop.borrow_mut();
+        if current.as_ref().map(|(backdrop, scale, _)| (*backdrop, *scale)) == backdrop.map(|backdrop| (backdrop, scale)) {
+            return;
+        }
+        if let Some((_, _, old)) = current.take() {
+            let _ = self.command(&["change-list", "glsl-shaders", "remove", &old.to_string_lossy()]);
+            let _ = std::fs::remove_file(old);
+        }
+        self.set_flag("keepaspect", backdrop.is_none());
+        let Some(backdrop) = backdrop else { return };
+        static NEXT_SHADER: AtomicU64 = AtomicU64::new(1);
+        let name = format!("rsimgv-backdrop-{:x}-{}.glsl", std::process::id(), NEXT_SHADER.fetch_add(1, Ordering::Relaxed));
+        let path = gtk::glib::user_runtime_dir().join(name);
+        if let Err(err) = std::fs::write(&path, framing::backdrop_shader(backdrop, scale)) {
+            eprintln!("rsimgv: mpv: could not write the backdrop shader to {}: {err}", path.display());
+            self.set_flag("keepaspect", true);
+            return;
+        }
+        let _ = self.command(&["change-list", "glsl-shaders", "append", &path.to_string_lossy()]);
+        current.replace((backdrop, scale, path));
     }
 
     /// Renders the current frame at `width` by `height` now, and the frames after it at that size.
@@ -797,7 +842,13 @@ impl Drop for Player {
         // SAFETY: as above.
         unsafe {
             if !self.render.is_null() {
-                sys::mpv_render_context_free(self.render);
+                match &self.gl {
+                    Some(gl) => gl::free_render_context(self.render, gl),
+                    None => sys::mpv_render_context_free(self.render),
+                }
+            }
+            if let Some((_, _, shader)) = self.gl_backdrop.take() {
+                let _ = std::fs::remove_file(shader);
             }
             // The render thread's callback data goes with the context.
             self.renderer.take();

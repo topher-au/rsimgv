@@ -38,6 +38,9 @@ pub const MPV_END_FILE_REASON_ERROR: c_int = 4;
 
 pub const MPV_RENDER_PARAM_INVALID: c_int = 0;
 pub const MPV_RENDER_PARAM_API_TYPE: c_int = 1;
+pub const MPV_RENDER_PARAM_OPENGL_INIT_PARAMS: c_int = 2;
+pub const MPV_RENDER_PARAM_OPENGL_FBO: c_int = 3;
+pub const MPV_RENDER_PARAM_WL_DISPLAY: c_int = 9;
 pub const MPV_RENDER_PARAM_SW_SIZE: c_int = 17;
 pub const MPV_RENDER_PARAM_SW_FORMAT: c_int = 18;
 pub const MPV_RENDER_PARAM_SW_STRIDE: c_int = 19;
@@ -71,6 +74,20 @@ pub struct mpv_event_end_file {
 pub struct mpv_render_param {
     pub type_: c_int,
     pub data: *mut c_void,
+}
+
+#[repr(C)]
+pub struct mpv_opengl_init_params {
+    pub get_proc_address: Option<unsafe extern "C" fn(*mut c_void, *const c_char) -> *mut c_void>,
+    pub get_proc_address_ctx: *mut c_void,
+}
+
+#[repr(C)]
+pub struct mpv_opengl_fbo {
+    pub fbo: c_int,
+    pub w: c_int,
+    pub h: c_int,
+    pub internal_format: c_int,
 }
 
 /// `LC_NUMERIC` in glibc's `locale.h`.

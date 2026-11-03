@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 
+use super::gl::{GlFrame, GlRenderer, SendContext};
 use super::{check, sys};
 
 /// The most buffers kept to render frames into.
@@ -84,9 +85,15 @@ impl Drop for Ticket {
     }
 }
 
-/// A frame the thread rendered: its pixels, 4 bytes each in BGRx order, and its size.
+/// What a frame was rendered into: pixels, 4 bytes each in BGRx order, or a GL texture.
+pub enum FrameImage {
+    Memory(Pooled),
+    Gl(GlFrame),
+}
+
+/// A frame the thread rendered, and its size.
 pub struct RenderedFrame {
-    pub pixels: Pooled,
+    pub image: FrameImage,
     pub width: i32,
     pub height: i32,
     pub ticket: Ticket,
@@ -141,14 +148,14 @@ pub struct RenderThread {
 
 impl RenderThread {
     /// Starts rendering with `context`, calling `deliver`, on the render thread, with each frame. It renders at the size given by
-    /// `render_at`, while `gate` is open.
-    pub(super) fn start(context: *mut sys::mpv_render_context, gate: Arc<RenderGate>, deliver: impl Fn(RenderedFrame) + Send + 'static) -> Self {
+    /// `render_at`, while `gate` is open. It renders into textures of `gl`, if it is given, and otherwise into memory.
+    pub(super) fn start(context: *mut sys::mpv_render_context, gate: Arc<RenderGate>, gl: Option<SendContext>, deliver: impl Fn(RenderedFrame) + Send + 'static) -> Self {
         let shared = Arc::new(Shared { state: Mutex::default(), wake: Condvar::new(), pool: Pool::default(), gate });
         let callback_data = Arc::into_raw(shared.clone());
         // SAFETY: the context is live, and no thread is rendering with it yet.
         unsafe { sys::mpv_render_context_set_update_callback(context, Some(frame_may_be_ready), callback_data as *mut c_void) };
         let (thread_shared, context) = (shared.clone(), Context(context));
-        let thread = std::thread::Builder::new().name("rsimgv-render".to_owned()).spawn(move || run(thread_shared, context, deliver));
+        let thread = std::thread::Builder::new().name("rsimgv-render".to_owned()).spawn(move || run(thread_shared, context, gl, deliver));
         let thread = match thread {
             Ok(thread) => Some(thread),
             Err(err) => {
@@ -193,8 +200,15 @@ impl Drop for RenderThread {
     }
 }
 
-fn run(shared: Arc<Shared>, context: Context, deliver: impl Fn(RenderedFrame)) {
+fn run(shared: Arc<Shared>, context: Context, gl: Option<SendContext>, deliver: impl Fn(RenderedFrame)) {
     let format = CString::new("bgr0").expect("no nul");
+    let mut gl = match gl.map(GlRenderer::new).transpose() {
+        Ok(gl) => gl,
+        Err(err) => {
+            eprintln!("rsimgv: mpv: could not render with OpenGL: {err}");
+            return;
+        }
+    };
     let mut state = shared.lock();
     loop {
         if state.quit {
@@ -216,10 +230,14 @@ fn run(shared: Arc<Shared>, context: Context, deliver: impl Fn(RenderedFrame)) {
             // Looked at again just before rendering, which takes the new frame: the gate may have shut while the frame was
             // taken. The frame stays queued in libmpv, and is rendered once the gate opens.
             if shared.gate.open() {
-                match render(&context, &format, &shared.pool, width, height) {
-                    Ok(pixels) => {
+                let image = match &mut gl {
+                    Some(gl) => gl.render(context.0, width, height).map(FrameImage::Gl),
+                    None => render(&context, &format, &shared.pool, width, height).map(FrameImage::Memory),
+                };
+                match image {
+                    Ok(image) => {
                         shared.lock().in_flight += 1;
-                        deliver(RenderedFrame { pixels, width, height, ticket: Ticket(shared.clone()) });
+                        deliver(RenderedFrame { image, width, height, ticket: Ticket(shared.clone()) });
                     }
                     Err(err) => eprintln!("rsimgv: mpv: could not render a frame: {err}"),
                 }

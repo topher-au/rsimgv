@@ -18,7 +18,8 @@ use gtk::subclass::prelude::*;
 use gtk::{gdk, gio, glib};
 
 use super::framing::{self, Backdrop, CropMethod, CropRect, Framing};
-use super::{config_generation, Event, Player, RenderedFrame};
+use super::render::FrameImage;
+use super::{config_generation, gl, Event, Player, RenderedFrame};
 use crate::orientation::Orientation;
 
 /// The ids observed properties are reported under.
@@ -144,6 +145,8 @@ mod imp {
         pub(super) frame_size: Cell<(i32, i32)>,
         /// The size frames are rendered at, in device pixels: the size shown, so mpv's OSD is drawn sharp.
         pub(super) render_size: Cell<(i32, i32)>,
+        /// Whether frames are of the whole area, with the backdrop drawn into them by libmpv, instead of the picture alone.
+        pub(super) frame_fills: Cell<bool>,
         /// The display's scale, which may be fractional, and turns the size shown into device pixels.
         pub(super) scale: Cell<f64>,
         /// The latest frame with its size, which the backdrop is made from.
@@ -277,7 +280,7 @@ mod imp {
                 snapshot.append_color(&gdk::RGBA::BLACK, &gtk::graphene::Rect::new(0.0, 0.0, width as f32, height as f32));
             }
             let (frame_width, frame_height) = (f64::from(frame.width()), f64::from(frame.height()));
-            let (x, y, shown_width, shown_height) = framing::fitted(width, height, frame_width, frame_height);
+            let (x, y, shown_width, shown_height) = if self.frame_fills.get() { (0.0, 0.0, width, height) } else { framing::fitted(width, height, frame_width, frame_height) };
             let strips = framing::bars(width, height, (x, y, shown_width, shown_height));
             for (piece, (strip_x, strip_y, strip_width, strip_height)) in self.backdrop.borrow().iter().zip(strips) {
                 let strip = gtk::graphene::Rect::new(strip_x as f32, strip_y as f32, strip_width as f32, strip_height as f32);
@@ -331,6 +334,16 @@ fn main_thread_waker(handle: fn(&MpvStream)) -> impl Fn() + Send + Sync + 'stati
     }
 }
 
+/// A player that renders with OpenGL, if `RSIMGV_MPV_GL` asks for one and it can be made.
+fn gl_player(options: &str) -> Option<Player> {
+    std::env::var_os("RSIMGV_MPV_GL")?;
+    let made = gl::new_context().and_then(|context| Player::new(options, Some(context)));
+    if let Err(err) = &made {
+        eprintln!("rsimgv: mpv: could not render with OpenGL, so rendering in software: {err}");
+    }
+    made.ok()
+}
+
 /// The shared player made with `options` and the current mpv.conf, made now if there is none yet or it was made with
 /// other options or an older mpv.conf.
 fn shared_player(options: &str) -> Option<Rc<Player>> {
@@ -350,7 +363,7 @@ fn shared_player(options: &str) -> Option<Rc<Player>> {
         stream.imp().player.take();
     }
     drop(old);
-    let mut player = match Player::new(options) {
+    let mut player = match gl_player(options).map_or_else(|| Player::new(options, None), Ok) {
         Ok(player) => player,
         Err(err) => {
             eprintln!("rsimgv: mpv: {err}");
@@ -426,6 +439,7 @@ impl MpvStream {
         let imp = self.imp();
         let backdrop_changed = imp.framing.get().backdrop != framing.backdrop;
         imp.framing.set(framing);
+        self.sync_gl_backdrop();
         if backdrop_changed {
             self.update_backdrop();
         }
@@ -784,8 +798,18 @@ impl MpvStream {
     /// Sets the display's scale, so frames are rendered at device pixels. The next snapshot renders at the new size.
     pub fn set_scale(&self, scale: f64) {
         if self.imp().scale.replace(scale) != scale {
+            self.sync_gl_backdrop();
             self.invalidate_contents();
         }
+    }
+
+    /// With OpenGL, has libmpv draw the backdrop into frames of the whole area, instead of it being made here from the frame.
+    fn sync_gl_backdrop(&self) {
+        let imp = self.imp();
+        let Some(player) = imp.player.borrow().clone().filter(|player| player.uses_gl()) else { return };
+        let backdrop = imp.framing.get().backdrop;
+        player.set_gl_backdrop(backdrop, imp.scale.get().max(1.0));
+        imp.frame_fills.set(backdrop.is_some());
     }
 
     /// Has the picture rendered at the size it is shown at in the area `width` by `height`, in device pixels (or at its own
@@ -797,6 +821,7 @@ impl MpvStream {
         let area_changed = imp.area.replace((width, height)) != (width, height);
         // The frame is the picture alone, as big as fits the area, so no pixels are rendered or uploaded for the bars round it.
         let (width, height) = match imp.frame_size.get() {
+            _ if imp.frame_fills.get() => (width, height),
             (video_width, video_height) if video_width > 0 && video_height > 0 => {
                 let (_, _, fitted_width, fitted_height) = framing::fitted(width, height, f64::from(video_width), f64::from(video_height));
                 (fitted_width, fitted_height)
@@ -806,6 +831,7 @@ impl MpvStream {
         let (width, height) = capped((width * scale).round().max(1.0) as i32, (height * scale).round().max(1.0) as i32);
         // A small video is not rendered bigger than it is.
         let (width, height) = match imp.frame_size.get() {
+            _ if imp.frame_fills.get() => (width, height),
             (own_width, own_height) if own_width > 0 && own_width <= OWN_SIZE_MAX_WIDTH && own_width < width => (own_width, own_height),
             _ => (width, height),
         };
@@ -925,17 +951,23 @@ impl MpvStream {
         if imp.player.borrow().as_ref().map(|player| player.id()) != Some(player_id) {
             return;
         }
-        let RenderedFrame { pixels, width, height, ticket } = frame;
-        let bytes = glib::Bytes::from_owned(pixels);
-        let texture = gdk::MemoryTexture::new(width, height, gdk::MemoryFormat::B8g8r8x8, &bytes, width as usize * 4);
+        let RenderedFrame { image, width, height, ticket } = frame;
+        let texture: gdk::Texture = match image {
+            FrameImage::Memory(pixels) => {
+                let bytes = glib::Bytes::from_owned(pixels);
+                let texture = gdk::MemoryTexture::new(width, height, gdk::MemoryFormat::B8g8r8x8, &bytes, width as usize * 4);
+                imp.last_frame.replace(Some((bytes, width, height)));
+                texture.upcast()
+            }
+            FrameImage::Gl(frame) => frame.into_texture(),
+        };
         // The render thread may render the next frame now.
         drop(ticket);
-        imp.last_frame.replace(Some((bytes, width, height)));
         let backdrop_due = !imp.backdrop_busy.get() && imp.backdrop_at.get().is_none_or(|at| at.elapsed() >= BACKDROP_INTERVAL);
         if imp.framing.get().backdrop.is_some() && (imp.backdrop_stale.get() || backdrop_due) {
             self.update_backdrop();
         }
-        let first = imp.frame.replace(Some(texture.upcast())).is_none();
+        let first = imp.frame.replace(Some(texture)).is_none();
         self.invalidate_contents();
         if first {
             self.emit_by_name::<()>("first-frame", &[]);
