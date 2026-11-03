@@ -1107,7 +1107,7 @@ impl Window {
         if let Some(previous) = imp.focus_notice.take() {
             messages.dismiss(previous);
         }
-        let notice = messages.show(Message::notification(format!("Focus: {name}")).level(Level::Plain).lasting(FOCUS_NOTICE));
+        let notice = messages.show(Message::notification(format!("Focus: {name}")).level(Level::Info).lasting(FOCUS_NOTICE));
         imp.focus_notice.set(Some(notice));
     }
 
