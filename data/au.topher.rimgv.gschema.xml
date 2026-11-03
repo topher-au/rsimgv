@@ -50,6 +50,10 @@
       <default>false</default>
       <summary>Show a status bar under the viewer's item: its position, name, resolution, frame rate and file size</summary>
     </key>
+    <key name="mpv-opengl" type="b">
+      <default>false</default>
+      <summary>Render videos played by libmpv with OpenGL, with the blurred backdrop drawn by a shader, rather than in software</summary>
+    </key>
     <key name="svp-enabled" type="b">
       <default>false</default>
       <summary>Interpolate the frames of videos played by libmpv with SVP (SmoothVideo Project)</summary>

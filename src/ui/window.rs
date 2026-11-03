@@ -301,6 +301,10 @@ impl Window {
         }
         window.imp().viewer.set_use_mpv(settings.string("video-backend") == "mpv");
         window.imp().viewer.set_mpv_options(&settings.string("mpv-args"));
+        crate::mpv::set_render_with_opengl(settings.boolean("mpv-opengl"));
+        settings.connect_changed(Some("mpv-opengl"), |settings, _| {
+            crate::mpv::set_render_with_opengl(settings.boolean("mpv-opengl"));
+        });
         crate::mpv::watch_config({
             let weak = window.imp().viewer.downgrade();
             move || {

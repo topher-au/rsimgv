@@ -10,7 +10,7 @@ mod sys;
 
 pub use framing::{CropRect, Framing};
 pub use render::RenderedFrame;
-pub use stream::MpvStream;
+pub use stream::{set_render_with_opengl, MpvStream};
 
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;

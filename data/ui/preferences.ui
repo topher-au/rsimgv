@@ -878,6 +878,12 @@
                                 <property name="title">MPV</property>
                                 <property name="description">Extra options for mpv, such as --hwdec=auto-copy. Apply them with the check mark once edited.</property>
                                 <child>
+                                  <object class="AdwSwitchRow" id="mpv_opengl_row">
+                                    <property name="title">Render with OpenGL</property>
+                                    <property name="subtitle">Draws frames on the GPU, with the blurred backdrop drawn by a shader. Applies to the next video opened</property>
+                                  </object>
+                                </child>
+                                <child>
                                   <object class="AdwEntryRow" id="mpv_args_row">
                                     <property name="title">mpv options</property>
                                     <property name="show-apply-button">true</property>

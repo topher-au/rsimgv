@@ -201,6 +201,8 @@ mod imp {
         #[template_child]
         pub mpv_args_row: TemplateChild<adw::EntryRow>,
         #[template_child]
+        pub mpv_opengl_row: TemplateChild<adw::SwitchRow>,
+        #[template_child]
         pub scaling_filter_row: TemplateChild<adw::ComboRow>,
         #[template_child]
         pub smooth_upscaling_row: TemplateChild<adw::SwitchRow>,
@@ -302,6 +304,7 @@ impl PreferencesDialog {
                 let _ = settings.set_string("mpv-args", &row.text());
             }
         });
+        settings.bind("mpv-opengl", &*imp.mpv_opengl_row, "active").build();
         settings
             .bind("video-backend", &*imp.svp_banner, "revealed")
             .mapping(|variant, _| Some((variant.str()? != "mpv").to_value()))

@@ -324,10 +324,17 @@ glib::wrapper! {
 }
 
 thread_local! {
-    /// The shared player, with the mpv options and config generation it was made with.
-    static SHARED: RefCell<Option<(String, u64, Rc<Player>)>> = const { RefCell::new(None) };
+    /// The shared player, with the mpv options, whether it renders with OpenGL and the config generation it was made with.
+    static SHARED: RefCell<Option<(String, bool, u64, Rc<Player>)>> = const { RefCell::new(None) };
     /// The stream the shared player is playing for.
     static CURRENT: RefCell<glib::WeakRef<MpvStream>> = RefCell::new(glib::WeakRef::new());
+    /// Whether the shared player renders with OpenGL, as the preferences ask.
+    static RENDER_WITH_OPENGL: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Sets whether videos are rendered with OpenGL. The next video opened uses it.
+pub fn set_render_with_opengl(on: bool) {
+    RENDER_WITH_OPENGL.with(|flag| flag.set(on));
 }
 
 /// Calls `handle` on the main thread with the current stream, once for any number of calls made before it runs.
@@ -347,9 +354,11 @@ fn main_thread_waker(handle: fn(&MpvStream)) -> impl Fn() + Send + Sync + 'stati
     }
 }
 
-/// A player that renders with OpenGL, if `RSIMGV_MPV_GL` asks for one and it can be made.
+/// A player that renders with OpenGL, if the preferences ask for one and it can be made.
 fn gl_player(options: &str) -> Option<Player> {
-    std::env::var_os("RSIMGV_MPV_GL")?;
+    if !RENDER_WITH_OPENGL.with(Cell::get) {
+        return None;
+    }
     let made = gl::new_context().and_then(|context| Player::new(options, Some(context)));
     if let Err(err) = &made {
         eprintln!("rsimgv: mpv: could not render with OpenGL, so rendering in software: {err}");
@@ -361,12 +370,13 @@ fn gl_player(options: &str) -> Option<Player> {
 /// other options or an older mpv.conf.
 fn shared_player(options: &str) -> Option<Rc<Player>> {
     let generation = config_generation();
+    let opengl = RENDER_WITH_OPENGL.with(Cell::get);
     if let Some(player) = SHARED.with(|shared| {
         shared
             .borrow()
             .as_ref()
-            .filter(|(made_with, made_at, _)| made_with == options && *made_at == generation)
-            .map(|(_, _, player)| player.clone())
+            .filter(|(made_with, made_opengl, made_at, _)| made_with == options && *made_opengl == opengl && *made_at == generation)
+            .map(|(_, _, _, player)| player.clone())
     }) {
         return Some(player);
     }
@@ -399,7 +409,7 @@ fn shared_player(options: &str) -> Option<Rc<Player>> {
     player.observe_double(SPEED, "speed");
     player.observe_double(ESTIMATED_FPS, "estimated-vf-fps");
     let player = Rc::new(player);
-    SHARED.with(|shared| shared.replace(Some((options.to_owned(), generation, player.clone()))));
+    SHARED.with(|shared| shared.replace(Some((options.to_owned(), opengl, generation, player.clone()))));
     Some(player)
 }
 
