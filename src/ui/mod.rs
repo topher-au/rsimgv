@@ -1,3 +1,4 @@
+mod backdrop;
 mod binding_dialog;
 mod browse_view;
 mod drag;

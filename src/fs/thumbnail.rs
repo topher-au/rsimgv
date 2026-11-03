@@ -432,6 +432,29 @@ impl Thumbnails {
         self.inner.textures.borrow().keys().any(|key| key.path == path)
     }
 
+    /// The largest still thumbnail of the file at `path`, modified at `mtime`, that has already been made: in memory, or in the
+    /// cache on the disk. Nothing is made for it, so there is none for a file that has not been thumbnailed.
+    pub async fn best_existing(&self, path: &Path, mtime: i64) -> Option<gdk::Texture> {
+        let in_memory = {
+            let textures = self.inner.textures.borrow();
+            textures
+                .iter()
+                .filter(|(key, _)| key.path == path && key.mtime == mtime && matches!(key.job, Job::Still(_)))
+                .max_by_key(|(key, _)| key.size.pixels())
+                .and_then(|(key, textures)| textures.first().map(|texture| (key.size.pixels(), texture.clone())))
+        };
+        let above = in_memory.as_ref().map_or(0, |(size, _)| *size);
+        if self.inner.disk_cache.get() {
+            let (root, file) = (self.inner.root.clone(), path.to_path_buf());
+            // Only a size larger than the one in memory is worth reading.
+            let found = gio::spawn_blocking(move || largest_on_disk(&root, &file, mtime, above)).await.ok().flatten();
+            if let Some(pixels) = found {
+                return Some(pixels.texture());
+            }
+        }
+        in_memory.map(|(_, texture)| texture)
+    }
+
     /// Calls `on_ready` with the still thumbnail of the file at `path`, modified at `mtime`, once it is made.
     /// A thumbnail already made is given at once. Nothing is called if it cannot be made.
     pub fn request_still(
@@ -841,6 +864,17 @@ fn make_cancellable(root: Option<&Path>, key: &Key, cancel: Arc<AtomicBool>) -> 
     let made = make(root, key);
     CANCEL.with(|current| *current.borrow_mut() = None);
     made
+}
+
+/// The pixels of the largest still thumbnail in the cache under `root` for the file at `path` modified at `mtime`, if there
+/// is one larger than `above` pixels. A thumbnail made for another time is not current and is passed over.
+fn largest_on_disk(root: &Path, path: &Path, mtime: i64, above: i32) -> Option<Pixels> {
+    let uri = glib::filename_to_uri(path, None).ok()?;
+    let digest = glib::compute_checksum_for_string(glib::ChecksumType::Md5, uri.as_str())?;
+    SIZES.iter().rev().filter(|size| **size > above).find_map(|size| {
+        let data = std::fs::read(root.join(size.to_string()).join(format!("{digest}.png"))).ok()?;
+        (png_text(&data, "rsimgv::MTime")?.parse::<i64>().ok()? == mtime).then(|| Pixels::from_png(&data)).flatten()
+    })
 }
 
 /// The pixels of a job: from the cache under `root` where they are current, or made and cached now. With no `root`,

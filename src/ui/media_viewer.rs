@@ -23,6 +23,7 @@ use crate::fs::metadata::MediaInfo;
 use crate::fs::thumbnail::Pixels;
 use super::media_controls::MediaControls;
 use super::overlay_split_view::OverlaySplitView;
+use super::backdrop::Backdrop;
 use super::media_overlay::{clock, fraction, Frame, MediaOverlay};
 use crate::overlay::{Layout, Trigger, TRIGGERS};
 use super::thumbnail_bar::ThumbnailBar;
@@ -439,6 +440,9 @@ mod imp {
         pub(super) controls_drag: Cell<Option<(ControlsDrag, ControlsLayout, f64)>>,
         /// The overlay of elements over the item, made when it is first wanted.
         pub(super) media_overlay: OnceCell<MediaOverlay>,
+        /// The page that shows a video: the blurred thumbnail behind, and the video over it.
+        pub(super) video_page: OnceCell<gtk::Overlay>,
+        pub(super) backdrop: Backdrop,
         /// The band that shows which edge the thumbnail bar would go to if it were dropped, while it is dragged.
         pub(super) drop_indicator: OnceCell<gtk::Box>,
         /// The timer that keeps the overlay up to date while any element is on.
@@ -492,6 +496,17 @@ mod imp {
             let obj = self.obj();
             let weak = obj.downgrade();
             self.video_start_delay.set(DEFAULT_VIDEO_START_DELAY);
+            // A video is shown over a blurred copy of its thumbnail, which fills the view until its frames are up.
+            let video_page = gtk::Overlay::new();
+            video_page.set_hexpand(true);
+            video_page.set_vexpand(true);
+            self.backdrop.set_hexpand(true);
+            self.backdrop.set_vexpand(true);
+            video_page.set_child(Some(&self.backdrop));
+            self.pages.remove(&*self.picture);
+            video_page.add_overlay(&*self.picture);
+            self.pages.add_child(&video_page);
+            let _ = self.video_page.set(video_page);
             obj.setup_controls_placement();
             let weak_viewer = obj.downgrade();
             crate::ui::media_overlay::watch_preview(move || {
@@ -2001,6 +2016,20 @@ impl MediaViewer {
         }
     }
 
+    /// Puts the largest thumbnail already made for the video at `path` behind it, blurred, if there is one. None is made.
+    fn show_backdrop(&self, path: &Path) {
+        let (weak, path) = (self.downgrade(), path.to_path_buf());
+        glib::spawn_future_local(async move {
+            let stamp = crate::fs::thumbnail::stamp(&path);
+            let Some(texture) = Thumbnails::shared().best_existing(&path, stamp).await else { return };
+            let Some(viewer) = weak.upgrade() else { return };
+            // Only if the video is still the one shown.
+            if viewer.shown_path().as_deref() == Some(path.as_path()) && viewer.imp().media.borrow().is_some() {
+                viewer.imp().backdrop.set_texture(Some(&texture));
+            }
+        });
+    }
+
     /// Shows the item at `index`, replacing the one before it.
     fn load(&self, index: usize) {
         let imp = self.imp();
@@ -2095,7 +2124,10 @@ impl MediaViewer {
                     eprintln!("rsimgv: {err}");
                 }
             });
-            imp.pages.set_visible_child(&*imp.picture);
+            if let Some(page) = imp.video_page.get() {
+                imp.pages.set_visible_child(page);
+            }
+            self.show_backdrop(&path);
             // mpv fits the video to the area it is given, so that area is the whole picture, and its OSD sits in its corner.
             let fit = if media.is::<crate::mpv::MpvStream>() { gtk::ContentFit::Fill } else { gtk::ContentFit::Contain };
             imp.picture.set_content_fit(fit);
@@ -2279,6 +2311,7 @@ impl MediaViewer {
         }
         imp.controls.set_media(None);
         imp.picture.set_paintable(None::<&gdk::Paintable>);
+        imp.backdrop.set_texture(None);
         imp.canvas.set_texture(None);
     }
 
