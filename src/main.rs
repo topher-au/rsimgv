@@ -8,7 +8,6 @@ mod remote;
 mod resample;
 mod scripts;
 mod svp;
-mod svp_manager;
 mod bookmarks;
 mod playlist;
 mod file_settings;

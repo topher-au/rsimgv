@@ -1035,11 +1035,6 @@
                                   </object>
                                 </child>
                                 <child>
-                                  <object class="AdwEntryRow" id="svp_plugin_directory_row">
-                                    <property name="title">Plugin directory</property>
-                                  </object>
-                                </child>
-                                <child>
                                   <object class="AdwComboRow" id="svp_fps_mode_row">
                                     <property name="title">Output frame rate</property>
                                     <property name="subtitle">Scales with the playback speed in Display and Variable</property>

@@ -58,10 +58,6 @@
       <default>false</default>
       <summary>Interpolate the frames of videos played by libmpv with SVP (SmoothVideo Project)</summary>
     </key>
-    <key name="svp-plugin-directory" type="s">
-      <default>'/opt/svp/plugins'</default>
-      <summary>The directory of SVP's VapourSynth plugin libraries</summary>
-    </key>
     <key name="svp-fps-mode" type="s">
       <choices>
         <choice value="default"/>

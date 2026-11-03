@@ -50,10 +50,25 @@ gresource = gnome.compile_resources('rsimgv',
   dependencies: [style_css],
 )
 
-# Cargo builds the Rust crate, embedding the GResource bundle via RSIMGV_GRESOURCE.
+# SVP frame interpolation uses open-svpflow's VapourSynth plugins, built from its source in third_party/. Their
+# libraries are written into the build directory, where Cargo embeds them.
+svpflow_plugins = custom_target('svpflow',
+  output: ['libsvpflow1_vs.so', 'libsvpflow2_vs.so'],
+  command: [
+    sh, files('build-aux/svpflow-build.sh'),
+    find_program('cargo').full_path(),
+    meson.project_source_root() / 'third_party' / 'open-svpflow',
+    meson.project_build_root() / 'svpflow-target',
+    '@OUTDIR@',
+  ],
+)
+
+# Cargo builds the Rust crate, embedding the GResource bundle via RSIMGV_GRESOURCE and the plugins via
+# RSIMGV_SVP_PLUGINS.
 rsimgv = custom_target('rsimgv',
   input: gresource,
   output: 'rsimgv',
+  depends: svpflow_plugins,
   command: [
     sh, files('build-aux/cargo-build.sh'),
     find_program('cargo').full_path(),
@@ -61,6 +76,7 @@ rsimgv = custom_target('rsimgv',
     meson.project_build_root() / 'target',
     cargo_profile,
     '@INPUT@',
+    meson.current_build_dir(),
     '@OUTPUT@',
   ],
   build_always_stale: true,

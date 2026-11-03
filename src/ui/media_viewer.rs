@@ -475,8 +475,6 @@ mod imp {
         pub(super) svp_timer: RefCell<Option<glib::SourceId>>,
         /// Whether that filter is being kept out, as the video was skipped through or has only just started.
         pub(super) svp_held: Cell<bool>,
-        /// This viewer's hold on the server SVP's libraries connect to, kept while SVP is on.
-        pub(super) svp_manager: RefCell<Option<std::rc::Rc<crate::svp_manager::Manager>>>,
     }
 
     #[glib::object_subclass]
@@ -1273,10 +1271,6 @@ impl MediaViewer {
             let speed = stream.speed().unwrap_or(1.0);
             self.apply_svp(&stream, speed, false);
         }
-        // With no video shown, nothing above has let go of the server.
-        if !self.imp().svp.borrow().as_ref().is_some_and(|config| config.enabled) {
-            self.imp().svp_manager.take();
-        }
     }
 
     /// Applies SVP to the video `stream` plays at `speed`, once mpv knows the video's frame rate. The filter left by the
@@ -1384,21 +1378,21 @@ impl MediaViewer {
             self.cancel_svp_timer();
             imp.svp_held.set(false);
             imp.svp_announcement.take();
-            imp.svp_manager.take();
             if let Err(err) = stream.set_interpolation_filter(crate::svp::FILTER_LABEL, None) {
                 eprintln!("rsimgv: SVP could not be removed: {err}");
             }
             imp.svp_filter.take();
             return;
         }
-        let plugins = crate::svp::find_plugins(&config.plugin_directory);
-        let usable = if config.nvof { plugins.svp2.is_some() } else { plugins.svp1.is_some() && plugins.svp2.is_some() };
+        let plugins = match crate::svp::plugins() {
+            Ok(plugins) => plugins,
+            Err(err) => {
+                eprintln!("rsimgv: SVP plugins could not be written: {err}");
+                self.announce("SVP plugins could not be written", true);
+                return;
+            }
+        };
         let Some(source) = stream.fps() else { return };
-        if !usable {
-            eprintln!("rsimgv: SVP plugins not found in {}", config.plugin_directory.display());
-            self.announce(&format!("SVP plugins not found in {}", config.plugin_directory.display()), true);
-            return;
-        }
         let target = crate::svp::target_fps(&config.rate, source, speed, stream.display_fps());
         let script = crate::svp::script(&plugins, source, target, config.nvof);
         let directory = crate::svp::script_directory();
@@ -1412,16 +1406,6 @@ impl MediaViewer {
                 return;
             }
             println!("rsimgv: SVP script written to {}", path.display());
-        }
-        // The server comes first, as SVP's libraries connect to it as soon as the filter loads them. SVP still plays
-        // without it, as it did before there was one.
-        if imp.svp_manager.borrow().is_none() {
-            match crate::svp_manager::shared() {
-                Ok(manager) => {
-                    imp.svp_manager.replace(Some(manager));
-                }
-                Err(err) => eprintln!("rsimgv: SVP manager: {err}"),
-            }
         }
         let text = format!(
             "SVP: {} -> {} ({:.0}% speed)",
