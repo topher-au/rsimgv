@@ -338,11 +338,9 @@ pub struct Player {
     orientation: Cell<Orientation>,
     /// The filter that `set_interpolation_filter` last put in the chain.
     interpolation: std::cell::RefCell<Option<String>>,
-    /// The crop filter and the detector that finds where to crop, and the backdrop filter, that `set_framing_filters` put
-    /// in the chain.
+    /// The crop filter and the detector that finds where to crop that `set_framing_filters` put in the chain.
     crop: Cell<Option<CropRect>>,
     detector: Cell<bool>,
-    backdrop: std::cell::RefCell<Option<String>>,
 }
 
 impl Player {
@@ -358,7 +356,7 @@ impl Player {
             if handle.is_null() {
                 return Err("could not create the mpv player".to_owned());
             }
-            let mut player = Self { handle, render: std::ptr::null_mut(), wakeup: None, render_update: None, rotation: Cell::new(0), orientation: Cell::new(Orientation::default()), interpolation: Default::default(), crop: Cell::new(None), detector: Cell::new(false), backdrop: Default::default() };
+            let mut player = Self { handle, render: std::ptr::null_mut(), wakeup: None, render_update: None, rotation: Cell::new(0), orientation: Cell::new(Orientation::default()), interpolation: Default::default(), crop: Cell::new(None), detector: Cell::new(false) };
             for (name, value) in [
                 ("vo", "libmpv"),
                 ("hwdec", "auto-safe"),
@@ -445,7 +443,6 @@ impl Player {
                 eprintln!("rsimgv: mpv: could not add the orientation filter: {err}");
             }
         }
-        self.refresh_backdrop();
         // The frame shown already passed the filters, and a paused video would stay that way, so it is decoded again.
         let _ = self.command(&["seek", "0", "relative+exact"]);
     }
@@ -464,29 +461,21 @@ impl Player {
             self.command(&["vf", "add", filter])?;
         }
         self.interpolation.replace(filter.map(str::to_owned));
-        // The backdrop is the last filter, so it is put after this one.
-        self.refresh_backdrop();
         Ok(())
     }
 
-    /// Sets the filters that frame the video: the detector that finds the picture, the crop to `crop`, and the backdrop. The
-    /// upright filter stays first, so the detector and the crop see the video as it is shown, and the backdrop stays last.
-    /// A change holds up the video, so nothing happens for what is already in the chain.
-    pub fn set_framing_filters(&self, detector: bool, crop: Option<CropRect>, backdrop: Option<String>) {
-        let front = self.detector.replace(detector) != detector || self.crop.replace(crop) != crop;
-        let back = *self.backdrop.borrow() != backdrop;
-        if front {
-            self.rebuild_front_filters();
+    /// Sets the filters that frame the video: the detector that finds the picture, and the crop to `crop`. The upright filter
+    /// stays first, so the detector and the crop see the video as it is shown. A change holds up the video, so nothing
+    /// happens for what is already in the chain.
+    pub fn set_framing_filters(&self, detector: bool, crop: Option<CropRect>) {
+        if self.detector.replace(detector) == detector && self.crop.replace(crop) == crop {
+            return;
         }
-        if back {
-            self.backdrop.replace(backdrop);
-            self.refresh_backdrop();
-        }
-        if front || back {
-            // The frame shown already passed the filters, and a paused video would stay that way, so it is decoded again.
-            if self.get_flag("pause") == Some(true) {
-                let _ = self.command(&["seek", "0", "relative+exact"]);
-            }
+        self.crop.set(crop);
+        self.rebuild_front_filters();
+        // The frame shown already passed the filters, and a paused video would stay that way, so it is decoded again.
+        if self.get_flag("pause") == Some(true) {
+            let _ = self.command(&["seek", "0", "relative+exact"]);
         }
     }
 
@@ -501,18 +490,6 @@ impl Player {
         for filter in filters.into_iter().flatten() {
             if let Err(err) = self.command(&["vf", "pre", &filter]) {
                 eprintln!("rsimgv: mpv: could not add a filter: {err}");
-            }
-        }
-    }
-
-    /// Puts the backdrop last in the chain, in place of the one before.
-    fn refresh_backdrop(&self) {
-        if let Err(err) = self.command(&["vf", "remove", &format!("@{}", framing::BACKDROP_LABEL)]) {
-            eprintln!("rsimgv: mpv: could not remove the backdrop: {err}");
-        }
-        if let Some(filter) = self.backdrop.borrow().as_deref() {
-            if let Err(err) = self.command(&["vf", "add", filter]) {
-                eprintln!("rsimgv: mpv: could not add the backdrop: {err}");
             }
         }
     }

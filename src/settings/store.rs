@@ -142,7 +142,6 @@ const LAYOUT: &[(&str, &str, &str)] = &[
     ("video-crop-method", "video", "crop.method"),
     ("video-crop-trim", "video", "crop.trim"),
     ("video-backdrop", "video", "backdrop.enabled"),
-    ("video-backdrop-aspect", "video", "backdrop.aspect"),
     ("video-backdrop-zoom", "video", "backdrop.zoom"),
     ("video-backdrop-blur", "video", "backdrop.blur"),
     ("video-backdrop-dim", "video", "backdrop.dim"),

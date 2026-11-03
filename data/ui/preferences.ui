@@ -933,21 +933,7 @@
                                 <child>
                                   <object class="AdwSwitchRow" id="video_backdrop_row">
                                     <property name="title">Blurred backdrop</property>
-                                    <property name="subtitle">Pads the picture to the shape below over a blurred, dimmed copy of itself</property>
-                                  </object>
-                                </child>
-                                <child>
-                                  <object class="AdwSpinRow" id="video_backdrop_aspect_row">
-                                    <property name="title">Backdrop shape</property>
-                                    <property name="subtitle">Width over height; 1.78 is 16:9</property>
-                                    <property name="digits">2</property>
-                                    <property name="adjustment">
-                                      <object class="GtkAdjustment">
-                                        <property name="lower">0.5</property>
-                                        <property name="upper">4</property>
-                                        <property name="step-increment">0.01</property>
-                                      </object>
-                                    </property>
+                                    <property name="subtitle">Fills the space round the picture with a blurred, dimmed copy of it, whatever shape the window is</property>
                                   </object>
                                 </child>
                                 <child>

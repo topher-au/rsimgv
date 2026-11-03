@@ -169,8 +169,6 @@ mod imp {
         #[template_child]
         pub video_backdrop_row: TemplateChild<adw::SwitchRow>,
         #[template_child]
-        pub video_backdrop_aspect_row: TemplateChild<adw::SpinRow>,
-        #[template_child]
         pub video_backdrop_zoom_row: TemplateChild<adw::SpinRow>,
         #[template_child]
         pub video_backdrop_blur_row: TemplateChild<adw::SpinRow>,
@@ -400,7 +398,6 @@ impl PreferencesDialog {
         bind_port(settings, &imp.video_crop_trim_row, "video-crop-trim");
         bind_port(settings, &imp.video_backdrop_blur_row, "video-backdrop-blur");
         for (row, key) in [
-            (&imp.video_backdrop_aspect_row, "video-backdrop-aspect"),
             (&imp.video_backdrop_zoom_row, "video-backdrop-zoom"),
             (&imp.video_backdrop_dim_row, "video-backdrop-dim"),
         ] {
@@ -411,8 +408,7 @@ impl PreferencesDialog {
             settings.bind("video-crop", row, "sensitive").get_only().build();
         }
         for row in [
-            imp.video_backdrop_aspect_row.upcast_ref::<gtk::Widget>(),
-            imp.video_backdrop_zoom_row.upcast_ref(),
+            imp.video_backdrop_zoom_row.upcast_ref::<gtk::Widget>(),
             imp.video_backdrop_blur_row.upcast_ref(),
             imp.video_backdrop_dim_row.upcast_ref(),
         ] {

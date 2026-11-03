@@ -459,12 +459,7 @@
     </key>
     <key name="video-backdrop" type="b">
       <default>false</default>
-      <summary>Pad a video to a canvas of a set shape over a blurred, dimmed copy of itself</summary>
-    </key>
-    <key name="video-backdrop-aspect" type="d">
-      <range min="0.5" max="4.0"/>
-      <default>1.7777777777777777</default>
-      <summary>The shape of the backdrop's canvas, as width over height</summary>
+      <summary>Fill the space round a video with a blurred, dimmed copy of it</summary>
     </key>
     <key name="video-backdrop-zoom" type="d">
       <range min="1.0" max="4.0"/>

@@ -36,6 +36,32 @@ const CROP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 /// How far apart, in seconds, the two frames are that the area that moves is found from.
 const MOTION_GAP: f64 = 0.1;
 
+/// How much smaller than the area the backdrop is drawn and blurred, and then scaled up: the blur of a small picture costs
+/// little and looks the same once it is spread out again.
+const BACKDROP_SHRINK: f32 = 8.0;
+
+/// Draws `frame` covering a `width` by `height` area, cropped to it, blurred and dimmed as `backdrop` says.
+fn draw_backdrop(snapshot: &gtk::Snapshot, frame: &gdk::Texture, backdrop: framing::Backdrop, width: f64, height: f64) {
+    let (frame_width, frame_height) = (f64::from(frame.width()), f64::from(frame.height()));
+    if width <= 0.0 || height <= 0.0 || frame_width <= 0.0 || frame_height <= 0.0 {
+        return;
+    }
+    let (x, y, cover_width, cover_height) = framing::covering(width, height, frame_width, frame_height, backdrop.zoom);
+    let whole = gtk::graphene::Rect::new(0.0, 0.0, width as f32, height as f32);
+    // The blur radius is in pixels of the area, as the blur setting gives it in steps of four.
+    let radius = f64::from(backdrop.blur.max(1)) * 4.0 / f64::from(BACKDROP_SHRINK);
+    snapshot.push_clip(&whole);
+    snapshot.save();
+    snapshot.scale(BACKDROP_SHRINK, BACKDROP_SHRINK);
+    snapshot.push_blur(radius);
+    let rect = gtk::graphene::Rect::new(x as f32 / BACKDROP_SHRINK, y as f32 / BACKDROP_SHRINK, cover_width as f32 / BACKDROP_SHRINK, cover_height as f32 / BACKDROP_SHRINK);
+    snapshot.append_scaled_texture(frame, gtk::gsk::ScalingFilter::Linear, &rect);
+    snapshot.pop();
+    snapshot.restore();
+    snapshot.append_color(&gdk::RGBA::new(0.0, 0.0, 0.0, (1.0 - backdrop.dim.clamp(0.0, 1.0)) as f32), &whole);
+    snapshot.pop();
+}
+
 /// One greyscale frame of the video at `path`, `seconds` in, decoded at the size `width` by `height`.
 fn grab_gray(path: &Path, seconds: f64, width: i32, height: i32) -> Option<Vec<u8>> {
     let frame = crate::fs::thumbnail::run_program(
@@ -168,11 +194,20 @@ mod imp {
 
     impl PaintableImpl for MpvStream {
         fn snapshot(&self, snapshot: &gdk::Snapshot, width: f64, height: f64) {
-            self.obj().fit_render(width, height);
-            if let Some(frame) = self.frame.borrow().as_ref() {
-                let snapshot = snapshot.downcast_ref::<gtk::Snapshot>().expect("a GTK snapshot");
-                snapshot.append_texture(frame, &gtk::graphene::Rect::new(0.0, 0.0, width as f32, height as f32));
-            }
+            let stream = self.obj();
+            stream.fit_render(width, height);
+            let Some(frame) = self.frame.borrow().clone() else { return };
+            let snapshot = snapshot.downcast_ref::<gtk::Snapshot>().expect("a GTK snapshot");
+            let Some(backdrop) = self.framing.get().backdrop else {
+                snapshot.append_texture(&frame, &gtk::graphene::Rect::new(0.0, 0.0, width as f32, height as f32));
+                return;
+            };
+            // The frame is the picture alone, as big as fits. A blurred, dimmed copy of it, cropped to the shape of the whole
+            // area, fills the background, and the frame itself goes over it, in the middle.
+            let (frame_width, frame_height) = (f64::from(frame.width()), f64::from(frame.height()));
+            let (x, y, shown_width, shown_height) = framing::fitted(width, height, frame_width, frame_height);
+            draw_backdrop(snapshot, &frame, backdrop, width, height);
+            snapshot.append_texture(&frame, &gtk::graphene::Rect::new(x as f32, y as f32, shown_width as f32, shown_height as f32));
         }
 
         fn intrinsic_width(&self) -> i32 {
@@ -303,7 +338,13 @@ impl MpvStream {
     /// video before is let go, and looked for again. The player is shared, so each stream sets this when it starts.
     pub fn set_framing(&self, framing: Framing) {
         let imp = self.imp();
+        let backdrop_changed = imp.framing.get().backdrop.is_some() != framing.backdrop.is_some();
         imp.framing.set(framing);
+        if backdrop_changed {
+            // The frame is rendered at another size now, which the next snapshot sets.
+            imp.render_size.set((0, 0));
+        }
+        self.invalidate_contents();
         imp.crop.set(None);
         imp.crop_candidate.set(None);
         self.apply_framing_filters();
@@ -331,7 +372,7 @@ impl MpvStream {
         let framing = imp.framing.get();
         let crop = imp.crop.get().map(|rect| framing::trimmed(rect, framing.trim_pixels, player.source_size()));
         let detector = framing.crop == Some(CropMethod::CropDetect);
-        player.set_framing_filters(detector, crop, framing.backdrop.map(framing::backdrop_filter));
+        player.set_framing_filters(detector, crop);
     }
 
     /// Looks for where to crop, once an interval: asks the cropdetect filter, or measures a frame decoded from the file.
@@ -557,7 +598,15 @@ impl MpvStream {
     fn fit_render(&self, width: f64, height: f64) {
         let imp = self.imp();
         let scale = f64::from(imp.scale.get().max(1));
-        let (width, height) = capped((width * scale).round() as i32, (height * scale).round() as i32);
+        // With a backdrop the frame is the picture alone, as big as fits the area, and the backdrop fills the rest.
+        let (width, height) = match (imp.framing.get().backdrop, imp.frame_size.get()) {
+            (Some(_), (video_width, video_height)) if video_width > 0 && video_height > 0 => {
+                let (_, _, fitted_width, fitted_height) = framing::fitted(width, height, f64::from(video_width), f64::from(video_height));
+                (fitted_width, fitted_height)
+            }
+            _ => (width, height),
+        };
+        let (width, height) = capped((width * scale).round().max(1.0) as i32, (height * scale).round().max(1.0) as i32);
         if width <= 0 || height <= 0 || imp.render_size.get() == (width, height) || !self.is_prepared() {
             return;
         }

@@ -899,7 +899,6 @@ impl Window {
             crop: settings.boolean("video-crop").then_some(crop_method),
             trim_pixels: settings.int("video-crop-trim"),
             backdrop: settings.boolean("video-backdrop").then(|| crate::mpv::framing::Backdrop {
-                aspect: settings.double("video-backdrop-aspect"),
                 zoom: settings.double("video-backdrop-zoom"),
                 blur: settings.int("video-backdrop-blur"),
                 dim: settings.double("video-backdrop-dim"),
@@ -3511,12 +3510,11 @@ const WHEEL_VOLUME_STEP: f64 = 5.0;
 const WHEEL_SEEK_STEP: f64 = 5.0;
 
 /// The settings the viewer and the window title are set from, applied again whenever one changes.
-const VIEWER_SETTINGS: [&str; 56] = [
+const VIEWER_SETTINGS: [&str; 55] = [
     "video-crop",
     "video-crop-method",
     "video-crop-trim",
     "video-backdrop",
-    "video-backdrop-aspect",
     "video-backdrop-zoom",
     "video-backdrop-blur",
     "video-backdrop-dim",

@@ -1,10 +1,10 @@
-//! How a video is framed by mpv filters: the picture cropped out of the bars or backdrop round it, and the picture padded
-//! to a canvas of a set shape over a blurred, dimmed copy of itself.
+//! How a video is framed: the picture cropped out of the bars or backdrop round it by an mpv filter, and the space round the
+//! picture filled with a blurred, dimmed copy of it, which the stream draws itself.
 //!
 //! The crop is an mpv `crop` filter. Where it should crop is found by mpv's own `cropdetect` filter, which reports the
 //! area that is not near black, or by looking at a frame decoded from the file: at the steps in brightness that mark the
 //! picture's border (`Edges`), which also strips a blurred backdrop, or at the area that changes between two frames
-//! (`Static`), which strips a backdrop that does not move. The backdrop is an `lavfi` filter graph.
+//! (`Static`), which strips a backdrop that does not move.
 
 /// The area of a frame to keep, in pixels, with even offsets and sizes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,11 +44,10 @@ impl CropMethod {
     }
 }
 
-/// The backdrop: the shape of the canvas, as width over height, how far the copy behind is zoomed, how blurred, and how
-/// bright it is, from 0 for black to 1 for unchanged.
+/// The backdrop drawn behind the picture: how far the blurred copy is zoomed in (1 for just covering the space), how blurred
+/// it is, and how bright it is, from 0 for black to 1 for unchanged.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Backdrop {
-    pub aspect: f64,
     pub zoom: f64,
     pub blur: i32,
     pub dim: f64,
@@ -64,10 +63,9 @@ pub struct Framing {
     pub backdrop: Option<Backdrop>,
 }
 
-/// The label of the filter that finds the picture, the one that crops to it, and the backdrop.
+/// The label of the filter that finds the picture, and the one that crops to it.
 pub const DETECTOR_LABEL: &str = "rsimgv-cropdetect";
 pub const CROP_LABEL: &str = "rsimgv-crop";
-pub const BACKDROP_LABEL: &str = "rsimgv-backdrop";
 
 /// The brightness step, in levels of mean luma, that marks a picture's border, and the mean change per column or row that
 /// counts as motion.
@@ -92,29 +90,23 @@ pub fn crop_filter(rect: CropRect) -> String {
     format!("@{CROP_LABEL}:crop=w={}:h={}:x={}:y={}", rect.width, rect.height, rect.left, rect.top)
 }
 
-/// The `lavfi` graph that pads the picture to `backdrop.aspect` over a blurred copy of itself. The copy is the picture
-/// scaled up (zoomed), cropped to the canvas, shrunk to a quarter, blurred, dimmed and scaled back up; working at a quarter
-/// size keeps the blur cheap. The picture is then scaled to fit and centred on it. The canvas is the smallest box of that
-/// shape that holds the picture, so content of that shape is left as it is.
-pub fn backdrop_graph(backdrop: Backdrop) -> String {
-    let aspect = backdrop.aspect.max(0.1);
-    let box_w = format!("max(iw,ih*{aspect})");
-    let box_h = format!("max(ih,iw/{aspect})");
-    let zoom = backdrop.zoom.max(1.0);
-    let (blur, dim) = (backdrop.blur.max(1), backdrop.dim.clamp(0.0, 1.0));
-    format!(
-        "[in]split[p][a];\
-         [a]scale=w='2*trunc({box_w}*{zoom}/8)':h='2*trunc({box_h}*{zoom}/8)':force_original_aspect_ratio=increase,\
-         crop=w='min(iw,ih*{aspect})':h='min(ih,iw/{aspect})',\
-         boxblur={blur}:1,lutyuv=y='val*{dim}',scale=w='iw*4':h='ih*4'[bg];\
-         [p]scale=w='{box_w}':h='{box_h}':force_original_aspect_ratio=decrease[fg];\
-         [bg][fg]overlay=x='(W-w)/2':y='(H-h)/2',format=yuv420p"
-    )
+/// The rectangle, as (x, y, width, height), of a `width` by `height` picture shown as big as fits an `area_width` by `area_height`
+/// area without cropping it, centred.
+pub fn fitted(area_width: f64, area_height: f64, width: f64, height: f64) -> (f64, f64, f64, f64) {
+    if width <= 0.0 || height <= 0.0 {
+        return (0.0, 0.0, area_width, area_height);
+    }
+    let scale = (area_width / width).min(area_height / height);
+    let (fitted_width, fitted_height) = (width * scale, height * scale);
+    ((area_width - fitted_width) / 2.0, (area_height - fitted_height) / 2.0, fitted_width, fitted_height)
 }
 
-/// The backdrop as an `vf` argument.
-pub fn backdrop_filter(backdrop: Backdrop) -> String {
-    format!("@{BACKDROP_LABEL}:lavfi=[{}]", backdrop_graph(backdrop))
+/// The rectangle, as (x, y, width, height), of a `width` by `height` picture scaled to cover an `area_width` by `area_height`
+/// area and `zoom` times further in, centred. The parts outside the area are cropped by drawing it clipped to the area.
+pub fn covering(area_width: f64, area_height: f64, width: f64, height: f64, zoom: f64) -> (f64, f64, f64, f64) {
+    let scale = (area_width / width).max(area_height / height) * zoom.max(1.0);
+    let (covered_width, covered_height) = (width * scale, height * scale);
+    ((area_width - covered_width) / 2.0, (area_height - covered_height) / 2.0, covered_width, covered_height)
 }
 
 // -- finding the picture -----------------------------------------------------
@@ -338,13 +330,24 @@ mod tests {
     }
 
     #[test]
-    fn the_filters_are_labelled_and_the_backdrop_pads_to_the_canvas() {
+    fn a_picture_is_fitted_inside_the_area_and_covers_it() {
+        // A wide picture in a tall area is as wide as the area, and has room above and below.
+        let (x, y, width, height) = fitted(400.0, 800.0, 200.0, 100.0);
+        assert_eq!((x, width, height), (0.0, 400.0, 200.0));
+        assert!((y - 300.0).abs() < 1e-9);
+        // It covers a tall area by being as tall as the area, cropped at the sides.
+        let (x, y, width, height) = covering(400.0, 800.0, 200.0, 100.0, 1.0);
+        assert_eq!((y, height), (0.0, 800.0));
+        assert!((width - 1600.0).abs() < 1e-9 && (x + 600.0).abs() < 1e-9);
+        // Zoomed in, it is bigger, and still centred.
+        let (x, _, width, _) = covering(400.0, 800.0, 200.0, 100.0, 2.0);
+        assert!((width - 3200.0).abs() < 1e-9 && (x + 1400.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn the_filters_are_labelled() {
         assert_eq!(crop_filter(rect(404, 720, 438, 0)), "@rsimgv-crop:crop=w=404:h=720:x=438:y=0");
         assert!(detector_filter().starts_with("@rsimgv-cropdetect:cropdetect="));
-        let filter = backdrop_filter(Backdrop { aspect: 16.0 / 9.0, zoom: 0.5, blur: 8, dim: 0.5 });
-        assert!(filter.starts_with("@rsimgv-backdrop:lavfi=[[in]split[p][a];"));
-        assert!(filter.contains("boxblur=8:1") && filter.contains("val*0.5") && filter.ends_with("format=yuv420p]"));
-        assert!(filter.contains("/8)':h="), "a zoom below one counts as one");
         assert_eq!(CropMethod::from_name("edges"), CropMethod::Edges);
         assert_eq!(CropMethod::from_name("nonsense"), CropMethod::CropDetect);
     }
