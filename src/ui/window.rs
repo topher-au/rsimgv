@@ -188,7 +188,10 @@ impl Window {
         window.add_tick_callback(move |_, _| {
             let Some(window) = weak.upgrade() else { return glib::ControlFlow::Break };
             let enabled = window.imp().settings.get().is_some_and(|settings| settings.boolean("kde-effects"));
-            let widgets = if enabled { window.imp().viewer.floating_widgets() } else { Vec::new() };
+            let mut widgets = if enabled { window.imp().viewer.floating_widgets() } else { Vec::new() };
+            if enabled {
+                widgets.extend(window.messages().blurred());
+            }
             crate::ui::kde_blur::update(window.upcast_ref(), &widgets, &blur_last);
             glib::ControlFlow::Continue
         });
@@ -829,7 +832,9 @@ impl Window {
         viewer.set_status_bar(settings.boolean("viewer-status-bar"));
         viewer.set_svp(crate::svp::Config::from_settings(settings));
         self.apply_folder_end();
-        viewer.set_overlay_layout(super::media_overlay::layout_from_settings(settings));
+        let layout = super::media_overlay::layout_from_settings(settings);
+        self.messages().configure(layout.elements.iter().find(|element| element.kind == crate::overlay::Kind::Messages));
+        viewer.set_overlay_layout(layout);
         self.update_title();
     }
 

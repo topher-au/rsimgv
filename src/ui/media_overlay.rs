@@ -6,10 +6,12 @@ use std::cell::RefCell;
 use std::time::Duration;
 
 use gtk::prelude::*;
-use gtk::{gio, pango};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+use gtk::{gdk, gio};
 
 use crate::overlay::template::Template;
-use crate::overlay::{Element, Items, Kind, Layout, Legacy, Slot, Visibility};
+use crate::overlay::{Element, Items, Kind, Layout, Legacy, Slot, Style, TextAlign, Visibility};
 
 /// The space between the edge of the item and the elements, and between one element and the next, in pixels.
 const MARGIN: i32 = 12;
@@ -56,6 +58,73 @@ pub fn fraction(position: i64, duration: i64) -> f64 {
     (position as f64 / duration as f64).clamp(0.0, 1.0)
 }
 
+/// The CSS that gives what matches `selector` the look of `style`. A colour that does not parse is left out, so nothing
+/// the settings hold reaches the stylesheet as it was written.
+pub fn style_css(selector: &str, style: &Style) -> String {
+    let color = |text: &str| gdk::RGBA::parse(text).ok().map(|color| color.to_str().to_string());
+    let background = style.background.as_str();
+    let mut css = format!(
+        "{selector} {{ font-size: {}pt; padding: {}px; border-radius: {}px; background-color: {};",
+        style.font_size,
+        style.padding,
+        style.radius,
+        color(background).unwrap_or_else(|| "transparent".to_owned()),
+    );
+    if let Some(color) = color(&style.text_color) {
+        css.push_str(&format!(" color: {color};"));
+    }
+    css.push_str(" }");
+    css
+}
+
+/// A stylesheet added to the display for as long as it is held.
+pub struct Sheet(gtk::CssProvider);
+
+impl Sheet {
+    pub fn new(css: &str) -> Self {
+        let provider = gtk::CssProvider::new();
+        provider.load_from_string(css);
+        if let Some(display) = gdk::Display::default() {
+            gtk::style_context_add_provider_for_display(&display, &provider, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION + 1);
+        }
+        Self(provider)
+    }
+}
+
+impl Drop for Sheet {
+    fn drop(&mut self) {
+        if let Some(display) = gdk::Display::default() {
+            gtk::style_context_remove_provider_for_display(&display, &self.0);
+        }
+    }
+}
+
+/// A name for a class that only one element's stylesheet matches.
+pub fn unique_class(prefix: &str) -> String {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    format!("{prefix}-{}", NEXT.fetch_add(1, Ordering::Relaxed))
+}
+
+/// How text and the things that hold it line up in `align`: the label's alignment and the holder's.
+pub fn align_label(label: &gtk::Label, align: TextAlign) {
+    let (xalign, justify) = match align {
+        TextAlign::Left => (0.0, gtk::Justification::Left),
+        TextAlign::Center => (0.5, gtk::Justification::Center),
+        TextAlign::Right => (1.0, gtk::Justification::Right),
+    };
+    label.set_xalign(xalign);
+    label.set_justify(justify);
+}
+
+/// Where a place holds the things in it, along the row: against the left edge, the middle, or the right edge.
+pub fn horizontal_align(align: TextAlign) -> gtk::Align {
+    match align {
+        TextAlign::Left => gtk::Align::Start,
+        TextAlign::Center => gtk::Align::Center,
+        TextAlign::Right => gtk::Align::End,
+    }
+}
+
 /// What the overlay is drawn from.
 pub struct Frame<'a> {
     /// The value of each property a template reads, or `None` while it has none.
@@ -93,6 +162,8 @@ struct Placed {
     revealer: gtk::Revealer,
     label: gtk::Label,
     bar: Option<gtk::ProgressBar>,
+    /// Keeps the element's look on the display.
+    _sheet: Sheet,
 }
 
 /// The widgets of the overlay, added to the viewer's `gtk::Overlay`.
@@ -140,7 +211,8 @@ impl MediaOverlay {
             }
         }
         let mut placed = self.placed.borrow_mut();
-        for element in layout.elements.iter().filter(|element| element.enabled) {
+        // Messages are shown by the window's message overlay, not over the item.
+        for element in layout.elements.iter().filter(|element| element.enabled && element.kind != Kind::Messages) {
             let Some((_, column)) = self.columns.iter().find(|(slot, _)| *slot == element.slot) else { continue };
             let item = build(element);
             column.append(&item.revealer);
@@ -155,8 +227,8 @@ impl MediaOverlay {
             let mut up = item.element.is_up(frame);
             if up {
                 let text = item.template.render(frame.values);
-                // A text element with no text has nothing to show, so it does not show its card either.
-                up = item.element.kind == Kind::Progress || !text.trim().is_empty();
+                // An element with no text and no bar has nothing to show, so it does not show its background either.
+                up = item.bar.is_some() || !text.trim().is_empty();
                 if item.label.text() != text {
                     item.label.set_text(&text);
                 }
@@ -171,6 +243,16 @@ impl MediaOverlay {
         }
     }
 
+    /// The elements that are up and want KDE's blur behind them.
+    pub fn blurred(&self) -> Vec<gtk::Widget> {
+        self.placed
+            .borrow()
+            .iter()
+            .filter(|item| item.element.style.blur && item.revealer.is_child_revealed())
+            .map(|item| item.revealer.clone().upcast())
+            .collect()
+    }
+
     /// Takes every element down now, as the item they were over is gone.
     pub fn hide_all(&self) {
         for item in self.placed.borrow().iter() {
@@ -180,12 +262,12 @@ impl MediaOverlay {
 }
 
 fn build(element: &Element) -> Placed {
+    let class = unique_class("overlay-el");
+    let align = element.slot.text_align();
     let card = gtk::Box::new(gtk::Orientation::Vertical, 4);
     card.add_css_class("overlay-element");
-    if element.card {
-        card.add_css_class("overlay-card");
-    }
-    let bar = (element.kind == Kind::Progress).then(|| {
+    card.add_css_class(&class);
+    let bar = (element.kind == Kind::Seek && element.bar).then(|| {
         let bar = gtk::ProgressBar::new();
         bar.add_css_class("seek-bar");
         bar.set_size_request(element.bar_width, -1);
@@ -194,20 +276,18 @@ fn build(element: &Element) -> Placed {
     });
     let label = gtk::Label::new(None);
     label.add_css_class("overlay-text");
-    label.set_halign(if bar.is_some() { gtk::Align::Center } else { gtk::Align::Start });
-    label.set_xalign(0.0);
-    let attributes = pango::AttrList::new();
-    attributes.insert(pango::AttrFloat::new_scale(element.scale));
-    label.set_attributes(Some(&attributes));
+    align_label(&label, align);
     card.append(&label);
 
     let revealer = gtk::Revealer::new();
     revealer.set_transition_type(gtk::RevealerTransitionType::Crossfade);
     revealer.set_transition_duration(FADE);
     revealer.set_child(Some(&card));
-    revealer.set_opacity(element.opacity);
+    revealer.set_opacity(element.style.opacity);
+    revealer.set_halign(horizontal_align(align));
     revealer.set_can_target(false);
-    Placed { element: element.clone(), template: Template::parse(&element.template), revealer, label, bar }
+    let sheet = Sheet::new(&style_css(&format!(".overlay-element.{class}"), &element.style));
+    Placed { element: element.clone(), template: Template::parse(&element.text_template()), revealer, label, bar, _sheet: sheet }
 }
 
 #[cfg(test)]

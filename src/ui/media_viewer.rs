@@ -1441,7 +1441,8 @@ impl MediaViewer {
     }
 
     /// The parts of the viewer that float over the item, which KDE's blur is drawn behind: the
-    /// header in fullscreen (unless pinned), the video controls, and the thumbnail bar when it floats.
+    /// header in fullscreen (unless pinned), the video controls, the thumbnail bar when it floats, and the overlay's elements
+    /// that ask for it.
     pub fn floating_widgets(&self) -> Vec<gtk::Widget> {
         let imp = self.imp();
         let mut widgets = Vec::new();
@@ -1455,6 +1456,9 @@ impl MediaViewer {
         }
         if imp.bar_shown.get() && imp.bar_overlay.get() {
             widgets.push(imp.thumbnail_bar.clone().upcast());
+        }
+        if let Some(overlay) = imp.media_overlay.get() {
+            widgets.extend(overlay.blurred());
         }
         widgets
     }

@@ -1,5 +1,5 @@
-//! The overlay's page in the preferences: a map of the item with its nine places, showing the elements in each, a button
-//! in each place to add one, and a form for the element picked. Every change is saved at once.
+//! The overlay's page in the preferences: a map of the item with its nine places, showing the elements stacked in each,
+//! a button in each place to add one, and a form for the element picked. Every change is saved at once.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -9,7 +9,10 @@ use gtk::gio;
 
 use super::media_overlay::layout_from_settings;
 use crate::overlay::template::Template;
-use crate::overlay::{Element, Items, Kind, Layout, Slot, Visibility, BAR_WIDTH_RANGE, PROPERTIES, SCALE_RANGE, SECONDS_RANGE};
+use crate::overlay::{
+    Element, Items, Kind, Layout, Slot, Visibility, BAR_WIDTH_RANGE, FONT_SIZE_RANGE, PADDING_RANGE, PROPERTIES, RADIUS_RANGE, SECONDS_RANGE,
+    STATUS_PARTS, TIME_FORMATS,
+};
 
 /// What a property reads as in the form's preview.
 fn sample(name: &str) -> Option<String> {
@@ -56,8 +59,8 @@ pub fn build(settings: &gio::Settings) -> gtk::Widget {
 
     let root = gtk::Box::new(gtk::Orientation::Vertical, 12);
     let intro = gtk::Label::new(Some(
-        "Pick where each element sits over the item. Elements are text made from a template, or a progress bar with text; \
-         each can show always, for a moment after skipping, or while paused.",
+        "Elements in one place stack, the first on top, and their text lines up toward the nearest edge. Add a seek \
+         display, the playback status, the notification messages, or text of your own from a template.",
     ));
     intro.set_wrap(true);
     intro.set_xalign(0.0);
@@ -124,9 +127,8 @@ impl Editor {
         self.refresh_form();
     }
 
-    fn add(self: &Rc<Self>, slot: Slot) {
-        let mut element = Element::new("New element", slot, "${state} ${time-pos}${?duration: / ${duration}}");
-        element.items = Items::Videos;
+    fn add(self: &Rc<Self>, kind: Kind, slot: Slot) {
+        let element = Element::of_kind(kind, slot);
         let index = {
             let mut layout = self.layout.borrow_mut();
             layout.elements.push(element);
@@ -134,6 +136,23 @@ impl Editor {
         };
         self.save();
         self.select(Some(index));
+    }
+
+    /// Moves the element picked up or down among those in its place, which is up or down the stack.
+    fn shift(self: &Rc<Self>, down: bool) {
+        let Some(index) = self.selected.get() else { return };
+        let mut layout = self.layout.borrow_mut();
+        let slot = layout.elements[index].slot;
+        let neighbour = if down {
+            (index + 1..layout.elements.len()).find(|&other| layout.elements[other].slot == slot)
+        } else {
+            (0..index).rev().find(|&other| layout.elements[other].slot == slot)
+        };
+        let Some(neighbour) = neighbour else { return };
+        layout.elements.swap(index, neighbour);
+        drop(layout);
+        self.save();
+        self.select(Some(neighbour));
     }
 
     fn remove(self: &Rc<Self>) {
@@ -168,15 +187,25 @@ impl Editor {
                 });
                 cell.append(&chip);
             }
-            let add = gtk::Button::from_icon_name("list-add-symbolic");
+            let add = gtk::MenuButton::builder().icon_name("list-add-symbolic").tooltip_text("Add an element here").valign(gtk::Align::End).vexpand(true).build();
             add.add_css_class("flat");
-            add.set_tooltip_text(Some("Add an element here"));
-            add.set_valign(gtk::Align::End);
-            add.set_vexpand(true);
-            add.connect_clicked({
-                let editor = self.clone();
-                move |_| editor.add(slot)
-            });
+            let choices = gtk::Box::new(gtk::Orientation::Vertical, 0);
+            let popover = gtk::Popover::new();
+            for kind in Kind::ALL {
+                let choice = gtk::Button::with_label(kind.title());
+                choice.add_css_class("flat");
+                choice.connect_clicked({
+                    let editor = self.clone();
+                    let popover = popover.clone();
+                    move |_| {
+                        popover.popdown();
+                        editor.add(kind, slot);
+                    }
+                });
+                choices.append(&choice);
+            }
+            popover.set_child(Some(&choices));
+            add.set_popover(Some(&popover));
             cell.append(&add);
             self.map.attach(&cell, i32::from(slot.column), i32::from(slot.row), 1, 1);
         }
@@ -196,7 +225,7 @@ impl Editor {
         };
 
         let group = adw::PreferencesGroup::new();
-        group.set_title("Element");
+        group.set_title(element.kind.title());
 
         let name = adw::EntryRow::builder().title("Name").text(element.name.as_str()).build();
         name.connect_changed({
@@ -216,39 +245,152 @@ impl Editor {
         position.add_suffix(&self.slot_picker(element.slot));
         group.add(&position);
 
-        let kind = adw::ComboRow::builder().title("Type").model(&gtk::StringList::new(&["Text", "Progress bar with text"])).build();
-        kind.set_selected(u32::from(element.kind == Kind::Progress));
-        kind.connect_selected_notify({
-            let editor = self.clone();
-            move |row| {
-                editor.edit(|element| element.kind = if row.selected() == 1 { Kind::Progress } else { Kind::Text });
-                editor.refresh_form();
-            }
-        });
-        group.add(&kind);
+        let order = adw::ActionRow::builder().title("Order").subtitle("Where it is among the elements in its place").build();
+        for (icon, down) in [("go-up-symbolic", false), ("go-down-symbolic", true)] {
+            let button = gtk::Button::from_icon_name(icon);
+            button.set_valign(gtk::Align::Center);
+            button.add_css_class("flat");
+            button.connect_clicked({
+                let editor = self.clone();
+                move |_| editor.shift(down)
+            });
+            order.add_suffix(&button);
+        }
+        group.add(&order);
+        self.form.append(&group);
 
+        match element.kind {
+            Kind::Template => self.template_options(&element),
+            Kind::Seek => self.seek_options(&element),
+            Kind::Status => self.status_options(&element),
+            Kind::Messages => {
+                let note = adw::PreferencesGroup::new();
+                note.set_description(Some("Notification messages appear in this place, and look as set below. Messages that ask for a place of their own still go there."));
+                self.form.append(&note);
+            }
+        }
+        if element.kind != Kind::Messages {
+            self.form.append(&self.when_options(&element));
+        }
+        self.form.append(&self.look_options(&element));
+
+        let delete = gtk::Button::with_label("Delete element");
+        delete.set_halign(gtk::Align::Start);
+        delete.add_css_class("destructive-action");
+        delete.connect_clicked({
+            let editor = self.clone();
+            move |_| editor.remove()
+        });
+        self.form.append(&delete);
+    }
+
+    /// A row that shows the text the element picked makes, for sample values, kept up to date by calling what it returns.
+    fn preview_row(self: &Rc<Self>) -> (adw::ActionRow, Rc<dyn Fn()>) {
+        let row = adw::ActionRow::builder().title("Preview").build();
+        let label = gtk::Label::new(None);
+        label.set_selectable(true);
+        label.set_wrap(true);
+        row.add_suffix(&label);
+        let editor = self.clone();
+        let update: Rc<dyn Fn()> = Rc::new(move || {
+            let template = editor.selected.get().and_then(|index| editor.layout.borrow().elements.get(index).map(Element::text_template));
+            label.set_text(&template.map(|template| Template::parse(&template).render(&sample)).unwrap_or_default());
+        });
+        update();
+        (row, update)
+    }
+
+    fn template_options(self: &Rc<Self>, element: &Element) {
+        let group = adw::PreferencesGroup::new();
+        group.set_title("Text");
         let template = adw::EntryRow::builder().title("Text template").text(element.template.as_str()).build();
-        let preview = adw::ActionRow::builder().title("Preview").build();
-        let preview_label = gtk::Label::new(None);
-        preview_label.set_selectable(true);
-        preview.add_suffix(&preview_label);
-        let show_preview = {
-            let preview_label = preview_label.clone();
-            move |source: &str| preview_label.set_text(&Template::parse(source).render(&sample))
-        };
-        show_preview(&element.template);
+        let (preview, update) = self.preview_row();
         template.connect_changed({
             let editor = self.clone();
             move |row| {
                 let text = row.text().to_string();
-                show_preview(&text);
                 editor.edit(|element| element.template = text);
+                update();
             }
         });
         group.add(&template);
         group.add(&preview);
         group.add(&reference());
+        self.form.append(&group);
+    }
 
+    fn seek_options(self: &Rc<Self>, element: &Element) {
+        let group = adw::PreferencesGroup::new();
+        group.set_title("Seek display");
+        group.set_description(Some("A progress bar and the time, shown for a moment after the video is skipped through."));
+        let bar = adw::SwitchRow::builder().title("Progress bar").active(element.bar).build();
+        let width = adw::SpinRow::with_range(f64::from(BAR_WIDTH_RANGE.0), f64::from(BAR_WIDTH_RANGE.1), 20.0);
+        width.set_title("Bar width");
+        width.set_subtitle("In pixels");
+        width.set_value(f64::from(element.bar_width));
+        width.set_sensitive(element.bar);
+        bar.connect_active_notify({
+            let editor = self.clone();
+            let width = width.clone();
+            move |row| {
+                width.set_sensitive(row.is_active());
+                editor.edit(|element| element.bar = row.is_active());
+            }
+        });
+        width.connect_value_notify({
+            let editor = self.clone();
+            move |row| editor.edit(|element| element.bar_width = row.value() as i32)
+        });
+        let labels: Vec<&str> = TIME_FORMATS.iter().map(|(_, label)| *label).collect();
+        let format = adw::ComboRow::builder().title("Time").subtitle("How the time is written").model(&gtk::StringList::new(&labels)).build();
+        format.set_selected(TIME_FORMATS.iter().position(|(name, _)| *name == element.time_format).unwrap_or(0) as u32);
+        let (preview, update) = self.preview_row();
+        format.connect_selected_notify({
+            let editor = self.clone();
+            move |row| {
+                if let Some((name, _)) = TIME_FORMATS.get(row.selected() as usize) {
+                    editor.edit(|element| element.time_format = (*name).to_owned());
+                    update();
+                }
+            }
+        });
+        group.add(&bar);
+        group.add(&width);
+        group.add(&format);
+        group.add(&preview);
+        self.form.append(&group);
+    }
+
+    fn status_options(self: &Rc<Self>, element: &Element) {
+        let group = adw::PreferencesGroup::new();
+        group.set_title("Media status");
+        group.set_description(Some("The playback state and time, as mpv writes them on its own display."));
+        let (preview, update) = self.preview_row();
+        for (part, title, _) in STATUS_PARTS {
+            let row = adw::SwitchRow::builder().title(*title).active(element.parts.iter().any(|shown| shown == part)).build();
+            row.connect_active_notify({
+                let editor = self.clone();
+                let update = update.clone();
+                move |row| {
+                    editor.edit(|element| {
+                        element.parts.retain(|shown| shown != part);
+                        if row.is_active() {
+                            element.parts.push((*part).to_owned());
+                        }
+                    });
+                    update();
+                }
+            });
+            group.add(&row);
+        }
+        group.add(&preview);
+        self.form.append(&group);
+    }
+
+    /// When the element is up, and over what.
+    fn when_options(self: &Rc<Self>, element: &Element) -> adw::PreferencesGroup {
+        let group = adw::PreferencesGroup::new();
+        group.set_title("When");
         let visibility = adw::ComboRow::builder()
             .title("Show")
             .model(&gtk::StringList::new(&["Always", "After skipping", "While paused"]))
@@ -309,57 +451,81 @@ impl Editor {
             move |row| editor.edit(|element| element.fullscreen_only = row.is_active())
         });
         group.add(&fullscreen);
+        group
+    }
 
-        let style = adw::PreferencesGroup::new();
-        style.set_title("Look");
-        let scale = adw::SpinRow::with_range(SCALE_RANGE.0, SCALE_RANGE.1, 0.1);
-        scale.set_title("Text size");
-        scale.set_subtitle("As a multiple of the usual size");
-        scale.set_digits(1);
-        scale.set_value(element.scale);
-        scale.connect_value_notify({
+    /// The font, colours, corners and blur.
+    fn look_options(self: &Rc<Self>, element: &Element) -> adw::PreferencesGroup {
+        let style = &element.style;
+        let group = adw::PreferencesGroup::new();
+        group.set_title("Look");
+
+        let spin = |title: &str, subtitle: &str, range: (f64, f64), step: f64, value: f64| {
+            let row = adw::SpinRow::with_range(range.0, range.1, step);
+            row.set_title(title);
+            row.set_subtitle(subtitle);
+            row.set_value(value);
+            row
+        };
+        let font_size = spin("Font size", "In points", FONT_SIZE_RANGE, 1.0, style.font_size);
+        font_size.connect_value_notify({
             let editor = self.clone();
-            move |row| editor.edit(|element| element.scale = row.value())
+            move |row| editor.edit(|element| element.style.font_size = row.value())
         });
-        style.add(&scale);
-        let opacity = adw::SpinRow::with_range(10.0, 100.0, 5.0);
-        opacity.set_title("Opacity");
-        opacity.set_subtitle("In percent");
-        opacity.set_value(element.opacity * 100.0);
+        group.add(&font_size);
+
+        let text_color = self.color_row("Text colour", &style.text_color, |style, color| style.text_color = color);
+        group.add(&text_color);
+        let background = self.color_row("Background colour", &style.background, |style, color| style.background = color);
+        group.add(&background);
+
+        let blur = adw::SwitchRow::builder()
+            .title("Blur behind")
+            .subtitle("Blurs the picture behind it. Needs KDE Plasma on Wayland, and the KDE effects setting")
+            .active(style.blur)
+            .build();
+        blur.connect_active_notify({
+            let editor = self.clone();
+            move |row| editor.edit(|element| element.style.blur = row.is_active())
+        });
+        group.add(&blur);
+
+        let radius = spin("Corner radius", "In pixels", (f64::from(RADIUS_RANGE.0), f64::from(RADIUS_RANGE.1)), 1.0, f64::from(style.radius));
+        radius.connect_value_notify({
+            let editor = self.clone();
+            move |row| editor.edit(|element| element.style.radius = row.value() as i32)
+        });
+        group.add(&radius);
+        let padding = spin("Padding", "In pixels", (f64::from(PADDING_RANGE.0), f64::from(PADDING_RANGE.1)), 1.0, f64::from(style.padding));
+        padding.connect_value_notify({
+            let editor = self.clone();
+            move |row| editor.edit(|element| element.style.padding = row.value() as i32)
+        });
+        group.add(&padding);
+        let opacity = spin("Opacity", "In percent", (10.0, 100.0), 5.0, style.opacity * 100.0);
         opacity.connect_value_notify({
             let editor = self.clone();
-            move |row| editor.edit(|element| element.opacity = row.value() / 100.0)
+            move |row| editor.edit(|element| element.style.opacity = row.value() / 100.0)
         });
-        style.add(&opacity);
-        let card = adw::SwitchRow::builder().title("Card").subtitle("A translucent panel behind it").active(element.card).build();
-        card.connect_active_notify({
-            let editor = self.clone();
-            move |row| editor.edit(|element| element.card = row.is_active())
-        });
-        style.add(&card);
-        if element.kind == Kind::Progress {
-            let width = adw::SpinRow::with_range(f64::from(BAR_WIDTH_RANGE.0), f64::from(BAR_WIDTH_RANGE.1), 20.0);
-            width.set_title("Bar width");
-            width.set_subtitle("In pixels");
-            width.set_value(f64::from(element.bar_width));
-            width.connect_value_notify({
-                let editor = self.clone();
-                move |row| editor.edit(|element| element.bar_width = row.value() as i32)
-            });
-            style.add(&width);
-        }
+        group.add(&opacity);
+        group
+    }
 
-        let delete = gtk::Button::with_label("Delete element");
-        delete.set_halign(gtk::Align::Start);
-        delete.add_css_class("destructive-action");
-        delete.connect_clicked({
+    /// A row with a button that picks a colour, with its transparency, and calls `set` with the colour picked.
+    fn color_row(self: &Rc<Self>, title: &str, current: &str, set: fn(&mut crate::overlay::Style, String)) -> adw::ActionRow {
+        let row = adw::ActionRow::builder().title(title).build();
+        let button = gtk::ColorDialogButton::new(Some(gtk::ColorDialog::builder().with_alpha(true).build()));
+        button.set_valign(gtk::Align::Center);
+        button.set_rgba(&gtk::gdk::RGBA::parse(current).unwrap_or(gtk::gdk::RGBA::BLACK));
+        button.connect_rgba_notify({
             let editor = self.clone();
-            move |_| editor.remove()
+            move |button| {
+                let color = button.rgba().to_str().to_string();
+                editor.edit(|element| set(&mut element.style, color));
+            }
         });
-
-        self.form.append(&group);
-        self.form.append(&style);
-        self.form.append(&delete);
+        row.add_suffix(&button);
+        row
     }
 
     /// A grid of nine buttons, one for each place, of which the one for `current` is down. Pressing another moves the

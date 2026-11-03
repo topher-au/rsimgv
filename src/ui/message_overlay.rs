@@ -2,7 +2,8 @@
 //! edges, and is either temporary, going away by itself after a while, or persistent, staying until it is dismissed
 //! by the code that showed it or by its close button. A persistent message can have its text changed while it is up.
 //!
-//! The messages are added to a `gtk::Overlay` as a column for each place. A column is only as big as its messages,
+//! The messages are added to a `gtk::Overlay` as a column for each place. A message that names no place goes where the
+//! overlay's notification element is, and takes its look. A column is only as big as its messages,
 //! so the rest of the window under the overlay still takes the clicks.
 
 use std::cell::{Cell, RefCell};
@@ -12,6 +13,9 @@ use std::time::Duration;
 
 use gtk::glib;
 use gtk::prelude::*;
+
+use super::media_overlay::{align_label, horizontal_align, style_css, unique_class, Sheet};
+use crate::overlay::{Element, Kind, Slot, Style};
 
 /// How long a temporary message stays up unless it says otherwise.
 pub const DEFAULT_DURATION: Duration = Duration::from_secs(4);
@@ -96,17 +100,17 @@ impl Position {
         }
     }
 
-    fn alignment(self) -> (gtk::Align, gtk::Align) {
-        let horizontal = match self {
-            Self::TopLeft | Self::BottomLeft => gtk::Align::Start,
-            Self::TopCenter | Self::BottomCenter => gtk::Align::Center,
-            Self::TopRight | Self::BottomRight => gtk::Align::End,
+    /// The place over the window the position stands for.
+    pub fn slot(self) -> Slot {
+        let (row, column) = match self {
+            Self::TopLeft => (0, 0),
+            Self::TopCenter => (0, 1),
+            Self::TopRight => (0, 2),
+            Self::BottomLeft => (2, 0),
+            Self::BottomCenter => (2, 1),
+            Self::BottomRight => (2, 2),
         };
-        let vertical = match self {
-            Self::TopLeft | Self::TopCenter | Self::TopRight => gtk::Align::Start,
-            _ => gtk::Align::End,
-        };
-        (horizontal, vertical)
+        Slot { row, column }
     }
 }
 
@@ -124,7 +128,8 @@ pub enum Lifetime {
 pub struct Message {
     pub text: String,
     pub level: Level,
-    pub position: Position,
+    /// Where it sits, or `None` for where the notification element says.
+    pub position: Option<Slot>,
     pub lifetime: Lifetime,
     /// Whether the message has a close button. A temporary message goes by itself, so it has none unless asked to.
     pub dismissible: bool,
@@ -136,7 +141,7 @@ impl Message {
         Self {
             text: text.into(),
             level: Level::Info,
-            position: Position::BottomCenter,
+            position: None,
             lifetime: Lifetime::Temporary(DEFAULT_DURATION),
             dismissible: false,
         }
@@ -153,7 +158,7 @@ impl Message {
     }
 
     pub fn at(mut self, position: Position) -> Self {
-        self.position = position;
+        self.position = Some(position.slot());
         self
     }
 
@@ -176,9 +181,19 @@ struct Shown {
     timer: Option<glib::SourceId>,
 }
 
+/// How messages look, from the notification element.
+struct Look {
+    class: String,
+    blur: bool,
+    _sheet: Sheet,
+}
+
 struct Inner {
-    /// The column of messages at each position.
-    columns: HashMap<Position, gtk::Box>,
+    /// The column of messages at each place.
+    columns: HashMap<Slot, gtk::Box>,
+    /// Where a message goes that names no place.
+    default_slot: Cell<Slot>,
+    look: RefCell<Option<Look>>,
     messages: RefCell<HashMap<MessageId, Shown>>,
     next: Cell<MessageId>,
 }
@@ -192,22 +207,54 @@ pub struct MessageOverlay {
 impl MessageOverlay {
     /// Messages over what `overlay` holds.
     pub fn new(overlay: &gtk::Overlay) -> Self {
-        let columns = Position::ALL
-            .into_iter()
-            .map(|position| {
+        let columns = Slot::all()
+            .map(|slot| {
                 let column = gtk::Box::new(gtk::Orientation::Vertical, SPACING);
-                let (horizontal, vertical) = position.alignment();
-                column.set_halign(horizontal);
-                column.set_valign(vertical);
+                column.set_halign(horizontal_align(slot.text_align()));
+                column.set_valign([gtk::Align::Start, gtk::Align::Center, gtk::Align::End][usize::from(slot.row)]);
                 column.set_margin_start(MARGIN);
                 column.set_margin_end(MARGIN);
                 column.set_margin_top(MARGIN);
                 column.set_margin_bottom(MARGIN);
                 overlay.add_overlay(&column);
-                (position, column)
+                (slot, column)
             })
             .collect();
-        Self { inner: Rc::new(Inner { columns, messages: RefCell::new(HashMap::new()), next: Cell::new(0) }) }
+        Self {
+            inner: Rc::new(Inner {
+                columns,
+                default_slot: Cell::new(Slot::BOTTOM_MIDDLE),
+                look: RefCell::new(None),
+                messages: RefCell::new(HashMap::new()),
+                next: Cell::new(0),
+            }),
+        }
+    }
+
+    /// Sets where messages that name no place go, and how all later messages look, from the layout's notification
+    /// element. With none, they go to the bottom middle and look as the stylesheet says.
+    pub fn configure(&self, element: Option<&Element>) {
+        let element = element.filter(|element| element.kind == Kind::Messages && element.enabled);
+        self.inner.default_slot.set(element.map_or(Slot::BOTTOM_MIDDLE, |element| element.slot));
+        let look = element.map(|element| {
+            let class = unique_class("message-el");
+            let Style { font_size, .. } = element.style;
+            // A plain message has no background, so only the rest of the look applies to it.
+            let css = format!(
+                "{} .message-plain.{class} {{ font-size: {font_size}pt; }}",
+                style_css(&format!(".message.{class}:not(.message-plain)"), &element.style)
+            );
+            Look { class, blur: element.style.blur, _sheet: Sheet::new(&css) }
+        });
+        self.inner.look.replace(look);
+    }
+
+    /// The messages that are up and want KDE's blur behind them.
+    pub fn blurred(&self) -> Vec<gtk::Widget> {
+        if !self.inner.look.borrow().as_ref().is_some_and(|look| look.blur) {
+            return Vec::new();
+        }
+        self.inner.messages.borrow().values().filter(|shown| shown.revealer.is_child_revealed()).map(|shown| shown.revealer.clone().upcast()).collect()
     }
 
     fn downgrade(&self) -> Weak<Inner> {
@@ -219,13 +266,18 @@ impl MessageOverlay {
         let id = self.inner.next.get() + 1;
         self.inner.next.set(id);
 
+        let slot = message.position.unwrap_or_else(|| self.inner.default_slot.get());
+        let align = slot.text_align();
         let card = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         card.add_css_class("message");
         card.add_css_class(message.level.css_class());
+        if let Some(look) = self.inner.look.borrow().as_ref() {
+            card.add_css_class(&look.class);
+        }
         let label = gtk::Label::new(Some(&message.text));
         label.set_wrap(true);
         label.set_max_width_chars(WRAP_WIDTH);
-        label.set_xalign(0.0);
+        align_label(&label, align);
         label.set_hexpand(true);
         card.append(&label);
         if message.dismissible {
@@ -247,6 +299,7 @@ impl MessageOverlay {
         revealer.set_transition_type(gtk::RevealerTransitionType::Crossfade);
         revealer.set_transition_duration(FADE.as_millis() as u32);
         revealer.set_child(Some(&card));
+        revealer.set_halign(horizontal_align(align));
         // A message that has faded out is taken off the window.
         revealer.connect_child_revealed_notify(|revealer| {
             if !revealer.is_child_revealed() && !revealer.reveals_child() {
@@ -255,7 +308,7 @@ impl MessageOverlay {
                 }
             }
         });
-        if let Some(column) = self.inner.columns.get(&message.position) {
+        if let Some(column) = self.inner.columns.get(&slot) {
             column.append(&revealer);
         }
         let appearing = revealer.clone();
@@ -324,7 +377,7 @@ pub(crate) mod tests {
     use super::*;
 
     fn cards_at(overlay: &MessageOverlay, position: Position) -> usize {
-        let column = overlay.inner.columns.get(&position).expect("a column for each position");
+        let column = overlay.inner.columns.get(&position.slot()).expect("a column for each position");
         std::iter::successors(column.first_child(), |child| child.next_sibling()).count()
     }
 

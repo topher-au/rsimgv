@@ -1,16 +1,11 @@
-// The elements of the media overlay over the item. Their text carries a shadow so it reads over any picture; a card
-// puts a translucent, rounded panel behind it, with a thin progress bar for a progress element.
+// The elements of the media overlay over the item. Their text carries a shadow so it reads over any picture; the rest
+// of an element's look (its colours, font size and corners) is set for each element from its settings.
 .overlay-element {
+  color: white;
+
   .overlay-text {
-    color: white;
     text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9);
     font-feature-settings: "tnum";
-  }
-
-  &.overlay-card {
-    background-color: rgba(0, 0, 0, 0.55);
-    border-radius: 10px;
-    padding: 6px 12px;
   }
 
   progressbar.seek-bar {
