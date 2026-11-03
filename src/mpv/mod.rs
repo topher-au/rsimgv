@@ -285,6 +285,13 @@ fn upright_filter(rotation: i64) -> Option<String> {
     Some(format!("{UPRIGHT_FILTER_LABEL}:lavfi=[{graph}]"))
 }
 
+/// The filters that go first in the chain, as one list for `vf pre`, which puts them in the order given: the upright filter, then
+/// the detector, then the crop, so the detector and the crop see the video as it is shown. `None` when there are none.
+fn front_filters(rotation: i64, detector: bool, crop: Option<CropRect>) -> Option<String> {
+    let filters: Vec<String> = [upright_filter(rotation), detector.then(framing::detector_filter), crop.map(framing::crop_filter)].into_iter().flatten().collect();
+    (!filters.is_empty()).then(|| filters.join(","))
+}
+
 /// A captured frame: its size, the bytes from one row to the next, and its pixels.
 pub struct Frame {
     pub width: i32,
@@ -523,17 +530,17 @@ impl Player {
         }
     }
 
-    /// Puts the upright filter, the detector and the crop first in the chain, in that order, in place of any before.
+    /// Puts the upright filter, the detector and the crop first in the chain, in that order, in place of any before, with one
+    /// command to take the old ones out and one to put the new ones in. The filters from the user's options and SVP stay.
     fn rebuild_front_filters(&self) {
-        for label in [UPRIGHT_FILTER_LABEL, &format!("@{}", framing::DETECTOR_LABEL), &format!("@{}", framing::CROP_LABEL)] {
-            if let Err(err) = self.command(&["vf", "remove", label]) {
-                eprintln!("rsimgv: mpv: could not remove {label}: {err}");
-            }
+        // Removing a label that is not in the chain does nothing.
+        let labels = [UPRIGHT_FILTER_LABEL.to_owned(), format!("@{}", framing::DETECTOR_LABEL), format!("@{}", framing::CROP_LABEL)].join(",");
+        if let Err(err) = self.command(&["vf", "remove", &labels]) {
+            eprintln!("rsimgv: mpv: could not remove {labels}: {err}");
         }
-        let filters = [self.crop.get().map(framing::crop_filter), self.detector.get().then(framing::detector_filter), upright_filter(self.rotation.get())];
-        for filter in filters.into_iter().flatten() {
-            if let Err(err) = self.command(&["vf", "pre", &filter]) {
-                eprintln!("rsimgv: mpv: could not add a filter: {err}");
+        if let Some(filters) = front_filters(self.rotation.get(), self.detector.get(), self.crop.get()) {
+            if let Err(err) = self.command(&["vf", "pre", &filters]) {
+                eprintln!("rsimgv: mpv: could not add the filters: {err}");
             }
         }
     }
@@ -829,6 +836,17 @@ mod tests {
         let options = parse_options("--no-quiet --hwdec=cuda-copy --sub-ass  --msg=a b--c --x=1 --empty=");
         let pairs: Vec<(&str, &str)> = options.iter().map(|(name, value)| (name.as_str(), value.as_str())).collect();
         assert_eq!(pairs, [("quiet", "no"), ("hwdec", "cuda-copy"), ("sub-ass", "yes"), ("msg", "a b--c"), ("x", "1"), ("empty", "")]);
+    }
+
+    #[test]
+    fn the_front_filters_are_one_list_in_order() {
+        assert_eq!(front_filters(0, false, None), None);
+        let crop = CropRect { width: 404, height: 720, left: 438, top: 0 };
+        assert_eq!(front_filters(0, false, Some(crop)).as_deref(), Some("@rsimgv-crop:crop=w=404:h=720:x=438:y=0"));
+        let all = front_filters(90, true, Some(crop)).unwrap();
+        let (upright, detector, crop) = (all.find("@rsimgv-upright:"), all.find("@rsimgv-cropdetect:"), all.find("@rsimgv-crop:"));
+        assert!(upright < detector && detector < crop && upright.is_some());
+        assert_eq!(all.matches(",@rsimgv-").count(), 2, "the filters are separated by commas, and the one in brackets keeps its own");
     }
 
     #[test]
