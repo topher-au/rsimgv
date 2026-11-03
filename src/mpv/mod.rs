@@ -370,6 +370,9 @@ impl Player {
                 ("osd-scale-by-window", "no"),
                 // The volume goes up to 200%; mpv stops at 130% unless it is told otherwise.
                 ("volume-max", "200"),
+                // Rendering must not wait for a frame's display time on the main thread, which libmpv does for up to
+                // this long a frame. A frame is shown when it is drawn.
+                ("video-timing-offset", "0"),
             ] {
                 player.set_option(name, value)?;
             }
