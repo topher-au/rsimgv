@@ -115,7 +115,7 @@
         <choice value="extreme"/>
       </choices>
       <default>'standard'</default>
-      <summary>How eagerly thumbnails are made for items off screen: only those on screen, or those up to one, two or four pages away, or the whole folder</summary>
+      <summary>How eagerly thumbnails are made for items off screen: only those on screen, or those up to one, two or four screens away, or the whole folder</summary>
     </key>
     <key name="thumbnail-unload-offscreen" type="b">
       <default>true</default>

@@ -1285,15 +1285,15 @@
                             <child>
                               <object class="AdwComboRow" id="thumbnail_aggression_row">
                                 <property name="title">Aggressiveness</property>
-                                <property name="subtitle">How far from the items on screen thumbnails are made, and whether they go on while a video plays</property>
+                                <property name="subtitle">How far beyond the screen thumbnails are made, ahead of scrolling to them</property>
                                 <property name="model">
                                   <object class="GtkStringList">
                                     <items>
-                                      <item>Low: only the items on screen</item>
-                                      <item>Standard: up to a page away</item>
-                                      <item>Increased: up to two pages away, and while a video plays</item>
-                                      <item>High: up to four pages away</item>
-                                      <item>Extreme: every item in the folder</item>
+                                      <item>Low: only what is on screen</item>
+                                      <item>Standard: up to one screen away</item>
+                                      <item>Increased: up to two screens away, and also while a video plays, which can slow it</item>
+                                      <item>High: up to four screens away</item>
+                                      <item>Extreme: every item in the folder, starting with what is on screen</item>
                                     </items>
                                   </object>
                                 </property>
