@@ -2,8 +2,9 @@
 //! steps through, with the one shown selected. Clicking a thumbnail shows its item. Only the
 //! thumbnails in view are made, as the list view only binds the rows it shows. Dragging the bar asks for
 //! it to move to the side of the viewer it is dropped nearest; dragging its inner edge, the one facing the
-//! picture, makes the thumbnails bigger or smaller. A small header at the start of the bar holds toggles to
-//! pin the bar shown and to float it over the picture.
+//! picture, makes the thumbnails bigger or smaller. A small header at the start of the bar has the position in
+//! its centre, the toggles to pin the bar shown and to float it over the picture nearest the window's edge, and a
+//! button to close the bar at the other end.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -52,7 +53,11 @@ mod imp {
         pub(super) scroller: gtk::ScrolledWindow,
         /// Lays the header and the thumbnails out along the bar.
         pub(super) content: gtk::Box,
-        pub(super) header: gtk::Box,
+        pub(super) header: gtk::CenterBox,
+        /// The pin and overlay toggles, and the button that closes the bar. The toggles are in the header's slot nearest
+        /// the window's edge and the close button in the other.
+        pub(super) toggles: gtk::Box,
+        pub(super) close_button: gtk::Button,
         pub(super) pin_button: gtk::ToggleButton,
         pub(super) overlay_button: gtk::ToggleButton,
         /// Which item is shown out of how many, as `3 / 120`.
@@ -94,18 +99,26 @@ mod imp {
                 .icon_name("window-restore-symbolic")
                 .tooltip_text("Float the thumbnail bar over the picture")
                 .build();
-            let header = gtk::Box::new(gtk::Orientation::Vertical, 4);
+            let header = gtk::CenterBox::new();
             header.add_css_class("thumbnail-bar-header");
-            header.set_valign(gtk::Align::Center);
+            header.set_valign(gtk::Align::Fill);
+            let toggles = gtk::Box::new(gtk::Orientation::Vertical, 4);
+            let close_button = gtk::Button::builder()
+                .icon_name("window-close-symbolic")
+                .tooltip_text("Close the thumbnail bar")
+                .action_name("view.toggle-thumbnail-bar")
+                .build();
+            close_button.add_css_class("flat");
+            close_button.add_css_class("circular");
             let counter = gtk::Label::new(None);
             counter.add_css_class("caption");
             counter.add_css_class("numeric");
             counter.set_tooltip_text(Some("Position in the folder"));
-            header.append(&counter);
+            header.set_center_widget(Some(&counter));
             for button in [&pin_button, &overlay_button] {
                 button.add_css_class("flat");
                 button.add_css_class("circular");
-                header.append(button);
+                toggles.append(button);
             }
             let content = gtk::Box::new(gtk::Orientation::Horizontal, 0);
             content.append(&header);
@@ -117,6 +130,8 @@ mod imp {
                 scroller,
                 content,
                 header,
+                toggles,
+                close_button,
                 pin_button,
                 overlay_button,
                 counter,
@@ -307,6 +322,19 @@ impl ThumbnailBar {
             gtk::PositionType::Left => gtk::CornerType::TopRight,
             _ => gtk::CornerType::TopLeft,
         });
+        let imp = self.imp();
+        // The toggles go in the slot nearest the window's edge: the start of a bar at the top or left, the end of one at
+        // the bottom or right. The close button takes the other.
+        let (header, toggles, close) = (&imp.header, &imp.toggles, &imp.close_button);
+        header.set_start_widget(None::<&gtk::Widget>);
+        header.set_end_widget(None::<&gtk::Widget>);
+        if matches!(side, gtk::PositionType::Top | gtk::PositionType::Left) {
+            header.set_start_widget(Some(toggles));
+            header.set_end_widget(Some(close));
+        } else {
+            header.set_start_widget(Some(close));
+            header.set_end_widget(Some(toggles));
+        }
         self.set_orientation(match side {
             gtk::PositionType::Top | gtk::PositionType::Bottom => gtk::Orientation::Horizontal,
             _ => gtk::Orientation::Vertical,
@@ -358,8 +386,10 @@ impl ThumbnailBar {
         // The header runs across the bar at its start: a column before a row of thumbnails, a row above a column.
         imp.content.set_orientation(orientation);
         let horizontal = orientation == gtk::Orientation::Horizontal;
-        imp.header.set_orientation(if horizontal { gtk::Orientation::Vertical } else { gtk::Orientation::Horizontal });
-        imp.header.set_valign(if horizontal { gtk::Align::Center } else { gtk::Align::Fill });
+        let header_orientation = if horizontal { gtk::Orientation::Vertical } else { gtk::Orientation::Horizontal };
+        imp.header.set_orientation(header_orientation);
+        imp.toggles.set_orientation(header_orientation);
+        imp.header.set_valign(if horizontal { gtk::Align::Fill } else { gtk::Align::Center });
         imp.header.set_halign(if horizontal { gtk::Align::Fill } else { gtk::Align::Center });
         imp.list.set_orientation(orientation);
         let (h, v) = match orientation {
@@ -414,6 +444,8 @@ impl ThumbnailBar {
         imp.pin_button.set_active(pinned);
         imp.overlay_button.set_active(overlay);
         imp.pin_button.set_sensitive(overlay);
+        // A floating bar that is not pinned hides itself; any other stays until it is closed.
+        imp.close_button.set_visible(!overlay || pinned);
     }
 
     /// Calls `callback` when the pin toggle is clicked, with whether it is now on.
