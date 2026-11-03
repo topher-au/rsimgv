@@ -55,6 +55,8 @@ mod imp {
         pub(super) header: gtk::Box,
         pub(super) pin_button: gtk::ToggleButton,
         pub(super) overlay_button: gtk::ToggleButton,
+        /// Which item is shown out of how many, as `3 / 120`.
+        pub(super) counter: gtk::Label,
         /// Whether the bar is being dragged to another side.
         pub(super) dragging: Cell<bool>,
         /// The thumbnail size the drag of the inner edge started from, while one is under way.
@@ -95,6 +97,11 @@ mod imp {
             let header = gtk::Box::new(gtk::Orientation::Vertical, 4);
             header.add_css_class("thumbnail-bar-header");
             header.set_valign(gtk::Align::Center);
+            let counter = gtk::Label::new(None);
+            counter.add_css_class("caption");
+            counter.add_css_class("numeric");
+            counter.set_tooltip_text(Some("Position in the folder"));
+            header.append(&counter);
             for button in [&pin_button, &overlay_button] {
                 button.add_css_class("flat");
                 button.add_css_class("circular");
@@ -112,6 +119,7 @@ mod imp {
                 header,
                 pin_button,
                 overlay_button,
+                counter,
                 dragging: Cell::new(false),
                 resizing: Cell::new(None),
                 side: Cell::new(gtk::PositionType::Bottom),
@@ -162,6 +170,24 @@ mod imp {
                 }
             });
             obj.set_orientation(gtk::Orientation::Horizontal);
+            // The counter follows the selection and the number of items.
+            self.selection.connect_selection_changed({
+                let weak = obj.downgrade();
+                move |_, _, _| {
+                    if let Some(bar) = weak.upgrade() {
+                        bar.update_counter();
+                    }
+                }
+            });
+            self.paths.connect_items_changed({
+                let weak = obj.downgrade();
+                move |_, _, _, _| {
+                    if let Some(bar) = weak.upgrade() {
+                        bar.update_counter();
+                    }
+                }
+            });
+            obj.update_counter();
 
             // A press that moves far enough becomes a drag of the whole bar; dropping it asks for the
             // side nearest the pointer. Claiming the drag cancels the list's click, so no item opens.
@@ -347,6 +373,19 @@ impl ThumbnailBar {
             self.remove_css_class(class);
         }
         self.add_css_class(if orientation == gtk::Orientation::Horizontal { "horizontal" } else { "vertical" });
+    }
+
+    /// Shows the selected item's place among the items: its number and how many there are. With no item selected it
+    /// shows a dash for the number, and with no items nothing.
+    fn update_counter(&self) {
+        let imp = self.imp();
+        let (selected, total) = (imp.selection.selected(), imp.paths.n_items());
+        let text = match (total, selected) {
+            (0, _) => String::new(),
+            (_, gtk::INVALID_LIST_POSITION) => format!("\u{2013} / {total}"),
+            _ => format!("{} / {total}", selected + 1),
+        };
+        imp.counter.set_label(&text);
     }
 
     /// Shows the thumbnails of `paths`, replacing those shown.
