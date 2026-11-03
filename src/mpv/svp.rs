@@ -7,8 +7,10 @@
 //! video does not wait on that each time, the filter can be left out until the skipping has stopped.
 
 use std::collections::hash_map::DefaultHasher;
+use std::ffi::{c_char, c_int, c_void, CString};
 use std::fs::{DirBuilder, Permissions};
 use std::hash::{Hash, Hasher};
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -79,11 +81,29 @@ pub fn target_fps(rate: &Rate, source: f64, speed: f64, display: Option<f64>) ->
 static SVPFLOW1: &[u8] = include_bytes!(concat!(env!("RSIMGV_SVP_PLUGINS"), "/libsvpflow1_vs.so"));
 static SVPFLOW2: &[u8] = include_bytes!(concat!(env!("RSIMGV_SVP_PLUGINS"), "/libsvpflow2_vs.so"));
 
+const RTLD_NOW: c_int = 2;
+const RTLD_NODELETE: c_int = 0x1000;
+
+unsafe extern "C" {
+    fn dlopen(file: *const c_char, flags: c_int) -> *mut c_void;
+}
+
 /// The paths of the plugin libraries, which are in the script directory.
 #[derive(Debug, PartialEq)]
 pub struct Plugins {
     pub svp1: PathBuf,
     pub svp2: PathBuf,
+}
+
+/// Keeps the plugin at `path` loaded for the rest of the process. VapourSynth unloads a plugin with its core, which goes
+/// each time mpv reloads the script, and the plugins never release the OpenCL context and programs they keep in statics:
+/// unloaded, those are lost in VRAM, and the plugin makes new ones when it is next loaded.
+fn keep_loaded(path: &Path) {
+    let Ok(file) = CString::new(path.as_os_str().as_bytes()) else { return };
+    // SAFETY: the path is a valid string, and the plugins do nothing on being loaded but set up their own statics.
+    if unsafe { dlopen(file.as_ptr(), RTLD_NOW | RTLD_NODELETE) }.is_null() {
+        eprintln!("rsimgv: {} could not be kept loaded", path.display());
+    }
 }
 
 /// The plugins, written out to the script directory the first time they are needed. Each is written under a name of its
@@ -99,6 +119,7 @@ pub fn plugins() -> Result<&'static Plugins, &'static str> {
                 let path = directory.join(name);
                 std::fs::write(&temporary, bytes)?;
                 std::fs::rename(&temporary, &path)?;
+                keep_loaded(&path);
                 Ok(path)
             };
             Ok(Plugins {
