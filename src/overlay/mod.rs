@@ -647,8 +647,6 @@ pub struct Style {
     pub text_opacity: f64,
     pub background: String,
     pub background_opacity: f64,
-    /// Whether KDE blurs what is behind the element, which needs the KDE effects setting and a Wayland session.
-    pub blur: bool,
     /// How round the corners of the background are, and the space between it and the text, in pixels.
     pub radius: i32,
     pub padding: i32,
@@ -684,7 +682,6 @@ impl Default for Style {
             text_opacity: 1.0,
             background: "rgb(0, 0, 0)".to_owned(),
             background_opacity: 0.55,
-            blur: false,
             radius: 10,
             padding: 8,
             opacity: 1.0,
@@ -890,7 +887,6 @@ impl Element {
             "text-opacity": self.style.text_opacity,
             "background": self.style.background,
             "background-opacity": self.style.background_opacity,
-            "blur": self.style.blur,
             "radius": self.style.radius,
             "padding": self.style.padding,
             "opacity": self.style.opacity,
@@ -1014,7 +1010,6 @@ impl Element {
         if let Some(color) = text("background") {
             style.background = color.to_owned();
         }
-        style.blur = flag("blur", style.blur);
         style.radius = whole("radius", style.radius, RADIUS_RANGE);
         style.padding = whole("padding", style.padding, PADDING_RANGE);
         style.opacity = number("opacity", style.opacity, (0.1, 1.0));
@@ -1224,12 +1219,12 @@ mod tests {
     #[test]
     fn an_element_written_by_hand_says_only_what_it_changes() {
         let layout = Layout::from_json(
-            r#"{"elements":[{"template":"${speed}x","slot":"top-right","font-size":999,"blur":true},{"kind":"seek"},"nonsense"]}"#,
+            r#"{"elements":[{"template":"${speed}x","slot":"top-right","font-size":999},{"kind":"seek"},"nonsense"]}"#,
         )
         .unwrap();
         assert_eq!(layout.elements.len(), 2, "what is not an element is left out");
         let (template, seek) = (&layout.elements[0], &layout.elements[1]);
-        assert_eq!((template.slot, template.style.font_size, template.enabled, template.style.blur), (Slot::TOP_RIGHT, FONT_SIZE_RANGE.1, true, true));
+        assert_eq!((template.slot, template.style.font_size, template.enabled), (Slot::TOP_RIGHT, FONT_SIZE_RANGE.1, true));
         assert_eq!((seek.kind, seek.visibility, seek.items), (Kind::Seek, Visibility::Seek, Items::Videos), "a kind brings its usual settings");
         assert_eq!(Layout::from_json("not json"), None);
         assert_eq!(Layout::from_json("{}"), None);

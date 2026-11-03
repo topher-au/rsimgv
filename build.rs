@@ -1,8 +1,5 @@
-//! Compiles the GSettings backend's GObject subclass (native/backend.c) into the crate, and KWin's blur
-//! protocol: its client code is generated from the protocol description, beside the blur's C wrapper.
+//! Compiles the GSettings backend's GObject subclass (native/backend.c) into the crate.
 
-use std::env;
-use std::path::PathBuf;
 use std::process::Command;
 
 /// Adds the compile flags from `pkg-config` for `package` to `build`: include paths, and other flags as they are.
@@ -33,23 +30,4 @@ fn main() {
     pkg_config_cflags(&mut build, "gio-2.0");
     build.compile("rsimgv_settings_backend");
 
-    println!("cargo:rerun-if-changed=native/kde_blur.c");
-    println!("cargo:rerun-if-changed=data/protocols/kde-blur.xml");
-    let out = PathBuf::from(env::var("OUT_DIR").expect("cargo sets OUT_DIR"));
-    let protocol = "data/protocols/kde-blur.xml";
-    for (mode, file) in [("client-header", "kde-blur-client.h"), ("private-code", "kde-blur-protocol.c")] {
-        let status = Command::new("wayland-scanner")
-            .args([mode, protocol])
-            .arg(out.join(file))
-            .status()
-            .expect("wayland-scanner is needed for the KDE blur protocol");
-        assert!(status.success(), "wayland-scanner failed on {protocol}");
-    }
-    let mut build = cc::Build::new();
-    build.file("native/kde_blur.c").file(out.join("kde-blur-protocol.c")).include(&out);
-    pkg_config_cflags(&mut build, "wayland-client");
-    build.compile("rsimgv_kde_blur");
-    for flag in ["wayland-client"] {
-        println!("cargo:rustc-link-lib={flag}");
-    }
 }

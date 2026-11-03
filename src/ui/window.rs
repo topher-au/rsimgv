@@ -178,19 +178,6 @@ impl Window {
             let pending = pending.clone();
             Rc::new(move |window: &Window| schedule_window_save(window, &settings, &pending))
         };
-        // KDE's blur is kept behind the viewer's floating parts, each frame, when the setting is on.
-        let blur_last = Rc::new(RefCell::new(Vec::new()));
-        let weak = window.downgrade();
-        window.add_tick_callback(move |_, _| {
-            let Some(window) = weak.upgrade() else { return glib::ControlFlow::Break };
-            let enabled = window.imp().settings.get().is_some_and(|settings| settings.boolean("kde-effects"));
-            let mut widgets = if enabled { window.imp().viewer.floating_widgets() } else { Vec::new() };
-            if enabled {
-                widgets.extend(window.messages().blurred());
-            }
-            crate::ui::kde_blur::update(window.upcast_ref(), &widgets, &blur_last);
-            glib::ControlFlow::Continue
-        });
         window.connect_maximized_notify({
             let schedule = schedule.clone();
             move |window| schedule(window)

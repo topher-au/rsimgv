@@ -43,8 +43,6 @@ mod imp {
         #[template_child]
         pub blurred_background_row: TemplateChild<adw::SwitchRow>,
         #[template_child]
-        pub kde_effects_row: TemplateChild<adw::SwitchRow>,
-        #[template_child]
         pub svp_enabled_row: TemplateChild<adw::SwitchRow>,
         #[template_child]
         pub svp_fps_mode_row: TemplateChild<adw::ComboRow>,
@@ -383,7 +381,6 @@ impl PreferencesDialog {
             .flags(gio::SettingsBindFlags::INVERT_BOOLEAN)
             .build();
         settings.bind("viewer-blurred-background", &*imp.blurred_background_row, "active").build();
-        settings.bind("kde-effects", &*imp.kde_effects_row, "active").build();
         settings.bind("svp-enabled", &*imp.svp_enabled_row, "active").build();
         settings.bind("svp-fps-target", &*imp.svp_fps_target_row, "value").build();
         settings.bind("svp-nvof", &*imp.svp_nvof_row, "active").build();

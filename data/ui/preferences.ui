@@ -150,12 +150,6 @@
                                   </object>
                                 </child>
                                 <child>
-                                  <object class="AdwSwitchRow" id="kde_effects_row">
-                                    <property name="title">KDE effects</property>
-                                    <property name="subtitle">Blurs the overlays that float over the viewer's item, on KDE Plasma under Wayland</property>
-                                  </object>
-                                </child>
-                                <child>
                                   <object class="AdwActionRow" id="start_directory_row">
                                     <property name="title">Start directory</property>
                                     <child type="suffix">

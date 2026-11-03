@@ -188,7 +188,6 @@ struct Look {
     /// already up.
     element: Element,
     class: String,
-    blur: bool,
     _sheet: Sheet,
 }
 
@@ -262,7 +261,7 @@ impl MessageOverlay {
                 style_css(&format!(".message.{class}:not(.message-plain)"), &element.style),
                 effects_css(&format!(".message.{class}:not(.message-plain)"), &format!(".message.{class} label"), &element.style),
             );
-            Look { element: element.clone(), class, blur: element.style.blur, _sheet: Sheet::new(&css) }
+            Look { element: element.clone(), class, _sheet: Sheet::new(&css) }
         });
         self.inner.look.replace(look);
     }
@@ -313,14 +312,6 @@ impl MessageOverlay {
             let Some((id, slot, message)) = next else { return };
             self.present(id, slot, message);
         }
-    }
-
-    /// The messages that are up and want KDE's blur behind them.
-    pub fn blurred(&self) -> Vec<gtk::Widget> {
-        if !self.inner.look.borrow().as_ref().is_some_and(|look| look.blur) {
-            return Vec::new();
-        }
-        self.inner.messages.borrow().values().filter(|shown| shown.revealer.is_child_revealed()).map(|shown| shown.revealer.clone().upcast()).collect()
     }
 
     fn downgrade(&self) -> Weak<Inner> {

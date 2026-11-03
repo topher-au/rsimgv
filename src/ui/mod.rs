@@ -8,7 +8,6 @@ mod thumbnail_paint;
 mod thumbnail_bar;
 mod image_canvas;
 mod item_grid;
-mod kde_blur;
 mod keybinding_list;
 mod key_handler;
 mod keybind_label;

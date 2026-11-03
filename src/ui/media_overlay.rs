@@ -468,16 +468,6 @@ impl MediaOverlay {
         }
     }
 
-    /// The elements that are up and want KDE's blur behind them.
-    pub fn blurred(&self) -> Vec<gtk::Widget> {
-        self.placed
-            .borrow()
-            .iter()
-            .filter(|item| item.element.style.blur && item.revealer.is_child_revealed())
-            .map(|item| item.revealer.clone().upcast())
-            .collect()
-    }
-
     /// Takes every element down now, as the item they were over is gone.
     pub fn hide_all(&self) {
         self.drop_preview();

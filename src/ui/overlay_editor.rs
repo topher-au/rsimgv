@@ -886,7 +886,7 @@ impl Editor {
         group.add(&fullscreen);
     }
 
-    /// The font, colours, corners and blur.
+    /// The font, colours and corners.
     fn look_tab(self: &Rc<Self>, element: &Element) -> adw::PreferencesPage {
         let style = &element.style;
         let page = adw::PreferencesPage::new();
@@ -952,17 +952,7 @@ impl Editor {
             move |row| editor.edit(|element| element.style.background_opacity = row.value() / 100.0)
         });
         boxed.add(&background_opacity);
-        let blur = adw::SwitchRow::builder()
-            .title("Blur behind")
-            .subtitle("Blurs the picture behind it. Needs KDE Plasma on Wayland, and the KDE effects setting")
-            .active(style.blur)
-            .build();
-        blur.connect_active_notify({
-            let editor = self.clone();
-            move |row| editor.edit(|element| element.style.blur = row.is_active())
-        });
-        boxed.add(&blur);
-        let background_rows = [background_color.upcast::<gtk::Widget>(), background_opacity.clone().upcast(), blur.clone().upcast()];
+        let background_rows = [background_color.upcast::<gtk::Widget>(), background_opacity.clone().upcast()];
         for row in &background_rows {
             row.set_sensitive(style.background_on);
         }

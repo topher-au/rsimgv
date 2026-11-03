@@ -163,7 +163,7 @@ src/
   storage/           atomic file writes, bookmarks and per-file settings
   ui/                widgets: window, folder tree, browse view, path bar,
                      navigation bar, header bar, preferences, split view
-native/              GObject subclass for GSettings (backend.c) and KWin blur (kde_blur.c)
+native/              GObject subclass for GSettings (backend.c)
 data/
   ui/                GTK XML templates for every window and widget
   style/             SCSS, compiled to CSS at build time

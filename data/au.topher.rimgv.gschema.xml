@@ -93,10 +93,6 @@
       <default>1.0</default>
       <summary>How many seconds after the last seek SVP comes back</summary>
     </key>
-    <key name="kde-effects" type="b">
-      <default>false</default>
-      <summary>Use KDE Plasma's effects, such as blur behind floating overlays, where the compositor offers them</summary>
-    </key>
     <key name="image-preloading" type="b">
       <default>true</default>
       <summary>When viewing an image, preload the adjacent images in the background</summary>
