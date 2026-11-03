@@ -40,6 +40,10 @@ const MOTION_GAP: f64 = 0.1;
 /// little, and the display scales it up as it draws it.
 const BACKDROP_SHRINK: f64 = 8.0;
 
+/// How long the backdrop is left as it is while the video plays, before it is made again from the frame. It is a blur, so it
+/// need not keep up with every frame.
+const BACKDROP_INTERVAL: std::time::Duration = std::time::Duration::from_millis(150);
+
 /// One greyscale frame of the video at `path`, `seconds` in, decoded at the size `width` by `height`.
 fn grab_gray(path: &Path, seconds: f64, width: i32, height: i32) -> Option<Vec<u8>> {
     let frame = crate::fs::thumbnail::run_program(
@@ -95,6 +99,11 @@ mod imp {
         /// it, each with the strip it fills.
         pub(super) area: Cell<(f64, f64)>,
         pub(super) backdrop: RefCell<Vec<(gdk::Texture, gtk::graphene::Rect)>>,
+        /// When the backdrop was last made, and whether it must be made again from the next frame whatever the time, such as
+        /// after a seek. The scratch space is the blur's, kept between backdrops.
+        pub(super) backdrop_at: Cell<Option<std::time::Instant>>,
+        pub(super) backdrop_stale: Cell<bool>,
+        pub(super) blur_scratch: RefCell<Vec<u8>>,
         pub(super) duration: Cell<i64>,
         /// Whether a seek is under way, to report when it lands.
         pub(super) seeking: Cell<bool>,
@@ -159,6 +168,7 @@ mod imp {
         fn seek(&self, timestamp: i64) {
             // Sent before the seek, so a filter taken out in response is out of the way when it lands.
             self.obj().emit_by_name::<()>("seek-requested", &[]);
+            self.backdrop_stale.set(true);
             let seconds = format!("{:.6}", timestamp as f64 / MICROS);
             let result = self.player.borrow().as_ref().map(|player| player.command(&["seek", &seconds, "absolute"]));
             if matches!(result, Some(Ok(()))) {
@@ -543,6 +553,8 @@ impl MpvStream {
                 self.update_frame_size();
             }
             Event::PlaybackRestart => {
+                // The frames before it were from before the seek.
+                imp.backdrop_stale.set(true);
                 if imp.seeking.replace(false) {
                     self.seek_success();
                 }
@@ -613,10 +625,11 @@ impl MpvStream {
         }
         imp.render_size.set((width, height));
         imp.pixels.replace(vec![0; width as usize * height as usize * 4]);
+        imp.backdrop_stale.set(true);
         self.render_frame(true);
     }
 
-    /// Makes the backdrop from the `width` by `height` frame in `pixels`: for each bare strip of the area round the picture,
+    /// Makes the backdrop, now, from the `width` by `height` frame in `pixels`: for each bare strip of the area round the picture,
     /// the part of the frame that, covering the area, lies under it, shrunk to an eighth, blurred and dimmed. They are drawn
     /// as they are, so only the small pixels are ever blurred.
     fn update_backdrop(&self, pixels: &[u8], width: i32, height: i32) {
@@ -635,13 +648,16 @@ impl MpvStream {
         // Area units per pixel of the frame, when it covers the area.
         let per_pixel = cover_width / f64::from(width);
         let radius = (f64::from(backdrop.blur.max(1)) * 4.0 * scale / BACKDROP_SHRINK).round().max(1.0) as usize;
+        imp.backdrop_at.set(Some(std::time::Instant::now()));
+        imp.backdrop_stale.set(false);
+        let mut scratch = imp.blur_scratch.borrow_mut();
         let mut pieces = Vec::new();
         for (x, y, strip_width, strip_height) in framing::bars(area_width, area_height, fitted) {
             let out_width = ((strip_width * scale / BACKDROP_SHRINK).ceil() as usize).max(1);
             let out_height = ((strip_height * scale / BACKDROP_SHRINK).ceil() as usize).max(1);
             let region = ((x - cover_x) / per_pixel, (y - cover_y) / per_pixel, (x + strip_width - cover_x) / per_pixel, (y + strip_height - cover_y) / per_pixel);
             let mut small = framing::shrink_region(pixels, width as usize, height as usize, region, out_width, out_height);
-            framing::blur_and_dim(&mut small, out_width, out_height, radius, backdrop.dim);
+            framing::blur_and_dim(&mut small, &mut scratch, out_width, out_height, radius, backdrop.dim);
             let bytes = glib::Bytes::from_owned(small);
             let texture = gdk::MemoryTexture::new(out_width as i32, out_height as i32, gdk::MemoryFormat::B8g8r8x8, &bytes, out_width * 4);
             pieces.push((texture.upcast(), gtk::graphene::Rect::new(x as f32, y as f32, strip_width as f32, strip_height as f32)));
@@ -665,7 +681,9 @@ impl MpvStream {
         }
         let bytes = glib::Bytes::from(&pixels[..]);
         let texture = gdk::MemoryTexture::new(width, height, gdk::MemoryFormat::B8g8r8x8, &bytes, width as usize * 4);
-        self.update_backdrop(&pixels, width, height);
+        if imp.framing.get().backdrop.is_some() && (imp.backdrop_stale.get() || imp.backdrop_at.get().is_none_or(|at| at.elapsed() >= BACKDROP_INTERVAL)) {
+            self.update_backdrop(&pixels, width, height);
+        }
         drop(pixels);
         imp.frame.replace(Some(texture.upcast()));
         self.invalidate_contents();

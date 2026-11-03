@@ -155,36 +155,51 @@ pub fn shrink_region(pixels: &[u8], width: usize, height: usize, region: (f64, f
 }
 
 /// Blurs 4-byte pixels `width` by `height` with two passes of a box `radius` pixels either side (clamped at the edges), and
-/// scales them to `dim` of their brightness.
-pub fn blur_and_dim(pixels: &mut [u8], width: usize, height: usize, radius: usize, dim: f64) {
+/// scales them to `dim` of their brightness. The fourth byte of each pixel is not used. `scratch` holds the pass between the
+/// two directions, and is kept by the caller so it is not made for each picture.
+pub fn blur_and_dim(pixels: &mut [u8], scratch: &mut Vec<u8>, width: usize, height: usize, radius: usize, dim: f64) {
     if width == 0 || height == 0 || pixels.len() < width * height * 4 {
         return;
     }
-    let mut scratch = vec![0u8; pixels.len()];
+    scratch.resize(pixels.len(), 0);
     for _ in 0..2 {
-        box_pass(pixels, &mut scratch, width, height, radius, true);
-        box_pass(&scratch, pixels, width, height, radius, false);
+        box_pass(pixels, scratch, width, height, radius, true);
+        box_pass(scratch, pixels, width, height, radius, false);
     }
     let dim = dim.clamp(0.0, 1.0);
+    let levels: [u8; 256] = std::array::from_fn(|level| (level as f64 * dim) as u8);
     for pixel in pixels.chunks_exact_mut(4) {
         for byte in &mut pixel[..3] {
-            *byte = (f64::from(*byte) * dim) as u8;
+            *byte = levels[usize::from(*byte)];
         }
     }
 }
 
+/// One box blur pass along rows (`horizontal`) or columns, of the colour bytes of each pixel, with a window that slides along
+/// each line: the sum gains the pixel entering it and loses the one leaving, so the cost does not follow the radius. Pixels
+/// past either end of a line count as its end pixel.
 fn box_pass(from: &[u8], to: &mut [u8], width: usize, height: usize, radius: usize, horizontal: bool) {
     let (length, lines, along, across) = if horizontal { (width, height, 1, width) } else { (height, width, width, 1) };
     let window = (2 * radius + 1) as u32;
+    let last = length as isize - 1;
+    let radius = radius as isize;
     for line in 0..lines {
-        for i in 0..length {
-            for channel in 0..4 {
-                let mut total = 0u32;
-                for k in i as isize - radius as isize..=(i + radius) as isize {
-                    let k = k.clamp(0, length as isize - 1) as usize;
-                    total += u32::from(from[(line * across + k * along) * 4 + channel]);
-                }
-                to[(line * across + i * along) * 4 + channel] = (total / window) as u8;
+        let at = |i: isize| (line * across + i.clamp(0, last) as usize * along) * 4;
+        let mut total = [0u32; 3];
+        for k in -radius..=radius {
+            let from_at = at(k);
+            for (sum, byte) in total.iter_mut().zip(&from[from_at..from_at + 3]) {
+                *sum += u32::from(*byte);
+            }
+        }
+        for i in 0..length as isize {
+            let to_at = at(i);
+            for (byte, sum) in to[to_at..to_at + 3].iter_mut().zip(total) {
+                *byte = (sum / window) as u8;
+            }
+            let (leaving, entering) = (at(i - radius), at(i + radius + 1));
+            for (channel, sum) in total.iter_mut().enumerate() {
+                *sum = *sum + u32::from(from[entering + channel]) - u32::from(from[leaving + channel]);
             }
         }
     }
@@ -434,8 +449,44 @@ mod tests {
         let small = shrink_region(&pixels, 4, 4, (0.0, 0.0, 4.0, 4.0), 2, 1);
         assert_eq!(small, vec![255, 255, 255, 255, 0, 0, 0, 0]);
         let mut blurred = small;
-        blur_and_dim(&mut blurred, 2, 1, 1, 0.5);
+        blur_and_dim(&mut blurred, &mut Vec::new(), 2, 1, 1, 0.5);
         assert!(blurred[0] < 128 && blurred[0] > blurred[4]);
+    }
+
+    /// The blur as first written, summing the whole window for each pixel, to check the sliding window against.
+    fn box_pass_by_sum(from: &[u8], width: usize, height: usize, radius: usize, horizontal: bool) -> Vec<u8> {
+        let (length, lines, along, across) = if horizontal { (width, height, 1, width) } else { (height, width, width, 1) };
+        let mut to = from.to_vec();
+        for line in 0..lines {
+            for i in 0..length {
+                for channel in 0..3 {
+                    let total: u32 = (i as isize - radius as isize..=(i + radius) as isize)
+                        .map(|k| u32::from(from[(line * across + k.clamp(0, length as isize - 1) as usize * along) * 4 + channel]))
+                        .sum();
+                    to[(line * across + i * along) * 4 + channel] = (total / (2 * radius as u32 + 1)) as u8;
+                }
+            }
+        }
+        to
+    }
+
+    #[test]
+    fn the_sliding_window_blur_matches_summing_the_window() {
+        let (width, height) = (13, 7);
+        let pixels: Vec<u8> = (0..width * height * 4).map(|i| ((i * 37 + i / 5 * 11) % 256) as u8).collect();
+        // Radii smaller than, equal to and larger than the line, so the window reaches past both ends.
+        for radius in [1, 3, 8, 20] {
+            for horizontal in [true, false] {
+                let mut slid = pixels.clone();
+                box_pass(&pixels, &mut slid, width, height, radius, horizontal);
+                let summed = box_pass_by_sum(&pixels, width, height, radius, horizontal);
+                for (at, (a, b)) in slid.iter().zip(&summed).enumerate() {
+                    if at % 4 != 3 {
+                        assert_eq!(a, b, "radius {radius}, horizontal {horizontal}, byte {at}");
+                    }
+                }
+            }
+        }
     }
 
     #[test]
