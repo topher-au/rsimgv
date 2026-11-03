@@ -877,6 +877,24 @@ fn largest_on_disk(root: &Path, path: &Path, mtime: i64, above: i32) -> Option<P
     })
 }
 
+/// The PNG bytes, and the size in pixels, of the largest cached still thumbnail of the file at `path`, as it is now, that is
+/// at most `max_size` pixels across. Nothing is made, so `None` for a file that has not been thumbnailed to that size or
+/// less, or whose thumbnails are not kept on the disk.
+pub fn cached_still_png(path: &Path, max_size: i32) -> Option<(i32, Vec<u8>)> {
+    let uri = glib::filename_to_uri(path, None).ok()?;
+    let digest = glib::compute_checksum_for_string(glib::ChecksumType::Md5, uri.as_str())?;
+    let stamp = stamp(path).to_string();
+    let root = glib::user_cache_dir().join("rsimgv");
+    let found: Vec<(i32, Vec<u8>)> = SIZES
+        .iter()
+        .filter_map(|&pixels| {
+            let data = std::fs::read(root.join(pixels.to_string()).join(format!("{digest}.png"))).ok()?;
+            (png_text(&data, "rsimgv::MTime") == Some(stamp.as_str())).then_some((pixels, data))
+        })
+        .collect();
+    found.into_iter().rev().find(|(pixels, _)| *pixels <= max_size)
+}
+
 /// The pixels of a job: from the cache under `root` where they are current, or made and cached now. With no `root`,
 /// they are made without touching the disk. `None` if the file cannot be decoded.
 fn make(root: Option<&Path>, key: &Key) -> Option<Vec<Pixels>> {

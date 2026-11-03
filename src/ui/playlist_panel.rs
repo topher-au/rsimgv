@@ -4,6 +4,8 @@
 //! browse view or, when detached, in a window of its own. What the panel asks for, it asks of the window through its
 //! `win.playlist-*` actions.
 
+use crate::settings::Settings;
+
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -23,13 +25,13 @@ use crate::services::scripts;
 
 /// How wide the panel is, in pixels.
 const PANEL_WIDTH: i32 = 400;
-/// The columns in order: the setting that shows each, the menu label that toggles it, its title, and how wide it starts,
-/// in pixels. The position column is -1 wide, which is as wide as its marker, and cannot be resized.
-pub const COLUMNS: [(&str, &str, &str, i32); 4] = [
-    ("playlist-show-position", "Show position column", "#", -1),
-    ("playlist-show-name", "Show name column", "Name", -1),
-    ("playlist-show-length", "Show length column", "Length", -1),
-    ("playlist-show-filename", "Show filename column", "Filename / URL", 300),
+/// The columns in order: the setting that shows each, the window action that toggles it, the menu label of that action,
+/// its title, and how wide it starts, in pixels. The position column is -1 wide, which is as wide as its marker, and cannot be resized.
+pub const COLUMNS: [(&str, &str, &str, &str, i32); 4] = [
+    ("playlist.columns.position", "playlist-show-position", "Show position column", "#", -1),
+    ("playlist.columns.name", "playlist-show-name", "Show name column", "Name", -1),
+    ("playlist.columns.length", "playlist-show-length", "Show length column", "Length", -1),
+    ("playlist.columns.filename", "playlist-show-filename", "Show filename column", "Filename / URL", 300),
 ];
 
 /// A column the playlist can be sorted by. The position is not one, as it is the order the list is in.
@@ -90,7 +92,7 @@ pub struct PlaylistPanel {
 
 impl PlaylistPanel {
     /// Makes the panel, showing the playlist as it is. The columns shown and the lengths read follow `settings`.
-    pub fn new(settings: &gio::Settings) -> Self {
+    pub fn new(settings: &Settings) -> Self {
         eprintln!("playlist-debug: panel new");
         let current = Rc::new(Cell::new(None));
         let rows = Rc::new(RefCell::new(Vec::new()));
@@ -124,8 +126,8 @@ impl PlaylistPanel {
         // The sorter of each sortable column compares nothing, so the view keeps the order the playlist is in. Clicking
         // a heading tells the window to sort the playlist instead.
         let mut sortable = Vec::new();
-        let saved_widths: Vec<i32> = settings.value("playlist-column-widths").get().unwrap_or_default();
-        for (index, (key, _, title, width)) in COLUMNS.into_iter().enumerate() {
+        let saved_widths: Vec<i32> = settings.value("playlist.columns.widths").get().unwrap_or_default();
+        for (index, (key, _, _, title, width)) in COLUMNS.into_iter().enumerate() {
             let factory = cell_factory(index, settings, &current, &rows, &lengths);
             let column = gtk::ColumnViewColumn::new(Some(title), Some(factory));
             column.set_resizable(width >= 0);
@@ -157,7 +159,7 @@ impl PlaylistPanel {
         }
         // The sort the playlist was left in shows in its column's heading. The playlist is already in that order, so
         // nothing is sorted again.
-        let (sort_name, descending): (String, bool) = settings.value("playlist-sort").get().unwrap_or_default();
+        let (sort_name, descending): (String, bool) = settings.value("playlist.sort").get().unwrap_or_default();
         if let Some((_, column)) = sortable.iter().find(|(sort, _)| sort.name() == sort_name) {
             let order = if descending { gtk::SortType::Descending } else { gtk::SortType::Ascending };
             view.sort_by_column(Some(column), order);
@@ -184,7 +186,7 @@ impl PlaylistPanel {
             let (lengths, settings) = (lengths.clone(), settings.clone());
             move |adjustment| {
                 eprintln!("playlist-debug: scroll value={}", adjustment.value());
-                bring_visible_lengths_forward(&lengths, settings.boolean("playlist-fetch-in-background"));
+                bring_visible_lengths_forward(&lengths, settings.boolean("playlist.fetch-in-background"));
             }
         });
 
@@ -516,7 +518,7 @@ fn bring_visible_lengths_forward(lengths: &RefCell<Vec<glib::WeakRef<gtk::Label>
 /// it, and opens the item's menu on a right click. The number column also keeps the rows it binds, to mark the current one.
 fn cell_factory(
     index: usize,
-    settings: &gio::Settings,
+    settings: &Settings,
     current: &Rc<Cell<Option<u32>>>,
     rows: &Rc<RefCell<Vec<glib::WeakRef<gtk::ListItem>>>>,
     lengths: &Rc<RefCell<Vec<glib::WeakRef<gtk::Label>>>>,
@@ -605,7 +607,7 @@ fn cell_factory(
                     bound.push(label.downgrade());
                 }
                 drop(bound);
-                show_length(&label, path, bind_settings.boolean("playlist-fetch-in-background"));
+                show_length(&label, path, bind_settings.boolean("playlist.fetch-in-background"));
             }
             _ => set_label_if_changed(&label, &path.to_string_lossy()),
         }
@@ -654,7 +656,7 @@ fn attach_row_controls(label: &gtk::Label, item: &gtk::ListItem) {
 }
 
 /// Gives a row the menu of its item.
-fn attach_row_menu(row: &gtk::Widget, item: &gtk::ListItem, settings: &gio::Settings) {
+fn attach_row_menu(row: &gtk::Widget, item: &gtk::ListItem, settings: &Settings) {
     let click = gtk::GestureClick::new();
     click.set_button(gdk::BUTTON_SECONDARY);
     // The cell's own selection gesture would otherwise get the press first.
@@ -678,7 +680,7 @@ fn attach_row_menu(row: &gtk::Widget, item: &gtk::ListItem, settings: &gio::Sett
 
 /// The menu of an item at `position` in the playlist, whose path is `path`: what the item is played and removed by, its
 /// file's actions, and which columns are shown.
-fn row_menu(settings: &gio::Settings, position: u32, path: &str) -> gio::Menu {
+fn row_menu(settings: &Settings, position: u32, path: &str) -> gio::Menu {
     let item = |label: &str, action: &str, value: glib::Variant| {
         let item = gio::MenuItem::new(Some(label), None);
         item.set_action_and_target_value(Some(action), Some(&value));
@@ -703,8 +705,8 @@ fn row_menu(settings: &gio::Settings, position: u32, path: &str) -> gio::Menu {
     menu.append_section(None, &file);
 
     let columns = gio::Menu::new();
-    for (key, label, _, _) in COLUMNS {
-        columns.append(Some(label), Some(&format!("win.{key}")));
+    for (_, action, label, _, _) in COLUMNS {
+        columns.append(Some(label), Some(&format!("win.{action}")));
     }
     menu.append_section(None, &columns);
     menu
@@ -726,9 +728,9 @@ fn popup_menu(parent: &gtk::Widget, menu: &gio::Menu, x: f64, y: f64) {
 
 
 /// Keeps the widths of the playlist's columns, so they open as they were left.
-fn save_column_widths(view: &gtk::ColumnView, settings: &gio::Settings) {
+fn save_column_widths(view: &gtk::ColumnView, settings: &Settings) {
     let widths: Vec<i32> = view.columns().iter::<gtk::ColumnViewColumn>().flatten().map(|column| column.fixed_width()).collect();
-    let _ = settings.set_value("playlist-column-widths", &widths.to_variant());
+    let _ = settings.set_value("playlist.columns.widths", &widths.to_variant());
 }
 
 /// The toolbar under the list. Its buttons act on the playlist, or on the selected item through the actions of the group

@@ -1,4 +1,4 @@
-//! The sort chosen for each folder, kept while `remember-folder-sort` is on. They are one YAML file,
+//! The sort chosen for each folder, kept while `browse.sort.remember-per-folder` is on. They are one YAML file,
 //! `folder_sort.yaml` in the config directory, with an entry for each folder by its path:
 //!
 //! ```yaml
@@ -13,7 +13,7 @@ use serde_yaml_ng::{Mapping, Value};
 
 use crate::settings::config_path;
 
-/// How a folder is sorted, as the values of the `sort-by` and `sort-order` settings.
+/// How a folder is sorted, as the values of the `browse.sort.by` and `browse.sort.order` settings.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FolderSort {
     pub by: String,

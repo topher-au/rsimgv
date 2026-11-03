@@ -7,7 +7,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use adw::prelude::*;
-use gtk::{gio, glib};
+use gtk::glib;
 
 use crate::keybindings::actions::{
     value_info, ActionInfo, Scope, DEFAULT_NOTIFICATION_SECONDS, MAX_NOTIFICATION_SECONDS, NOTIFICATION_LEVELS,
@@ -65,7 +65,7 @@ pub fn show(
     // The scripts to pick from, for the action that runs one: those on the Scripts page, and the one the binding
     // already runs if it has since been removed from there, so changing the binding does not silently swap it.
     let scripts = action.takes_script().then(|| {
-        let settings = gio::Settings::new("au.topher.rimgv");
+        let settings = crate::settings::app_settings();
         let mut names: Vec<String> = read_scripts(&settings).into_iter().map(|script| script.name).collect();
         if let Some(script) = existing_script.as_ref().filter(|script| !names.contains(script)) {
             names.push(script.clone());

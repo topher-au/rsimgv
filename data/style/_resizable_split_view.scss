@@ -1,3 +1,8 @@
+// A sidebar laid over the content when collapsed is opaque, so nothing under it shows through.
+.overlay-pane {
+  background-color: var(--window-bg-color);
+}
+
 // Grip on the sidebar's inner edge, dragged to resize the sidebar.
 .rsimgv-split-handle {
   background-color: transparent;

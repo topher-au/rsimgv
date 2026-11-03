@@ -16,7 +16,7 @@ mod imp {
     use super::*;
 
     #[derive(Default, gtk::CompositeTemplate)]
-    #[template(resource = "/au/topher/rimgv/ui/floating_bar.ui")]
+    #[template(resource = "/au/topher/rsimgv/ui/floating_bar.ui")]
     pub struct FloatingBar {
         #[template_child]
         pub spinner: TemplateChild<adw::Spinner>,

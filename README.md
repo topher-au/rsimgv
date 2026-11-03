@@ -57,8 +57,8 @@ library of pictures and videos without leaving the window.
 - **Settings** in a preferences dialog, saved as YAML and applied immediately.
 - **Hidden files** can be shown from the main menu.
 - **Playlist**: one list of pictures and videos from anywhere, in your own order, kept between runs and shared by the windows. Playing it leaves the folder you are browsing, and the item selected there, as they were. See [Playlist](#playlist).
-- **Scripts** are commands listed on the Scripts page, with `%file%` standing for the item they run on. The Run Script action in the keybinding editor binds a key to one: it runs on the item under the cursor, or on the one the viewer shows. A script that waits to finish has the folder listed again when it ends.
-- **Messages** appear over the window: notifications that go away by themselves, and persistent messages that stay until dismissed. A script that fails reports it this way, and other programs can show their own through the remote control server (`messages.show`). F1 shows a list of the keybindings in force where you are, and hides it again. Skipping through a video shows a progress bar and the time over it, which the Overlay tab of the video preferences sets up. With SVP on, skipping leaves it out until a moment after the last skip, and a new video starts without it, so neither waits for SVP to load; the SVP tab sets how long that is, or turns it off. V turns SVP on or off while watching. The Show Notification action in the keybinding editor binds a key to a notification: each binding sets its message, level and how many seconds it stays.
+- **Scripts** are commands listed on the Scripts tab of the Integration page, with `%file%` standing for the item they run on. The Run Script action in the keybinding editor binds a key to one: it runs on the item under the cursor, or on the one the viewer shows. A script that waits to finish has the folder listed again when it ends.
+- **Messages** appear over the window: notifications that go away by themselves, and persistent messages that stay until dismissed. A script that fails reports it this way, and other programs can show their own through the remote control server (`messages.show`). F1 shows a list of the keybindings in force where you are, and hides it again. Skipping through a video shows a progress bar and the time over it, which the Overlay tab of the Viewer page sets up. With SVP on, skipping leaves it out until a moment after the last skip, and a new video starts without it, so neither waits for SVP to load; the SVP tab of the Videos page sets how long that is, or turns it off. V turns SVP on or off while watching. The Show Notification action in the keybinding editor binds a key to a notification: each binding sets its message, level and how many seconds it stays.
 
 ## Requirements
 
@@ -136,40 +136,31 @@ The playlist is kept in `playlist.m3u8` beside the settings file. Other programs
 
 Settings are stored as YAML in `~/.config/rsimgv/rsimgv.conf`. Set `RSIMGV_CONFIG` to use another file.
 
+The file is nested by each setting's GSettings key path below the schema's path, `/au/topher/rsimgv/`. Each setting holds
+its plain value, and its type comes from the schema:
+
 ```yaml
 window:
-  width: 960
   height: 640
-  maximized: false
+  sidebar:
+    width: -1
 browse:
-  show-hidden: false
-  media-only: true
-  item-size: 128
-  filename-display: ellipsized
-  show-directories: first-last
-  info-fields: [size, modified]
-tree:
-  collapse-on-navigate: false
-navigation:
-  folder-end: stop
-  remember-folder-sort: false
-viewer:
-  image-preloading: true
-image:
-  fit: window
-  keep-fit: true
-  original-focus: center
-  unlock-minimum-zoom: false
-  scaling-filter: linear
-thumbnails:
-  threads: 4
-  cache: true
-  unload-offscreen: true
+  info:
+    fields:
+      - size
+      - modified
 ```
 
-They are read and written through GSettings, using a backend that stores them in that file. Changes made in
-the preferences dialog, from the menu, or by editing the file while the app runs all take effect straight
-away. The schema is `data/au.topher.rimgv.gschema.xml`.
+A value that does not fit its setting's type is kept in the file as written and ignored, and the setting uses its default.
+
+Settings are read and written through GSettings, using a backend the application creates and passes to
+`gio::Settings`. Changes made in the preferences dialog, from the menu, or by editing the file while the app runs all
+take effect straight away. A file that cannot be parsed makes the settings read-only until it is fixed and the app is
+restarted, so it is never overwritten. The schema is `data/au.topher.rsimgv.gschema.xml`.
+
+Each group is a child schema in the schema file, such as `au.topher.rsimgv.window.sidebar` at
+`/au/topher/rsimgv/window/sidebar/`. GSettings key names cannot contain `.`, so code names a setting by its dotted path
+through `settings::Settings`, as in `settings.int("window.sidebar.width")`, and that picks the child schema to use.
 
 ## Project layout
 
@@ -202,7 +193,7 @@ because the Rust bindings do not expose the trait needed to subclass `GSettingsB
 
 ## Application ID
 
-The application ID is `au.topher.rimgv`. The icons are currently named `au.topher.rsimgv`, so the app icon
+The application ID is `au.topher.rsimgv`. The icons are currently named `au.topher.rsimgv`, so the app icon
 will not resolve until the two agree.
 
 ## License

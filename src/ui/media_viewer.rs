@@ -317,7 +317,7 @@ mod imp {
     use super::*;
 
     #[derive(Default, gtk::CompositeTemplate)]
-    #[template(resource = "/au/topher/rimgv/ui/media_viewer.ui")]
+    #[template(resource = "/au/topher/rsimgv/ui/media_viewer.ui")]
     pub struct MediaViewer {
         #[template_child]
         pub pages: TemplateChild<gtk::Stack>,
@@ -630,6 +630,9 @@ mod imp {
             });
             obj.add_controller(motion);
 
+            // The overlay's elements are added to the overlay first, so the thumbnail bar and the drop indicator, added
+            // after, lie over them.
+            obj.media_overlay();
             self.bar_revealer.set_transition_duration(BAR_SLIDE_MS);
             self.overlay.add_overlay(&self.bar_revealer);
             self.pin_button.connect_toggled({
@@ -743,14 +746,16 @@ impl MediaViewer {
     }
 
     /// Puts the thumbnail bar on the `side` of the picture, turned on or off. Floating (`overlay`), it lies over
-    /// the picture and slides in only while the pointer is near that edge, unless `pinned`; otherwise it sits
-    /// beside the picture. Turning it on shows it briefly.
+    /// the picture and slides in only while the pointer is near that edge, unless `pinned`. A pinned bar never floats:
+    /// it sits beside the picture, so the overlay over the picture keeps to the picture's own area. Turning it on shows
+    /// it briefly.
     pub fn set_thumbnail_bar(&self, side: gtk::PositionType, shown: bool, overlay: bool, pinned: bool) {
         let imp = self.imp();
         let turned_on = shown && !imp.bar_shown.get();
+        let floating = overlay && !pinned;
         imp.bar_side.set(Some(side));
         imp.bar_shown.set(shown);
-        imp.bar_overlay.set(overlay);
+        imp.bar_overlay.set(floating);
         imp.bar_pinned.set(pinned);
         self.place_status_bar();
         let bar = &imp.thumbnail_bar;
@@ -765,10 +770,10 @@ impl MediaViewer {
         } else if revealer.child().is_some() {
             revealer.set_child(None::<&gtk::Widget>);
         }
-        revealer.set_visible(shown && overlay);
+        revealer.set_visible(shown && floating);
         bar.set_visible(shown);
 
-        if !overlay {
+        if !floating {
             // The viewer box runs across the bar: a column with the bar above or below, a row beside.
             let horizontal = matches!(side, gtk::PositionType::Top | gtk::PositionType::Bottom);
             body.set_orientation(if horizontal { gtk::Orientation::Vertical } else { gtk::Orientation::Horizontal });

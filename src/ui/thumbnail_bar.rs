@@ -2,12 +2,15 @@
 //! steps through, with the one shown selected. Clicking a thumbnail shows its item. Only the
 //! thumbnails in view are made, as the list view only binds the rows it shows. Dragging the bar asks for
 //! it to move to the side of the viewer it is dropped nearest; dragging its inner edge, the one facing the
-//! picture, makes the thumbnails bigger or smaller. A small header at the start of the bar has the position in
+//! picture, makes the thumbnails bigger or smaller. The thumbnails fill the bar's width, or its height along a row,
+//! so when the layout gives the bar another size they are resized to match, and the thumbnail at the start of the
+//! strip stays in view. A small header at the start of the bar has the position in
 //! its centre, the toggles to pin the bar shown and to float it over the picture nearest the window's edge, and a
 //! button to close the bar at the other end.
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
@@ -69,11 +72,15 @@ mod imp {
         pub(super) resizing: Cell<Option<i32>>,
         /// The side of the viewer the bar is on, so which of its edges faces the picture.
         pub(super) side: Cell<gtk::PositionType>,
-        /// The thumbnail size, shared with the factory, and the images it made, to resize them.
+        /// The thumbnail size, shared with the factory, and the rows it made, to resize their images and mark the one shown.
         pub(super) size: Rc<Cell<i32>>,
-        pub(super) images: Rc<RefCell<Vec<glib::WeakRef<gtk::Image>>>>,
+        pub(super) rows: Rc<RefCell<Vec<glib::WeakRef<gtk::ListItem>>>>,
+        /// The position of the item shown in the viewer, shared with the factory, so its thumbnail is marked as it is bound.
+        pub(super) shown: Rc<Cell<Option<u32>>>,
         /// The stamp of each path shown, taken when the paths were set, so binding a row does not read the file.
         pub(super) stamps: Rc<RefCell<HashMap<PathBuf, i64>>>,
+        /// The positions of the videos whose thumbnails are asked for ahead of the ones in view.
+        pub(super) prefetched: RefCell<HashSet<usize>>,
     }
 
     impl Default for ThumbnailBar {
@@ -83,9 +90,10 @@ mod imp {
             selection.set_autoselect(false);
             selection.set_can_unselect(true);
             let size = Rc::new(Cell::new(THUMBNAIL_PIXELS));
-            let images = Rc::new(RefCell::new(Vec::new()));
+            let rows = Rc::new(RefCell::new(Vec::new()));
+            let shown = Rc::new(Cell::new(None));
             let stamps = Rc::new(RefCell::new(HashMap::new()));
-            let list = gtk::ListView::new(Some(selection.clone()), Some(factory(size.clone(), images.clone(), stamps.clone())));
+            let list = gtk::ListView::new(Some(selection.clone()), Some(factory(size.clone(), rows.clone(), shown.clone(), stamps.clone())));
             list.set_single_click_activate(true);
             list.add_css_class("thumbnail-bar-list");
             let scroller = gtk::ScrolledWindow::builder().child(&list).hexpand(true).vexpand(true).build();
@@ -159,8 +167,10 @@ mod imp {
                 resizing: Cell::new(None),
                 side: Cell::new(gtk::PositionType::Bottom),
                 size,
-                images,
+                rows,
+                shown,
                 stamps,
+                prefetched: RefCell::new(HashSet::new()),
             }
         }
     }
@@ -223,6 +233,24 @@ mod imp {
                 }
             });
             obj.update_counter();
+
+            // Scrolling, resizing the list or changing the thumbnail aggression moves the range of videos to make ready.
+            for adjustment in [self.scroller.hadjustment(), self.scroller.vadjustment()] {
+                let weak = obj.downgrade();
+                adjustment.connect_notify_local(None, move |_, _| {
+                    if let Some(bar) = weak.upgrade() {
+                        bar.prefetch_videos();
+                    }
+                });
+            }
+            Thumbnails::shared().watch_aggression({
+                let weak = obj.downgrade();
+                move || {
+                    if let Some(bar) = weak.upgrade() {
+                        bar.prefetch_videos();
+                    }
+                }
+            });
 
             // A press that moves far enough becomes a drag of the whole bar; dropping it asks for the
             // side nearest the pointer. Claiming the drag cancels the list's click, so no item opens.
@@ -322,7 +350,12 @@ mod imp {
         }
     }
 
-    impl WidgetImpl for ThumbnailBar {}
+    impl WidgetImpl for ThumbnailBar {
+        fn size_allocate(&self, width: i32, height: i32, baseline: i32) {
+            self.parent_size_allocate(width, height, baseline);
+            self.obj().fit_to_allocation();
+        }
+    }
 }
 
 glib::wrapper! {
@@ -384,11 +417,14 @@ impl ThumbnailBar {
     pub fn set_thumbnail_size(&self, size: i32) {
         let imp = self.imp();
         let size = size.clamp(THUMBNAIL_MIN, THUMBNAIL_MAX);
-        if imp.size.replace(size) == size {
+        if imp.size.get() == size {
             return;
         }
-        imp.images.borrow_mut().retain(|image| {
-            let Some(image) = image.upgrade() else { return false };
+        // The thumbnail at the start of the strip is kept in view as the list lays out at the new size.
+        let start = self.scroll_position();
+        imp.size.set(size);
+        imp.rows.borrow_mut().retain(|row| {
+            let Some(image) = row.upgrade().and_then(|row| row.child()).and_downcast::<gtk::Image>() else { return false };
             image.set_pixel_size(size);
             image.set_size_request(size, size);
             true
@@ -396,13 +432,86 @@ impl ThumbnailBar {
         if imp.resizing.get().is_none() {
             self.refresh_thumbnails();
         }
+        if let Some(start) = start {
+            self.restore_scroll(start);
+        }
+    }
+
+    /// Sizes the thumbnails to fill the bar as the layout gives it: its width, or its height along a row, less what
+    /// the list takes beside the thumbnails. The bar is normally as wide as its thumbnails need, so this only changes
+    /// them when the layout gives the bar another size. The change waits for the layout to finish.
+    fn fit_to_allocation(&self) {
+        let imp = self.imp();
+        let extent = if imp.list.orientation() == gtk::Orientation::Horizontal { self.height() } else { self.width() };
+        if extent <= 0 || imp.resizing.get().is_some() {
+            return;
+        }
+        let fitted = (extent - self.chrome()).clamp(THUMBNAIL_MIN, THUMBNAIL_MAX);
+        if fitted == imp.size.get() {
+            return;
+        }
+        let weak = self.downgrade();
+        glib::idle_add_local_once(move || {
+            if let Some(bar) = weak.upgrade() {
+                bar.set_thumbnail_size(fitted);
+            }
+        });
+    }
+
+    /// The space the list takes across the thumbnails beside them, such as its padding and scrollbar.
+    fn chrome(&self) -> i32 {
+        let imp = self.imp();
+        let across = if imp.list.orientation() == gtk::Orientation::Horizontal { gtk::Orientation::Vertical } else { gtk::Orientation::Horizontal };
+        imp.scroller.measure(across, -1).1 - imp.size.get()
+    }
+
+    /// Where the list is scrolled to, as a number of thumbnails from its start, so the same thumbnail is at the start
+    /// whatever their size. `None` until the list has laid out its items.
+    fn scroll_position(&self) -> Option<f64> {
+        let items = f64::from(self.imp().paths.n_items());
+        let adjustment = self.along_adjustment();
+        (items > 0.0 && adjustment.upper() > 0.0).then(|| adjustment.value() / (adjustment.upper() / items))
+    }
+
+    /// Scrolls the list back to `start` thumbnails from its start, once the list has laid out at the new size.
+    fn restore_scroll(&self, start: f64) {
+        let weak = self.downgrade();
+        glib::idle_add_local_once(move || {
+            let Some(bar) = weak.upgrade() else { return };
+            let items = f64::from(bar.imp().paths.n_items());
+            if items == 0.0 {
+                return;
+            }
+            let adjustment = bar.along_adjustment();
+            let most = (adjustment.upper() - adjustment.page_size()).max(adjustment.lower());
+            adjustment.set_value((start * (adjustment.upper() / items)).clamp(adjustment.lower(), most));
+        });
+    }
+
+    /// The adjustment that scrolls the list along the bar: the horizontal one in a row, the vertical one in a column.
+    fn along_adjustment(&self) -> gtk::Adjustment {
+        let imp = self.imp();
+        if imp.list.orientation() == gtk::Orientation::Horizontal { imp.scroller.hadjustment() } else { imp.scroller.vadjustment() }
+    }
+
+    /// Marks the thumbnail of the item shown, and unmarks the rest, so the one in the viewer stands out from the others.
+    fn mark_shown(&self) {
+        let imp = self.imp();
+        let shown = imp.shown.get();
+        imp.rows.borrow_mut().retain(|row| {
+            let Some(row) = row.upgrade() else { return false };
+            if let Some(image) = row.child().and_downcast::<gtk::Image>() {
+                mark_shown_image(&image, shown == Some(row.position()));
+            }
+            true
+        });
     }
 
     /// Asks again for the thumbnails shown, at the size they are now.
     fn refresh_thumbnails(&self) {
         let imp = self.imp();
-        imp.images.borrow_mut().clear();
-        imp.list.set_factory(Some(&factory(imp.size.clone(), imp.images.clone(), imp.stamps.clone())));
+        imp.rows.borrow_mut().clear();
+        imp.list.set_factory(Some(&factory(imp.size.clone(), imp.rows.clone(), imp.shown.clone(), imp.stamps.clone())));
         if let Some(position) = (imp.selection.selected() != gtk::INVALID_LIST_POSITION).then(|| imp.selection.selected()) {
             imp.list.scroll_to(position, gtk::ListScrollFlags::NONE, None);
         }
@@ -469,6 +578,72 @@ impl ThumbnailBar {
         let uris: Vec<String> = paths.iter().map(|path| uri_of(path)).collect();
         let uris: Vec<&str> = uris.iter().map(String::as_str).collect();
         imp.paths.splice(0, imp.paths.n_items(), &uris);
+        imp.prefetched.borrow_mut().clear();
+        self.prefetch_videos();
+    }
+
+    /// The positions in view, and the positions a page either side of them, for the aggression of the thumbnails: a
+    /// page is as many items as are in view at once. At the highest aggression, every position is in reach.
+    fn ranges(&self) -> (Range<i64>, Range<i64>) {
+        let imp = self.imp();
+        let items = i64::from(imp.paths.n_items());
+        let adjustment = self.along_adjustment();
+        if items == 0 || adjustment.upper() <= 0.0 {
+            return (0..0, 0..0);
+        }
+        let share = adjustment.upper() / items as f64;
+        let start = (adjustment.value() / share).floor() as i64;
+        let end = (((adjustment.value() + adjustment.page_size()) / share).ceil() as i64).clamp(start, items);
+        let page = (end - start).max(1);
+        let reach = match Thumbnails::shared().aggression().pages() {
+            Some(pages) => {
+                let margin = (pages * page as f64) as i64;
+                (start - margin).max(0)..(end + margin).min(items)
+            }
+            None => 0..items,
+        };
+        (start..end, reach)
+    }
+
+    /// The path of the item at `position`.
+    fn path_at(&self, position: usize) -> Option<PathBuf> {
+        self.imp().paths.item(position as u32).and_downcast::<gtk::StringObject>().and_then(|object| path_of(&object))
+    }
+
+    /// Whether the item at `position`, shown as `path`, is still in reach for a prefetch of its thumbnail.
+    fn in_reach(&self, position: usize, path: &Path) -> bool {
+        let (_, reach) = self.ranges();
+        reach.contains(&(position as i64)) && self.path_at(position).as_deref() == Some(path)
+    }
+
+    /// Asks for the thumbnails of the videos in reach but not in view, so they are ready as the bar scrolls to them.
+    /// Those no longer in reach are dropped, and asked for again if they come back.
+    fn prefetch_videos(&self) {
+        let imp = self.imp();
+        let (view, reach) = self.ranges();
+        let mut asked = imp.prefetched.borrow_mut();
+        asked.retain(|position| reach.contains(&(*position as i64)));
+        for position in reach.clone() {
+            let index = position as usize;
+            if view.contains(&position) || asked.contains(&index) {
+                continue;
+            }
+            let Some(path) = self.path_at(index).filter(|path| is_video(path)) else { continue };
+            asked.insert(index);
+            let mtime = imp.stamps.borrow().get(&path).copied().unwrap_or_default();
+            let size = ThumbnailSize::for_pixels(imp.size.get() * self.scale_factor());
+            let (nearer, wanted) = (self.downgrade(), self.downgrade());
+            let wanted_path = path.clone();
+            Thumbnails::shared().prefetch_still(
+                &path,
+                mtime,
+                ThumbnailMedia::Video,
+                size,
+                move || nearer.upgrade().map_or(f64::MAX, |bar| distance_from(&bar.ranges().0, position)),
+                move || wanted.upgrade().is_some_and(|bar| bar.in_reach(index, &wanted_path)),
+                |_| {},
+            );
+        }
     }
 
     /// Selects the thumbnail at `index` and scrolls it into view.
@@ -479,6 +654,8 @@ impl ThumbnailBar {
             return;
         }
         imp.selection.set_selected(position);
+        imp.shown.set(Some(position));
+        self.mark_shown();
         // The thumbnail is made first, then put in the middle of the bar once the list has laid out its range, or as near
         // the middle as the ends of the list allow.
         imp.list.scroll_to(position, gtk::ListScrollFlags::NONE, None);
@@ -499,7 +676,7 @@ impl ThumbnailBar {
         if items == 0 {
             return;
         }
-        let adjustment = if imp.list.orientation() == gtk::Orientation::Horizontal { imp.scroller.hadjustment() } else { imp.scroller.vadjustment() };
+        let adjustment = self.along_adjustment();
         let share = adjustment.upper() / f64::from(items);
         let middle = (f64::from(position) + 0.5) * share;
         let most = (adjustment.upper() - adjustment.page_size()).max(adjustment.lower());
@@ -590,11 +767,32 @@ impl ThumbnailBar {
     }
 }
 
+/// Gives `image`, the thumbnail of the item shown in the viewer, the `shown` class while `shown`, so it can be styled.
+fn mark_shown_image(image: &gtk::Image, shown: bool) {
+    if shown {
+        image.add_css_class("shown");
+    } else {
+        image.remove_css_class("shown");
+    }
+}
+
+/// How many positions `position` is outside `view`, or 0 if it is in it.
+fn distance_from(view: &Range<i64>, position: i64) -> f64 {
+    if position < view.start {
+        (view.start - position) as f64
+    } else if position >= view.end {
+        (position - view.end + 1) as f64
+    } else {
+        0.0
+    }
+}
+
 /// Makes each row an image of `size`, which asks for its item's thumbnail when bound, and keeps the
-/// images in `images`.
+/// rows in `rows`. The image of the item at `shown` is marked, so it can be styled as the one in the viewer.
 fn factory(
     size: Rc<Cell<i32>>,
-    images: Rc<RefCell<Vec<glib::WeakRef<gtk::Image>>>>,
+    rows: Rc<RefCell<Vec<glib::WeakRef<gtk::ListItem>>>>,
+    shown: Rc<Cell<Option<u32>>>,
     stamps: Rc<RefCell<HashMap<PathBuf, i64>>>,
 ) -> gtk::SignalListItemFactory {
     let factory = gtk::SignalListItemFactory::new();
@@ -609,7 +807,7 @@ fn factory(
             .height_request(pixels)
             .build();
         image.add_css_class("thumbnail");
-        images.borrow_mut().push(image.downgrade());
+        rows.borrow_mut().push(item.downgrade());
         item.set_child(Some(&image));
     });
     factory.connect_bind(move |_, item| {
@@ -620,6 +818,7 @@ fn factory(
         ) else {
             return;
         };
+        mark_shown_image(&image, shown.get() == Some(item.position()));
         let video = is_video(&path);
         image.set_icon_name(Some(if video { "video-x-generic-symbolic" } else { "image-x-generic-symbolic" }));
         image.set_tooltip_text(path.file_name().and_then(|name| name.to_str()));

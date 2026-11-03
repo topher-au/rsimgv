@@ -6,16 +6,19 @@
 //! mpv reloads the script after every seek, as the filter drops VapourSynth when it is reset. So that skipping through a
 //! video does not wait on that each time, the filter can be left out until the skipping has stopped.
 
+use crate::settings::Settings;
+
 use std::collections::hash_map::DefaultHasher;
+use std::ffi::{c_char, c_int, c_void, CString};
 use std::fs::{DirBuilder, Permissions};
 use std::hash::{Hash, Hasher};
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use gtk::gio::prelude::SettingsExt;
-use gtk::{gio, glib};
+use gtk::glib;
 use serde_json::{json, Value};
 
 /// The whole frame rates the output is rounded to.
@@ -79,11 +82,29 @@ pub fn target_fps(rate: &Rate, source: f64, speed: f64, display: Option<f64>) ->
 static SVPFLOW1: &[u8] = include_bytes!(concat!(env!("RSIMGV_SVP_PLUGINS"), "/libsvpflow1_vs.so"));
 static SVPFLOW2: &[u8] = include_bytes!(concat!(env!("RSIMGV_SVP_PLUGINS"), "/libsvpflow2_vs.so"));
 
+const RTLD_NOW: c_int = 2;
+const RTLD_NODELETE: c_int = 0x1000;
+
+unsafe extern "C" {
+    fn dlopen(file: *const c_char, flags: c_int) -> *mut c_void;
+}
+
 /// The paths of the plugin libraries, which are in the script directory.
 #[derive(Debug, PartialEq)]
 pub struct Plugins {
     pub svp1: PathBuf,
     pub svp2: PathBuf,
+}
+
+/// Keeps the plugin at `path` loaded for the rest of the process. VapourSynth unloads a plugin with its core, which goes
+/// each time mpv reloads the script, and the plugins never release the OpenCL context and programs they keep in statics:
+/// unloaded, those are lost in VRAM, and the plugin makes new ones when it is next loaded.
+fn keep_loaded(path: &Path) {
+    let Ok(file) = CString::new(path.as_os_str().as_bytes()) else { return };
+    // SAFETY: the path is a valid string, and the plugins do nothing on being loaded but set up their own statics.
+    if unsafe { dlopen(file.as_ptr(), RTLD_NOW | RTLD_NODELETE) }.is_null() {
+        eprintln!("rsimgv: {} could not be kept loaded", path.display());
+    }
 }
 
 /// The plugins, written out to the script directory the first time they are needed. Each is written under a name of its
@@ -99,6 +120,7 @@ pub fn plugins() -> Result<&'static Plugins, &'static str> {
                 let path = directory.join(name);
                 std::fs::write(&temporary, bytes)?;
                 std::fs::rename(&temporary, &path)?;
+                keep_loaded(&path);
                 Ok(path)
             };
             Ok(Plugins {
@@ -232,19 +254,19 @@ pub struct Config {
 }
 
 impl Config {
-    pub fn from_settings(settings: &gio::Settings) -> Self {
+    pub fn from_settings(settings: &Settings) -> Self {
         Self {
-            enabled: settings.boolean("svp-enabled"),
+            enabled: settings.boolean("video.svp.enabled"),
             rate: Rate {
-                mode: Mode::from_name(&settings.string("svp-fps-mode")),
-                target: settings.double("svp-fps-target"),
-                minimum: f64::from(settings.int("svp-fps-minimum")),
-                maximum: f64::from(settings.int("svp-fps-maximum")),
+                mode: Mode::from_name(&settings.string("video.svp.fps.mode")),
+                target: settings.double("video.svp.fps.target"),
+                minimum: f64::from(settings.int("video.svp.fps.minimum")),
+                maximum: f64::from(settings.int("video.svp.fps.maximum")),
             },
-            nvof: settings.boolean("svp-nvof"),
+            nvof: settings.boolean("video.svp.nvof"),
             seek_bypass: settings
-                .boolean("svp-seek-bypass")
-                .then(|| Duration::from_secs_f64(settings.double("svp-seek-bypass-delay"))),
+                .boolean("video.svp.seek-bypass.enabled")
+                .then(|| Duration::from_secs_f64(settings.double("video.svp.seek-bypass.delay"))),
         }
     }
 }

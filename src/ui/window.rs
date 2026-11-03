@@ -8,6 +8,7 @@ use gio::prelude::StaticType;
 use gtk::prelude::*;
 use gtk::{gdk, gio, glib};
 
+use crate::settings::Settings;
 use crate::keybindings::actions::{Scope, DEFAULT_NOTIFICATION_SECONDS, MAX_NOTIFICATION_SECONDS};
 use super::browse_view::{InfoField, ListedFile};
 use crate::storage::bookmarks::{self, Bookmark};
@@ -30,7 +31,7 @@ mod imp {
     use super::*;
 
     #[derive(Default, gtk::CompositeTemplate)]
-    #[template(resource = "/au/topher/rimgv/ui/window.ui")]
+    #[template(resource = "/au/topher/rsimgv/ui/window.ui")]
     pub struct Window {
         #[template_child]
         pub tree: TemplateChild<FsTree>,
@@ -110,7 +111,7 @@ mod imp {
         pub(super) viewer_fullscreened: Cell<bool>,
         /// The keybinding handler, detached when the window closes.
         pub(super) key_handler: std::cell::OnceCell<ActionKeyHandler>,
-        pub(super) settings: std::cell::OnceCell<gio::Settings>,
+        pub(super) settings: std::cell::OnceCell<Settings>,
     }
 
     #[glib::object_subclass]
@@ -159,15 +160,15 @@ pub enum Destination {
 }
 
 impl Window {
-    pub fn new(app: &adw::Application, settings: &gio::Settings) -> Self {
+    pub fn new(app: &adw::Application, settings: &Settings) -> Self {
         let window: Self = glib::Object::builder().property("application", app).build();
         let imp = window.imp();
         let _ = imp.settings.set(settings.clone());
         window.bind_pointer();
 
         // The window opens at the size and state it had when it was last closed.
-        window.set_default_size(settings.int("window-width"), settings.int("window-height"));
-        if settings.boolean("window-maximized") {
+        window.set_default_size(settings.int("window.width"), settings.int("window.height"));
+        if settings.boolean("window.maximized") {
             window.maximize();
         }
         // Save as the window changes, not only on close. A size change arrives on every step of a
@@ -238,28 +239,28 @@ impl Window {
 
         // Settings drive the view: the browse view's properties and the tree follow their keys, and
         // the menu's "Show Hidden Directories" item is an action bound to its key.
-        settings.bind("collapse-on-navigate", &tree, "collapse-on-navigate").build();
-        settings.bind("sidebar-bookmarks-expanded", &*imp.bookmarks_expander, "expanded").build();
-        settings.bind("sidebar-filesystem-expanded", &*imp.filesystem_expander, "expanded").build();
-        tree.set_show_hidden(settings.boolean("show-hidden"));
+        settings.bind("browse.collapse-on-navigate", &tree, "collapse-on-navigate").build();
+        settings.bind("window.sidebar.bookmarks-expanded", &*imp.bookmarks_expander, "expanded").build();
+        settings.bind("window.sidebar.filesystem-expanded", &*imp.filesystem_expander, "expanded").build();
+        tree.set_show_hidden(settings.boolean("browse.show-hidden"));
         let tree_for_settings = tree.clone();
-        settings.connect_changed(Some("playlist-window-headerbar"), {
+        settings.connect_changed("playlist.window.headerbar", {
             let weak = window.downgrade();
             move |settings, _| {
                 if let Some(window) = weak.upgrade() {
                     if let Some(header) = window.imp().playlist_header.borrow().as_ref() {
-                        apply_playlist_header_style(header, &settings.string("playlist-window-headerbar"));
+                        apply_playlist_header_style(header, &settings.string("playlist.window.headerbar"));
                     }
                 }
             }
         });
-        settings.connect_changed(Some("show-hidden"), move |settings, _| {
-            tree_for_settings.set_show_hidden(settings.boolean("show-hidden"));
+        settings.connect_changed("browse.show-hidden", move |settings, _| {
+            tree_for_settings.set_show_hidden(settings.boolean("browse.show-hidden"));
         });
-        window.add_action(&settings.create_action("show-hidden"));
-        add_sort_action(&window, settings, "sort-by");
-        add_sort_action(&window, settings, "sort-order");
-        settings.connect_changed(Some("remember-folder-sort"), {
+        window.add_action(&settings.create_toggle_action("browse.show-hidden", "show-hidden"));
+        add_sort_action(&window, settings, "sort-by", "browse.sort.by");
+        add_sort_action(&window, settings, "sort-order", "browse.sort.order");
+        settings.connect_changed("browse.sort.remember-per-folder", {
             let weak = window.downgrade();
             move |_, _| {
                 if let Some(window) = weak.upgrade() {
@@ -268,8 +269,8 @@ impl Window {
             }
         });
         add_show_directories_action(&window, settings);
-        settings.bind("show-images", &*window.imp().images_button, "active").build();
-        settings.bind("show-videos", &*window.imp().videos_button, "active").build();
+        settings.bind("browse.show-images", &*window.imp().images_button, "active").build();
+        settings.bind("browse.show-videos", &*window.imp().videos_button, "active").build();
 
         window.add_context_actions();
         window.add_tab_actions();
@@ -283,14 +284,14 @@ impl Window {
         let _ = window.imp().playlist_panel.set(panel);
         window.setup_playlist_splits(settings);
         GtkWindowExt::connect_focus_widget_notify(&window, |window| window.update_handle_highlights());
-        if settings.boolean("playlist-detached") {
+        if settings.boolean("playlist.detached") {
             window.detach_playlist(settings);
         }
-        window.imp().viewer.set_use_mpv(settings.string("video-backend") == "mpv");
-        window.imp().viewer.set_mpv_options(&settings.string("mpv-args"));
-        crate::mpv::set_render_with_opengl(settings.boolean("mpv-opengl"));
-        settings.connect_changed(Some("mpv-opengl"), |settings, _| {
-            crate::mpv::set_render_with_opengl(settings.boolean("mpv-opengl"));
+        window.imp().viewer.set_use_mpv(settings.string("video.backend") == "mpv");
+        window.imp().viewer.set_mpv_options(&settings.string("video.mpv.args"));
+        crate::mpv::set_render_with_opengl(settings.boolean("video.mpv.opengl"));
+        settings.connect_changed("video.mpv.opengl", |settings, _| {
+            crate::mpv::set_render_with_opengl(settings.boolean("video.mpv.opengl"));
         });
         crate::mpv::watch_config({
             let weak = window.imp().viewer.downgrade();
@@ -300,25 +301,25 @@ impl Window {
                 }
             }
         });
-        settings.connect_changed(Some("mpv-args"), {
+        settings.connect_changed("video.mpv.args", {
             let weak = window.downgrade();
             move |settings, _| {
                 if let Some(window) = weak.upgrade() {
-                    window.imp().viewer.set_mpv_options(&settings.string("mpv-args"));
+                    window.imp().viewer.set_mpv_options(&settings.string("video.mpv.args"));
                 }
             }
         });
-        settings.connect_changed(Some("video-backend"), {
+        settings.connect_changed("video.backend", {
             let weak = window.downgrade();
             move |settings, _| {
                 if let Some(window) = weak.upgrade() {
-                    window.imp().viewer.set_use_mpv(settings.string("video-backend") == "mpv");
+                    window.imp().viewer.set_use_mpv(settings.string("video.backend") == "mpv");
                 }
             }
         });
         window.apply_viewer_settings(settings);
         for key in VIEWER_SETTINGS {
-            settings.connect_changed(Some(key), {
+            settings.connect_changed(key, {
                 let weak = window.downgrade();
                 move |settings, _| {
                     if let Some(window) = weak.upgrade() {
@@ -329,11 +330,11 @@ impl Window {
         }
         // Turning SVP on or off, by its key or in the preferences, is said over the window. The setting is written on
         // other changes too, so only a change of its value counts.
-        let svp_was_on = Cell::new(settings.boolean("svp-enabled"));
-        settings.connect_changed(Some("svp-enabled"), {
+        let svp_was_on = Cell::new(settings.boolean("video.svp.enabled"));
+        settings.connect_changed("video.svp.enabled", {
             let weak = window.downgrade();
             move |settings, _| {
-                let on = settings.boolean("svp-enabled");
+                let on = settings.boolean("video.svp.enabled");
                 if svp_was_on.replace(on) != on {
                     if let Some(window) = weak.upgrade() {
                         window.notify(if on { "SVP on" } else { "SVP off" });
@@ -350,36 +351,36 @@ impl Window {
                 }
             }
         });
-        let width = settings.int("sidebar-width");
+        let width = settings.int("window.sidebar.width");
         imp.split.set_user_sidebar_width((width > 0).then_some(width));
         // In fullscreen the viewer's header floats over the picture and hides; otherwise it sits above it.
         imp.viewer.set_fullscreen(window.is_fullscreen());
         window.connect_fullscreened_notify(|window| window.imp().viewer.set_fullscreen(window.is_fullscreen()));
         let apply_thumbnail_bar = {
             let weak = window.downgrade();
-            move |settings: &gio::Settings, _: &str| {
+            move |settings: &Settings, _: &str| {
                 let Some(window) = weak.upgrade() else { return };
                 window.imp().viewer.set_thumbnail_bar(
-                    side_from_name(&settings.string("viewer-thumbnail-bar")),
-                    settings.boolean("viewer-thumbnail-bar-shown"),
-                    settings.boolean("viewer-thumbnail-bar-overlay"),
-                    settings.boolean("viewer-thumbnail-bar-pinned"),
+                    side_from_name(&settings.string("viewer.thumbnail-bar.side")),
+                    settings.boolean("viewer.thumbnail-bar.shown"),
+                    settings.boolean("viewer.thumbnail-bar.overlay"),
+                    settings.boolean("viewer.thumbnail-bar.pinned"),
                 );
-                window.imp().viewer.set_thumbnail_size(settings.int("viewer-thumbnail-bar-size"));
+                window.imp().viewer.set_thumbnail_size(settings.int("viewer.thumbnail-bar.size"));
             }
         };
-        apply_thumbnail_bar(settings, "viewer-thumbnail-bar");
+        apply_thumbnail_bar(settings, "viewer.thumbnail-bar.side");
         for key in [
-            "viewer-thumbnail-bar",
-            "viewer-thumbnail-bar-shown",
-            "viewer-thumbnail-bar-size",
-            "viewer-thumbnail-bar-overlay",
-            "viewer-thumbnail-bar-pinned",
+            "viewer.thumbnail-bar.side",
+            "viewer.thumbnail-bar.shown",
+            "viewer.thumbnail-bar.size",
+            "viewer.thumbnail-bar.overlay",
+            "viewer.thumbnail-bar.pinned",
         ] {
-            settings.connect_changed(Some(key), apply_thumbnail_bar.clone());
+            settings.connect_changed(key, apply_thumbnail_bar.clone());
         }
-        imp.viewer.set_preloading(settings.boolean("image-preloading"));
-        settings.connect_changed(Some("image-preloading"), {
+        imp.viewer.set_preloading(settings.boolean("image.preloading"));
+        settings.connect_changed("image.preloading", {
             let weak = window.downgrade();
             move |settings, key| {
                 if let Some(window) = weak.upgrade() {
@@ -390,19 +391,19 @@ impl Window {
         imp.viewer.connect_thumbnail_side_requested({
             let settings = settings.clone();
             move |_, side| {
-                let _ = settings.set_string("viewer-thumbnail-bar", side);
+                let _ = settings.set_string("viewer.thumbnail-bar.side", side);
             }
         });
         imp.viewer.thumbnail_bar().connect_pin_toggled({
             let settings = settings.clone();
             move |_, on| {
-                let _ = settings.set_boolean("viewer-thumbnail-bar-pinned", on);
+                let _ = settings.set_boolean("viewer.thumbnail-bar.pinned", on);
             }
         });
         imp.viewer.thumbnail_bar().connect_overlay_toggled({
             let settings = settings.clone();
             move |_, on| {
-                let _ = settings.set_boolean("viewer-thumbnail-bar-overlay", on);
+                let _ = settings.set_boolean("viewer.thumbnail-bar.overlay", on);
             }
         });
         super::media_overlay::watch_preview({
@@ -428,15 +429,15 @@ impl Window {
         imp.viewer.connect_controls_layout_changed({
             let settings = settings.clone();
             move |_, x, y, width| {
-                let _ = settings.set_double("video-controls-x", x);
-                let _ = settings.set_double("video-controls-y", y);
-                let _ = settings.set_double("video-controls-width", width);
+                let _ = settings.set_double("video.controls.x", x);
+                let _ = settings.set_double("video.controls.y", y);
+                let _ = settings.set_double("video.controls.width", width);
             }
         });
         imp.viewer.connect_thumbnail_size_requested({
             let settings = settings.clone();
             move |_, size| {
-                let _ = settings.set_int("viewer-thumbnail-bar-size", size);
+                let _ = settings.set_int("viewer.thumbnail-bar.size", size);
             }
         });
         // Ctrl and the wheel over the browse view resize its items, a step per notch; a smooth scroll
@@ -466,12 +467,12 @@ impl Window {
         window
     }
 
-    /// Reselects the `last-file` setting once the folder lists, if the window started in its folder.
-    fn reselect_last_file(&self, settings: &gio::Settings) {
-        if settings.string("start-location") != "last" {
+    /// Reselects the `start.last-file` setting once the folder lists, if the window started in its folder.
+    fn reselect_last_file(&self, settings: &Settings) {
+        if settings.string("start.location") != "last" {
             return;
         }
-        let file = PathBuf::from(settings.string("last-file").as_str());
+        let file = PathBuf::from(settings.string("start.last-file").as_str());
         let Some(file_folder) = file.parent().map(Path::to_path_buf) else { return };
         if self.current_path().as_deref() != Some(file_folder.as_path()) {
             return;
@@ -489,17 +490,17 @@ impl Window {
         self.imp().current_path.borrow().clone()
     }
 
-    /// Records `folder`, the one the browser has open, as the last folder, for the window to open at when `start-location`
+    /// Records `folder`, the one the browser has open, as the last folder, for the window to open at when `start.location`
     /// is `last`. The last file stays only if it is in that folder, as it is the last one played there.
     fn remember_directory(&self, folder: &Path) {
         let Some(settings) = self.imp().settings.get() else { return };
-        if settings.string("start-location") != "last" {
+        if settings.string("start.location") != "last" {
             return;
         }
-        let _ = settings.set_string("last-directory", &folder.to_string_lossy());
-        let file = PathBuf::from(settings.string("last-file").as_str());
+        let _ = settings.set_string("start.last-directory", &folder.to_string_lossy());
+        let file = PathBuf::from(settings.string("start.last-file").as_str());
         if file.parent() != Some(folder) {
-            let _ = settings.set_string("last-file", "");
+            let _ = settings.set_string("start.last-file", "");
         }
     }
 
@@ -507,10 +508,10 @@ impl Window {
     /// file is kept for.
     fn remember_file(&self, file: &Path) {
         let Some(settings) = self.imp().settings.get() else { return };
-        if settings.string("start-location") != "last" || file.parent() != self.current_path().as_deref() {
+        if settings.string("start.location") != "last" || file.parent() != self.current_path().as_deref() {
             return;
         }
-        let _ = settings.set_string("last-file", &file.to_string_lossy());
+        let _ = settings.set_string("start.last-file", &file.to_string_lossy());
     }
 
     /// Makes `path` the window's folder. This is the only way the folder changes: it records the
@@ -814,7 +815,7 @@ impl Window {
         self.refresh_keybinds_overlay();
         imp.pages.set_visible_child(&*imp.viewer);
         imp.viewer.grab_focus();
-        if imp.settings.get().is_some_and(|settings| settings.boolean("open-fullscreen")) && !self.is_fullscreen() {
+        if imp.settings.get().is_some_and(|settings| settings.boolean("viewer.open-fullscreen")) && !self.is_fullscreen() {
             self.fullscreen();
             imp.viewer_fullscreened.set(true);
         }
@@ -825,7 +826,7 @@ impl Window {
     /// background. The panel then shows it once it is read.
     fn read_length_when_played(&self, path: &Path) {
         let Some(settings) = self.imp().settings.get() else { return };
-        if settings.boolean("playlist-fetch-in-background") {
+        if settings.boolean("playlist.fetch-in-background") {
             return;
         }
         let Some((mtime, size)) = stamp(path) else { return };
@@ -859,43 +860,43 @@ impl Window {
 
     /// Applies the settings the viewer shows its pictures and videos with, and the window title, which
     /// depends on one of them.
-    fn apply_viewer_settings(&self, settings: &gio::Settings) {
+    fn apply_viewer_settings(&self, settings: &Settings) {
         let viewer = &self.imp().viewer;
-        viewer.set_zoom_step(settings.int("zoom-step"));
-        viewer.set_video_start_delay(settings.int("video-start-delay"));
-        viewer.set_expand_limit(settings.int("expand-up-to-factor"));
-        viewer.set_keep_fit(settings.boolean("keep-fit-mode"));
-        viewer.set_original_focus(OriginalFocus::from_name(&settings.string("original-focus")));
-        viewer.set_minimum_zoom_unlocked(settings.boolean("unlock-minimum-zoom"));
-        viewer.set_default_fit(Fit::from_name(&settings.string("image-fit")).unwrap_or_default());
-        viewer.set_smooth_scrolling(settings.boolean("smooth-scrolling"));
-        viewer.set_scaling(Scaling::from_name(&settings.string("scaling-filter")), settings.boolean("smooth-upscaling"));
-        viewer.set_zoom_indicator(ZoomIndicator::from_name(&settings.string("zoom-indicator")).unwrap_or_default());
-        viewer.set_auto_hide_cursor(settings.boolean("auto-hide-cursor"));
-        viewer.set_blurred_background(settings.boolean("viewer-blurred-background"));
-        viewer.set_status_bar(settings.boolean("viewer-status-bar"));
+        viewer.set_zoom_step(settings.int("image.zoom-step"));
+        viewer.set_video_start_delay(settings.int("video.start-delay"));
+        viewer.set_expand_limit(settings.int("image.expand-up-to-factor"));
+        viewer.set_keep_fit(settings.boolean("image.keep-fit"));
+        viewer.set_original_focus(OriginalFocus::from_name(&settings.string("image.original-focus")));
+        viewer.set_minimum_zoom_unlocked(settings.boolean("image.unlock-minimum-zoom"));
+        viewer.set_default_fit(Fit::from_name(&settings.string("image.fit")).unwrap_or_default());
+        viewer.set_smooth_scrolling(settings.boolean("image.smooth-scrolling"));
+        viewer.set_scaling(Scaling::from_name(&settings.string("image.scaling-filter")), settings.boolean("image.smooth-upscaling"));
+        viewer.set_zoom_indicator(ZoomIndicator::from_name(&settings.string("image.zoom-indicator")).unwrap_or_default());
+        viewer.set_auto_hide_cursor(settings.boolean("viewer.auto-hide-cursor"));
+        viewer.set_blurred_background(settings.boolean("viewer.blurred-background"));
+        viewer.set_status_bar(settings.boolean("viewer.status-bar.shown"));
         viewer.set_svp(crate::mpv::svp::Config::from_settings(settings));
         self.apply_folder_end();
         viewer.set_remember(super::media_viewer::Remember {
-            enabled: settings.boolean("remember-file-settings"),
-            position: settings.boolean("remember-position"),
-            speed: settings.boolean("remember-speed"),
-            volume: settings.boolean("remember-volume"),
-            rotation: settings.boolean("remember-rotation"),
-            zoom: settings.boolean("remember-zoom"),
-            pan: settings.boolean("remember-pan"),
+            enabled: settings.boolean("remember.enabled"),
+            position: settings.boolean("remember.position"),
+            speed: settings.boolean("remember.speed"),
+            volume: settings.boolean("remember.volume"),
+            rotation: settings.boolean("remember.rotation"),
+            zoom: settings.boolean("remember.zoom"),
+            pan: settings.boolean("remember.pan"),
         });
-        let crop_method = crate::mpv::framing::CropMethod::from_name(&settings.string("video-crop-method"));
+        let crop_method = crate::mpv::framing::CropMethod::from_name(&settings.string("video.crop.method"));
         viewer.set_framing(crate::mpv::Framing {
-            crop: settings.boolean("video-crop").then_some(crop_method),
-            trim_pixels: settings.int("video-crop-trim"),
-            backdrop: settings.boolean("video-backdrop").then(|| crate::mpv::framing::Backdrop {
-                zoom: settings.double("video-backdrop-zoom"),
-                blur: settings.int("video-backdrop-blur"),
-                dim: settings.double("video-backdrop-dim"),
+            crop: settings.boolean("video.crop.enabled").then_some(crop_method),
+            trim_pixels: settings.int("video.crop.trim"),
+            backdrop: settings.boolean("video.backdrop.enabled").then(|| crate::mpv::framing::Backdrop {
+                zoom: settings.double("video.backdrop.zoom"),
+                blur: settings.int("video.backdrop.blur"),
+                dim: settings.double("video.backdrop.dim"),
             }),
         });
-        let (animated, millis) = (settings.boolean("sidebar-animations"), settings.int("sidebar-animation-ms").max(0) as u32);
+        let (animated, millis) = (settings.boolean("window.sidebar.animations"), settings.int("window.sidebar.animation-ms").max(0) as u32);
         let imp = self.imp();
         for split in [(*imp.split).clone(), (*imp.playlist_split).clone(), viewer.playlist_split()] {
             split.set_animation(animated, millis);
@@ -903,10 +904,10 @@ impl Window {
         viewer.set_bar_animation(animated, millis);
         imp.content_revealer.set_transition_duration(if animated { millis } else { 0 });
         viewer.set_controls_layout(super::media_viewer::ControlsLayout {
-            locked: settings.boolean("video-controls-locked"),
-            x: settings.double("video-controls-x"),
-            y: settings.double("video-controls-y"),
-            width: settings.double("video-controls-width"),
+            locked: settings.boolean("video.controls.locked"),
+            x: settings.double("video.controls.x"),
+            y: settings.double("video.controls.y"),
+            width: settings.double("video.controls.width"),
         });
         let layout = super::media_overlay::layout_from_settings(settings);
         self.messages().set_margins(&layout);
@@ -922,7 +923,7 @@ impl Window {
         let end = if self.imp().playlist_playing.get() {
             FolderEnd::Stop
         } else {
-            FolderEnd::from_name(&settings.string("folder-end"))
+            FolderEnd::from_name(&settings.string("viewer.folder-end"))
         };
         self.imp().viewer.set_folder_end(end);
     }
@@ -931,7 +932,7 @@ impl Window {
     /// setting that asks for it is on. Otherwise, and when the viewer is not open, it is titled by the app.
     fn update_title(&self) {
         let imp = self.imp();
-        let info = imp.settings.get().is_some_and(|settings| settings.boolean("image-info-in-title"));
+        let info = imp.settings.get().is_some_and(|settings| settings.boolean("viewer.image-info-in-title"));
         let item = (info && imp.viewer_open.get()).then(|| imp.viewer.shown_item()).flatten();
         let title = match item {
             Some(item) => {
@@ -1048,8 +1049,8 @@ impl Window {
         bound_action(&browse, &weak, "select-all", |window| window.with_browse(|view| view.select_all()));
         bound_action(&browse, &weak, "open", |window| window.with_browse(|view| view.activate_selected()));
         bound_action(&browse, &weak, "show-tooltip", |window| window.with_browse(|view| view.show_tooltip_now()));
-        bound_action(&browse, &weak, "toggle-hidden", |window| window.toggle_setting("show-hidden"));
-        bound_action(&browse, &weak, "toggle-media-only", |window| window.toggle_setting("media-only"));
+        bound_action(&browse, &weak, "toggle-hidden", |window| window.toggle_setting("browse.show-hidden"));
+        bound_action(&browse, &weak, "toggle-media-only", |window| window.toggle_setting("browse.media-only"));
         bound_action(&browse, &weak, "toggle-filename", Window::toggle_filename);
         bound_action(&browse, &weak, "toggle-item-info", Window::toggle_item_info);
         bound_action(&browse, &weak, "thumbnail-larger", |window| window.resize_items(THUMBNAIL_STEP));
@@ -1063,15 +1064,15 @@ impl Window {
         bound_action(&view, &weak, "last", |window| window.imp().viewer.jump(true));
         bound_action(&view, &weak, "close", Window::close_viewer);
         bound_action(&view, &weak, "pin", |window| window.imp().viewer.toggle_pinned());
-        bound_action(&view, &weak, "toggle-thumbnail-bar", |window| window.toggle_setting("viewer-thumbnail-bar-shown"));
-        bound_action(&view, &weak, "toggle-status-bar", |window| window.toggle_setting("viewer-status-bar"));
+        bound_action(&view, &weak, "toggle-thumbnail-bar", |window| window.toggle_setting("viewer.thumbnail-bar.shown"));
+        bound_action(&view, &weak, "toggle-status-bar", |window| window.toggle_setting("viewer.status-bar.shown"));
         bound_action(&view, &weak, "rotate-clockwise", |window| window.imp().viewer.reorient(Orientation::rotated_clockwise));
         bound_action(&view, &weak, "rotate-counter-clockwise", |window| window.imp().viewer.reorient(Orientation::rotated_counter_clockwise));
         valued_action(&view, &weak, "view.set-rotation", |window, degrees| window.imp().viewer.reorient(|orientation| orientation.with_rotation(degrees)));
         bound_action(&view, &weak, "flip-vertical", |window| window.imp().viewer.reorient(Orientation::flipped_vertically));
         bound_action(&view, &weak, "flip-horizontal", |window| window.imp().viewer.reorient(Orientation::flipped_horizontally));
-        bound_action(&view, &weak, "toggle-thumbnail-bar-pin", |window| window.toggle_setting("viewer-thumbnail-bar-pinned"));
-        bound_action(&view, &weak, "toggle-thumbnail-bar-overlay", |window| window.toggle_setting("viewer-thumbnail-bar-overlay"));
+        bound_action(&view, &weak, "toggle-thumbnail-bar-pin", |window| window.toggle_setting("viewer.thumbnail-bar.pinned"));
+        bound_action(&view, &weak, "toggle-thumbnail-bar-overlay", |window| window.toggle_setting("viewer.thumbnail-bar.overlay"));
         self.insert_action_group("view", Some(&view));
 
         let video = gio::SimpleActionGroup::new();
@@ -1085,7 +1086,7 @@ impl Window {
         bound_action(&video, &weak, "volume-up", |window| window.imp().viewer.adjust_volume(VOLUME_STEP));
         bound_action(&video, &weak, "volume-down", |window| window.imp().viewer.adjust_volume(-VOLUME_STEP));
         bound_action(&video, &weak, "mute", |window| window.imp().viewer.toggle_mute());
-        bound_action(&video, &weak, "toggle-svp", |window| window.toggle_setting("svp-enabled"));
+        bound_action(&video, &weak, "toggle-svp", |window| window.toggle_setting("video.svp.enabled"));
         bound_action(&video, &weak, "repeat", |window| window.imp().viewer.toggle_repeat());
         bound_action(&video, &weak, "auto-advance", |window| window.imp().viewer.toggle_auto_advance());
         self.insert_action_group("video", Some(&video));
@@ -1237,13 +1238,13 @@ impl Window {
     }
 
     /// The actions behind the playlist's menu items and its panel, which say what they work on in their parameter.
-    fn add_playlist_actions(&self, settings: &gio::Settings) {
+    fn add_playlist_actions(&self, settings: &Settings) {
         let weak = self.downgrade();
-        // The menu's column toggles are window actions named by their settings, so they work from any part of the window.
-        for (key, _, _, _) in crate::ui::playlist_panel::COLUMNS {
-            self.add_action(&settings.create_action(key));
+        // The menu's column toggles are window actions, so they work from any part of the window.
+        for (key, action, _, _, _) in crate::ui::playlist_panel::COLUMNS {
+            self.add_action(&settings.create_toggle_action(key, action));
         }
-        self.add_action(&settings.create_action("playlist-repeat"));
+        self.add_action(&settings.create_toggle_action("playlist.repeat", "playlist-repeat"));
         for name in ["playlist-add-paths", "playlist-remove-paths"] {
             let action = gio::SimpleAction::new(name, Some(&<Vec<String>>::static_variant_type()));
             let weak = weak.clone();
@@ -1275,7 +1276,7 @@ impl Window {
         }
         // The state is the column the playlist was last sorted by, and whether it was sorted descending. An empty name is no sort.
         let sort_type = <(String, bool)>::static_variant_type();
-        let saved_sort: (String, bool) = settings.value("playlist-sort").get().unwrap_or_default();
+        let saved_sort: (String, bool) = settings.value("playlist.sort").get().unwrap_or_default();
         let sort = gio::SimpleAction::new_stateful("playlist-sort", Some(&sort_type), &saved_sort.to_variant());
         let weak_sort = weak.clone();
         let settings_sort = settings.clone();
@@ -1285,7 +1286,7 @@ impl Window {
                 window.sort_playlist(sort, descending);
                 let state = (column, descending).to_variant();
                 action.set_state(&state);
-                let _ = settings_sort.set_value("playlist-sort", &state);
+                let _ = settings_sort.set_value("playlist.sort", &state);
             }
         });
         self.add_action(&sort);
@@ -1507,7 +1508,7 @@ impl Window {
         eprintln!("playlist-debug: window step_playlist forward={forward} current={current:?} target={target:?} len={len}");
         // With repeat off, going past either end stops there instead of going round.
         let at_end = current.is_some_and(|current| if forward { current + 1 == len } else { current == 0 });
-        if at_end && !gio::Settings::new("au.topher.rimgv").boolean("playlist-repeat") {
+        if at_end && !crate::settings::app_settings().boolean("playlist.repeat") {
             self.announce_playlist("The end of the playlist");
             return;
         }
@@ -1591,12 +1592,12 @@ impl Window {
 
     /// Sets up the playlist's two split views, the browse view's and the viewer's: their sidebars are on the end side,
     /// they collapse together, and their openness is kept as the playlist's. Then the playlist is put beside the page.
-    fn setup_playlist_splits(&self, settings: &gio::Settings) {
+    fn setup_playlist_splits(&self, settings: &Settings) {
         let imp = self.imp();
         let browse = (*imp.playlist_split).clone();
         let viewer = imp.viewer.playlist_split();
-        imp.playlist_shown.set(settings.boolean("playlist-shown"));
-        let width = settings.int("playlist-width");
+        imp.playlist_shown.set(settings.boolean("playlist.shown"));
+        let width = settings.int("playlist.width");
         for split in [&browse, &viewer] {
             split.set_user_sidebar_width((width > 0).then_some(width));
             split.set_sidebar_position(gtk::PackType::End);
@@ -1658,7 +1659,7 @@ impl Window {
 
     /// Takes the playlist out into a window of its own, or puts it back beside the browse view.
     fn toggle_detached_playlist(&self) {
-        let settings = gio::Settings::new("au.topher.rimgv");
+        let settings = crate::settings::app_settings();
         if self.imp().playlist_window.borrow().is_some() {
             self.attach_playlist(&settings);
         } else {
@@ -1668,7 +1669,7 @@ impl Window {
 
     /// Moves the playlist from beside the browse view into a window of its own. That window takes this window's actions,
     /// so its buttons and the playlist's actions work from it.
-    fn detach_playlist(&self, settings: &gio::Settings) {
+    fn detach_playlist(&self, settings: &Settings) {
         let imp = self.imp();
         let Some(panel) = imp.playlist_panel.get() else { return };
         let content = panel.content();
@@ -1681,14 +1682,14 @@ impl Window {
         attach.set_action_name(Some("win.playlist-detach"));
         let header = adw::HeaderBar::new();
         header.pack_end(&attach);
-        apply_playlist_header_style(&header, &settings.string("playlist-window-headerbar"));
+        apply_playlist_header_style(&header, &settings.string("playlist.window.headerbar"));
         let toolbar = adw::ToolbarView::new();
         toolbar.add_top_bar(&header);
         toolbar.set_content(Some(&holder));
 
         let window = adw::Window::new();
         window.set_title(Some("Playlist"));
-        window.set_default_size(settings.int("playlist-window-width"), settings.int("playlist-window-height"));
+        window.set_default_size(settings.int("playlist.window.width"), settings.int("playlist.window.height"));
         window.set_transient_for(Some(self.upcast_ref::<gtk::Window>()));
         adw::prelude::AdwWindowExt::set_content(&window, Some(&toolbar));
         window.insert_action_group("win", Some(self));
@@ -1711,7 +1712,7 @@ impl Window {
     }
 
     /// Puts the playlist back beside the browse view, and closes the window it was in.
-    fn attach_playlist(&self, settings: &gio::Settings) {
+    fn attach_playlist(&self, settings: &Settings) {
         let detached = self.imp().playlist_window.take();
         self.reattach_playlist();
         if let Some(window) = detached {
@@ -2147,8 +2148,8 @@ impl Window {
             move |gesture, _, _, _| {
                 let Some(window) = weak.upgrade() else { return };
                 match gesture.current_button() {
-                    8 => window.run_mouse_setting("mouse-back"),
-                    9 => window.run_mouse_setting("mouse-forward"),
+                    8 => window.run_mouse_setting("mouse.back"),
+                    9 => window.run_mouse_setting("mouse.forward"),
                     _ => {}
                 }
             }
@@ -2188,18 +2189,18 @@ impl Window {
     fn scroll_viewer(&self, dy: f64, ctrl: bool) -> glib::Propagation {
         let Some(settings) = self.imp().settings.get() else { return glib::Propagation::Proceed };
         let viewer = &self.imp().viewer;
-        let speed = f64::from(settings.int("scroll-speed")) / 100.0;
+        let speed = f64::from(settings.int("mouse.scroll.speed")) / 100.0;
         // A trackpad sends small amounts, so a notch counts as at most one.
         let notch = dy.clamp(-1.0, 1.0);
         let used = if viewer.shows_video() {
-            match settings.string("scroll-video").as_str() {
+            match settings.string("mouse.scroll.video").as_str() {
                 "volume" => self.run_action("video.volume", Some(-notch * WHEEL_VOLUME_STEP * speed)),
                 "seek" => self.run_action("video.seek", Some(-notch * WHEEL_SEEK_STEP * speed)),
                 "step" => self.step_by_scroll(notch),
                 _ => false,
             }
         } else {
-            match settings.string("scroll-image").as_str() {
+            match settings.string("mouse.scroll.image").as_str() {
                 "ctrl-zoom" if ctrl => self.zoom_by_scroll(notch * speed),
                 "zoom" => self.zoom_by_scroll(notch * speed),
                 "step" => self.step_by_scroll(notch),
@@ -2499,24 +2500,24 @@ impl Window {
     /// Shows the browse items' filenames, or hides them.
     fn toggle_filename(&self) {
         if let Some(settings) = self.imp().settings.get() {
-            let shown = settings.string("filename-display") != "off";
-            let _ = settings.set_string("filename-display", if shown { "off" } else { "ellipsized" });
+            let shown = settings.string("browse.filename-display") != "off";
+            let _ = settings.set_string("browse.filename-display", if shown { "off" } else { "ellipsized" });
         }
     }
 
     /// Shows the browse items' information, or hides it.
     fn toggle_item_info(&self) {
         if let Some(settings) = self.imp().settings.get() {
-            let shown = settings.string("info-layout") != "disabled";
-            let _ = settings.set_string("info-layout", if shown { "disabled" } else { "inline" });
+            let shown = settings.string("browse.info.layout") != "disabled";
+            let _ = settings.set_string("browse.info.layout", if shown { "disabled" } else { "inline" });
         }
     }
 
     /// Makes the browse items larger or smaller by `delta` pixels, within the setting's range.
     fn resize_items(&self, delta: i32) {
         if let Some(settings) = self.imp().settings.get() {
-            let size = (settings.int("item-size") + delta).clamp(ITEM_SIZE_MIN, ITEM_SIZE_MAX);
-            let _ = settings.set_int("item-size", size);
+            let size = (settings.int("browse.item-size") + delta).clamp(ITEM_SIZE_MIN, ITEM_SIZE_MAX);
+            let _ = settings.set_int("browse.item-size", size);
         }
     }
 
@@ -2793,12 +2794,12 @@ impl Window {
     fn media_filter(&self) -> crate::fs::walk::MediaFilter {
         let settings = self.imp().settings.get();
         let flag = |key: &str| settings.is_some_and(|settings| settings.boolean(key));
-        crate::fs::walk::MediaFilter { show_hidden: flag("show-hidden"), images: flag("show-images"), videos: flag("show-videos") }
+        crate::fs::walk::MediaFilter { show_hidden: flag("browse.show-hidden"), images: flag("browse.show-images"), videos: flag("browse.show-videos") }
     }
 
     /// Whether hidden folders are listed, from the settings.
     fn show_hidden(&self) -> bool {
-        self.imp().settings.get().is_some_and(|settings| settings.boolean("show-hidden"))
+        self.imp().settings.get().is_some_and(|settings| settings.boolean("browse.show-hidden"))
     }
 
     /// Opens the folder `target` that a media-folder step found: in the viewer its first picture or video is shown, or
@@ -3304,10 +3305,10 @@ impl Window {
     /// the view is not sorting, so a change of sort does not first sort the folder it is leaving.
     fn apply_folder_sort(&self, browse: &BrowseView) {
         let Some(settings) = self.imp().settings.get() else { return };
-        let remembered = browse.path().filter(|_| settings.boolean("remember-folder-sort")).and_then(|path| crate::fs::folder_sort::remembered(&path));
+        let remembered = browse.path().filter(|_| settings.boolean("browse.sort.remember-per-folder")).and_then(|path| crate::fs::folder_sort::remembered(&path));
         let (by, order) = match remembered {
             Some(sort) => (sort.by, sort.order),
-            None => (settings.string("sort-by").to_string(), settings.string("sort-order").to_string()),
+            None => (settings.string("browse.sort.by").to_string(), settings.string("browse.sort.order").to_string()),
         };
         if browse.sort_by() != by {
             browse.set_sort_by(by);
@@ -3336,7 +3337,7 @@ impl Window {
         let Some(settings) = self.imp().settings.get() else { return };
         let (by, order) = match self.active_browse() {
             Some(browse) => (browse.sort_by(), browse.sort_order()),
-            None => (settings.string("sort-by").to_string(), settings.string("sort-order").to_string()),
+            None => (settings.string("browse.sort.by").to_string(), settings.string("browse.sort.order").to_string()),
         };
         for (key, value) in [("sort-by", by), ("sort-order", order)] {
             if let Some(action) = self.lookup_action(key).and_downcast::<gio::SimpleAction>() {
@@ -3349,13 +3350,13 @@ impl Window {
     /// the default, which every tab follows.
     fn choose_sort(&self, key: &str, value: &str) {
         let Some(settings) = self.imp().settings.get() else { return };
-        let remembering = self.active_browse().filter(|_| settings.boolean("remember-folder-sort"));
+        let remembering = self.active_browse().filter(|_| settings.boolean("browse.sort.remember-per-folder"));
         let Some((browse, path)) = remembering.and_then(|browse| browse.path().map(|path| (browse, path))) else {
             let _ = settings.set_string(key, value);
             return;
         };
         match key {
-            "sort-by" => browse.set_sort_by(value),
+            "browse.sort.by" => browse.set_sort_by(value),
             _ => browse.set_sort_order(value),
         }
         let sort = crate::fs::folder_sort::FolderSort { by: browse.sort_by(), order: browse.sort_order() };
@@ -3386,27 +3387,27 @@ impl Window {
             }
         });
         if let Some(settings) = imp.settings.get() {
-            settings.bind("item-size", browse, "item-size").build();
-            settings.bind("filename-display", browse, "filename-display").build();
-            settings.bind("show-directories", browse, "show-directories").build();
-            settings.bind("info-layout", browse, "info-layout").build();
+            settings.bind("browse.item-size", browse, "item-size").build();
+            settings.bind("browse.filename-display", browse, "filename-display").build();
+            settings.bind("browse.show-directories", browse, "show-directories").build();
+            settings.bind("browse.info.layout", browse, "info-layout").build();
             set_info_fields_from(settings, browse);
             let weak = browse.downgrade();
-            settings.connect_changed(Some("info-fields"), move |settings, _| {
+            settings.connect_changed("browse.info.fields", move |settings, _| {
                 if let Some(browse) = weak.upgrade() {
                     set_info_fields_from(settings, &browse);
                 }
             });
-            settings.bind("media-only", browse, "media-only").build();
-            settings.bind("show-images", browse, "show-images").build();
-            settings.bind("show-videos", browse, "show-videos").build();
-            settings.bind("thumbnail-crop", browse, "thumbnail-crop").build();
-            settings.bind("video-frame-previews", browse, "video-frame-previews").build();
-            settings.bind("directory-previews", browse, "directory-previews").build();
-            settings.bind("folder-preview-cycle", browse, "folder-preview-cycle").build();
-            settings.bind("folder-preview-count", browse, "folder-preview-count").build();
-            settings.bind("folder-preview-fit", browse, "folder-preview-fit").build();
-            settings.bind("show-hidden", browse, "show-hidden").build();
+            settings.bind("browse.media-only", browse, "media-only").build();
+            settings.bind("browse.show-images", browse, "show-images").build();
+            settings.bind("browse.show-videos", browse, "show-videos").build();
+            settings.bind("thumbnails.crop", browse, "thumbnail-crop").build();
+            settings.bind("browse.video-frame-previews", browse, "video-frame-previews").build();
+            settings.bind("browse.folder-previews.enabled", browse, "directory-previews").build();
+            settings.bind("browse.folder-previews.cycle", browse, "folder-preview-cycle").build();
+            settings.bind("browse.folder-previews.count", browse, "folder-preview-count").build();
+            settings.bind("browse.folder-previews.fit", browse, "folder-preview-fit").build();
+            settings.bind("browse.show-hidden", browse, "show-hidden").build();
         }
         self.apply_folder_sort(browse);
         // The active tab's selection is what the history remembers for its current location.
@@ -3502,61 +3503,61 @@ const WHEEL_SEEK_STEP: f64 = 5.0;
 
 /// The settings the viewer and the window title are set from, applied again whenever one changes.
 const VIEWER_SETTINGS: [&str; 55] = [
-    "video-crop",
-    "video-crop-method",
-    "video-crop-trim",
-    "video-backdrop",
-    "video-backdrop-zoom",
-    "video-backdrop-blur",
-    "video-backdrop-dim",
-    "remember-file-settings",
-    "remember-position",
-    "remember-speed",
-    "remember-volume",
-    "remember-rotation",
-    "remember-zoom",
-    "remember-pan",
-    "sidebar-animations",
-    "sidebar-animation-ms",
-    "video-controls-locked",
-    "video-controls-x",
-    "video-controls-y",
-    "video-controls-width",
-    "overlay-layout",
-    "seek-overlay",
-    "seek-overlay-bar",
-    "seek-overlay-time",
-    "seek-overlay-time-format",
-    "seek-overlay-position",
-    "seek-overlay-seconds",
-    "seek-overlay-width",
-    "seek-overlay-always",
-    "folder-end",
-    "original-focus",
-    "unlock-minimum-zoom",
-    "zoom-step",
-    "video-start-delay",
-    "expand-up-to-factor",
-    "keep-fit-mode",
-    "image-fit",
-    "smooth-scrolling",
-    "scaling-filter",
-    "smooth-upscaling",
-    "zoom-indicator",
-    "auto-hide-cursor",
-    "viewer-blurred-background",
-    "viewer-status-bar",
-    "viewer-status-overlay-position",
-    "svp-enabled",
+    "video.crop.enabled",
+    "video.crop.method",
+    "video.crop.trim",
+    "video.backdrop.enabled",
+    "video.backdrop.zoom",
+    "video.backdrop.blur",
+    "video.backdrop.dim",
+    "remember.enabled",
+    "remember.position",
+    "remember.speed",
+    "remember.volume",
+    "remember.rotation",
+    "remember.zoom",
+    "remember.pan",
+    "window.sidebar.animations",
+    "window.sidebar.animation-ms",
+    "video.controls.locked",
+    "video.controls.x",
+    "video.controls.y",
+    "video.controls.width",
+    "viewer.overlay-layout",
+    "video.seek-overlay.enabled",
+    "video.seek-overlay.bar",
+    "video.seek-overlay.time",
+    "video.seek-overlay.time-format",
+    "video.seek-overlay.position",
+    "video.seek-overlay.seconds",
+    "video.seek-overlay.width",
+    "video.seek-overlay.always",
+    "viewer.folder-end",
+    "image.original-focus",
+    "image.unlock-minimum-zoom",
+    "image.zoom-step",
+    "video.start-delay",
+    "image.expand-up-to-factor",
+    "image.keep-fit",
+    "image.fit",
+    "image.smooth-scrolling",
+    "image.scaling-filter",
+    "image.smooth-upscaling",
+    "image.zoom-indicator",
+    "viewer.auto-hide-cursor",
+    "viewer.blurred-background",
+    "viewer.status-bar.shown",
+    "viewer.status-bar.overlay-position",
+    "video.svp.enabled",
     "svp-plugin-directory",
-    "svp-fps-mode",
-    "svp-fps-target",
-    "svp-fps-minimum",
-    "svp-fps-maximum",
-    "svp-nvof",
-    "svp-seek-bypass",
-    "svp-seek-bypass-delay",
-    "image-info-in-title",
+    "video.svp.fps.mode",
+    "video.svp.fps.target",
+    "video.svp.fps.minimum",
+    "video.svp.fps.maximum",
+    "video.svp.nvof",
+    "video.svp.seek-bypass.enabled",
+    "video.svp.seek-bypass.delay",
+    "viewer.image-info-in-title",
 ];
 /// How far a thumbnail size key moves each time, in pixels, and the range it is kept within.
 const THUMBNAIL_STEP: i32 = 16;
@@ -3571,15 +3572,15 @@ pub struct TabInfo {
     pub active: bool,
 }
 
-/// Whether the browse view lists folders at all, which is `show-directories` other than `none`.
-fn shows_directories(settings: &gio::Settings) -> bool {
-    settings.string("show-directories") != "none"
+/// Whether the browse view lists folders at all, which is `browse.show-directories` other than `none`.
+fn shows_directories(settings: &Settings) -> bool {
+    settings.string("browse.show-directories") != "none"
 }
 
-/// Adds a stateful action for the sort setting `key`, whose radio items in the sort menu choose it. Menu items
+/// Adds the stateful action `name` for the sort setting `key`, whose radio items in the sort menu choose it. Menu items
 /// activate their action, and some pass the new value as a change of state, so both make the choice.
-fn add_sort_action(window: &Window, settings: &gio::Settings, key: &'static str) {
-    let action = gio::SimpleAction::new_stateful(key, Some(glib::VariantTy::STRING), &settings.string(key).to_variant());
+fn add_sort_action(window: &Window, settings: &Settings, name: &str, key: &'static str) {
+    let action = gio::SimpleAction::new_stateful(name, Some(glib::VariantTy::STRING), &settings.string(key).to_variant());
     let choose = {
         let weak = window.downgrade();
         move |parameter: Option<&glib::Variant>| {
@@ -3593,7 +3594,7 @@ fn add_sort_action(window: &Window, settings: &gio::Settings, key: &'static str)
         move |_, parameter| choose(parameter)
     });
     action.connect_change_state(move |_, parameter| choose(parameter));
-    settings.connect_changed(Some(key), {
+    settings.connect_changed(key, {
         let weak = window.downgrade();
         move |_, _| {
             if let Some(window) = weak.upgrade() {
@@ -3605,30 +3606,30 @@ fn add_sort_action(window: &Window, settings: &gio::Settings, key: &'static str)
 }
 
 /// Adds the sort menu's "Show Directories" checkbox, which turns the listing of folders on or off.
-fn add_show_directories_action(window: &Window, settings: &gio::Settings) {
+fn add_show_directories_action(window: &Window, settings: &Settings) {
     let action = gio::SimpleAction::new_stateful("show-directories", None, &shows_directories(settings).to_variant());
     action.connect_activate({
         let settings = settings.clone();
         move |_, _| {
             // Turning folders back on lists them first-last, the default.
             let value = if shows_directories(&settings) { "none" } else { "first-last" };
-            let _ = settings.set_string("show-directories", value);
+            let _ = settings.set_string("browse.show-directories", value);
         }
     });
-    settings.connect_changed(Some("show-directories"), {
+    settings.connect_changed("browse.show-directories", {
         let action = action.clone();
         move |settings, _| action.set_state(&shows_directories(settings).to_variant())
     });
     window.add_action(&action);
 }
 
-/// The folder a new window opens at, from the `start-location` setting. Falls back to the home folder
+/// The folder a new window opens at, from the `start.location` setting. Falls back to the home folder
 /// when the chosen folder is unset or no longer exists.
-fn start_location(settings: &gio::Settings) -> PathBuf {
-    let path = match settings.string("start-location").as_str() {
-        "last" => PathBuf::from(settings.string("last-directory").as_str()),
+fn start_location(settings: &Settings) -> PathBuf {
+    let path = match settings.string("start.location").as_str() {
+        "last" => PathBuf::from(settings.string("start.last-directory").as_str()),
         "root" => PathBuf::from("/"),
-        "specific" => PathBuf::from(settings.string("start-directory").as_str()),
+        "specific" => PathBuf::from(settings.string("start.directory").as_str()),
         _ => glib::home_dir(),
     };
     if path.is_dir() { path } else { glib::home_dir() }
@@ -3636,44 +3637,44 @@ fn start_location(settings: &gio::Settings) -> PathBuf {
 
 /// Saves whether the window is maximized and, if it is not, its size. A maximized window is as big as
 /// the screen, so the size kept is the one from before it was maximized.
-fn save_window_state(window: &Window, settings: &gio::Settings) {
-    if settings.string("start-location") == "last" {
+fn save_window_state(window: &Window, settings: &Settings) {
+    if settings.string("start.location") == "last" {
         if let Some(path) = window.current_path() {
-            let _ = settings.set_string("last-directory", &path.to_string_lossy());
+            let _ = settings.set_string("start.last-directory", &path.to_string_lossy());
             let file = window.selected_file().map(|name| path.join(name).to_string_lossy().into_owned());
-            let _ = settings.set_string("last-file", file.as_deref().unwrap_or(""));
+            let _ = settings.set_string("start.last-file", file.as_deref().unwrap_or(""));
         }
     }
-    let _ = settings.set_int("sidebar-width", window.imp().split.user_sidebar_width().unwrap_or(-1));
+    let _ = settings.set_int("window.sidebar.width", window.imp().split.user_sidebar_width().unwrap_or(-1));
     let maximized = window.is_maximized();
-    let _ = settings.set_boolean("window-maximized", maximized);
+    let _ = settings.set_boolean("window.maximized", maximized);
     if !maximized && window.width() > 0 && window.height() > 0 {
-        let _ = settings.set_int("window-width", window.width());
-        let _ = settings.set_int("window-height", window.height());
+        let _ = settings.set_int("window.width", window.width());
+        let _ = settings.set_int("window.height", window.height());
     }
     save_playlist_layout(window, settings);
 }
 
 /// Saves the playlist's layout: whether it is shown and how wide it is beside the page, and whether it is in a window of
 /// its own, with that window's size.
-fn save_playlist_layout(window: &Window, settings: &gio::Settings) {
+fn save_playlist_layout(window: &Window, settings: &Settings) {
     let imp = window.imp();
-    let _ = settings.set_boolean("playlist-shown", imp.playlist_shown.get());
+    let _ = settings.set_boolean("playlist.shown", imp.playlist_shown.get());
     if let Some(width) = window.active_playlist_split().user_sidebar_width() {
-        let _ = settings.set_int("playlist-width", width);
+        let _ = settings.set_int("playlist.width", width);
     }
     let detached = imp.playlist_window.borrow().clone();
-    let _ = settings.set_boolean("playlist-detached", detached.is_some());
+    let _ = settings.set_boolean("playlist.detached", detached.is_some());
     if let Some(detached) = &detached {
         save_playlist_window_size(detached, settings);
     }
 }
 
 /// Saves the size of the window the playlist is in, while it is shown.
-fn save_playlist_window_size(window: &adw::Window, settings: &gio::Settings) {
+fn save_playlist_window_size(window: &adw::Window, settings: &Settings) {
     if window.width() > 0 && window.height() > 0 {
-        let _ = settings.set_int("playlist-window-width", window.width());
-        let _ = settings.set_int("playlist-window-height", window.height());
+        let _ = settings.set_int("playlist.window.width", window.width());
+        let _ = settings.set_int("playlist.window.height", window.height());
     }
 }
 
@@ -3688,7 +3689,7 @@ fn child_toward(parent: &Path, folder: &Path) -> Option<String> {
     rest.components().next()?.as_os_str().to_str().map(str::to_owned)
 }
 
-fn schedule_window_save(window: &Window, settings: &gio::Settings, pending: &Rc<Cell<Option<glib::SourceId>>>) {
+fn schedule_window_save(window: &Window, settings: &Settings, pending: &Rc<Cell<Option<glib::SourceId>>>) {
     if let Some(id) = pending.take() {
         id.remove();
     }
@@ -3715,8 +3716,8 @@ struct TabState {
 }
 
 /// Gives `browse` the info fields the settings list, skipping names it does not know.
-fn set_info_fields_from(settings: &gio::Settings, browse: &BrowseView) {
-    let fields: Vec<InfoField> = settings.strv("info-fields").iter().filter_map(|key| InfoField::from_key(key)).collect();
+fn set_info_fields_from(settings: &Settings, browse: &BrowseView) {
+    let fields: Vec<InfoField> = settings.strv("browse.info.fields").iter().filter_map(|key| InfoField::from_key(key)).collect();
     browse.set_info_fields(&fields);
 }
 
@@ -3788,7 +3789,7 @@ pub(crate) mod tests {
 
 
     /// The context menu actions act on the path they are given.
-    fn context_actions_work(app: &adw::Application, settings: &gio::Settings) {
+    fn context_actions_work(app: &adw::Application, settings: &Settings) {
         let root = std::env::temp_dir().join(format!("rsimgv-context-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("docs")).unwrap();
@@ -3809,7 +3810,7 @@ pub(crate) mod tests {
     }
 
     /// Each tab keeps its own folder and history; switching tabs shows the one chosen.
-    fn tabs_keep_their_own_state(app: &adw::Application, settings: &gio::Settings) {
+    fn tabs_keep_their_own_state(app: &adw::Application, settings: &Settings) {
         let root = std::env::temp_dir().join(format!("rsimgv-tabs-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("alpha")).unwrap();
@@ -3839,7 +3840,7 @@ pub(crate) mod tests {
 
     /// Stepping past a folder's last item goes on to the next folder's first, and back past its first to the previous
     /// folder's last, while the setting asks for it.
-    fn viewer_steps_between_folders(app: &adw::Application, settings: &gio::Settings) {
+    fn viewer_steps_between_folders(app: &adw::Application, settings: &Settings) {
         let root = std::env::temp_dir().join(format!("rsimgv-folder-end-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         let (alpha, gamma) = (root.join("alpha"), root.join("gamma"));
@@ -3851,7 +3852,7 @@ pub(crate) mod tests {
             }
         }
 
-        settings.set_string("folder-end", "next-folder").unwrap();
+        settings.set_string("viewer.folder-end", "next-folder").unwrap();
         let window = Window::new(app, settings);
         window.navigate(&alpha);
         let browse = window.active_browse().unwrap();
@@ -3870,7 +3871,7 @@ pub(crate) mod tests {
             window.current_path().as_ref() == Some(&alpha) && viewer.shown_item().map(|item| item.path) == Some(alpha.join("two.png"))
         });
 
-        settings.reset("folder-end");
+        settings.reset("viewer.folder-end");
         viewer.step(true);
         assert_eq!(window.current_path().as_ref(), Some(&alpha), "stopping stays in the folder");
         window.destroy();
@@ -3878,7 +3879,7 @@ pub(crate) mod tests {
     }
 
     /// The menu's column toggles show and hide the columns, and "Reveal in browser" shows the item's folder.
-    fn playlist_menu_actions(app: &adw::Application, settings: &gio::Settings) {
+    fn playlist_menu_actions(app: &adw::Application, settings: &Settings) {
         let root = std::env::temp_dir().join(format!("rsimgv-reveal-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         let (alpha, gamma) = (root.join("alpha"), root.join("gamma"));
@@ -3890,12 +3891,12 @@ pub(crate) mod tests {
 
         let window = Window::new(app, settings);
         let panel = window.imp().playlist_panel.get().unwrap();
-        for (index, key) in ["playlist-show-position", "playlist-show-name", "playlist-show-length", "playlist-show-filename"].into_iter().enumerate() {
+        for (index, (key, action, _, _, _)) in crate::ui::playlist_panel::COLUMNS.into_iter().enumerate() {
             let before = settings.boolean(key);
-            panel.content().activate_action(&format!("win.{key}"), None).unwrap();
+            panel.content().activate_action(&format!("win.{action}"), None).unwrap();
             assert_eq!(settings.boolean(key), !before, "the toggle changes the setting for {key}");
             assert_eq!(panel.column_shown(index as u32), !before, "the toggle changes the column for {key}");
-            panel.content().activate_action(&format!("win.{key}"), None).unwrap();
+            panel.content().activate_action(&format!("win.{action}"), None).unwrap();
             assert_eq!(panel.column_shown(index as u32), before, "the toggle changes the column back for {key}");
         }
 
@@ -3912,7 +3913,7 @@ pub(crate) mod tests {
     }
 
     /// The viewer goes through the playlist without the folder shown, or the item selected in it, having any part in it.
-    fn playlist_plays_apart_from_browsing(app: &adw::Application, settings: &gio::Settings) {
+    fn playlist_plays_apart_from_browsing(app: &adw::Application, settings: &Settings) {
         let root = std::env::temp_dir().join(format!("rsimgv-playlist-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         let (alpha, gamma) = (root.join("alpha"), root.join("gamma"));
@@ -3927,7 +3928,7 @@ pub(crate) mod tests {
         playlist::with(|list| list.clear());
 
         // Looping and moving on to other folders are for folders, and do not apply here.
-        settings.set_string("folder-end", "next-folder").unwrap();
+        settings.set_string("viewer.folder-end", "next-folder").unwrap();
         let window = Window::new(app, settings);
         let panel = window.imp().playlist_panel.get().unwrap();
         let viewer = window.imp().viewer.clone();
@@ -4047,14 +4048,14 @@ pub(crate) mod tests {
 
         playlist::with(|list| list.clear());
         window.playlist_changed();
-        settings.reset("folder-end");
+        settings.reset("viewer.folder-end");
         window.destroy();
         let _ = fs::remove_file(playlist::file());
         let _ = fs::remove_dir_all(&root);
     }
 
     /// While folders remember their sorts the sort menu changes only the folder shown, and the others use the default.
-    fn folders_remember_their_sorts(app: &adw::Application, settings: &gio::Settings) {
+    fn folders_remember_their_sorts(app: &adw::Application, settings: &Settings) {
         let root = std::env::temp_dir().join(format!("rsimgv-sorts-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("alpha")).unwrap();
@@ -4067,11 +4068,11 @@ pub(crate) mod tests {
         let menu_state = |key: &str| window.lookup_action(key).unwrap().state().unwrap().get::<String>().unwrap();
         assert_eq!(browse.sort_by(), "name", "a folder starts with the default");
 
-        settings.set_boolean("remember-folder-sort", true).unwrap();
-        window.choose_sort("sort-by", "size");
+        settings.set_boolean("browse.sort.remember-per-folder", true).unwrap();
+        window.choose_sort("browse.sort.by", "size");
         assert_eq!(browse.sort_by(), "size", "the folder shown takes the choice");
         assert_eq!(menu_state("sort-by"), "size", "and the menu shows it");
-        assert_eq!(settings.string("sort-by"), "name", "the default stays as it was");
+        assert_eq!(settings.string("browse.sort.by"), "name", "the default stays as it was");
 
         window.navigate(&gamma);
         assert_eq!(browse.sort_by(), "name", "another folder uses the default");
@@ -4079,28 +4080,28 @@ pub(crate) mod tests {
         window.navigate(&alpha);
         assert_eq!(browse.sort_by(), "size", "coming back brings the folder's own sort");
 
-        settings.set_string("sort-by", "type").unwrap();
+        settings.set_string("browse.sort.by", "type").unwrap();
         assert_eq!(browse.sort_by(), "size", "a remembered sort outranks the default");
         window.navigate(&gamma);
         assert_eq!(browse.sort_by(), "type", "a folder without one follows the default");
 
-        settings.set_boolean("remember-folder-sort", false).unwrap();
+        settings.set_boolean("browse.sort.remember-per-folder", false).unwrap();
         window.navigate(&alpha);
         assert_eq!(browse.sort_by(), "type", "with remembering off, every folder uses the default");
-        window.choose_sort("sort-order", "descending");
-        assert_eq!(settings.string("sort-order"), "descending", "and the menu changes the default");
+        window.choose_sort("browse.sort.order", "descending");
+        assert_eq!(settings.string("browse.sort.order"), "descending", "and the menu changes the default");
         assert_eq!(browse.sort_order(), "descending");
 
-        settings.reset("sort-by");
-        settings.reset("sort-order");
-        settings.reset("remember-folder-sort");
+        settings.reset("browse.sort.by");
+        settings.reset("browse.sort.order");
+        settings.reset("browse.sort.remember-per-folder");
         window.destroy();
         let _ = fs::remove_file(crate::settings::config_path().with_file_name("folder_sort.yaml"));
         let _ = fs::remove_dir_all(&root);
     }
 
     /// A size change is saved shortly after it happens, without waiting for the window to close.
-    fn size_change_is_saved_without_closing(app: &adw::Application, settings: &gio::Settings) {
+    fn size_change_is_saved_without_closing(app: &adw::Application, settings: &Settings) {
         let window = Window::new(app, settings);
         window.present();
         let ctx = glib::MainContext::default();
@@ -4118,14 +4119,14 @@ pub(crate) mod tests {
         // against the window's own size.
         let grown = (window.width(), window.height());
         assert!(grown.0 > before.0 && grown.1 > before.1, "the window grew to the new size: {before:?} to {grown:?}");
-        assert_eq!(settings.int("window-width"), grown.0, "the width is saved without closing");
-        assert_eq!(settings.int("window-height"), grown.1, "the height is saved without closing");
+        assert_eq!(settings.int("window.width"), grown.0, "the width is saved without closing");
+        assert_eq!(settings.int("window.height"), grown.1, "the height is saved without closing");
         window.set_size_request(-1, -1);
         window.destroy();
     }
 
     /// Closing a window saves its size and that it is not maximized; a new window opens at that size.
-    fn window_size_is_saved(app: &adw::Application, settings: &gio::Settings) {
+    fn window_size_is_saved(app: &adw::Application, settings: &Settings) {
         let window = Window::new(&app, &settings);
         window.set_default_size(700, 450);
         window.present();
@@ -4138,9 +4139,9 @@ pub(crate) mod tests {
         // from the size asked for, so the saved size is checked against the window's own size.
         let (width, height) = (window.width(), window.height());
         window.close();
-        assert_eq!(settings.int("window-width"), width, "the width is saved");
-        assert_eq!(settings.int("window-height"), height, "the height is saved");
-        assert!(!settings.boolean("window-maximized"), "an unmaximized window is saved as such");
+        assert_eq!(settings.int("window.width"), width, "the width is saved");
+        assert_eq!(settings.int("window.height"), height, "the height is saved");
+        assert!(!settings.boolean("window.maximized"), "an unmaximized window is saved as such");
 
         // A window opened afterwards starts at the saved size.
         let reopened = Window::new(&app, &settings);
@@ -4158,10 +4159,10 @@ pub(crate) mod tests {
         fs::write(root.join("file.txt"), "").unwrap();
         fs::create_dir_all(root.join("delta/epsilon")).unwrap();
 
-        let app = adw::Application::builder().application_id("au.topher.rimgv.Tests").build();
+        let app = adw::Application::builder().application_id("au.topher.rsimgv.Tests").build();
         // Windows may only be created once the application has started.
         gio::prelude::ApplicationExt::register(&app, gio::Cancellable::NONE).expect("register test application");
-        let settings = crate::settings::open("au.topher.rimgv");
+        let settings = crate::settings::open().expect("the settings open");
         tabs_keep_their_own_state(&app, &settings);
         folders_remember_their_sorts(&app, &settings);
         viewer_steps_between_folders(&app, &settings);

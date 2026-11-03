@@ -10,7 +10,7 @@ mod imp {
     use super::*;
 
     #[derive(Default, gtk::CompositeTemplate)]
-    #[template(resource = "/au/topher/rimgv/ui/header_bar.ui")]
+    #[template(resource = "/au/topher/rsimgv/ui/header_bar.ui")]
     pub struct HeaderBar {
         #[template_child]
         pub start: TemplateChild<gtk::Box>,

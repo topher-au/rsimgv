@@ -820,7 +820,7 @@ mod imp {
 
     #[derive(Default, glib::Properties, gtk::CompositeTemplate)]
     #[properties(wrapper_type = super::BrowseView)]
-    #[template(resource = "/au/topher/rimgv/ui/browse_view.ui")]
+    #[template(resource = "/au/topher/rsimgv/ui/browse_view.ui")]
     pub struct BrowseView {
         #[template_child]
         pub grid: TemplateChild<super::super::ItemGrid>,
@@ -1115,7 +1115,7 @@ mod imp {
 
             self.grid.set_builders(
                 || {
-                    let builder = gtk::Builder::from_resource("/au/topher/rimgv/ui/browse_item.ui");
+                    let builder = gtk::Builder::from_resource("/au/topher/rsimgv/ui/browse_item.ui");
                     let cell: gtk::Box = builder.object("cell").expect("browse_item.ui defines `cell`");
 
                 // Right-click on an item asks for its context menu.
@@ -2259,7 +2259,7 @@ impl BrowseView {
 
     /// The height of one item: the visual, then the name and info lines as the settings lay them out.
     fn cell_height(&self) -> i32 {
-        let builder = gtk::Builder::from_resource("/au/topher/rimgv/ui/browse_item.ui");
+        let builder = gtk::Builder::from_resource("/au/topher/rsimgv/ui/browse_item.ui");
         let (Some(cell), Some(visual), Some(name), Some(info)) = (
             builder.object::<gtk::Box>("cell"),
             builder.object::<gtk::Box>("visual"),

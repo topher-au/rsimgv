@@ -63,7 +63,7 @@ mod imp {
     use super::*;
 
     #[derive(Default, gtk::CompositeTemplate)]
-    #[template(resource = "/au/topher/rimgv/ui/media_controls.ui")]
+    #[template(resource = "/au/topher/rsimgv/ui/media_controls.ui")]
     pub struct MediaControls {
         #[template_child]
         pub previous_button: TemplateChild<gtk::Button>,

@@ -46,6 +46,19 @@
 //!                   which a persistent message has unless it is false.
 //!   messages.update {"id", "text"}           -> {}   changes the text of a message still up
 //!   messages.dismiss {"id"}                  -> {}   takes a message down; with no id, every message
+//!   thumbnails.get {"paths", "max_size"?}   -> {"thumbnails": [{"path", "size", "format", "data"}, ...]}
+//!                   The still thumbnail of each file, as base64-encoded PNG, from the thumbnails rsimgv has
+//!                   already made for it: the largest at most max_size pixels across (default 256).
+//!                   "size" is the pixels of the thumbnail given. "data" is null for a file with no thumbnail yet,
+//!                   which the window makes when it shows the file. The thumbnails are read from the disk cache,
+//!                   so none are given while the thumbnail cache is turned off.
+//!   metadata.get {"paths"}                   -> {"metadata": [{"path", "name", "is_dir", "size", "modified", "mime_type",
+//!                                                "media", "media_pending"}, ...]}
+//!                   Each file's metadata, in the order of paths. size is in bytes for a file, and modified is in seconds
+//!                   since the Unix epoch. media holds a picture's or video's width, height, duration (seconds), frame_rate,
+//!                   codec, audio_codec, audio_channels and bit_rate, from what the app has read of it; it is null for a
+//!                   folder or other file. A picture or video not read yet is queued, so media is null and media_pending is
+//!                   true until a later request finds it. A path that does not exist gives {"path", "error": "no_such_file"}.
 //!
 //! "tab" in tabs.files and tabs.select is a tab id, or "current" for the selected tab. "index" is a tab's
 //! position, counted from 0 in tab order.
@@ -57,6 +70,8 @@ use gtk::{gio, glib};
 use gtk::prelude::*;
 use serde_json::{json, Value};
 
+use crate::fs::metadata::{MediaInfo, MediaMetadata};
+use crate::fs::thumbnail;
 use crate::storage::bookmarks;
 use crate::services::ipc::Error;
 use crate::keybindings::actions::{find, ACTIONS, DEFAULT_NOTIFICATION_SECONDS, NOTIFICATION_LEVELS};
@@ -138,6 +153,32 @@ pub fn handle(window: &Window, method: &str, params: &Value) -> Result<Value, Er
                 "height": texture.height(),
                 "data": glib::base64_encode(&png).as_str(),
             }))
+        }
+        "thumbnails.get" => {
+            let size = match params.get("max_size").filter(|size| !size.is_null()) {
+                None => 256,
+                Some(size) => size
+                    .as_i64()
+                    .filter(|size| (1..=2048).contains(size))
+                    .ok_or_else(|| Error::new("invalid_params", "the parameter max_size must be a whole number from 1 to 2048"))?,
+            };
+            let thumbnails: Vec<Value> = path_list_param(params)?
+                .into_iter()
+                .map(|path| match thumbnail::cached_still_png(Path::new(path), size as i32) {
+                    Some((pixels, png)) => json!({
+                        "path": path,
+                        "size": pixels,
+                        "format": "png",
+                        "data": glib::base64_encode(&png).as_str(),
+                    }),
+                    None => json!({"path": path, "data": null}),
+                })
+                .collect();
+            Ok(json!({"thumbnails": thumbnails}))
+        }
+        "metadata.get" => {
+            let metadata: Vec<Value> = path_list_param(params)?.into_iter().map(file_metadata).collect();
+            Ok(json!({"metadata": metadata}))
         }
         "window.info" => Ok(json!({
             "current_path": window.current_path().map(|path| path.to_string_lossy().into_owned()),
@@ -345,6 +386,66 @@ pub fn handle(window: &Window, method: &str, params: &Value) -> Result<Value, Er
 fn mime_type(path: &Path) -> Option<String> {
     let (content_type, _) = gio::content_type_guess(Some(path), None::<&[u8]>);
     gio::content_type_get_mime_type(&content_type).map(|mime| mime.to_string())
+}
+
+/// The paths a request names in its "paths" list, each as text.
+fn path_list_param(params: &Value) -> Result<Vec<&str>, Error> {
+    params
+        .get("paths")
+        .and_then(Value::as_array)
+        .ok_or_else(|| Error::new("invalid_params", "the parameter paths must be a list of paths"))?
+        .iter()
+        .map(|path| path.as_str().ok_or_else(|| Error::new("invalid_params", "each path must be text")))
+        .collect()
+}
+
+/// What the file system and the app say about the file at `path`. A picture or video whose metadata is not read yet is
+/// queued to be read, so its "media" is null and "media_pending" is true until a later request finds it.
+fn file_metadata(path: &str) -> Value {
+    let file = Path::new(path);
+    let Ok(metadata) = std::fs::metadata(file) else {
+        return json!({"path": path, "error": "no_such_file"});
+    };
+    let is_dir = metadata.is_dir();
+    let modified = metadata.modified().ok().and_then(|time| time.duration_since(UNIX_EPOCH).ok());
+    let mime = mime_type(file);
+    let mut info = json!({
+        "path": path,
+        "name": file.file_name().map(|name| name.to_string_lossy().into_owned()),
+        "is_dir": is_dir,
+        "size": (!is_dir).then(|| metadata.len()),
+        "modified": modified.map(|since| since.as_secs_f64()),
+        "mime_type": mime,
+        "media": null,
+        "media_pending": false,
+    });
+    let picture_or_video = mime.as_deref().is_some_and(|mime| mime.starts_with("image/") || mime.starts_with("video/"));
+    if !is_dir && picture_or_video {
+        // The playlist keys its metadata by the modification time in whole seconds, and the size.
+        let mtime = modified.map_or(0, |since| since.as_secs() as i64);
+        let media_info = MediaInfo::shared();
+        match media_info.get(file, mtime, metadata.len()) {
+            Some(read) => info["media"] = media_json(&read),
+            None => {
+                media_info.request(file, mtime, metadata.len(), || true, || {});
+                info["media_pending"] = json!(true);
+            }
+        }
+    }
+    info
+}
+
+fn media_json(media: &MediaMetadata) -> Value {
+    json!({
+        "width": media.width,
+        "height": media.height,
+        "duration": media.duration,
+        "frame_rate": media.frame_rate,
+        "codec": media.codec,
+        "audio_codec": media.audio_codec,
+        "audio_channels": media.audio_channels,
+        "bit_rate": media.bit_rate,
+    })
 }
 
 fn text_param<'a>(params: &'a Value, key: &str) -> Result<&'a str, Error> {

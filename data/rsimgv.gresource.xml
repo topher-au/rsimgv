@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <gresources>
-  <gresource prefix="/au/topher/rimgv">
+  <gresource prefix="/au/topher/rsimgv">
     <file preprocess="xml-stripblanks">ui/window.ui</file>
     <file preprocess="xml-stripblanks">ui/fs_tree.ui</file>
     <file preprocess="xml-stripblanks">ui/fs_tree_row.ui</file>
@@ -17,7 +17,7 @@
     <file preprocess="xml-stripblanks">ui/media_controls.ui</file>
     <file alias="style.css">style.css</file>
   </gresource>
-    <gresource prefix="/au/topher/rimgv/icons">
+    <gresource prefix="/au/topher/rsimgv/icons">
       <file alias="hicolor/128x128/apps/au.topher.rsimgv.png">icons/hicolor/128x128/apps/au.topher.rsimgv.png</file>
       <file alias="hicolor/16x16/apps/au.topher.rsimgv.png">icons/hicolor/16x16/apps/au.topher.rsimgv.png</file>
       <file alias="hicolor/24x24/apps/au.topher.rsimgv.png">icons/hicolor/24x24/apps/au.topher.rsimgv.png</file>
