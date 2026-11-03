@@ -109,9 +109,11 @@
       <object class="GtkBox" id="body">
         <property name="vexpand">true</property>
     <child>
+      <!-- The elements over the item are clipped to the item's frame, so one that is too big for it stays inside the widget. -->
       <object class="GtkOverlay" id="overlay">
         <property name="hexpand">true</property>
         <property name="vexpand">true</property>
+        <property name="overflow">hidden</property>
         <property name="child">
           <object class="GtkStack" id="pages">
             <property name="hexpand">true</property>
