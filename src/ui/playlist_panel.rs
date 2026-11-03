@@ -5,7 +5,7 @@
 //! `win.playlist-*` actions.
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::UNIX_EPOCH;
@@ -72,6 +72,8 @@ pub struct PlaylistPanel {
     shown: RefCell<Vec<String>>,
     /// The position of the item marked as the current one.
     current: Rc<Cell<Option<u32>>>,
+    /// The path of that item, which the view scrolls to when it changes, but not when the item only changes place.
+    current_path: RefCell<Option<String>>,
     /// The number cells showing an item now. Weak, so a cell GTK has let go of is not kept alive here.
     rows: Rc<RefCell<Vec<glib::WeakRef<gtk::ListItem>>>>,
     /// The length cells showing an item now, which are asked for again as the playlist scrolls. Weak, as `rows` is.
@@ -81,7 +83,7 @@ pub struct PlaylistPanel {
     filtered: gtk::FilterListModel,
     /// Each item's path, with its title and file name in lower case, for the search to match against.
     searchable: Rc<RefCell<HashMap<String, String>>>,
-    selection: gtk::SingleSelection,
+    selection: gtk::MultiSelection,
     /// The actions on the selected item, which the toolbar's buttons run.
     actions: gio::SimpleActionGroup,
     search: gtk::SearchBar,
@@ -110,9 +112,7 @@ impl PlaylistPanel {
             }
         });
         let filtered = gtk::FilterListModel::new(Some(paths.clone()), Some(filter.clone()));
-        let selection = gtk::SingleSelection::new(Some(filtered.clone()));
-        selection.set_autoselect(false);
-        selection.set_can_unselect(true);
+        let selection = gtk::MultiSelection::new(Some(filtered.clone()));
         let view = gtk::ColumnView::new(Some(selection.clone()));
         view.add_css_class("data-table");
         view.connect_activate(|view, position| {
@@ -251,6 +251,7 @@ impl PlaylistPanel {
             paths,
             shown: RefCell::new(Vec::new()),
             current,
+            current_path: RefCell::new(None),
             rows,
             lengths,
             filter,
@@ -318,36 +319,46 @@ impl PlaylistPanel {
         self.view.grab_focus()
     }
 
-    /// Selects the item `step` rows from the selected one in the view, stopping at the ends. With none selected, a step
-    /// forward selects the first row and a step back the last.
+    /// Selects only the row `step` rows from the selected ones, stopping at the ends: above them going up, below them
+    /// going down. With none selected, a step forward selects the first row and a step back the last.
     pub fn select_step(&self, step: i32) {
         let rows = self.filtered.n_items();
         if rows == 0 {
             return;
         }
-        let row = match self.selection.selected() {
-            gtk::INVALID_LIST_POSITION if step < 0 => rows - 1,
-            gtk::INVALID_LIST_POSITION => 0,
-            selected => selected.saturating_add_signed(step).min(rows - 1),
+        let selected = selected_rows(&self.selection);
+        let edge = if step < 0 { selected.first() } else { selected.last() };
+        let row = match edge {
+            None if step < 0 => rows - 1,
+            None => 0,
+            Some(edge) => edge.saturating_add_signed(step).min(rows - 1),
         };
-        self.selection.set_selected(row);
-        self.view.scroll_to(row, None::<&gtk::ColumnViewColumn>, gtk::ListScrollFlags::NONE, None);
+        self.selection.select_item(row, true);
+        reveal_rows(&self.view, &[row]);
     }
 
-    /// Runs one of the actions on the selected item, such as `move-up`, if it is enabled. A move keeps the item selected
-    /// at its new place, so the next one moves it on.
-    pub fn run_selection_action(&self, name: &str) {
-        let path = self.selection.selected_item().and_downcast::<gtk::StringObject>().map(|path| path.string());
-        gio::prelude::ActionGroupExt::activate_action(&self.actions, name, None);
-        let row = path.and_then(|path| {
-            (0..self.filtered.n_items()).find(|row| {
-                self.filtered.item(*row).and_downcast::<gtk::StringObject>().is_some_and(|item| item.string() == path)
-            })
-        });
-        if let Some(row) = row {
-            self.selection.set_selected(row);
-            self.view.scroll_to(row, None::<&gtk::ColumnViewColumn>, gtk::ListScrollFlags::NONE, None);
+    /// Adds the row beyond the selected ones, above them going up, below them going down, to the selection.
+    pub fn extend_selection(&self, step: i32) {
+        let rows = self.filtered.n_items();
+        let selected = selected_rows(&self.selection);
+        let next = match if step < 0 { selected.first() } else { selected.last() } {
+            Some(edge) => edge.checked_add_signed(step).filter(|row| *row < rows),
+            None => return self.select_step(step),
+        };
+        if let Some(row) = next {
+            self.selection.select_item(row, false);
+            reveal_rows(&self.view, &[row]);
         }
+    }
+
+    /// Selects every row the view shows.
+    pub fn select_all(&self) {
+        self.selection.select_all();
+    }
+
+    /// Runs one of the actions on the selected items, such as `move-up`, if it is enabled.
+    pub fn run_selection_action(&self, name: &str) {
+        gio::prelude::ActionGroupExt::activate_action(&self.actions, name, None);
     }
 
     /// Shows the search field and moves the focus into it, or hides it and gives the focus back to the list.
@@ -369,7 +380,9 @@ impl PlaylistPanel {
     /// Marks the playlist's current item, and brings it into view.
     pub fn refresh_current(&self) {
         let current = playlist::with(|list| list.current()).map(|index| index as u32);
-        let moved = self.current.replace(current) != current;
+        self.current.set(current);
+        let path = current.and_then(|current| playlist::with(|list| list.order().get(current as usize).map(|path| path.to_string_lossy().into_owned())));
+        let moved = self.current_path.replace(path.clone()) != path;
         eprintln!("playlist-debug: refresh_current current={current:?} moved={moved} rows={}", self.rows.borrow().len());
         for item in self.rows.borrow().iter().filter_map(|row| row.upgrade()) {
             let Some(position) = playlist_position(&item) else { continue };
@@ -788,44 +801,47 @@ fn playlist_len() -> u32 {
     playlist::with(|list| list.len() as u32)
 }
 
-/// Whether a selection action is enabled, given the playlist position of the selected item, if any, and the playlist's length.
-type Needs = fn(Option<u32>, u32) -> bool;
-/// Runs a selection action, given the view it runs from, the selected item's position, and the playlist's length.
-type Runs = fn(&gtk::ColumnView, Option<u32>, u32);
+/// Whether a selection action is enabled, given the playlist positions of the selected items, in order, and the playlist's
+/// length.
+type Needs = fn(&[u32], u32) -> bool;
+/// Runs a selection action, given the view it runs from, the playlist positions of the selected items, in order, and the
+/// playlist's length.
+type Runs = fn(&gtk::ColumnView, &[u32], u32);
 
-/// The actions on the selected item, in the group `playlist` that the toolbar's buttons and its menu run. Each is enabled
-/// only while there is something for it to act on.
-fn selection_actions(selection: &gtk::SingleSelection, view: &gtk::ColumnView) -> gio::SimpleActionGroup {
+/// Whether the items at `positions` have somewhere to go towards the start: one is not already in the block at the start.
+fn can_move_up(positions: &[u32], _: u32) -> bool {
+    positions.iter().enumerate().any(|(place, position)| *position as usize != place)
+}
+
+/// Whether the items at `positions` have somewhere to go towards the end: one is not already in the block at the end.
+fn can_move_down(positions: &[u32], len: u32) -> bool {
+    positions.iter().rev().enumerate().any(|(place, position)| *position as usize + place + 1 != len as usize)
+}
+
+/// Moves the items at `positions` as a group: `shift` is `up`, `down`, `start` or `end`.
+fn move_group(view: &gtk::ColumnView, positions: &[u32], shift: &str) {
+    activate(view, "win.playlist-move-items", Some(&(positions.to_vec(), shift).to_variant()));
+}
+
+/// The actions on the selected items, in the group `playlist` that the toolbar's buttons and its menu run. Each is enabled
+/// only while there is something for it to act on. A move keeps the items selected at their new places, and scrolls the
+/// view only if one of them would otherwise be out of sight.
+fn selection_actions(selection: &gtk::MultiSelection, view: &gtk::ColumnView) -> gio::SimpleActionGroup {
     let specs: [(&str, Needs, Runs); 6] = [
-        ("play", |_, _| true, |view, index, _| match index {
+        ("play", |_, _| true, |view, positions, _| match positions.first() {
             Some(index) => activate(view, "win.playlist-play-index", Some(&index.to_variant())),
             None => activate(view, "win.playlist-play", None),
         }),
-        ("remove-selected", |index, _| index.is_some(), |view, index, _| {
-            if let Some(index) = index {
-                activate(view, "win.playlist-remove-index", Some(&index.to_variant()));
-            }
+        ("remove-selected", |positions, _| !positions.is_empty(), |view, positions, _| {
+            let paths: Vec<String> = playlist::with(|list| {
+                positions.iter().filter_map(|position| list.order().get(*position as usize)).map(|path| path.to_string_lossy().into_owned()).collect()
+            });
+            activate(view, "win.playlist-remove-paths", Some(&paths.to_variant()));
         }),
-        ("move-up", |index, _| index.is_some_and(|from| from > 0), |view, index, _| {
-            if let Some(from) = index {
-                activate(view, "win.playlist-move", Some(&(from, from - 1).to_variant()));
-            }
-        }),
-        ("move-down", |index, len| index.is_some_and(|from| from + 1 < len), |view, index, _| {
-            if let Some(from) = index {
-                activate(view, "win.playlist-move", Some(&(from, from + 1).to_variant()));
-            }
-        }),
-        ("move-top", |index, _| index.is_some_and(|from| from > 0), |view, index, _| {
-            if let Some(from) = index {
-                activate(view, "win.playlist-move", Some(&(from, 0u32).to_variant()));
-            }
-        }),
-        ("move-bottom", |index, len| index.is_some_and(|from| from + 1 < len), |view, index, len| {
-            if let Some(from) = index {
-                activate(view, "win.playlist-move", Some(&(from, len - 1).to_variant()));
-            }
-        }),
+        ("move-up", can_move_up, |view, positions, _| move_group(view, positions, "up")),
+        ("move-down", can_move_down, |view, positions, _| move_group(view, positions, "down")),
+        ("move-top", can_move_up, |view, positions, _| move_group(view, positions, "start")),
+        ("move-bottom", can_move_down, |view, positions, _| move_group(view, positions, "end")),
     ];
     let group = gio::SimpleActionGroup::new();
     let mut actions = Vec::new();
@@ -834,8 +850,15 @@ fn selection_actions(selection: &gtk::SingleSelection, view: &gtk::ColumnView) -
         action.connect_activate({
             let (selection, view) = (selection.clone(), view.clone());
             move |_, _| {
-                eprintln!("playlist-debug: action {name} selected={:?} len={}", selected(&selection), playlist_len());
-                runs(&view, selected(&selection), playlist_len())
+                let positions = selected_positions(&selection);
+                eprintln!("playlist-debug: action {name} selected={positions:?} len={}", playlist_len());
+                let before = selected_paths(&selection);
+                runs(&view, &positions, playlist_len());
+                // The list is rebuilt by a change, which clears the selection, so it is made again.
+                let rows = reselect(&selection, &before);
+                if name.starts_with("move-") {
+                    reveal_rows(&view, &rows);
+                }
             }
         });
         group.add_action(&action);
@@ -844,16 +867,16 @@ fn selection_actions(selection: &gtk::SingleSelection, view: &gtk::ColumnView) -
     let refresh: Rc<dyn Fn()> = Rc::new({
         let selection = selection.clone();
         move || {
-            let index = selected(&selection);
+            let positions = selected_positions(&selection);
             let len = playlist_len();
             for (action, needs) in &actions {
-                action.set_enabled(needs(index, len));
+                action.set_enabled(needs(&positions, len));
             }
         }
     });
     refresh();
     let on_items = refresh.clone();
-    selection.connect_selected_notify(move |_| refresh());
+    selection.connect_selection_changed(move |_, _, _| refresh());
     selection.connect_items_changed(move |_, _, _, _| on_items());
     group
 }
@@ -870,8 +893,59 @@ fn path_position(path: &str) -> Option<u32> {
     playlist::with(|list| list.order().iter().position(|item| item.as_path() == Path::new(path))).map(|index| index as u32)
 }
 
-/// The playlist position of the selected item, if one is selected.
-fn selected(selection: &gtk::SingleSelection) -> Option<u32> {
-    let path = selection.selected_item().and_downcast::<gtk::StringObject>()?.string();
-    path_position(path.as_str())
+/// The rows of the view that are selected, in order.
+fn selected_rows(selection: &gtk::MultiSelection) -> Vec<u32> {
+    let rows = selection.selection();
+    (0..rows.size()).map(|nth| rows.nth(nth as u32)).collect()
+}
+
+/// The paths of the selected items.
+fn selected_paths(selection: &gtk::MultiSelection) -> HashSet<String> {
+    selected_rows(selection)
+        .into_iter()
+        .filter_map(|row| selection.item(row).and_downcast::<gtk::StringObject>())
+        .map(|path| path.string().to_string())
+        .collect()
+}
+
+/// The playlist positions of the selected items, in order.
+fn selected_positions(selection: &gtk::MultiSelection) -> Vec<u32> {
+    let paths = selected_paths(selection);
+    if paths.is_empty() {
+        return Vec::new();
+    }
+    playlist::with(|list| {
+        list.order().iter().enumerate().filter(|(_, path)| paths.contains(path.to_string_lossy().as_ref())).map(|(index, _)| index as u32).collect()
+    })
+}
+
+/// Selects the rows that show the items at `paths`, and only those. Returns their rows, in order.
+fn reselect(selection: &gtk::MultiSelection, paths: &HashSet<String>) -> Vec<u32> {
+    let rows: Vec<u32> = (0..selection.n_items())
+        .filter(|row| selection.item(*row).and_downcast::<gtk::StringObject>().is_some_and(|path| paths.contains(path.string().as_str())))
+        .collect();
+    let chosen = gtk::Bitset::new_empty();
+    for row in &rows {
+        chosen.add(*row);
+    }
+    selection.set_selection(&chosen, &gtk::Bitset::new_range(0, selection.n_items()));
+    rows
+}
+
+/// Scrolls the view, as little as it can, so that the first and last of `rows` are in sight, if one is not already.
+/// Rows are all as tall as the view's height shared out among them.
+fn reveal_rows(view: &gtk::ColumnView, rows: &[u32]) {
+    let (Some(first), Some(last)) = (rows.iter().min().copied(), rows.iter().max().copied()) else { return };
+    let total = view.model().map_or(0, |model| model.n_items());
+    let Some(adjustment) = view.vadjustment().filter(|_| total > 0) else { return };
+    let row_height = adjustment.upper() / f64::from(total);
+    let (top, bottom) = (adjustment.value(), adjustment.value() + adjustment.page_size());
+    let target = if f64::from(first) * row_height < top {
+        first
+    } else if f64::from(last + 1) * row_height > bottom {
+        last
+    } else {
+        return;
+    };
+    view.scroll_to(target, None::<&gtk::ColumnViewColumn>, gtk::ListScrollFlags::NONE, None);
 }

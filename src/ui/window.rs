@@ -1005,6 +1005,9 @@ impl Window {
         bound_action(&playlist, &weak, "move-down", |window| window.with_playlist(|panel| panel.run_selection_action("move-down")));
         bound_action(&playlist, &weak, "move-top", |window| window.with_playlist(|panel| panel.run_selection_action("move-top")));
         bound_action(&playlist, &weak, "move-bottom", |window| window.with_playlist(|panel| panel.run_selection_action("move-bottom")));
+        bound_action(&playlist, &weak, "select-all", |window| window.with_playlist(PlaylistPanel::select_all));
+        bound_action(&playlist, &weak, "extend-up", |window| window.with_playlist(|panel| panel.extend_selection(-1)));
+        bound_action(&playlist, &weak, "extend-down", |window| window.with_playlist(|panel| panel.extend_selection(1)));
         bound_action(&playlist, &weak, "toggle-search", |window| window.with_playlist(PlaylistPanel::toggle_search));
         bound_action(&playlist, &weak, "focus-search", |window| window.with_playlist(PlaylistPanel::focus_search));
         self.insert_action_group("playlist", Some(&playlist));
@@ -1227,6 +1230,21 @@ impl Window {
             window.run_script_on(&script, Some(PathBuf::from(path)));
         });
         self.add_action(&open_with);
+        // The items at the positions given move together, one place `up` or `down`, or to the `start` or the `end`.
+        let group = gio::SimpleAction::new("playlist-move-items", Some(&<(Vec<u32>, String)>::static_variant_type()));
+        group.connect_activate({
+            let weak = weak.clone();
+            move |_, parameter| {
+                let Some(window) = weak.upgrade() else { return };
+                let Some((indices, shift)) = parameter.and_then(|p| p.get::<(Vec<u32>, String)>()) else { return };
+                let Some(shift) = playlist::Shift::from_name(&shift) else { return };
+                let indices: Vec<usize> = indices.into_iter().map(|index| index as usize).collect();
+                if playlist::with(|list| list.move_items(&indices, shift)) {
+                    window.playlist_changed();
+                }
+            }
+        });
+        self.add_action(&group);
         let moved = gio::SimpleAction::new("playlist-move", Some(&<(u32, u32)>::static_variant_type()));
         moved.connect_activate(move |_, parameter| {
             let (Some(window), Some((from, to))) = (weak.upgrade(), parameter.and_then(|p| p.get::<(u32, u32)>())) else { return };

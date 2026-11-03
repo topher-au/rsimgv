@@ -395,22 +395,31 @@ pub const ACTIONS: &[ActionInfo] = &[
         name: "browse.toggle-item-info", description: "Show or hide each item's information under its name.", icon: "dialog-information-symbolic", label: "Toggle Item Info", defaults: &[],
     },
     ActionInfo {
-        name: "playlist.cursor-up", description: "Select the item above the selected one in the playlist, or the last item if none is selected.", icon: "go-up-symbolic", label: "Select Previous Row", defaults: &["up"],
+        name: "playlist.cursor-up", description: "Select only the row above the selected ones in the playlist, or the last row if none is selected.", icon: "go-up-symbolic", label: "Select Previous Row", defaults: &["up"],
     },
     ActionInfo {
-        name: "playlist.cursor-down", description: "Select the item below the selected one in the playlist, or the first item if none is selected.", icon: "go-down-symbolic", label: "Select Next Row", defaults: &["down"],
+        name: "playlist.cursor-down", description: "Select only the row below the selected ones in the playlist, or the first row if none is selected.", icon: "go-down-symbolic", label: "Select Next Row", defaults: &["down"],
     },
     ActionInfo {
-        name: "playlist.move-up", description: "Move the selected playlist item up one place.", icon: "go-up-symbolic", label: "Move Item Up", defaults: &["ctrl+up"],
+        name: "playlist.extend-up", description: "Add the row above the selected ones to the selection.", icon: "go-up-symbolic", label: "Extend Selection Up", defaults: &["shift+up"],
     },
     ActionInfo {
-        name: "playlist.move-down", description: "Move the selected playlist item down one place.", icon: "go-down-symbolic", label: "Move Item Down", defaults: &["ctrl+down"],
+        name: "playlist.extend-down", description: "Add the row below the selected ones to the selection.", icon: "go-down-symbolic", label: "Extend Selection Down", defaults: &["shift+down"],
     },
     ActionInfo {
-        name: "playlist.move-top", description: "Move the selected playlist item to the start of the playlist.", icon: "go-top-symbolic", label: "Move Item to Start", defaults: &["ctrl+home"],
+        name: "playlist.select-all", description: "Select every row of the playlist that the search shows.", icon: "edit-select-all-symbolic", label: "Select All", defaults: &["ctrl+a"],
     },
     ActionInfo {
-        name: "playlist.move-bottom", description: "Move the selected playlist item to the end of the playlist.", icon: "go-bottom-symbolic", label: "Move Item to End", defaults: &["ctrl+end"],
+        name: "playlist.move-up", description: "Move the selected playlist items up one place, together.", icon: "go-up-symbolic", label: "Move Items Up", defaults: &["ctrl+up"],
+    },
+    ActionInfo {
+        name: "playlist.move-down", description: "Move the selected playlist items down one place, together.", icon: "go-down-symbolic", label: "Move Items Down", defaults: &["ctrl+down"],
+    },
+    ActionInfo {
+        name: "playlist.move-top", description: "Move the selected playlist items to the start of the playlist, keeping their order.", icon: "go-top-symbolic", label: "Move Items to Start", defaults: &["ctrl+home"],
+    },
+    ActionInfo {
+        name: "playlist.move-bottom", description: "Move the selected playlist items to the end of the playlist, keeping their order.", icon: "go-bottom-symbolic", label: "Move Items to End", defaults: &["ctrl+end"],
     },
     ActionInfo {
         name: "playlist.toggle-search", description: "Show the playlist's search field, or hide it and show every item again.", icon: "system-search-symbolic", label: "Toggle Search", defaults: &["ctrl+f"],

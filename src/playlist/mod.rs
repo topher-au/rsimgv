@@ -37,6 +37,28 @@ pub struct Playlist {
     source: Option<PathBuf>,
 }
 
+/// Where `Playlist::move_items` takes a group of items: one place up or down, or to the start or the end.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Shift {
+    Up,
+    Down,
+    Start,
+    End,
+}
+
+impl Shift {
+    /// The shift `name` names: `up`, `down`, `start` or `end`.
+    pub fn from_name(name: &str) -> Option<Shift> {
+        match name {
+            "up" => Some(Shift::Up),
+            "down" => Some(Shift::Down),
+            "start" => Some(Shift::Start),
+            "end" => Some(Shift::End),
+            _ => None,
+        }
+    }
+}
+
 impl Playlist {
     /// The file the playlist was last loaded from or saved to, if it was.
     pub fn source(&self) -> Option<&Path> {
@@ -240,6 +262,47 @@ impl Playlist {
         true
     }
 
+    /// Moves the items at `indices`, in the order shown, together as a group, so they keep their order among themselves:
+    /// each goes up or down past the item beside it that is not moving, or all go to the start or the end. Items of the
+    /// group already at the edge stay there. The other order is left as it was, and the current item stays the same
+    /// item. Returns whether anything moved.
+    pub fn move_items(&mut self, indices: &[usize], shift: Shift) -> bool {
+        let len = self.len();
+        let mut chosen = vec![false; len];
+        for &index in indices.iter().filter(|index| **index < len) {
+            chosen[index] = true;
+        }
+        let current = self.current.and_then(|current| self.order().get(current).cloned());
+        let order = self.order_mut();
+        let before = order.clone();
+        match shift {
+            Shift::Up => {
+                for at in 1..len {
+                    if chosen[at] && !chosen[at - 1] {
+                        order.swap(at - 1, at);
+                        chosen.swap(at - 1, at);
+                    }
+                }
+            }
+            Shift::Down => {
+                for at in (0..len.saturating_sub(1)).rev() {
+                    if chosen[at] && !chosen[at + 1] {
+                        order.swap(at, at + 1);
+                        chosen.swap(at, at + 1);
+                    }
+                }
+            }
+            Shift::Start | Shift::End => {
+                let (moving, staying): (Vec<_>, Vec<_>) = before.iter().cloned().zip(&chosen).partition(|(_, chosen)| **chosen);
+                let (moving, staying) = (moving.into_iter().map(|(path, _)| path), staying.into_iter().map(|(path, _)| path));
+                *order = if shift == Shift::Start { moving.chain(staying).collect() } else { staying.chain(moving).collect() };
+            }
+        }
+        let moved = *order != before;
+        self.current = current.and_then(|path| self.order().iter().position(|item| *item == path));
+        moved
+    }
+
     /// The item to go to from the current one, going round from one end to the other. With no current item, the first
     /// going forward and the last going back.
     pub fn step_index(&self, forward: bool) -> Option<usize> {
@@ -382,6 +445,26 @@ pub fn save() -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_group_moves_together_and_keeps_its_order() {
+        let mut list = playlist(&["a", "b", "c", "d", "e"]);
+        list.set_current(3);
+        assert!(list.move_items(&[1, 3], Shift::Up));
+        assert_eq!(list.order(), paths(&["b", "a", "d", "c", "e"]));
+        assert_eq!(list.current_path(), Some(Path::new("/d")), "the current item is still the same one");
+        // The member already at the start stays, the rest go on up behind it.
+        assert!(list.move_items(&[0, 2], Shift::Up));
+        assert_eq!(list.order(), paths(&["b", "d", "a", "c", "e"]));
+        assert!(!list.move_items(&[0, 1], Shift::Up), "a group at the start has nowhere to go");
+        assert!(list.move_items(&[1, 4], Shift::Down));
+        assert_eq!(list.order(), paths(&["b", "a", "d", "c", "e"]));
+        assert!(list.move_items(&[3, 1], Shift::Start));
+        assert_eq!(list.order(), paths(&["a", "c", "b", "d", "e"]));
+        assert!(list.move_items(&[0, 2], Shift::End));
+        assert_eq!(list.order(), paths(&["c", "d", "e", "a", "b"]));
+        assert!(!list.move_items(&[3, 4], Shift::End));
+    }
 
     fn paths(names: &[&str]) -> Vec<PathBuf> {
         names.iter().map(|name| PathBuf::from(format!("/{name}"))).collect()
