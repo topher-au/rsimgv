@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use gtk::{gdk, gio};
 
 use crate::overlay::template::Template;
-use crate::overlay::{sample, Element, Items, Kind, Layout, Legacy, Slot, Style, TextAlign, Visibility};
+use crate::overlay::{plain_icon, sample, Element, IconStyle, Items, Kind, Layout, Legacy, Slot, Style, TextAlign, Visibility};
 
 /// The space between the edge of the item and the elements, and between one element and the next, in pixels.
 const MARGIN: i32 = 12;
@@ -362,7 +362,10 @@ fn fill(item: &Placed, frame: &Frame) -> bool {
     let text = item.template.render(frame.values);
     let state_icon = item.icon.as_ref().and_then(|_| (frame.values)("state-icon"));
     if let (Some(icon), Some(text)) = (&item.icon, &state_icon) {
-        icon.set_text(text);
+        match item.element.icon_style {
+            IconStyle::Emoji => icon.set_text(text),
+            IconStyle::Characters => icon.set_text(&plain_icon(text)),
+        }
     }
     if let Some(label) = &item.filename {
         label.set_text(&(frame.values)("filename").unwrap_or_default());

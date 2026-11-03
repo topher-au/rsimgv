@@ -26,6 +26,11 @@ pub const PROPERTIES: &[(&str, &str)] = &[
     ("file-size", "The size of the file"),
 ];
 
+/// `icon`, an emoji such as ▶️, as the plain character of the font, which the text variation selector asks for.
+pub fn plain_icon(icon: &str) -> String {
+    icon.chars().filter(|&c| c != '\u{fe0f}').flat_map(|c| [c, '\u{fe0e}']).collect()
+}
+
 /// What a property reads as where there is no item to read it from, such as in the editor's preview.
 pub fn sample(name: &str) -> Option<String> {
     let value = match name {
@@ -145,6 +150,16 @@ pub const STATUS_PARTS: &[(&str, &str, &str)] = &[
     ("filename", "Filename under it", ""),
 ];
 
+/// How a media status draws the playback state.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum IconStyle {
+    /// As emoji, such as ▶️.
+    #[default]
+    Emoji,
+    /// As plain characters of the font, such as ▶.
+    Characters,
+}
+
 /// What happens to a notification that comes when the stack it would join is full.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Overflow {
@@ -211,6 +226,8 @@ pub struct Element {
     /// For notification messages: the most a stack shows at once, and what a notification that comes to a full one does.
     pub max_notifications: i32,
     pub overflow: Overflow,
+    /// How a media status draws the playback state.
+    pub icon_style: IconStyle,
     pub style: Style,
 }
 
@@ -295,6 +312,7 @@ impl Element {
             fullscreen_only: false,
             max_notifications: DEFAULT_MAX_NOTIFICATIONS,
             overflow: Overflow::default(),
+            icon_style: IconStyle::default(),
             style: Style::default(),
         };
         match kind {
@@ -352,6 +370,7 @@ impl Element {
             "fullscreen-only": self.fullscreen_only,
             "max-notifications": self.max_notifications,
             "overflow": match self.overflow { Overflow::PushOut => "push-out", Overflow::Wait => "wait" },
+            "icon-style": match self.icon_style { IconStyle::Emoji => "emoji", IconStyle::Characters => "characters" },
             "font": self.style.font_family,
             "font-size": self.style.font_size,
             "text-color": self.style.text_color,
@@ -411,6 +430,9 @@ impl Element {
         element.seconds = number("seconds", element.seconds, SECONDS_RANGE);
         element.fullscreen_only = flag("fullscreen-only", false);
         element.max_notifications = whole("max-notifications", element.max_notifications, MAX_NOTIFICATIONS_RANGE);
+        if let Some(icons) = text("icon-style") {
+            element.icon_style = if icons == "characters" { IconStyle::Characters } else { IconStyle::Emoji };
+        }
         if let Some(overflow) = text("overflow") {
             element.overflow = if overflow == "wait" { Overflow::Wait } else { Overflow::PushOut };
         }
@@ -604,6 +626,16 @@ mod tests {
         let layout = Layout::from_json(r#"{"elements":[{"kind":"messages","max-notifications":99,"overflow":"wait"},{"kind":"messages"}]}"#).unwrap();
         assert_eq!((layout.elements[0].max_notifications, layout.elements[0].overflow), (MAX_NOTIFICATIONS_RANGE.1, Overflow::Wait));
         assert_eq!((layout.elements[1].max_notifications, layout.elements[1].overflow), (DEFAULT_MAX_NOTIFICATIONS, Overflow::PushOut));
+        assert_eq!(Layout::from_json(&layout.to_json()), Some(layout));
+    }
+
+    #[test]
+    fn an_emoji_becomes_the_plain_character() {
+        assert_eq!(plain_icon("▶️"), "▶\u{fe0e}");
+        assert_eq!(plain_icon("⏭️"), "⏭\u{fe0e}");
+        assert_eq!(plain_icon("⏸"), "⏸\u{fe0e}");
+        let layout = Layout::from_json(r#"{"elements":[{"kind":"status","icon-style":"characters"}]}"#).unwrap();
+        assert_eq!(layout.elements[0].icon_style, IconStyle::Characters);
         assert_eq!(Layout::from_json(&layout.to_json()), Some(layout));
     }
 

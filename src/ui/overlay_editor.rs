@@ -12,7 +12,7 @@ use gtk::{gdk, gio, glib};
 use super::media_overlay::{layout_from_settings, set_preview, Preview};
 use crate::overlay::template::Template;
 use crate::overlay::{
-    sample, Element, Items, Kind, Layout, Overflow, Slot, Style, Visibility, BAR_WIDTH_RANGE, FONT_SIZE_RANGE, MAX_NOTIFICATIONS_RANGE, PADDING_RANGE, PROPERTIES, RADIUS_RANGE,
+    sample, Element, IconStyle, Items, Kind, Layout, Overflow, Slot, Style, Visibility, BAR_WIDTH_RANGE, FONT_SIZE_RANGE, MAX_NOTIFICATIONS_RANGE, PADDING_RANGE, PROPERTIES, RADIUS_RANGE,
     SECONDS_RANGE, STATUS_PARTS, TIME_FORMATS,
 };
 
@@ -475,6 +475,17 @@ impl Editor {
             });
             group.add(&row);
         }
+        let icons = adw::ComboRow::builder()
+            .title("State icons")
+            .subtitle("How playing, paused and skipping are drawn")
+            .model(&gtk::StringList::new(&["Emoji ▶️ ⏸️", "Characters ▶ ⏸"]))
+            .build();
+        icons.set_selected(u32::from(element.icon_style == IconStyle::Characters));
+        icons.connect_selected_notify({
+            let editor = self.clone();
+            move |row| editor.edit(|element| element.icon_style = if row.selected() == 1 { IconStyle::Characters } else { IconStyle::Emoji })
+        });
+        group.add(&icons);
         group.add(&preview);
         page.add(&group);
         page

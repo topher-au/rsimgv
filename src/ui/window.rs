@@ -342,6 +342,20 @@ impl Window {
                 }
             });
         }
+        // Turning SVP on or off, by its key or in the preferences, is said over the window. The setting is written on
+        // other changes too, so only a change of its value counts.
+        let svp_was_on = Cell::new(settings.boolean("svp-enabled"));
+        settings.connect_changed(Some("svp-enabled"), {
+            let weak = window.downgrade();
+            move |settings, _| {
+                let on = settings.boolean("svp-enabled");
+                if svp_was_on.replace(on) != on {
+                    if let Some(window) = weak.upgrade() {
+                        window.notify(if on { "SVP on" } else { "SVP off" });
+                    }
+                }
+            }
+        });
         imp.viewer.connect_item_changed({
             let weak = window.downgrade();
             move |_, _| {
