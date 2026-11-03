@@ -989,6 +989,24 @@ impl Window {
         bound_action(&image, &weak, "pan-left", |window| window.imp().viewer.pan(-PAN_STEP, 0.0));
         bound_action(&image, &weak, "pan-right", |window| window.imp().viewer.pan(PAN_STEP, 0.0));
         self.insert_action_group("image", Some(&image));
+
+        let playlist = gio::SimpleActionGroup::new();
+        bound_action(&playlist, &weak, "cursor-up", |window| window.with_playlist(|panel| panel.select_step(-1)));
+        bound_action(&playlist, &weak, "cursor-down", |window| window.with_playlist(|panel| panel.select_step(1)));
+        bound_action(&playlist, &weak, "move-up", |window| window.with_playlist(|panel| panel.run_selection_action("move-up")));
+        bound_action(&playlist, &weak, "move-down", |window| window.with_playlist(|panel| panel.run_selection_action("move-down")));
+        bound_action(&playlist, &weak, "move-top", |window| window.with_playlist(|panel| panel.run_selection_action("move-top")));
+        bound_action(&playlist, &weak, "move-bottom", |window| window.with_playlist(|panel| panel.run_selection_action("move-bottom")));
+        bound_action(&playlist, &weak, "toggle-search", |window| window.with_playlist(PlaylistPanel::toggle_search));
+        bound_action(&playlist, &weak, "focus-search", |window| window.with_playlist(PlaylistPanel::focus_search));
+        self.insert_action_group("playlist", Some(&playlist));
+    }
+
+    /// Runs `f` on the playlist panel.
+    fn with_playlist(&self, f: impl FnOnce(&PlaylistPanel)) {
+        if let Some(panel) = self.imp().playlist_panel.get() {
+            f(panel);
+        }
     }
 
     /// The actions behind the playlist's menu items and its panel, which say what they work on in their parameter.
@@ -2274,14 +2292,19 @@ impl Window {
 
     /// The scopes a key press can be bound in right now: the browse context while the media viewer is closed,
     /// and while it is open, the video or image context for the item it shows, plus the viewer's own actions.
-    /// Global applies everywhere and is not listed.
+    /// The playlist context is added while the playlist has the focus. Global applies everywhere and is not listed.
     pub(super) fn active_scopes(&self) -> Vec<Scope> {
         let imp = self.imp();
-        if !imp.viewer_open.get() {
-            return vec![Scope::Browse];
+        let mut scopes = if !imp.viewer_open.get() {
+            vec![Scope::Browse]
+        } else {
+            let media = if imp.viewer.shows_video() { Scope::Video } else { Scope::Image };
+            vec![Scope::View, media]
+        };
+        if imp.playlist_panel.get().is_some_and(PlaylistPanel::has_focus) {
+            scopes.push(Scope::Playlist);
         }
-        let media = if imp.viewer.shows_video() { Scope::Video } else { Scope::Image };
-        vec![Scope::View, media]
+        scopes
     }
 
     /// Whether the media viewer is open.

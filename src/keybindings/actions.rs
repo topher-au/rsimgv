@@ -14,10 +14,12 @@ pub enum Scope {
     Image,
     /// Viewing a video.
     Video,
+    /// The playlist has the focus. It applies on top of browsing or the viewer.
+    Playlist,
 }
 
 impl Scope {
-    /// The scope's id in the IPC and the keybindings file: `global`, `browse`, `view`, `image` or `video`.
+    /// The scope's id in the IPC and the keybindings file: `global`, `browse`, `view`, `image`, `video` or `playlist`.
     pub fn id(self) -> &'static str {
         match self {
             Scope::Global => "global",
@@ -25,11 +27,12 @@ impl Scope {
             Scope::View => "view",
             Scope::Image => "image",
             Scope::Video => "video",
+            Scope::Playlist => "playlist",
         }
     }
 
     /// Every scope, in the order the editor offers them.
-    pub const ALL: [Scope; 5] = [Scope::Global, Scope::Browse, Scope::View, Scope::Image, Scope::Video];
+    pub const ALL: [Scope; 6] = [Scope::Global, Scope::Browse, Scope::View, Scope::Image, Scope::Video, Scope::Playlist];
 
     /// The scope with the id `id`, if there is one.
     pub fn from_id(id: &str) -> Option<Scope> {
@@ -43,6 +46,7 @@ impl Scope {
             Scope::View => "Viewer",
             Scope::Image => "Picture",
             Scope::Video => "Video",
+            Scope::Playlist => "Playlist",
         }
     }
 
@@ -54,6 +58,7 @@ impl Scope {
             Scope::View => "view-reveal-symbolic",
             Scope::Image => "image-x-generic-symbolic",
             Scope::Video => "video-x-generic-symbolic",
+            Scope::Playlist => "view-list-symbolic",
         }
     }
 
@@ -63,15 +68,17 @@ impl Scope {
             Scope::Global => 0,
             Scope::Browse | Scope::View => 1,
             Scope::Image | Scope::Video => 2,
+            Scope::Playlist => 3,
         }
     }
 
     /// Whether a chord bound in one scope could also be pressed in the other, so binding it in both is a
-    /// conflict. Global overlaps everything; the viewer overlaps the picture and video scopes inside it.
+    /// conflict. Global overlaps everything, and so does the playlist, which has the focus while browsing or viewing;
+    /// the viewer overlaps the picture and video scopes inside it.
     pub fn overlaps(self, other: Scope) -> bool {
         self == other
-            || self == Scope::Global
-            || other == Scope::Global
+            || matches!(self, Scope::Global | Scope::Playlist)
+            || matches!(other, Scope::Global | Scope::Playlist)
             || matches!((self, other), (Scope::View, Scope::Image | Scope::Video) | (Scope::Image | Scope::Video, Scope::View))
     }
 }
@@ -112,7 +119,7 @@ impl ActionInfo {
         self.name == NOTIFY_ACTION
     }
 
-    /// The scope the action belongs to, which its name gives: `browse.`, `view.`, `image.` and `video.` actions to
+    /// The scope the action belongs to, which its name gives: `browse.`, `view.`, `image.`, `video.` and `playlist.` actions to
     /// their own, and the rest, which act on the window, to Global.
     fn home(&self) -> Scope {
         match self.name.split_once('.').map(|(group, _)| group) {
@@ -120,6 +127,7 @@ impl ActionInfo {
             Some("view") => Scope::View,
             Some("image") => Scope::Image,
             Some("video") => Scope::Video,
+            Some("playlist") => Scope::Playlist,
             _ => Scope::Global,
         }
     }
@@ -140,6 +148,7 @@ impl ActionInfo {
             (Scope::View, _) => &[Scope::Global, Scope::View, Scope::Image, Scope::Video],
             (Scope::Image, _) => &[Scope::Global, Scope::Image],
             (Scope::Video, _) => &[Scope::Global, Scope::Video],
+            (Scope::Playlist, _) => &[Scope::Global, Scope::Playlist],
         };
         contexts
     }
@@ -363,6 +372,30 @@ pub const ACTIONS: &[ActionInfo] = &[
         name: "browse.toggle-item-info", description: "Show or hide each item's information under its name.", icon: "dialog-information-symbolic", label: "Toggle Item Info", defaults: &[],
     },
     ActionInfo {
+        name: "playlist.cursor-up", description: "Select the item above the selected one in the playlist, or the last item if none is selected.", icon: "go-up-symbolic", label: "Select Previous Row", defaults: &["up"],
+    },
+    ActionInfo {
+        name: "playlist.cursor-down", description: "Select the item below the selected one in the playlist, or the first item if none is selected.", icon: "go-down-symbolic", label: "Select Next Row", defaults: &["down"],
+    },
+    ActionInfo {
+        name: "playlist.move-up", description: "Move the selected playlist item up one place.", icon: "go-up-symbolic", label: "Move Item Up", defaults: &["ctrl+up"],
+    },
+    ActionInfo {
+        name: "playlist.move-down", description: "Move the selected playlist item down one place.", icon: "go-down-symbolic", label: "Move Item Down", defaults: &["ctrl+down"],
+    },
+    ActionInfo {
+        name: "playlist.move-top", description: "Move the selected playlist item to the start of the playlist.", icon: "go-top-symbolic", label: "Move Item to Start", defaults: &["ctrl+home"],
+    },
+    ActionInfo {
+        name: "playlist.move-bottom", description: "Move the selected playlist item to the end of the playlist.", icon: "go-bottom-symbolic", label: "Move Item to End", defaults: &["ctrl+end"],
+    },
+    ActionInfo {
+        name: "playlist.toggle-search", description: "Show the playlist's search field, or hide it and show every item again.", icon: "system-search-symbolic", label: "Toggle Search", defaults: &["ctrl+f"],
+    },
+    ActionInfo {
+        name: "playlist.focus-search", description: "Show the playlist's search field if it is hidden, and move the focus to it.", icon: "edit-find-symbolic", label: "Focus Search", defaults: &[],
+    },
+    ActionInfo {
         name: "view.previous", description: "Show the picture or video before this one in the folder, or in the playlist while the viewer shows that.", icon: "go-previous-symbolic", label: "Previous Item", defaults: &["comma"],
     },
     ActionInfo {
@@ -511,6 +544,14 @@ mod tests {
         assert_eq!(contexts("image.zoom-in"), [Scope::Global, Scope::Image]);
         assert_eq!(contexts("video.mute"), [Scope::Global, Scope::Video]);
         assert_eq!(contexts("video.toggle-svp"), [Scope::Global, Scope::Video]);
+    }
+
+    #[test]
+    fn playlist_actions_are_bound_in_the_playlist_or_globally() {
+        for name in ["playlist.cursor-up", "playlist.move-top", "playlist.toggle-search", "playlist.focus-search"] {
+            assert_eq!(contexts(name), [Scope::Global, Scope::Playlist], "{name}");
+            assert_eq!(find(name).unwrap().default_context(), Scope::Playlist, "{name}");
+        }
     }
 
     #[test]

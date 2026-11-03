@@ -81,6 +81,11 @@ pub struct PlaylistPanel {
     filtered: gtk::FilterListModel,
     /// Each item's path, with its title and file name in lower case, for the search to match against.
     searchable: Rc<RefCell<HashMap<String, String>>>,
+    selection: gtk::SingleSelection,
+    /// The actions on the selected item, which the toolbar's buttons run.
+    actions: gio::SimpleActionGroup,
+    search: gtk::SearchBar,
+    entry: gtk::SearchEntry,
 }
 
 impl PlaylistPanel {
@@ -218,7 +223,8 @@ impl PlaylistPanel {
             }
         });
 
-        let toolbar = toolbar(&selection, &view, &search);
+        let actions = selection_actions(&selection, &view);
+        let toolbar = toolbar(&actions, &search);
 
         let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
     content.add_css_class("playlist-panel");
@@ -250,6 +256,10 @@ impl PlaylistPanel {
             filter,
             filtered,
             searchable,
+            selection,
+            actions,
+            search,
+            entry,
         };
         panel.refresh();
         panel
@@ -294,6 +304,61 @@ impl PlaylistPanel {
         eprintln!("playlist-debug: refresh done items={} rows={} lengths={}", self.paths.n_items(), self.rows.borrow().len(), self.lengths.borrow().len());
         drop(shown);
         self.refresh_current();
+    }
+
+    /// Whether the keyboard focus is in the panel.
+    pub fn has_focus(&self) -> bool {
+        self.content.root().and_downcast::<gtk::Window>().and_then(|window| gtk::prelude::GtkWindowExt::focus(&window)).is_some_and(|focus| {
+            focus == *self.content.upcast_ref::<gtk::Widget>() || focus.is_ancestor(&self.content)
+        })
+    }
+
+    /// Selects the item `step` rows from the selected one in the view, stopping at the ends. With none selected, a step
+    /// forward selects the first row and a step back the last.
+    pub fn select_step(&self, step: i32) {
+        let rows = self.filtered.n_items();
+        if rows == 0 {
+            return;
+        }
+        let row = match self.selection.selected() {
+            gtk::INVALID_LIST_POSITION if step < 0 => rows - 1,
+            gtk::INVALID_LIST_POSITION => 0,
+            selected => selected.saturating_add_signed(step).min(rows - 1),
+        };
+        self.selection.set_selected(row);
+        self.view.scroll_to(row, None::<&gtk::ColumnViewColumn>, gtk::ListScrollFlags::NONE, None);
+    }
+
+    /// Runs one of the actions on the selected item, such as `move-up`, if it is enabled. A move keeps the item selected
+    /// at its new place, so the next one moves it on.
+    pub fn run_selection_action(&self, name: &str) {
+        let path = self.selection.selected_item().and_downcast::<gtk::StringObject>().map(|path| path.string());
+        gio::prelude::ActionGroupExt::activate_action(&self.actions, name, None);
+        let row = path.and_then(|path| {
+            (0..self.filtered.n_items()).find(|row| {
+                self.filtered.item(*row).and_downcast::<gtk::StringObject>().is_some_and(|item| item.string() == path)
+            })
+        });
+        if let Some(row) = row {
+            self.selection.set_selected(row);
+            self.view.scroll_to(row, None::<&gtk::ColumnViewColumn>, gtk::ListScrollFlags::NONE, None);
+        }
+    }
+
+    /// Shows the search field and moves the focus into it, or hides it and gives the focus back to the list.
+    pub fn toggle_search(&self) {
+        if self.search.is_search_mode() {
+            self.search.set_search_mode(false);
+            self.view.grab_focus();
+        } else {
+            self.focus_search();
+        }
+    }
+
+    /// Shows the search field, if it is hidden, and moves the focus into it.
+    pub fn focus_search(&self) {
+        self.search.set_search_mode(true);
+        self.entry.grab_focus();
     }
 
     /// Marks the playlist's current item, and brings it into view.
@@ -666,7 +731,7 @@ fn save_column_widths(view: &gtk::ColumnView, settings: &gio::Settings) {
 
 /// The toolbar under the list. Its buttons act on the playlist, or on the selected item through the actions of the group
 /// `playlist`. The search toggle shows the search field above the list, and the buttons that do not fit are collapsed.
-fn toolbar(selection: &gtk::SingleSelection, view: &gtk::ColumnView, search: &gtk::SearchBar) -> Toolbar {
+fn toolbar(actions: &gio::SimpleActionGroup, search: &gtk::SearchBar) -> Toolbar {
     let search_toggle = gtk::ToggleButton::new();
     search_toggle.set_icon_name("system-search-symbolic");
     search_toggle.set_tooltip_text(Some("Search the playlist"));
@@ -704,7 +769,7 @@ fn toolbar(selection: &gtk::SingleSelection, view: &gtk::ColumnView, search: &gt
         Slot::Spacer,
     ];
     let toolbar = Toolbar::new(slots, &search_toggle);
-    toolbar.widget().insert_action_group("playlist", Some(&selection_actions(selection, view)));
+    toolbar.widget().insert_action_group("playlist", Some(actions));
     toolbar
 }
 
