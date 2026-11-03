@@ -2,7 +2,9 @@
 //! steps through, with the one shown selected. Clicking a thumbnail shows its item. Only the
 //! thumbnails in view are made, as the list view only binds the rows it shows. Dragging the bar asks for
 //! it to move to the side of the viewer it is dropped nearest; dragging its inner edge, the one facing the
-//! picture, makes the thumbnails bigger or smaller. A small header at the start of the bar has the position in
+//! picture, makes the thumbnails bigger or smaller. The thumbnails fill the bar's width, or its height along a row,
+//! so when the layout gives the bar another size they are resized to match, and the thumbnail at the start of the
+//! strip stays in view. A small header at the start of the bar has the position in
 //! its centre, the toggles to pin the bar shown and to float it over the picture nearest the window's edge, and a
 //! button to close the bar at the other end.
 
@@ -344,7 +346,12 @@ mod imp {
         }
     }
 
-    impl WidgetImpl for ThumbnailBar {}
+    impl WidgetImpl for ThumbnailBar {
+        fn size_allocate(&self, width: i32, height: i32, baseline: i32) {
+            self.parent_size_allocate(width, height, baseline);
+            self.obj().fit_to_allocation();
+        }
+    }
 }
 
 glib::wrapper! {
@@ -406,9 +413,12 @@ impl ThumbnailBar {
     pub fn set_thumbnail_size(&self, size: i32) {
         let imp = self.imp();
         let size = size.clamp(THUMBNAIL_MIN, THUMBNAIL_MAX);
-        if imp.size.replace(size) == size {
+        if imp.size.get() == size {
             return;
         }
+        // The thumbnail at the start of the strip is kept in view as the list lays out at the new size.
+        let start = self.scroll_position();
+        imp.size.set(size);
         imp.images.borrow_mut().retain(|image| {
             let Some(image) = image.upgrade() else { return false };
             image.set_pixel_size(size);
@@ -418,6 +428,66 @@ impl ThumbnailBar {
         if imp.resizing.get().is_none() {
             self.refresh_thumbnails();
         }
+        if let Some(start) = start {
+            self.restore_scroll(start);
+        }
+    }
+
+    /// Sizes the thumbnails to fill the bar as the layout gives it: its width, or its height along a row, less what
+    /// the list takes beside the thumbnails. The bar is normally as wide as its thumbnails need, so this only changes
+    /// them when the layout gives the bar another size. The change waits for the layout to finish.
+    fn fit_to_allocation(&self) {
+        let imp = self.imp();
+        let extent = if imp.list.orientation() == gtk::Orientation::Horizontal { self.height() } else { self.width() };
+        if extent <= 0 || imp.resizing.get().is_some() {
+            return;
+        }
+        let fitted = (extent - self.chrome()).clamp(THUMBNAIL_MIN, THUMBNAIL_MAX);
+        if fitted == imp.size.get() {
+            return;
+        }
+        let weak = self.downgrade();
+        glib::idle_add_local_once(move || {
+            if let Some(bar) = weak.upgrade() {
+                bar.set_thumbnail_size(fitted);
+            }
+        });
+    }
+
+    /// The space the list takes across the thumbnails beside them, such as its padding and scrollbar.
+    fn chrome(&self) -> i32 {
+        let imp = self.imp();
+        let across = if imp.list.orientation() == gtk::Orientation::Horizontal { gtk::Orientation::Vertical } else { gtk::Orientation::Horizontal };
+        imp.scroller.measure(across, -1).1 - imp.size.get()
+    }
+
+    /// Where the list is scrolled to, as a number of thumbnails from its start, so the same thumbnail is at the start
+    /// whatever their size. `None` until the list has laid out its items.
+    fn scroll_position(&self) -> Option<f64> {
+        let items = f64::from(self.imp().paths.n_items());
+        let adjustment = self.along_adjustment();
+        (items > 0.0 && adjustment.upper() > 0.0).then(|| adjustment.value() / (adjustment.upper() / items))
+    }
+
+    /// Scrolls the list back to `start` thumbnails from its start, once the list has laid out at the new size.
+    fn restore_scroll(&self, start: f64) {
+        let weak = self.downgrade();
+        glib::idle_add_local_once(move || {
+            let Some(bar) = weak.upgrade() else { return };
+            let items = f64::from(bar.imp().paths.n_items());
+            if items == 0.0 {
+                return;
+            }
+            let adjustment = bar.along_adjustment();
+            let most = (adjustment.upper() - adjustment.page_size()).max(adjustment.lower());
+            adjustment.set_value((start * (adjustment.upper() / items)).clamp(adjustment.lower(), most));
+        });
+    }
+
+    /// The adjustment that scrolls the list along the bar: the horizontal one in a row, the vertical one in a column.
+    fn along_adjustment(&self) -> gtk::Adjustment {
+        let imp = self.imp();
+        if imp.list.orientation() == gtk::Orientation::Horizontal { imp.scroller.hadjustment() } else { imp.scroller.vadjustment() }
     }
 
     /// Asks again for the thumbnails shown, at the size they are now.
@@ -500,7 +570,7 @@ impl ThumbnailBar {
     fn ranges(&self) -> (Range<i64>, Range<i64>) {
         let imp = self.imp();
         let items = i64::from(imp.paths.n_items());
-        let adjustment = if imp.list.orientation() == gtk::Orientation::Horizontal { imp.scroller.hadjustment() } else { imp.scroller.vadjustment() };
+        let adjustment = self.along_adjustment();
         if items == 0 || adjustment.upper() <= 0.0 {
             return (0..0, 0..0);
         }
@@ -587,7 +657,7 @@ impl ThumbnailBar {
         if items == 0 {
             return;
         }
-        let adjustment = if imp.list.orientation() == gtk::Orientation::Horizontal { imp.scroller.hadjustment() } else { imp.scroller.vadjustment() };
+        let adjustment = self.along_adjustment();
         let share = adjustment.upper() / f64::from(items);
         let middle = (f64::from(position) + 0.5) * share;
         let most = (adjustment.upper() - adjustment.page_size()).max(adjustment.lower());
