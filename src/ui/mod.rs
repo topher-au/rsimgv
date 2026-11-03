@@ -24,6 +24,7 @@ mod playlist_panel;
 mod playlist_toolbar;
 mod navigation_bar;
 mod preferences;
+mod rotated_label;
 mod tight_layout;
 mod window;
 

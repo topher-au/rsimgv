@@ -18,6 +18,7 @@ use gtk::glib;
 
 use super::film_strip::FilmStrip;
 use super::media_viewer::is_video;
+use super::rotated_label::RotatedLabel;
 use crate::fs::thumbnail::{self, Media as ThumbnailMedia, Size as ThumbnailSize, Thumbnails};
 
 /// The size of a thumbnail in the bar to start with, and the range it is kept within, in pixels.
@@ -61,7 +62,7 @@ mod imp {
         pub(super) pin_button: gtk::ToggleButton,
         pub(super) overlay_button: gtk::ToggleButton,
         /// Which item is shown out of how many, as `3 / 120`.
-        pub(super) counter: gtk::Label,
+        pub(super) counter: RotatedLabel,
         /// Whether the bar is being dragged to another side.
         pub(super) dragging: Cell<bool>,
         /// The thumbnail size the drag of the inner edge started from, while one is under way.
@@ -110,7 +111,7 @@ mod imp {
                 .build();
             close_button.add_css_class("flat");
             close_button.add_css_class("circular");
-            let counter = gtk::Label::new(None);
+            let counter = RotatedLabel::new("", 0.0);
             counter.add_css_class("title-3");
             counter.add_css_class("numeric");
             counter.set_tooltip_text(Some("Position in the folder"));
@@ -388,6 +389,8 @@ impl ThumbnailBar {
         let horizontal = orientation == gtk::Orientation::Horizontal;
         let header_orientation = if horizontal { gtk::Orientation::Vertical } else { gtk::Orientation::Horizontal };
         imp.header.set_orientation(header_orientation);
+        // In a column the position reads upward along it, rather than widening the column.
+        imp.counter.set_angle(if horizontal { -90.0 } else { 0.0 });
         imp.toggles.set_orientation(header_orientation);
         // The header spans the bar's width in a row, or its height in a column, and is only as thick as it needs.
         imp.header.set_hexpand(!horizontal);
@@ -418,7 +421,7 @@ impl ThumbnailBar {
             (_, gtk::INVALID_LIST_POSITION) => format!("\u{2013} / {total}"),
             _ => format!("{} / {total}", selected + 1),
         };
-        imp.counter.set_label(&text);
+        imp.counter.set_text(&text);
     }
 
     /// Shows the thumbnails of `paths`, replacing those shown.
