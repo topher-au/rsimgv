@@ -479,7 +479,31 @@ impl ThumbnailBar {
             return;
         }
         imp.selection.set_selected(position);
+        // The thumbnail is made first, then put in the middle of the bar once the list has laid out its range, or as near
+        // the middle as the ends of the list allow.
         imp.list.scroll_to(position, gtk::ListScrollFlags::NONE, None);
+        self.center_on(position);
+        let weak = self.downgrade();
+        glib::idle_add_local_once(move || {
+            if let Some(bar) = weak.upgrade() {
+                bar.center_on(position);
+            }
+        });
+    }
+
+    /// Scrolls the list so the thumbnail at `position` is in the middle of the bar, as near as the ends allow. The
+    /// thumbnails are all the same size, so each takes an equal share of the list's length.
+    fn center_on(&self, position: u32) {
+        let imp = self.imp();
+        let items = imp.paths.n_items();
+        if items == 0 {
+            return;
+        }
+        let adjustment = if imp.list.orientation() == gtk::Orientation::Horizontal { imp.scroller.hadjustment() } else { imp.scroller.vadjustment() };
+        let share = adjustment.upper() / f64::from(items);
+        let middle = (f64::from(position) + 0.5) * share;
+        let most = (adjustment.upper() - adjustment.page_size()).max(adjustment.lower());
+        adjustment.set_value((middle - adjustment.page_size() / 2.0).clamp(adjustment.lower(), most));
     }
 
     /// Shows the pin and overlay toggles as `pinned` and `overlay`. The pin only matters while floating.

@@ -43,6 +43,11 @@ thumbnail-bar {
       padding: 4px;
       border-radius: 6px;
 
+      // As in the playlist: the thumbnail under the pointer is lightly tinted, and the current item more strongly.
+      &:hover {
+        background-color: #{"color-mix(in srgb, var(--accent-bg-color) 20%, transparent)"};
+      }
+
       &:selected {
         background-color: #{"color-mix(in srgb, var(--accent-bg-color) 60%, transparent)"};
       }
