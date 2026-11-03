@@ -257,6 +257,12 @@ mod imp {
                     bar.add_css_class("dragging");
                     bar.set_cursor_from_name(Some("grabbing"));
                 }
+                // Where the bar would go if it were dropped now is shown.
+                if bar.imp().dragging.get() {
+                    if let Some((x, y)) = gesture.start_point() {
+                        bar.emit_by_name::<()>("side-hovered", &[&(x + dx), &(y + dy)]);
+                    }
+                }
             });
             let weak = obj.downgrade();
             drag.connect_drag_end(move |gesture, dx, dy| {
@@ -271,6 +277,7 @@ mod imp {
                 }
                 bar.remove_css_class("dragging");
                 bar.set_cursor(None);
+                bar.emit_by_name::<()>("side-hover-ended", &[]);
                 if let Some((x, y)) = gesture.start_point() {
                     bar.emit_by_name::<()>("side-dropped", &[&(x + dx), &(y + dy)]);
                 }
@@ -308,6 +315,8 @@ mod imp {
                     Signal::builder("overlay-toggled").param_types([bool::static_type()]).build(),
                     Signal::builder("size-chosen").param_types([i32::static_type()]).build(),
                     Signal::builder("side-dropped").param_types([f64::static_type(), f64::static_type()]).build(),
+                    Signal::builder("side-hovered").param_types([f64::static_type(), f64::static_type()]).build(),
+                    Signal::builder("side-hover-ended").build(),
                 ]);
             SIGNALS.as_ref()
         }
@@ -336,6 +345,16 @@ impl ThumbnailBar {
     /// Puts the bar on `side` of the viewer: a row along the top or bottom, a column beside.
     pub fn set_side(&self, side: gtk::PositionType) {
         self.imp().side.set(side);
+        // The side it is on is a style class, such as `side-top`, for the stylesheet to go by.
+        for class in ["side-top", "side-bottom", "side-left", "side-right"] {
+            self.remove_css_class(class);
+        }
+        self.add_css_class(match side {
+            gtk::PositionType::Top => "side-top",
+            gtk::PositionType::Left => "side-left",
+            gtk::PositionType::Right => "side-right",
+            _ => "side-bottom",
+        });
         // The scrollbar runs along the bar's outer edge, the one at the window's edge.
         self.imp().scroller.set_placement(match side {
             gtk::PositionType::Top => gtk::CornerType::BottomLeft,
@@ -513,6 +532,25 @@ impl ThumbnailBar {
             let x = values[1].get::<f64>().expect("x argument");
             let y = values[2].get::<f64>().expect("y argument");
             callback(&bar, x, y);
+            None
+        })
+    }
+
+    /// Calls `callback` with where, in the bar's coordinates, the bar is while it is dragged, as the pointer moves.
+    pub fn connect_side_hovered<F: Fn(&Self, f64, f64) + 'static>(&self, callback: F) -> glib::SignalHandlerId {
+        self.connect_local("side-hovered", false, move |values| {
+            let bar = values[0].get::<ThumbnailBar>().expect("bar argument");
+            let x = values[1].get::<f64>().expect("x argument");
+            let y = values[2].get::<f64>().expect("y argument");
+            callback(&bar, x, y);
+            None
+        })
+    }
+
+    /// Calls `callback` when the drag of the bar ends, wherever it is dropped.
+    pub fn connect_side_hover_ended<F: Fn(&Self) + 'static>(&self, callback: F) -> glib::SignalHandlerId {
+        self.connect_local("side-hover-ended", false, move |values| {
+            callback(&values[0].get::<ThumbnailBar>().expect("bar argument"));
             None
         })
     }

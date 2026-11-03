@@ -84,3 +84,25 @@ thumbnail-bar.dragging {
 .media-viewer headerbar.floating {
   background-color: rgba(0, 0, 0, 0.6);
 }
+
+// While the thumbnail bar is dragged, a band along the edge it would go to: tinted, with a line on the side facing the
+// picture.
+.thumbnail-drop-indicator {
+  background-color: #{"color-mix(in srgb, var(--accent-bg-color) 30%, transparent)"};
+
+  &.side-top {
+    border-bottom: 3px solid #{"var(--accent-bg-color)"};
+  }
+
+  &.side-bottom {
+    border-top: 3px solid #{"var(--accent-bg-color)"};
+  }
+
+  &.side-left {
+    border-right: 3px solid #{"var(--accent-bg-color)"};
+  }
+
+  &.side-right {
+    border-left: 3px solid #{"var(--accent-bg-color)"};
+  }
+}

@@ -436,6 +436,8 @@ mod imp {
         pub(super) controls_drag: Cell<Option<(ControlsDrag, ControlsLayout, f64)>>,
         /// The overlay of elements over the item, made when it is first wanted.
         pub(super) media_overlay: OnceCell<MediaOverlay>,
+        /// The band that shows which edge the thumbnail bar would go to if it were dropped, while it is dragged.
+        pub(super) drop_indicator: OnceCell<gtk::Box>,
         /// The timer that keeps the overlay up to date while any element is on.
         pub(super) overlay_tick: RefCell<Option<glib::SourceId>>,
         /// Where the last skip went and when, so the overlay shows that while the video catches up with it.
@@ -602,6 +604,29 @@ mod imp {
                     if let Some(viewer) = weak.upgrade() {
                         viewer.imp().zoom_label.set_label(&format!("{:.0}%", scale * 100.0));
                         viewer.update_zoom_indicator();
+                    }
+                }
+            });
+            let indicator = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+            indicator.add_css_class("thumbnail-drop-indicator");
+            indicator.set_can_target(false);
+            indicator.set_visible(false);
+            self.overlay.add_overlay(&indicator);
+            let _ = self.drop_indicator.set(indicator);
+            self.thumbnail_bar.connect_side_hovered({
+                let weak = weak.clone();
+                move |bar, x, y| {
+                    let Some(viewer) = weak.upgrade() else { return };
+                    let Some(point) = bar.compute_point(&viewer, &gtk::graphene::Point::new(x as f32, y as f32)) else { return };
+                    let side = nearest_side(f64::from(point.x()), f64::from(point.y()), viewer.width(), viewer.height());
+                    viewer.show_drop_indicator(Some(side));
+                }
+            });
+            self.thumbnail_bar.connect_side_hover_ended({
+                let weak = weak.clone();
+                move |_| {
+                    if let Some(viewer) = weak.upgrade() {
+                        viewer.show_drop_indicator(None);
                     }
                 }
             });
@@ -983,6 +1008,33 @@ impl MediaViewer {
             imp.header_bar.remove_css_class("floating");
             header.set_reveal_child(true);
         }
+    }
+
+    /// Shows a band along `side` of the picture, where the thumbnail bar would go if it were dropped now, or takes it away
+    /// for `None`.
+    fn show_drop_indicator(&self, side: Option<gtk::PositionType>) {
+        let Some(indicator) = self.imp().drop_indicator.get() else { return };
+        let Some(side) = side else {
+            indicator.set_visible(false);
+            return;
+        };
+        let horizontal = matches!(side, gtk::PositionType::Top | gtk::PositionType::Bottom);
+        for class in ["side-top", "side-bottom", "side-left", "side-right"] {
+            indicator.remove_css_class(class);
+        }
+        indicator.add_css_class(&format!("side-{}", side_name(side)));
+        let (halign, valign) = match side {
+            gtk::PositionType::Top => (gtk::Align::Fill, gtk::Align::Start),
+            gtk::PositionType::Left => (gtk::Align::Start, gtk::Align::Fill),
+            gtk::PositionType::Right => (gtk::Align::End, gtk::Align::Fill),
+            _ => (gtk::Align::Fill, gtk::Align::End),
+        };
+        indicator.set_halign(halign);
+        indicator.set_valign(valign);
+        // As thick as the bar is, so it shows how much room it takes.
+        let thickness = self.imp().thumbnail_bar.measure(if horizontal { gtk::Orientation::Vertical } else { gtk::Orientation::Horizontal }, -1).1.max(48);
+        indicator.set_size_request(if horizontal { -1 } else { thickness }, if horizontal { thickness } else { -1 });
+        indicator.set_visible(true);
     }
 
     /// Sets whether the thumbnail bar slides in and out, and how long that takes, in milliseconds.
