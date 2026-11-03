@@ -25,7 +25,7 @@ pub const MPV_FORMAT_BYTE_ARRAY: c_int = 9;
 
 pub const MPV_EVENT_NONE: c_int = 0;
 pub const MPV_EVENT_SHUTDOWN: c_int = 1;
-pub const MPV_EVENT_GET_PROPERTY_REPLY: c_int = 6;
+pub const MPV_EVENT_GET_PROPERTY_REPLY: c_int = 3;
 pub const MPV_EVENT_END_FILE: c_int = 7;
 pub const MPV_EVENT_FILE_LOADED: c_int = 8;
 pub const MPV_EVENT_VIDEO_RECONFIG: c_int = 17;
