@@ -20,6 +20,8 @@ mod imp {
     #[derive(Default)]
     pub struct RotatedLabel {
         pub(super) text: RefCell<String>,
+        /// Whether the text is Pango markup.
+        pub(super) markup: Cell<bool>,
         /// The clockwise angle the text is turned by, in degrees.
         pub(super) angle: Cell<f64>,
         /// Shadows drawn under the text, top one first: how far across and down, how blurred, and their colour.
@@ -97,9 +99,23 @@ impl RotatedLabel {
 
     /// Sets the text.
     pub fn set_text(&self, text: &str) {
-        if *self.imp().text.borrow() != text {
+        if *self.imp().text.borrow() != text || self.imp().markup.replace(false) {
+            self.imp().markup.set(false);
             self.imp().text.replace(text.to_owned());
             self.update_property(&[gtk::accessible::Property::Label(text)]);
+            self.queue_resize();
+        }
+    }
+
+    /// Sets the text to `markup`, which Pango markup the layout renders. Markup that is not valid is the text as it is.
+    pub fn set_markup(&self, markup: &str) {
+        if gtk::pango::parse_markup(markup, '\0').is_err() {
+            self.set_text(markup);
+            return;
+        }
+        if *self.imp().text.borrow() != markup || !self.imp().markup.replace(true) {
+            self.imp().markup.set(true);
+            self.imp().text.replace(markup.to_owned());
             self.queue_resize();
         }
     }
@@ -126,7 +142,13 @@ impl RotatedLabel {
     }
 
     fn text_layout(&self) -> gtk::pango::Layout {
-        self.create_pango_layout(Some(&self.imp().text.borrow()))
+        let layout = self.create_pango_layout(None);
+        if self.imp().markup.get() {
+            layout.set_markup(&self.imp().text.borrow());
+        } else {
+            layout.set_text(&self.imp().text.borrow());
+        }
+        layout
     }
 
     /// The size of the box that holds the turned text, in whole pixels.

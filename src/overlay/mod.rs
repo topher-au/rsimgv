@@ -591,6 +591,8 @@ pub struct Element {
     pub time_format: String,
     /// The width of a seek display's bar, or the length of a volume display's, in pixels.
     pub bar_width: i32,
+    /// For a template element: whether the text it makes is Pango markup to render, such as `<b>bold</b>`.
+    pub markup: bool,
     /// For a seek or volume display: whether the bar stands upright, whether it has text as well as the bar, and where the
     /// text sits beside it.
     pub bar_vertical: bool,
@@ -744,6 +746,7 @@ impl Element {
             bar: true,
             time_format: TIME_FORMATS[0].0.to_owned(),
             bar_width: 360,
+            markup: false,
             bar_vertical: false,
             show_text: true,
             text_position: TextPosition::default(),
@@ -852,6 +855,7 @@ impl Element {
             "bar": self.bar,
             "time-format": self.time_format,
             "bar-width": self.bar_width,
+            "markup": self.markup,
             "bar-vertical": self.bar_vertical,
             "show-text": self.show_text,
             "text-position": self.text_position.name(),
@@ -930,6 +934,7 @@ impl Element {
             element.time_format = format.to_owned();
         }
         element.bar_width = whole("bar-width", element.bar_width, BAR_WIDTH_RANGE);
+        element.markup = flag("markup", element.markup);
         element.bar_vertical = flag("bar-vertical", element.bar_vertical);
         element.show_text = flag("show-text", element.show_text);
         element.spacing = whole("spacing", element.spacing, SPACING_RANGE);
@@ -1276,6 +1281,13 @@ mod tests {
         assert_eq!(Layout::from_json(&layout.to_json()), Some(layout));
         assert_eq!(Justify::Auto.text_align(Slot::TOP_RIGHT), TextAlign::Right);
         assert_eq!(Justify::Left.text_align(Slot::TOP_RIGHT), TextAlign::Left);
+    }
+
+    #[test]
+    fn the_markup_option_is_kept() {
+        let layout = Layout::from_json(r#"{"elements":[{"template":"<b>${speed}</b>","markup":true},{}]}"#).unwrap();
+        assert!(layout.elements[0].markup && !layout.elements[1].markup);
+        assert_eq!(Layout::from_json(&layout.to_json()), Some(layout));
     }
 
     #[test]

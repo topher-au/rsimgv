@@ -395,8 +395,14 @@ impl Editor {
         row.add_suffix(&label);
         let editor = self.clone();
         let update: Rc<dyn Fn()> = Rc::new(move || {
-            let template = editor.draft.borrow().as_ref().map(|draft| draft.element.text_template());
-            label.set_text(&template.map(|template| Template::parse(&template).render(&sample)).unwrap_or_default());
+            let shown = editor.draft.borrow().as_ref().map(|draft| (draft.element.text_template(), draft.element.markup));
+            let (template, markup) = shown.unwrap_or_default();
+            let text = Template::parse(&template).render(&sample);
+            if markup && gtk::pango::parse_markup(&text, '\0').is_ok() {
+                label.set_markup(&text);
+            } else {
+                label.set_text(&text);
+            }
         });
         update();
         (row, update)
@@ -438,6 +444,7 @@ impl Editor {
         let group = adw::PreferencesGroup::new();
         let template = adw::EntryRow::builder().title("Text template").text(element.template.as_str()).build();
         let (preview, update) = self.preview_row();
+        let update_for_markup = update.clone();
         template.connect_changed({
             let editor = self.clone();
             move |row| {
@@ -447,6 +454,20 @@ impl Editor {
             }
         });
         group.add(&template);
+        let markup = adw::SwitchRow::builder()
+            .title("Markup")
+            .subtitle("Renders the text as GTK markup, such as <b>bold</b> or <span foreground=\"red\">red</span>, after the template makes it")
+            .active(element.markup)
+            .build();
+        let refresh = update_for_markup.clone();
+        markup.connect_active_notify({
+            let editor = self.clone();
+            move |row| {
+                editor.edit(|element| element.markup = row.is_active());
+                refresh();
+            }
+        });
+        group.add(&markup);
         self.add_layout_rows(&group, element, None, None);
         group.add(&preview);
         page.add(&group);

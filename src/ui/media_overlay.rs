@@ -184,17 +184,23 @@ impl TextLabel {
         }
     }
 
-    fn set_text(&self, text: &str) {
+    /// Shows `text`, rendered as Pango markup if `markup` is set. Markup that is not valid is shown as it is.
+    fn show(&self, text: &str, markup: bool) {
         match self {
-            Self::Plain(label) => label.set_text(text),
-            Self::Turned(label) => label.set_text(text),
-        }
-    }
-
-    fn text(&self) -> String {
-        match self {
-            Self::Plain(label) => label.text().to_string(),
-            Self::Turned(label) => label.text(),
+            Self::Plain(label) => {
+                if markup && gtk::pango::parse_markup(text, '\0').is_ok() {
+                    label.set_markup(text);
+                } else {
+                    label.set_text(text);
+                }
+            }
+            Self::Turned(label) => {
+                if markup {
+                    label.set_markup(text);
+                } else {
+                    label.set_text(text);
+                }
+            }
         }
     }
 }
@@ -328,6 +334,8 @@ struct Placed {
     template: Template,
     revealer: gtk::Revealer,
     label: TextLabel,
+    /// The text last given to the label, as the template made it.
+    shown: RefCell<String>,
     bar: Option<gtk::ProgressBar>,
     /// A media status's state icon, and the filename under its text.
     icon: Option<gtk::Label>,
@@ -471,7 +479,14 @@ impl MediaOverlay {
 
 /// Writes `frame`'s text, icon, filename and bar into the element, and returns whether there is anything of it to show.
 fn fill(item: &Placed, frame: &Frame) -> bool {
-    let text = item.template.render(frame.values);
+    // A template element can have its text rendered as markup, after the template makes it. What the template reads is
+    // escaped then, so a name with an & or a < in it cannot break the markup.
+    let markup = item.element.markup && item.element.kind == Kind::Template;
+    let text = if markup {
+        item.template.render(&|name| (frame.values)(name).map(|value| glib::markup_escape_text(&value).to_string()))
+    } else {
+        item.template.render(frame.values)
+    };
     let state_icon = item.icon.as_ref().and_then(|_| (frame.values)("state-icon"));
     if let (Some(icon), Some(text)) = (&item.icon, &state_icon) {
         match item.element.icon_style {
@@ -482,8 +497,9 @@ fn fill(item: &Placed, frame: &Frame) -> bool {
     if let Some(label) = &item.filename {
         label.set_text(&item.filename_template.render(frame.values));
     }
-    if item.label.text() != text {
-        item.label.set_text(&text);
+    if *item.shown.borrow() != text {
+        item.label.show(&text, markup);
+        item.shown.replace(text.clone());
     }
     item.label.widget().set_visible(!text.is_empty());
     if let Some(bar) = &item.bar {
@@ -641,6 +657,7 @@ fn build(index: usize, element: &Element) -> Placed {
         template: Template::parse(&element.text_template()),
         revealer,
         label,
+        shown: RefCell::new(String::new()),
         bar,
         icon,
         filename,
