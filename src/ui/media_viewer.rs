@@ -524,6 +524,12 @@ mod imp {
                 }
             });
             obj.setup_controls_placement();
+            // The overlay is kept up to date only while the viewer is on screen.
+            obj.connect_map(|viewer| {
+                viewer.sync_overlay_tick();
+                viewer.refresh_overlay();
+            });
+            obj.connect_unmap(|viewer| viewer.sync_overlay_tick());
             let weak_viewer = obj.downgrade();
             crate::ui::media_overlay::watch_preview(move || {
                 if let Some(viewer) = weak_viewer.upgrade() {
@@ -1512,10 +1518,16 @@ impl MediaViewer {
         self.media_overlay().any_enabled() || super::media_overlay::preview().is_some()
     }
 
+    /// Whether the timer that keeps the overlay up to date should run: there is something to keep up to date, on an item that is
+    /// shown, in a viewer that is on screen.
+    fn overlay_ticking(&self) -> bool {
+        self.overlay_active() && self.is_mapped() && self.shown_path().is_some()
+    }
+
     /// Starts the timer that keeps the overlay up to date while there is something to, and stops it when there is not.
     fn sync_overlay_tick(&self) {
         let imp = self.imp();
-        if !self.overlay_active() {
+        if !self.overlay_ticking() {
             if let Some(tick) = imp.overlay_tick.take() {
                 tick.remove();
             }
@@ -1523,7 +1535,7 @@ impl MediaViewer {
             let weak = self.downgrade();
             let tick = glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
                 let Some(viewer) = weak.upgrade() else { return glib::ControlFlow::Break };
-                if !viewer.overlay_active() {
+                if !viewer.overlay_ticking() {
                     // Ended on its own, so there is nothing to cancel.
                     viewer.imp().overlay_tick.take();
                     return glib::ControlFlow::Break;
@@ -2263,6 +2275,7 @@ impl MediaViewer {
         }
         imp.file_settings.replace(settings);
         imp.controls_revealer.set_visible(video);
+        self.sync_overlay_tick();
         self.update_zoom_indicator();
         self.emit_by_name::<()>("item-changed", &[&path.to_string_lossy().into_owned()]);
     }
