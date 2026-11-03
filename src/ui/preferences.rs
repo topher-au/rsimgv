@@ -159,6 +159,20 @@ mod imp {
         #[template_child]
         pub overlay_page: TemplateChild<gtk::Box>,
         #[template_child]
+        pub remember_file_settings_row: TemplateChild<adw::SwitchRow>,
+        #[template_child]
+        pub remember_position_row: TemplateChild<adw::SwitchRow>,
+        #[template_child]
+        pub remember_speed_row: TemplateChild<adw::SwitchRow>,
+        #[template_child]
+        pub remember_volume_row: TemplateChild<adw::SwitchRow>,
+        #[template_child]
+        pub remember_rotation_row: TemplateChild<adw::SwitchRow>,
+        #[template_child]
+        pub remember_zoom_row: TemplateChild<adw::SwitchRow>,
+        #[template_child]
+        pub remember_pan_row: TemplateChild<adw::SwitchRow>,
+        #[template_child]
         pub sidebar_animations_row: TemplateChild<adw::SwitchRow>,
         #[template_child]
         pub sidebar_animation_ms_row: TemplateChild<adw::SpinRow>,
@@ -383,6 +397,7 @@ impl PreferencesDialog {
                 }
             }
         });
+        dialog.bind_file_settings(settings);
         imp.overlay_page.append(&super::overlay_editor::build(settings));
         dialog.bind_start_directory(settings);
         bind_info_fields(settings, &dialog);
@@ -590,6 +605,13 @@ fn bind_switches(settings: &gio::Settings, imp: &imp::PreferencesDialog) {
         ("auto-hide-cursor", &imp.auto_hide_cursor_row),
         ("smooth-scrolling", &imp.smooth_scrolling_row),
         ("image-info-in-title", &imp.image_info_in_title_row),
+        ("remember-file-settings", &imp.remember_file_settings_row),
+        ("remember-position", &imp.remember_position_row),
+        ("remember-speed", &imp.remember_speed_row),
+        ("remember-volume", &imp.remember_volume_row),
+        ("remember-rotation", &imp.remember_rotation_row),
+        ("remember-zoom", &imp.remember_zoom_row),
+        ("remember-pan", &imp.remember_pan_row),
         ("video-controls-locked", &imp.controls_locked_row),
         ("sidebar-animations", &imp.sidebar_animations_row),
         ("keep-fit-mode", &imp.keep_fit_mode_row),
@@ -1264,6 +1286,37 @@ fn bind_port(settings: &gio::Settings, row: &adw::SpinRow, key: &'static str) {
 }
 
 impl PreferencesDialog {
+    /// Keeps the rows for what is remembered about each file insensitive while nothing is, and the zoom position's while the
+    /// zoom level is not, as a position means nothing without the zoom it goes with.
+    fn bind_file_settings(&self, settings: &gio::Settings) {
+        let imp = self.imp();
+        let rows = [
+            imp.remember_position_row.clone(),
+            imp.remember_speed_row.clone(),
+            imp.remember_volume_row.clone(),
+            imp.remember_rotation_row.clone(),
+            imp.remember_zoom_row.clone(),
+        ];
+        let pan = imp.remember_pan_row.clone();
+        let update = {
+            let settings = settings.clone();
+            move || {
+                let enabled = settings.boolean("remember-file-settings");
+                for row in &rows {
+                    row.set_sensitive(enabled);
+                }
+                pan.set_sensitive(enabled && settings.boolean("remember-zoom"));
+            }
+        };
+        update();
+        for key in ["remember-file-settings", "remember-zoom"] {
+            settings.connect_changed(Some(key), {
+                let update = update.clone();
+                move |_, _| update()
+            });
+        }
+    }
+
     /// Shows the start directory row only for a specific start location, with the chosen folder as
     /// its subtitle, and lets its button pick the folder.
     fn bind_start_directory(&self, settings: &gio::Settings) {

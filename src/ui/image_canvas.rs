@@ -166,6 +166,11 @@ impl Placement {
         ]
     }
 
+    /// This placement with the picture centred, as it is when only the zoom is wanted.
+    pub fn centered(self) -> Placement {
+        Placement { offset: (0.0, 0.0), ..self }
+    }
+
     /// The placement saved in `settings`, if there is one.
     pub fn from_settings(settings: &crate::file_settings::FileSettings) -> Option<Placement> {
         let zoom = settings.get_f64("zoom")?;

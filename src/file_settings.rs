@@ -9,7 +9,9 @@
 //! speed: 1.25
 //! ```
 //!
-//! The viewer keeps a video's play position and speed here, and a picture's zoom and pan.
+//! The viewer keeps a video's play position, speed, volume (`volume`, and `muted` if it was) and a picture's or video's
+//! turn and mirror (`rotation` in degrees, and `mirrored`) here, and a picture's fit mode, zoom and pan. The preferences
+//! choose which of these are kept.
 
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};

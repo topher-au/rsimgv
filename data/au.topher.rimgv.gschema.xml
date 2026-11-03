@@ -391,6 +391,34 @@
       <default>false</default>
       <summary>Keep the seek overlay up while a video plays, rather than only after a skip</summary>
     </key>
+    <key name="remember-file-settings" type="b">
+      <default>true</default>
+      <summary>Keep settings for each file, such as where a video was left, and use them when the file is shown again</summary>
+    </key>
+    <key name="remember-position" type="b">
+      <default>true</default>
+      <summary>Keep where a video was left, and start it there next time</summary>
+    </key>
+    <key name="remember-speed" type="b">
+      <default>true</default>
+      <summary>Keep the playback speed of a video</summary>
+    </key>
+    <key name="remember-volume" type="b">
+      <default>false</default>
+      <summary>Keep the volume and mute state of a video</summary>
+    </key>
+    <key name="remember-rotation" type="b">
+      <default>false</default>
+      <summary>Keep how a picture or video was turned and mirrored</summary>
+    </key>
+    <key name="remember-zoom" type="b">
+      <default>true</default>
+      <summary>Keep how a picture was zoomed, or its fit mode</summary>
+    </key>
+    <key name="remember-pan" type="b">
+      <default>true</default>
+      <summary>Keep where a zoomed picture was panned to</summary>
+    </key>
     <key name="sidebar-animations" type="b">
       <default>true</default>
       <summary>Slide the sidebars and the thumbnail bar in and out, rather than showing and hiding them at once</summary>

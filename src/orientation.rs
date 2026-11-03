@@ -21,6 +21,16 @@ impl Orientation {
         self.turns % 2 == 1
     }
 
+    /// Whether the picture is mirrored left to right before it is turned.
+    pub fn is_mirrored(self) -> bool {
+        self.mirrored
+    }
+
+    /// The orientation that mirrors the picture if `mirrored`, then turns it `degrees` clockwise, to the nearest quarter turn.
+    pub fn from_parts(mirrored: bool, degrees: f64) -> Self {
+        Self { mirrored, turns: 0 }.with_rotation(degrees)
+    }
+
     /// The clockwise rotation in degrees: 0, 90, 180 or 270.
     pub fn degrees(self) -> u16 {
         u16::from(self.turns) * 90
@@ -112,6 +122,15 @@ mod tests {
 
     fn numbers(pixels: &[u8]) -> Vec<u8> {
         pixels.chunks(4).map(|pixel| pixel[0]).collect()
+    }
+
+    #[test]
+    fn an_orientation_is_made_from_its_parts() {
+        let turned = Orientation::from_parts(true, 270.0);
+        assert!(turned.is_mirrored());
+        assert_eq!(turned.degrees(), 270);
+        assert_eq!(Orientation::from_parts(false, 0.0), Orientation::default());
+        assert_eq!(Orientation::from_parts(false, 450.0).degrees(), 90, "a turn past the full circle wraps");
     }
 
     #[test]

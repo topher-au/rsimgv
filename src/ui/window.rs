@@ -498,15 +498,28 @@ impl Window {
         self.imp().current_path.borrow().clone()
     }
 
-    /// Records `folder` and the `file` in it as the last ones shown, for the window to open at when `start-location` is
-    /// `last`. A folder with no file in it clears `last-file`.
-    fn remember_location(&self, folder: &Path, file: Option<&Path>) {
+    /// Records `folder`, the one the browser has open, as the last folder, for the window to open at when `start-location`
+    /// is `last`. The last file stays only if it is in that folder, as it is the last one played there.
+    fn remember_directory(&self, folder: &Path) {
         let Some(settings) = self.imp().settings.get() else { return };
         if settings.string("start-location") != "last" {
             return;
         }
         let _ = settings.set_string("last-directory", &folder.to_string_lossy());
-        let _ = settings.set_string("last-file", &file.map(|file| file.to_string_lossy().into_owned()).unwrap_or_default());
+        let file = PathBuf::from(settings.string("last-file").as_str());
+        if file.parent() != Some(folder) {
+            let _ = settings.set_string("last-file", "");
+        }
+    }
+
+    /// Records `file` as the last file played, if it is in the folder the browser has open, which is the only one the last
+    /// file is kept for.
+    fn remember_file(&self, file: &Path) {
+        let Some(settings) = self.imp().settings.get() else { return };
+        if settings.string("start-location") != "last" || file.parent() != self.current_path().as_deref() {
+            return;
+        }
+        let _ = settings.set_string("last-file", &file.to_string_lossy());
     }
 
     /// Makes `path` the window's folder. This is the only way the folder changes: it records the
@@ -528,7 +541,7 @@ impl Window {
             eprintln!("rsimgv: {} is not a folder", path.display());
             return false;
         }
-        self.remember_location(path, None);
+        self.remember_directory(path);
 
         // With no tab open, navigating opens one at the folder and activates it.
         if imp.tab_view.n_pages() == 0 {
@@ -789,9 +802,7 @@ impl Window {
     fn open_viewer(&self, view: &BrowseView, path: &Path) {
         let paths = view.media_paths();
         let Some(index) = paths.iter().position(|listed| listed == path) else { return };
-        if let Some(folder) = path.parent() {
-            self.remember_location(folder, Some(path));
-        }
+        self.remember_file(path);
         self.show_in_viewer(paths, index, false);
     }
 
@@ -872,6 +883,15 @@ impl Window {
         viewer.set_status_bar(settings.boolean("viewer-status-bar"));
         viewer.set_svp(crate::svp::Config::from_settings(settings));
         self.apply_folder_end();
+        viewer.set_remember(super::media_viewer::Remember {
+            enabled: settings.boolean("remember-file-settings"),
+            position: settings.boolean("remember-position"),
+            speed: settings.boolean("remember-speed"),
+            volume: settings.boolean("remember-volume"),
+            rotation: settings.boolean("remember-rotation"),
+            zoom: settings.boolean("remember-zoom"),
+            pan: settings.boolean("remember-pan"),
+        });
         let (animated, millis) = (settings.boolean("sidebar-animations"), settings.int("sidebar-animation-ms").max(0) as u32);
         let imp = self.imp();
         for split in [(*imp.split).clone(), (*imp.playlist_split).clone(), viewer.playlist_split()] {
@@ -3093,9 +3113,7 @@ impl Window {
                 if window.imp().playlist_playing.get() {
                     window.playlist_item_shown(path);
                 } else if let Some(view) = window.active_browse() {
-                    if let Some(folder) = path.parent() {
-                        window.remember_location(folder, Some(path));
-                    }
+                    window.remember_file(path);
                     view.select_named(&path.to_string_lossy());
                 }
             }
@@ -3470,7 +3488,14 @@ const WHEEL_VOLUME_STEP: f64 = 5.0;
 const WHEEL_SEEK_STEP: f64 = 5.0;
 
 /// The settings the viewer and the window title are set from, applied again whenever one changes.
-const VIEWER_SETTINGS: [&str; 41] = [
+const VIEWER_SETTINGS: [&str; 48] = [
+    "remember-file-settings",
+    "remember-position",
+    "remember-speed",
+    "remember-volume",
+    "remember-rotation",
+    "remember-zoom",
+    "remember-pan",
     "sidebar-animations",
     "sidebar-animation-ms",
     "video-controls-locked",

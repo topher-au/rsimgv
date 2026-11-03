@@ -348,6 +348,19 @@ impl MediaControls {
         }
     }
 
+    /// The volume, from 0 to 1, and whether the video is muted.
+    pub fn audio(&self) -> (f64, bool) {
+        (self.imp().volume.get(), self.imp().muted.get())
+    }
+
+    /// Sets the volume and mute state, to the video shown if there is one.
+    pub fn set_audio(&self, volume: f64, muted: bool) {
+        let imp = self.imp();
+        imp.volume.set(volume.clamp(0.0, 1.0));
+        imp.muted.set(muted);
+        self.apply_audio();
+    }
+
     /// Changes the volume by `delta`, kept between silence and full. Raising it above silence unmutes.
     pub fn adjust_volume(&self, delta: f64) {
         self.set_volume_level((self.imp().volume.get() + delta).clamp(0.0, 1.0));

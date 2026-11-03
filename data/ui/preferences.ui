@@ -250,6 +250,52 @@
                             </child>
                             <child>
                               <object class="AdwPreferencesGroup">
+                                <property name="title">File settings</property>
+                                <child>
+                                  <object class="AdwSwitchRow" id="remember_file_settings_row">
+                                    <property name="title">Remember settings for each file</property>
+                                    <property name="subtitle">Keeps the settings below for each picture and video by its contents, so they follow the file when it is moved or renamed</property>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="AdwSwitchRow" id="remember_position_row">
+                                    <property name="title">Playback position</property>
+                                    <property name="subtitle">Starts a video again from where it was left</property>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="AdwSwitchRow" id="remember_speed_row">
+                                    <property name="title">Playback speed</property>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="AdwSwitchRow" id="remember_volume_row">
+                                    <property name="title">Volume</property>
+                                    <property name="subtitle">Keeps the volume and whether the video was muted</property>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="AdwSwitchRow" id="remember_rotation_row">
+                                    <property name="title">Rotation and mirroring</property>
+                                    <property name="subtitle">Keeps how a picture or video was turned and flipped</property>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="AdwSwitchRow" id="remember_zoom_row">
+                                    <property name="title">Zoom level</property>
+                                    <property name="subtitle">Keeps how a picture was zoomed, or its fit mode</property>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="AdwSwitchRow" id="remember_pan_row">
+                                    <property name="title">Zoom position</property>
+                                    <property name="subtitle">Keeps where a zoomed picture was panned to</property>
+                                  </object>
+                                </child>
+                              </object>
+                            </child>
+                            <child>
+                              <object class="AdwPreferencesGroup">
                                 <property name="title">Animations</property>
                                 <child>
                                   <object class="AdwSwitchRow" id="sidebar_animations_row">

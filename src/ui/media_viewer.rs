@@ -177,6 +177,56 @@ const BAR_PEEK_MS: u64 = 1500;
 /// How long the pointer stays still before it is hidden, when the cursor is set to hide.
 const CURSOR_HIDE_MS: u64 = 1500;
 
+/// Which of a file's settings the viewer keeps for it and applies when the file is shown again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Remember {
+    /// Whether anything is kept for a file at all.
+    pub enabled: bool,
+    pub position: bool,
+    pub speed: bool,
+    pub volume: bool,
+    pub rotation: bool,
+    pub zoom: bool,
+    /// Where a zoomed picture is panned to, which only means something with the zoom it goes with.
+    pub pan: bool,
+}
+
+impl Default for Remember {
+    fn default() -> Self {
+        Self { enabled: true, position: true, speed: true, volume: false, rotation: false, zoom: true, pan: true }
+    }
+}
+
+impl Remember {
+    /// Whether the file setting `key` is kept.
+    fn keeps(&self, key: &str) -> bool {
+        self.enabled
+            && match key {
+                "position" => self.position,
+                "speed" => self.speed,
+                "volume" | "muted" => self.volume,
+                "rotation" | "mirrored" => self.rotation,
+                "fit" | "zoom" => self.zoom,
+                "pan-x" | "pan-y" => self.zoom && self.pan,
+                _ => true,
+            }
+    }
+}
+
+/// The settings changes that save how `orientation` turns and mirrors what is shown.
+fn orientation_settings(orientation: Orientation) -> Vec<(&'static str, Option<serde_yaml_ng::Value>)> {
+    vec![
+        ("rotation", (orientation.degrees() != 0).then(|| orientation.degrees().into())),
+        ("mirrored", orientation.is_mirrored().then(|| true.into())),
+    ]
+}
+
+/// The orientation saved in `settings`, if there is one.
+fn saved_orientation(settings: &FileSettings) -> Option<Orientation> {
+    let (degrees, mirrored) = (settings.get_f64("rotation"), settings.get_bool("mirrored"));
+    (degrees.is_some() || mirrored.is_some()).then(|| Orientation::from_parts(mirrored.unwrap_or(false), degrees.unwrap_or(0.0)))
+}
+
 /// The settings changes that keep where `media` was left: its position, unless it is near its start or end, and
 /// its speed, unless it is normal.
 fn video_settings(media: &gtk::MediaStream) -> Vec<(&'static str, Option<serde_yaml_ng::Value>)> {
@@ -344,6 +394,10 @@ mod imp {
         /// The settings kept for the item shown: a picture's zoom and pan, a video's position and speed. They are
         /// saved when it is left.
         pub(super) file_settings: RefCell<Option<FileSettings>>,
+        /// Which of a file's settings are kept, and the volume and mute state the video started with, so a change to them
+        /// can be told from the level a video merely inherited.
+        pub(super) remember: Cell<Remember>,
+        pub(super) audio_at_load: Cell<(f64, bool)>,
         /// The video shown, if the item is one. The viewer owns it, and the controls drive it.
         pub(super) media: RefCell<Option<gtk::MediaStream>>,
         /// Whether a video starts again when it ends, and whether the next item plays when it ends instead.
@@ -944,6 +998,11 @@ impl MediaViewer {
     /// Gives later videos played by mpv the mpv command line options in `options`.
     pub fn set_mpv_options(&self, options: &str) {
         self.imp().mpv_options.replace(options.to_owned());
+    }
+
+    /// Sets which of a file's settings are kept for it.
+    pub fn set_remember(&self, remember: Remember) {
+        self.imp().remember.set(remember);
     }
 
     /// Changes the volume of the video shown by `delta`.
@@ -1829,11 +1888,13 @@ impl MediaViewer {
         self.update_navigation(index, len);
 
         // The file's settings are read on a worker thread: the moviehash reads the file, and the settings file is parsed.
+        // With none kept, the file is not read.
+        let keep = imp.remember.get().enabled;
         let weak = self.downgrade();
         glib::spawn_future_local(async move {
             let settings = gio::spawn_blocking({
                 let path = path.clone();
-                move || FileSettings::for_path(&path).ok()
+                move || if keep { FileSettings::for_path(&path).ok() } else { None }
             })
             .await
             .ok()
@@ -1873,8 +1934,11 @@ impl MediaViewer {
                 .flatten()
                 .map(|stream| {
                     // Each video plays at the speed it was left at, or normal speed.
-                    let speed = settings.as_ref().and_then(|settings| settings.get_f64("speed")).unwrap_or(1.0);
+                    let speed = settings.as_ref().filter(|_| imp.remember.get().speed).and_then(|settings| settings.get_f64("speed")).unwrap_or(1.0);
                     stream.set_speed(speed);
+                    if let Some(orientation) = settings.as_ref().filter(|_| imp.remember.get().rotation).and_then(saved_orientation) {
+                        stream.set_orientation(orientation);
+                    }
                     self.start_svp(&stream);
                     // Frames are rendered at device pixels, so the video and its OSD are drawn at the display's scale.
                     stream.set_scale(imp.picture.scale_factor());
@@ -1904,10 +1968,15 @@ impl MediaViewer {
             let fit = if media.is::<crate::mpv::MpvStream>() { gtk::ContentFit::Fill } else { gtk::ContentFit::Contain };
             imp.picture.set_content_fit(fit);
             imp.picture.set_paintable(Some(&media));
+            // A video with a volume of its own starts at it; the others start at the level the last one left.
+            if let Some(volume) = settings.as_ref().filter(|_| imp.remember.get().volume).and_then(|settings| settings.get_f64("volume")) {
+                imp.controls.set_audio(volume, settings.as_ref().and_then(|settings| settings.get_bool("muted")).unwrap_or(false));
+            }
+            imp.audio_at_load.set(imp.controls.audio());
             imp.controls.set_media(Some(&media));
             // Playing is requested once the stream is ready, since a request made before then is dropped. It starts
             // where it was left.
-            let position = settings.as_ref().and_then(|settings| settings.get_f64("position"));
+            let position = settings.as_ref().filter(|_| imp.remember.get().position).and_then(|settings| settings.get_f64("position"));
             media.connect_prepared_notify(move |media| {
                 if !media.is_prepared() {
                     return;
@@ -1924,8 +1993,14 @@ impl MediaViewer {
             self.refresh_overlay();
         } else {
             imp.pages.set_visible_child(&*imp.canvas);
-            let placement = settings.as_ref().and_then(Placement::from_settings);
-            self.show_picture(index, &path, placement);
+            let remember = imp.remember.get();
+            let placement = settings
+                .as_ref()
+                .filter(|_| remember.zoom)
+                .and_then(Placement::from_settings)
+                .map(|placement| if remember.pan { placement } else { placement.centered() });
+            let orientation = settings.as_ref().filter(|_| remember.rotation).and_then(saved_orientation);
+            self.show_picture(index, &path, placement, orientation);
             self.prefetch_neighbours(index);
         }
         imp.file_settings.replace(settings);
@@ -1936,14 +2011,14 @@ impl MediaViewer {
 
     /// Shows the picture at `path`, the item at `index`, once it is decoded. A picture decoded ahead is shown at once. A
     /// decode that finishes after another item is shown is not shown.
-    fn show_picture(&self, index: usize, path: &Path, placement: Option<Placement>) {
+    fn show_picture(&self, index: usize, path: &Path, placement: Option<Placement>, orientation: Option<Orientation>) {
         let imp = self.imp();
         let ahead = {
             let mut prefetched = imp.prefetched.borrow_mut();
             prefetched.iter().position(|(ahead, _)| ahead == path).map(|position| prefetched.remove(position).1)
         };
         if let Some(pixels) = ahead {
-            self.set_picture(&pixels, placement);
+            self.set_picture(&pixels, placement, orientation);
             return;
         }
         let weak = self.downgrade();
@@ -1952,15 +2027,19 @@ impl MediaViewer {
             let Some(pixels) = decode_picture(path).await else { return };
             let Some(viewer) = weak.upgrade() else { return };
             if viewer.imp().index.get() == index && viewer.imp().media.borrow().is_none() {
-                viewer.set_picture(&pixels, placement);
+                viewer.set_picture(&pixels, placement, orientation);
             }
         });
     }
 
     /// Puts the decoded picture on the canvas, at the placement it was left at.
-    fn set_picture(&self, pixels: &Pixels, placement: Option<Placement>) {
+    fn set_picture(&self, pixels: &Pixels, placement: Option<Placement>, orientation: Option<Orientation>) {
         let imp = self.imp();
         imp.canvas.set_texture(Some(pixels.texture()));
+        // Turned first, as the placement is of the picture as it was shown turned.
+        if let Some(orientation) = orientation {
+            imp.canvas.set_orientation(orientation);
+        }
         if let Some(placement) = placement {
             imp.canvas.restore(placement);
         }
@@ -2014,11 +2093,30 @@ impl MediaViewer {
         imp.svp_announcement.take();
         let settings = imp.file_settings.take();
         let media = imp.media.take();
-        let changes = match &media {
-            Some(media) => video_settings(media),
-            None if imp.canvas.texture().is_some() => Placement::to_settings(imp.canvas.placement()),
+        let mut changes = match &media {
+            Some(media) => {
+                let mut changes = video_settings(media);
+                if let Some(stream) = media.downcast_ref::<crate::mpv::MpvStream>() {
+                    changes.extend(orientation_settings(stream.orientation()));
+                }
+                // The volume is kept only if it was changed while the video was up; it is otherwise the one it inherited.
+                let audio = imp.controls.audio();
+                if audio != imp.audio_at_load.get() {
+                    changes.push(("volume", Some(audio.0.into())));
+                    changes.push(("muted", audio.1.then(|| true.into())));
+                }
+                changes
+            }
+            None if imp.canvas.texture().is_some() => {
+                let mut changes = Placement::to_settings(imp.canvas.placement());
+                changes.extend(orientation_settings(imp.canvas.orientation()));
+                changes
+            }
             None => Vec::new(),
         };
+        // What is not kept is neither written nor cleared, so it is as it was when it is kept again.
+        let remember = imp.remember.get();
+        changes.retain(|(key, _)| remember.keeps(key));
         if let Some(mut settings) = settings {
             // Saved on a worker thread, so the write does not hold up the window.
             std::thread::spawn(move || {
