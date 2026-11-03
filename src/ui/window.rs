@@ -80,6 +80,10 @@ mod imp {
         #[template_child]
         pub navigation: TemplateChild<NavigationBar>,
         #[template_child]
+        pub images_button: TemplateChild<gtk::ToggleButton>,
+        #[template_child]
+        pub videos_button: TemplateChild<gtk::ToggleButton>,
+        #[template_child]
         pub title_stack: TemplateChild<gtk::Stack>,
         #[template_child]
         pub path_bar: TemplateChild<PathBar>,
@@ -278,7 +282,8 @@ impl Window {
             }
         });
         add_show_directories_action(&window, settings);
-        window.imp().navigation.bind_kind_toggles(settings);
+        settings.bind("show-images", &*window.imp().images_button, "active").build();
+        settings.bind("show-videos", &*window.imp().videos_button, "active").build();
 
         window.add_context_actions();
         window.add_tab_actions();

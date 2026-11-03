@@ -23,19 +23,5 @@
         <style><class name="flat"/></style>
       </object>
     </child>
-    <child>
-      <object class="GtkToggleButton" id="images_button">
-        <property name="icon-name">image-x-generic-symbolic</property>
-        <property name="tooltip-text">Show pictures</property>
-        <style><class name="flat"/></style>
-      </object>
-    </child>
-    <child>
-      <object class="GtkToggleButton" id="videos_button">
-        <property name="icon-name">video-x-generic-symbolic</property>
-        <property name="tooltip-text">Show videos</property>
-        <style><class name="flat"/></style>
-      </object>
-    </child>
   </template>
 </interface>

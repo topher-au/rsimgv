@@ -35,10 +35,6 @@ mod imp {
         pub forward_button: TemplateChild<gtk::Button>,
         #[template_child]
         pub up_button: TemplateChild<gtk::Button>,
-        #[template_child]
-        pub images_button: TemplateChild<gtk::ToggleButton>,
-        #[template_child]
-        pub videos_button: TemplateChild<gtk::ToggleButton>,
         pub(super) history: RefCell<Vec<PathBuf>>,
         /// The item selected in each location of the history, by its name, if one was.
         pub(super) selections: RefCell<Vec<Option<String>>>,
@@ -150,12 +146,6 @@ glib::wrapper! {
 impl NavigationBar {
     pub fn new() -> Self {
         glib::Object::new()
-    }
-
-    /// Keeps the toggles that show pictures and videos in step with the `show-images` and `show-videos` settings.
-    pub fn bind_kind_toggles(&self, settings: &gio::Settings) {
-        settings.bind("show-images", &*self.imp().images_button, "active").build();
-        settings.bind("show-videos", &*self.imp().videos_button, "active").build();
     }
 
     /// The location being shown, or `None` before the first visit.
