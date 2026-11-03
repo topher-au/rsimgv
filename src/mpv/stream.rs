@@ -312,13 +312,6 @@ impl MpvStream {
         self.imp().player.borrow().as_ref()?.get_double("display-fps")
     }
 
-    /// Shows `text` over the video with mpv's OSD, for `millis` milliseconds.
-    pub fn show_text(&self, text: &str, millis: u32) {
-        if let Some(player) = self.imp().player.borrow().as_ref() {
-            let _ = player.command(&["show-text", text, &millis.to_string()]);
-        }
-    }
-
     /// Puts `filter`, which is labelled `label`, after the other video filters in place of the one before, or takes that
     /// one out when it is `None`.
     pub fn set_interpolation_filter(&self, label: &str, filter: Option<&str>) -> Result<(), String> {

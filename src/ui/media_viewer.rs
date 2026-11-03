@@ -128,8 +128,6 @@ const POSITION_MARGIN: f64 = 2.0;
 const SEEK_SETTLE: std::time::Duration = std::time::Duration::from_millis(400);
 /// How long the playback speed has to stay put before SVP is rebuilt for it, as each rebuild holds up the video.
 const SVP_SPEED_SETTLE: std::time::Duration = std::time::Duration::from_millis(300);
-/// How long the OSD says what SVP is doing, in milliseconds.
-const SVP_OSD_MILLIS: u32 = 2500;
 /// How long, in milliseconds, a video waits to start by default after the viewer steps to it.
 const DEFAULT_VIDEO_START_DELAY: u64 = 150;
 
@@ -396,7 +394,7 @@ mod imp {
         pub(super) svp: RefCell<Option<crate::svp::Config>>,
         /// The filter that applies SVP to the video shown, while SVP is on for it.
         pub(super) svp_filter: RefCell<Option<String>>,
-        /// What the OSD says once that filter is in place.
+        /// What the notification says once that filter is in place.
         pub(super) svp_announcement: RefCell<Option<String>>,
         /// The timer that puts that filter in place.
         pub(super) svp_timer: RefCell<Option<glib::SourceId>>,
@@ -587,7 +585,7 @@ mod imp {
         fn signals() -> &'static [Signal] {
             use std::sync::LazyLock;
             static SIGNALS: LazyLock<Vec<Signal>> =
-                LazyLock::new(|| vec![Signal::builder("back-requested").build(), Signal::builder("item-changed").param_types([String::static_type()]).build(), Signal::builder("file-dropped").param_types([String::static_type()]).build(), Signal::builder("thumbnail-side-requested").param_types([String::static_type()]).build(), Signal::builder("thumbnail-size-requested").param_types([i32::static_type()]).build(), Signal::builder("folder-end-reached").param_types([bool::static_type()]).build(), Signal::builder("controls-layout-changed").param_types([f64::static_type(), f64::static_type(), f64::static_type()]).build()]);
+                LazyLock::new(|| vec![Signal::builder("back-requested").build(), Signal::builder("item-changed").param_types([String::static_type()]).build(), Signal::builder("file-dropped").param_types([String::static_type()]).build(), Signal::builder("thumbnail-side-requested").param_types([String::static_type()]).build(), Signal::builder("thumbnail-size-requested").param_types([i32::static_type()]).build(), Signal::builder("folder-end-reached").param_types([bool::static_type()]).build(), Signal::builder("notification-requested").param_types([String::static_type(), bool::static_type()]).build(), Signal::builder("controls-layout-changed").param_types([f64::static_type(), f64::static_type(), f64::static_type()]).build()]);
             SIGNALS.as_ref()
         }
     }
@@ -1182,13 +1180,28 @@ impl MediaViewer {
         self.install_svp(stream);
     }
 
+    /// Asks for `text` to be said over the window as a notification, as an error if `error`.
+    fn announce(&self, text: &str, error: bool) {
+        self.emit_by_name::<()>("notification-requested", &[&text, &error]);
+    }
+
+    /// Calls `callback` with the text of each notification the viewer asks for, and whether it is an error.
+    pub fn connect_notification_requested<F: Fn(&Self, &str, bool) + 'static>(&self, callback: F) -> glib::SignalHandlerId {
+        self.connect_local("notification-requested", false, move |values| {
+            let viewer = values[0].get::<MediaViewer>().expect("viewer argument");
+            let text = values[1].get::<String>().unwrap_or_default();
+            callback(&viewer, &text, values[2].get().unwrap_or(false));
+            None
+        })
+    }
+
     /// Writes the SVP script for `stream`'s video at `speed` and has mpv load it, or removes the filter when SVP is off.
-    /// Only the SVP settings' plugins and the video's own rate are read. With `speed_changed`, the OSD reports the speed
+    /// Only the SVP settings' plugins and the video's own rate are read. With `speed_changed`, a notification reports the speed
     /// even if SVP stays as it is, and the filter waits for the speed to settle.
     fn apply_svp(&self, stream: &crate::mpv::MpvStream, speed: f64, speed_changed: bool) {
         let imp = self.imp();
         let Some(config) = imp.svp.borrow().clone() else { return };
-        // The OSD says when SVP changes state: on when it is applied, off when it was on and is turned off.
+        // The window says when SVP is turned on or off; here a notification says what it does to the video.
         if !config.enabled {
             self.cancel_svp_timer();
             imp.svp_held.set(false);
@@ -1197,9 +1210,7 @@ impl MediaViewer {
             if let Err(err) = stream.set_interpolation_filter(crate::svp::FILTER_LABEL, None) {
                 eprintln!("rsimgv: SVP could not be removed: {err}");
             }
-            if imp.svp_filter.take().is_some() {
-                stream.show_text("SVP off", SVP_OSD_MILLIS);
-            }
+            imp.svp_filter.take();
             return;
         }
         let plugins = crate::svp::find_plugins(&config.plugin_directory);
@@ -1207,7 +1218,7 @@ impl MediaViewer {
         let Some(source) = stream.fps() else { return };
         if !usable {
             eprintln!("rsimgv: SVP plugins not found in {}", config.plugin_directory.display());
-            stream.show_text(&format!("SVP plugins not found in {}", config.plugin_directory.display()), SVP_OSD_MILLIS);
+            self.announce(&format!("SVP plugins not found in {}", config.plugin_directory.display()), true);
             return;
         }
         let target = crate::svp::target_fps(&config.rate, source, speed, stream.display_fps());
@@ -1219,7 +1230,7 @@ impl MediaViewer {
                 .and_then(|()| std::fs::write(&path, &script));
             if let Err(err) = written {
                 eprintln!("rsimgv: could not write the SVP script: {err}");
-                stream.show_text("SVP script could not be written", SVP_OSD_MILLIS);
+                self.announce("SVP script could not be written", true);
                 return;
             }
             println!("rsimgv: SVP script written to {}", path.display());
@@ -1243,7 +1254,7 @@ impl MediaViewer {
         let filter = crate::svp::filter(&path);
         if imp.svp_filter.borrow().as_deref() == Some(filter.as_str()) {
             if speed_changed {
-                stream.show_text(&text, SVP_OSD_MILLIS);
+                self.announce(&text, false);
             }
             return;
         }
@@ -1260,7 +1271,7 @@ impl MediaViewer {
         }
     }
 
-    /// Puts the video's SVP filter in place, and says so on the OSD if it is new.
+    /// Puts the video's SVP filter in place, and says so in a notification if it is new.
     fn install_svp(&self, stream: &crate::mpv::MpvStream) {
         let imp = self.imp();
         let filter = imp.svp_filter.borrow().clone();
@@ -1268,12 +1279,12 @@ impl MediaViewer {
             Ok(()) => {
                 if let Some(text) = imp.svp_announcement.take() {
                     println!("rsimgv: SVP filter set: {}", filter.as_deref().unwrap_or_default());
-                    stream.show_text(&text, SVP_OSD_MILLIS);
+                    self.announce(&text, false);
                 }
             }
             Err(err) => {
                 eprintln!("rsimgv: SVP could not be applied: {err}");
-                stream.show_text("SVP could not be applied", SVP_OSD_MILLIS);
+                self.announce("SVP could not be applied", true);
             }
         }
     }

@@ -20,7 +20,7 @@ use super::fs_tree::TreeSnapshot;
 use super::path_bar::OpenTarget;
 use super::{BrowseView, FsTree, HeaderBar, MediaViewer, MessageOverlay, NavigationBar, OverlaySplitView, PathBar, PreferencesDialog, ShownItem};
 use super::{Level, Message};
-use super::message_overlay::{MessageId, Position};
+use super::message_overlay::MessageId;
 use super::keybinds_overlay::KeybindsOverlay;
 use super::playlist_panel::{stamp, PlaylistPanel, SortColumn};
 use crate::orientation::Orientation;
@@ -425,6 +425,18 @@ impl Window {
             move || {
                 if let Some(window) = weak.upgrade() {
                     window.preview_messages();
+                }
+            }
+        });
+        imp.viewer.connect_notification_requested({
+            let weak = window.downgrade();
+            move |_, text, error| {
+                if let Some(window) = weak.upgrade() {
+                    if error {
+                        window.notify_error(text);
+                    } else {
+                        window.notify(text);
+                    }
                 }
             }
         });
@@ -2091,14 +2103,14 @@ impl Window {
         adw::prelude::AdwDialogExt::present(&dialog, Some(self));
     }
 
-    /// Says `text` over the window, at the top, clear of the video controls. A message still up from the last time is
+    /// Says `text` over the window. A message still up from the last time is
     /// taken down, so going through the playlist quickly does not stack them.
     fn announce_playlist(&self, text: &str) {
         let messages = self.messages();
         if let Some(previous) = self.imp().playlist_notice.take() {
             messages.dismiss(previous);
         }
-        let notice = messages.show(Message::notification(text).at(Position::TopCenter));
+        let notice = messages.show(Message::notification(text));
         self.imp().playlist_notice.set(Some(notice));
     }
 
@@ -2614,8 +2626,7 @@ impl Window {
         if let Some(previous) = self.imp().folder_notice.take() {
             messages.dismiss(previous);
         }
-        // At the top, clear of the video controls that come up at the bottom.
-        let notice = messages.show(Message::notification(name).at(Position::TopCenter));
+        let notice = messages.show(Message::notification(name));
         self.imp().folder_notice.set(Some(notice));
     }
 
