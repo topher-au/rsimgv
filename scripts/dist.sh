@@ -12,7 +12,8 @@ out="${1:-packaging/arch}"
 version=$(sed -n "s/^  version: '\(.*\)',$/\1/p" meson.build)
 prefix="rsimgv-$version"
 
-mapfile -d '' listed < <(git ls-files -co --exclude-standard -z)
+# The submodule's files are listed as tracked by its own repository, as its build needs them.
+mapfile -d '' listed < <(git ls-files -co --exclude-standard -z; git ls-files -z --recurse-submodules -- third_party/)
 files=()
 for file in "${listed[@]}"; do
   [ -f "$file" ] || continue

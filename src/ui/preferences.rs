@@ -47,8 +47,6 @@ mod imp {
         #[template_child]
         pub svp_enabled_row: TemplateChild<adw::SwitchRow>,
         #[template_child]
-        pub svp_plugin_directory_row: TemplateChild<adw::EntryRow>,
-        #[template_child]
         pub svp_fps_mode_row: TemplateChild<adw::ComboRow>,
         #[template_child]
         pub svp_fps_target_row: TemplateChild<adw::SpinRow>,
@@ -387,7 +385,6 @@ impl PreferencesDialog {
         settings.bind("viewer-blurred-background", &*imp.blurred_background_row, "active").build();
         settings.bind("kde-effects", &*imp.kde_effects_row, "active").build();
         settings.bind("svp-enabled", &*imp.svp_enabled_row, "active").build();
-        settings.bind("svp-plugin-directory", &*imp.svp_plugin_directory_row, "text").build();
         settings.bind("svp-fps-target", &*imp.svp_fps_target_row, "value").build();
         settings.bind("svp-nvof", &*imp.svp_nvof_row, "active").build();
         settings.bind("svp-seek-bypass", &*imp.svp_seek_bypass_row, "active").build();

@@ -32,6 +32,7 @@ sha256sums=('SKIP')
 prepare() {
   cd "$pkgname-$pkgver"
   cargo fetch --locked --target "$CARCH-unknown-linux-gnu"
+  (cd third_party/open-svpflow && cargo fetch --locked --target "$CARCH-unknown-linux-gnu")
 }
 
 build() {

@@ -11,6 +11,7 @@ use std::fs::{DirBuilder, Permissions};
 use std::hash::{Hash, Hasher};
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use gtk::gio::prelude::SettingsExt;
@@ -73,20 +74,40 @@ pub fn target_fps(rate: &Rate, source: f64, speed: f64, display: Option<f64>) ->
     ((target / ROUND_TO + 0.5).floor() * ROUND_TO).clamp(rate.minimum, rate.maximum)
 }
 
-/// The SVP plugin libraries found in a directory.
-#[derive(Debug, Default, PartialEq)]
+/// The plugin libraries of open-svpflow, which are built beside rsimgv and embedded in it, so the plugins used are always
+/// these and never ones installed elsewhere on the system.
+static SVPFLOW1: &[u8] = include_bytes!(concat!(env!("RSIMGV_SVP_PLUGINS"), "/libsvpflow1_vs.so"));
+static SVPFLOW2: &[u8] = include_bytes!(concat!(env!("RSIMGV_SVP_PLUGINS"), "/libsvpflow2_vs.so"));
+
+/// The paths of the plugin libraries, which are in the script directory.
+#[derive(Debug, PartialEq)]
 pub struct Plugins {
-    pub svp1: Option<PathBuf>,
-    pub svp2: Option<PathBuf>,
+    pub svp1: PathBuf,
+    pub svp2: PathBuf,
 }
 
-/// Finds the plugins in `directory`. Their file names are those SVP installs on Linux, with and without `_vs64`.
-pub fn find_plugins(directory: &Path) -> Plugins {
-    let find = |names: [&str; 2]| names.iter().map(|name| directory.join(name)).find(|path| path.is_file());
-    Plugins {
-        svp1: find(["libsvpflow1_vs64.so", "libsvpflow1.so"]),
-        svp2: find(["libsvpflow2_vs64.so", "libsvpflow2.so"]),
-    }
+/// The plugins, written out to the script directory the first time they are needed. Each is written under a name of its
+/// own and renamed into place, so a plugin that mpv has already loaded is not changed under it.
+pub fn plugins() -> Result<&'static Plugins, &'static str> {
+    static PLUGINS: OnceLock<Result<Plugins, String>> = OnceLock::new();
+    PLUGINS
+        .get_or_init(|| {
+            let directory = script_directory();
+            create_private_directory(&directory).map_err(|err| err.to_string())?;
+            let write = |name: &str, bytes: &[u8]| -> std::io::Result<PathBuf> {
+                let temporary = directory.join(format!("{name}.{}", std::process::id()));
+                let path = directory.join(name);
+                std::fs::write(&temporary, bytes)?;
+                std::fs::rename(&temporary, &path)?;
+                Ok(path)
+            };
+            Ok(Plugins {
+                svp1: write("libsvpflow1_vs.so", SVPFLOW1).map_err(|err| err.to_string())?,
+                svp2: write("libsvpflow2_vs.so", SVPFLOW2).map_err(|err| err.to_string())?,
+            })
+        })
+        .as_ref()
+        .map_err(String::as_str)
 }
 
 /// SVP's parameter string: compact JSON, with no quotes or spaces, as SVP reads it.
@@ -115,12 +136,10 @@ pub fn script(plugins: &Plugins, source: f64, target: f64, nvof: bool) -> String
 
     let mut loads = String::new();
     for (name, path) in [("svp1", &plugins.svp1), ("svp2", &plugins.svp2)] {
-        if let Some(path) = path {
-            loads.push_str(&format!(
-                "if not hasattr(core, '{name}'):\n    core.std.LoadPlugin('{}')\n",
-                path.display()
-            ));
-        }
+        loads.push_str(&format!(
+            "if not hasattr(core, '{name}'):\n    core.std.LoadPlugin('{}')\n",
+            path.display()
+        ));
     }
     let interpolate = if nvof {
         format!(
@@ -202,11 +221,10 @@ pub fn create_private_directory(directory: &Path) -> std::io::Result<()> {
     std::fs::set_permissions(directory, Permissions::from_mode(0o700))
 }
 
-/// The SVP settings: whether it is on, where the plugins are, and how the output rate is chosen.
+/// The SVP settings: whether it is on and how the output rate is chosen.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Config {
     pub enabled: bool,
-    pub plugin_directory: PathBuf,
     pub rate: Rate,
     pub nvof: bool,
     /// How long after a seek the filter stays out, or `None` to keep it in through seeks.
@@ -217,7 +235,6 @@ impl Config {
     pub fn from_settings(settings: &gio::Settings) -> Self {
         Self {
             enabled: settings.boolean("svp-enabled"),
-            plugin_directory: PathBuf::from(settings.string("svp-plugin-directory").as_str()),
             rate: Rate {
                 mode: Mode::from_name(&settings.string("svp-fps-mode")),
                 target: settings.double("svp-fps-target"),
@@ -263,7 +280,7 @@ mod tests {
 
     #[test]
     fn the_script_carries_the_rate_and_the_plugins() {
-        let plugins = Plugins { svp1: Some(PathBuf::from("/p/svp1.so")), svp2: Some(PathBuf::from("/p/svp2.so")) };
+        let plugins = Plugins { svp1: PathBuf::from("/p/svp1.so"), svp2: PathBuf::from("/p/svp2.so") };
         let text = script(&plugins, 23.976, 120.0, false);
         assert!(text.contains("src_fps = 23.976000"));
         assert!(text.contains("\"num\":1200000") || text.contains("num:1200000"));
@@ -304,8 +321,8 @@ mod tests {
 
     #[test]
     fn scripts_are_named_by_their_contents() {
-        let plugins = Plugins { svp1: Some(PathBuf::from("/p/svp1.so")), svp2: Some(PathBuf::from("/p/svp2.so")) };
-        let name = |target| script_name(&script(&plugins, 24.0, target, false));
+        let plugins = Plugins { svp1: PathBuf::from("/p/svp1.so"), svp2: PathBuf::from("/p/svp2.so") };
+        let name =|target| script_name(&script(&plugins, 24.0, target, false));
         assert_eq!(name(60.0), name(60.0));
         assert_ne!(name(60.0), name(120.0), "mpv only reloads a script at a new path");
     }

@@ -1391,14 +1391,15 @@ impl MediaViewer {
             imp.svp_filter.take();
             return;
         }
-        let plugins = crate::svp::find_plugins(&config.plugin_directory);
-        let usable = if config.nvof { plugins.svp2.is_some() } else { plugins.svp1.is_some() && plugins.svp2.is_some() };
+        let plugins = match crate::svp::plugins() {
+            Ok(plugins) => plugins,
+            Err(err) => {
+                eprintln!("rsimgv: SVP plugins could not be written: {err}");
+                self.announce("SVP plugins could not be written", true);
+                return;
+            }
+        };
         let Some(source) = stream.fps() else { return };
-        if !usable {
-            eprintln!("rsimgv: SVP plugins not found in {}", config.plugin_directory.display());
-            self.announce(&format!("SVP plugins not found in {}", config.plugin_directory.display()), true);
-            return;
-        }
         let target = crate::svp::target_fps(&config.rate, source, speed, stream.display_fps());
         let script = crate::svp::script(&plugins, source, target, config.nvof);
         let directory = crate::svp::script_directory();

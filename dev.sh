@@ -5,8 +5,8 @@
 #   ./dev.sh test        rebuild, then run the test suite
 #   ./dev.sh gdb         rebuild, then run rsimgv under gdb (extra arguments are passed to it)
 #
-# The GSettings schema and the GResource bundle are both produced in builddir/, so the schema
-# directory is pointed there and the test binary is given the bundle's path.
+# The GSettings schema, the GResource bundle and the SVP plugins are all produced in builddir/, so the schema
+# directory is pointed there and the test binary is given the bundle's path and the plugins' directory.
 set -e
 cd "$(dirname "$0")"
 
@@ -20,6 +20,7 @@ mkdir -p builddir/data
 glib-compile-schemas --targetdir="$PWD/builddir/data" data
 export GSETTINGS_SCHEMA_DIR="$PWD/builddir/data"
 export RSIMGV_GRESOURCE="$PWD/builddir/rsimgv.gresource"
+export RSIMGV_SVP_PLUGINS="$PWD/builddir"
 
 if [ "${1:-}" = "test" ]; then
     shift
