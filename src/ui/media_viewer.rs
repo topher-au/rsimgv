@@ -399,6 +399,8 @@ mod imp {
         /// Which of a file's settings are kept, and the volume and mute state the video started with, so a change to them
         /// can be told from the level a video merely inherited.
         pub(super) remember: Cell<Remember>,
+        /// How videos played by mpv are framed.
+        pub(super) framing: Cell<crate::mpv::Framing>,
         pub(super) audio_at_load: Cell<(f64, bool)>,
         /// The volume and mute state the user had before any video's own was applied, which the videos without their own start at.
         pub(super) audio_base: Cell<Option<(f64, bool)>>,
@@ -1074,6 +1076,18 @@ impl MediaViewer {
     /// Gives later videos played by mpv the mpv command line options in `options`.
     pub fn set_mpv_options(&self, options: &str) {
         self.imp().mpv_options.replace(options.to_owned());
+    }
+
+    /// Sets how videos played by mpv are framed: cropped to their picture, and over a blurred backdrop. The video shown is
+    /// framed that way now.
+    pub fn set_framing(&self, framing: crate::mpv::Framing) {
+        let imp = self.imp();
+        if imp.framing.replace(framing) == framing {
+            return;
+        }
+        if let Some(stream) = imp.media.borrow().as_ref().and_then(|media| media.downcast_ref::<crate::mpv::MpvStream>()) {
+            stream.set_framing(framing);
+        }
     }
 
     /// Sets which of a file's settings are kept for it.
@@ -2095,6 +2109,7 @@ impl MediaViewer {
                     // Each video plays at the speed it was left at, or normal speed.
                     let speed = settings.as_ref().filter(|_| imp.remember.get().speed).and_then(|settings| settings.get_f64("speed")).unwrap_or(1.0);
                     stream.set_speed(speed);
+                    stream.set_framing(imp.framing.get());
                     if let Some(orientation) = settings.as_ref().filter(|_| imp.remember.get().rotation).and_then(saved_orientation) {
                         stream.set_orientation(orientation);
                     }

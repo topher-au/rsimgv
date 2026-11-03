@@ -19,6 +19,7 @@ pub const MPV_FORMAT_STRING: c_int = 1;
 pub const MPV_FORMAT_FLAG: c_int = 3;
 pub const MPV_FORMAT_INT64: c_int = 4;
 pub const MPV_FORMAT_DOUBLE: c_int = 5;
+pub const MPV_FORMAT_NODE: c_int = 6;
 pub const MPV_FORMAT_NODE_MAP: c_int = 8;
 pub const MPV_FORMAT_BYTE_ARRAY: c_int = 9;
 

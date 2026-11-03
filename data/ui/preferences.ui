@@ -893,6 +893,109 @@
                             </child>
                             <child>
                               <object class="AdwPreferencesGroup">
+                                <property name="title">Video framing</property>
+                                <property name="description">Filters for videos played by mpv.</property>
+                                <child>
+                                  <object class="AdwSwitchRow" id="video_crop_row">
+                                    <property name="title">Crop black bars and backdrops</property>
+                                    <property name="subtitle">Cuts the bars, or the backdrop, off the edges of the picture</property>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="AdwComboRow" id="video_crop_method_row">
+                                    <property name="title">Find the picture by</property>
+                                    <property name="subtitle">Brightness and motion are sampled from the file once a second</property>
+                                    <property name="model">
+                                      <object class="GtkStringList">
+                                        <items>
+                                          <item>Near-black bars</item>
+                                          <item>Brightness at the border, also a blurred backdrop</item>
+                                          <item>The area that moves, also a still backdrop</item>
+                                        </items>
+                                      </object>
+                                    </property>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="AdwSpinRow" id="video_crop_trim_row">
+                                    <property name="title">Trim from the edges</property>
+                                    <property name="subtitle">Pixels taken off each side that was cropped, to lose a soft edge</property>
+                                    <property name="digits">0</property>
+                                    <property name="adjustment">
+                                      <object class="GtkAdjustment">
+                                        <property name="lower">0</property>
+                                        <property name="upper">32</property>
+                                        <property name="step-increment">1</property>
+                                      </object>
+                                    </property>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="AdwSwitchRow" id="video_backdrop_row">
+                                    <property name="title">Blurred backdrop</property>
+                                    <property name="subtitle">Pads the picture to the shape below over a blurred, dimmed copy of itself</property>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="AdwSpinRow" id="video_backdrop_aspect_row">
+                                    <property name="title">Backdrop shape</property>
+                                    <property name="subtitle">Width over height; 1.78 is 16:9</property>
+                                    <property name="digits">2</property>
+                                    <property name="adjustment">
+                                      <object class="GtkAdjustment">
+                                        <property name="lower">0.5</property>
+                                        <property name="upper">4</property>
+                                        <property name="step-increment">0.01</property>
+                                      </object>
+                                    </property>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="AdwSpinRow" id="video_backdrop_zoom_row">
+                                    <property name="title">Backdrop zoom</property>
+                                    <property name="subtitle">How far the copy behind the picture is zoomed in</property>
+                                    <property name="digits">1</property>
+                                    <property name="adjustment">
+                                      <object class="GtkAdjustment">
+                                        <property name="lower">1</property>
+                                        <property name="upper">4</property>
+                                        <property name="step-increment">0.1</property>
+                                      </object>
+                                    </property>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="AdwSpinRow" id="video_backdrop_blur_row">
+                                    <property name="title">Backdrop blur</property>
+                                    <property name="subtitle">The radius of the blur</property>
+                                    <property name="digits">0</property>
+                                    <property name="adjustment">
+                                      <object class="GtkAdjustment">
+                                        <property name="lower">1</property>
+                                        <property name="upper">64</property>
+                                        <property name="step-increment">1</property>
+                                      </object>
+                                    </property>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="AdwSpinRow" id="video_backdrop_dim_row">
+                                    <property name="title">Backdrop brightness</property>
+                                    <property name="subtitle">From 0 for black to 1 for unchanged</property>
+                                    <property name="digits">2</property>
+                                    <property name="adjustment">
+                                      <object class="GtkAdjustment">
+                                        <property name="lower">0</property>
+                                        <property name="upper">1</property>
+                                        <property name="step-increment">0.05</property>
+                                      </object>
+                                    </property>
+                                  </object>
+                                </child>
+                              </object>
+                            </child>
+                            <child>
+                              <object class="AdwPreferencesGroup">
                                 <property name="title">Video controls</property>
                                 <child>
                                   <object class="AdwSwitchRow" id="controls_locked_row">

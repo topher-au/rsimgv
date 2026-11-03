@@ -161,6 +161,22 @@ mod imp {
         #[template_child]
         pub overlay_page: TemplateChild<gtk::Box>,
         #[template_child]
+        pub video_crop_row: TemplateChild<adw::SwitchRow>,
+        #[template_child]
+        pub video_crop_method_row: TemplateChild<adw::ComboRow>,
+        #[template_child]
+        pub video_crop_trim_row: TemplateChild<adw::SpinRow>,
+        #[template_child]
+        pub video_backdrop_row: TemplateChild<adw::SwitchRow>,
+        #[template_child]
+        pub video_backdrop_aspect_row: TemplateChild<adw::SpinRow>,
+        #[template_child]
+        pub video_backdrop_zoom_row: TemplateChild<adw::SpinRow>,
+        #[template_child]
+        pub video_backdrop_blur_row: TemplateChild<adw::SpinRow>,
+        #[template_child]
+        pub video_backdrop_dim_row: TemplateChild<adw::SpinRow>,
+        #[template_child]
         pub remember_file_settings_row: TemplateChild<adw::SwitchRow>,
         #[template_child]
         pub remember_position_row: TemplateChild<adw::SwitchRow>,
@@ -381,6 +397,27 @@ impl PreferencesDialog {
         settings.bind("viewer-status-bar", &*imp.viewer_status_bar_row, "active").build();
         bind_port(settings, &imp.zoom_step_row, "zoom-step");
         bind_port(settings, &imp.sidebar_animation_ms_row, "sidebar-animation-ms");
+        bind_port(settings, &imp.video_crop_trim_row, "video-crop-trim");
+        bind_port(settings, &imp.video_backdrop_blur_row, "video-backdrop-blur");
+        for (row, key) in [
+            (&imp.video_backdrop_aspect_row, "video-backdrop-aspect"),
+            (&imp.video_backdrop_zoom_row, "video-backdrop-zoom"),
+            (&imp.video_backdrop_dim_row, "video-backdrop-dim"),
+        ] {
+            settings.bind(key, &**row, "value").build();
+        }
+        // The options mean nothing while their filter is off.
+        for row in [imp.video_crop_method_row.upcast_ref::<gtk::Widget>(), imp.video_crop_trim_row.upcast_ref()] {
+            settings.bind("video-crop", row, "sensitive").get_only().build();
+        }
+        for row in [
+            imp.video_backdrop_aspect_row.upcast_ref::<gtk::Widget>(),
+            imp.video_backdrop_zoom_row.upcast_ref(),
+            imp.video_backdrop_blur_row.upcast_ref(),
+            imp.video_backdrop_dim_row.upcast_ref(),
+        ] {
+            settings.bind("video-backdrop", row, "sensitive").get_only().build();
+        }
         settings.bind("sidebar-animations", &*imp.sidebar_animation_ms_row, "sensitive").get_only().build();
         bind_port(settings, &imp.video_start_delay_row, "video-start-delay");
         bind_port(settings, &imp.scroll_speed_row, "scroll-speed");
@@ -614,6 +651,8 @@ fn bind_switches(settings: &gio::Settings, imp: &imp::PreferencesDialog) {
         ("remember-rotation", &imp.remember_rotation_row),
         ("remember-zoom", &imp.remember_zoom_row),
         ("remember-pan", &imp.remember_pan_row),
+        ("video-crop", &imp.video_crop_row),
+        ("video-backdrop", &imp.video_backdrop_row),
         ("video-controls-locked", &imp.controls_locked_row),
         ("sidebar-animations", &imp.sidebar_animations_row),
         ("keep-fit-mode", &imp.keep_fit_mode_row),
@@ -630,8 +669,9 @@ fn bind_switches(settings: &gio::Settings, imp: &imp::PreferencesDialog) {
 
 /// Binds each combo row to a string setting whose value is one of `choices`, by position in the row.
 fn bind_choices(settings: &gio::Settings, imp: &imp::PreferencesDialog) {
-    let combos: [(&str, &glib::Object, &[&str]); 20] = [
+    let combos: [(&str, &glib::Object, &[&str]); 21] = [
         ("thumbnail-aggression", imp.thumbnail_aggression_row.upcast_ref(), &["low", "standard", "increased", "high", "extreme"]),
+        ("video-crop-method", imp.video_crop_method_row.upcast_ref(), &["cropdetect", "edges", "static"]),
         ("folder-end", imp.folder_end_row.upcast_ref(), &["stop", "loop", "next-folder"]),
         ("sort-by", imp.default_sort_by_row.upcast_ref(), &["name", "modified", "size", "type"]),
         ("sort-order", imp.default_sort_order_row.upcast_ref(), &["ascending", "descending"]),

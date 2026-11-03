@@ -439,6 +439,48 @@
       <default>250</default>
       <summary>How long the sidebars and the thumbnail bar take to slide in and out, in milliseconds</summary>
     </key>
+    <key name="video-crop" type="b">
+      <default>false</default>
+      <summary>Crop the black bars, or the backdrop, off the edges of a video that mpv plays</summary>
+    </key>
+    <key name="video-crop-method" type="s">
+      <choices>
+        <choice value="cropdetect"/>
+        <choice value="edges"/>
+        <choice value="static"/>
+      </choices>
+      <default>'cropdetect'</default>
+      <summary>How the picture to crop to is found: mpv's near-black border detector, the brightness steps at the picture's border, or the area that moves</summary>
+    </key>
+    <key name="video-crop-trim" type="i">
+      <range min="0" max="32"/>
+      <default>0</default>
+      <summary>Pixels trimmed from each side that was cropped, so a soft edge is not left in</summary>
+    </key>
+    <key name="video-backdrop" type="b">
+      <default>false</default>
+      <summary>Pad a video to a canvas of a set shape over a blurred, dimmed copy of itself</summary>
+    </key>
+    <key name="video-backdrop-aspect" type="d">
+      <range min="0.5" max="4.0"/>
+      <default>1.7777777777777777</default>
+      <summary>The shape of the backdrop's canvas, as width over height</summary>
+    </key>
+    <key name="video-backdrop-zoom" type="d">
+      <range min="1.0" max="4.0"/>
+      <default>1.0</default>
+      <summary>How far the copy behind the picture is zoomed in</summary>
+    </key>
+    <key name="video-backdrop-blur" type="i">
+      <range min="1" max="64"/>
+      <default>8</default>
+      <summary>How blurred the copy behind the picture is</summary>
+    </key>
+    <key name="video-backdrop-dim" type="d">
+      <range min="0.0" max="1.0"/>
+      <default>0.5</default>
+      <summary>How bright the copy behind the picture is, from 0 for black to 1 for unchanged</summary>
+    </key>
     <key name="video-controls-locked" type="b">
       <default>true</default>
       <summary>Keep the video controls where they are. Unlocked, they can be dragged to a new place over the video, and their left or right edge dragged to change their width</summary>

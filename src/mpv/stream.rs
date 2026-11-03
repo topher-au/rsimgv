@@ -14,8 +14,9 @@ use std::sync::Arc;
 use gtk::glib::subclass::Signal;
 use gtk::prelude::*;
 use gtk::subclass::prelude::*;
-use gtk::{gdk, glib};
+use gtk::{gdk, gio, glib};
 
+use super::framing::{self, CropMethod, CropRect, Framing};
 use super::{config_generation, Event, Player};
 use crate::orientation::Orientation;
 
@@ -28,6 +29,33 @@ const EOF_REACHED: u64 = 3;
 const MAX_FRAME_WIDTH: i32 = 2560;
 
 const MICROS: f64 = 1_000_000.0;
+
+/// How often the video is looked at for where to crop it.
+const CROP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// How far apart, in seconds, the two frames are that the area that moves is found from.
+const MOTION_GAP: f64 = 0.1;
+
+/// One greyscale frame of the video at `path`, `seconds` in, decoded at the size `width` by `height`.
+fn grab_gray(path: &Path, seconds: f64, width: i32, height: i32) -> Option<Vec<u8>> {
+    let frame = crate::fs::thumbnail::run_program(
+        std::process::Command::new("ffmpeg")
+            .args(["-v", "error", "-ss", &format!("{seconds:.3}"), "-i"])
+            .arg(path)
+            .args(["-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "gray", "-"]),
+    )
+    .ok()
+    .flatten()?;
+    (frame.len() == (width.max(0) * height.max(0)) as usize).then_some(frame)
+}
+
+/// Where to crop the video at `path` at `position` seconds, found by `method` from frames decoded from the file. This reads the
+/// file, so it runs on a worker thread.
+fn measure_frames(method: CropMethod, path: &Path, position: f64, width: i32, height: i32) -> Option<CropRect> {
+    let first = grab_gray(path, position, width, height)?;
+    let later = (method == CropMethod::Static).then(|| grab_gray(path, position + MOTION_GAP, width, height)).flatten();
+    framing::measure(method, &first, later.as_deref(), width as usize, height as usize)
+}
 
 /// `width` by `height`, scaled down to the widest frame rendered, keeping the aspect ratio.
 fn capped(width: i32, height: i32) -> (i32, i32) {
@@ -60,6 +88,14 @@ mod imp {
         pub(super) duration: Cell<i64>,
         /// Whether a seek is under way, to report when it lands.
         pub(super) seeking: Cell<bool>,
+        /// The file this plays, how its frame is to be framed, and the crop in use. The timer looks for where to crop, and the
+        /// candidate is the last measurement made from frames, which the next must agree with to be used.
+        pub(super) path: RefCell<std::path::PathBuf>,
+        pub(super) framing: Cell<Framing>,
+        pub(super) crop: Cell<Option<CropRect>>,
+        pub(super) crop_candidate: Cell<Option<CropRect>>,
+        pub(super) crop_timer: RefCell<Option<glib::SourceId>>,
+        pub(super) crop_busy: Cell<bool>,
     }
 
     #[glib::object_subclass]
@@ -223,6 +259,9 @@ fn shared_player(options: &str) -> Option<Rc<Player>> {
 impl MpvStream {
     /// Stops the video and lets go of the player, which stays alive for the next video. Nothing plays after this.
     pub fn stop(&self) {
+        if let Some(timer) = self.imp().crop_timer.take() {
+            timer.remove();
+        }
         let Some(player) = self.imp().player.take() else { return };
         let _ = player.command(&["stop"]);
         // The player now plays for no stream, unless a later stream has already taken it over.
@@ -248,6 +287,7 @@ impl MpvStream {
             eprintln!("rsimgv: mpv: could not open {}: {err}", path.display());
             return None;
         }
+        stream.imp().path.replace(path.to_path_buf());
         stream.imp().player.replace(Some(player));
         // Events may already be waiting, with no wakeup to come for them, so they are read now.
         let weak = stream.downgrade();
@@ -257,6 +297,96 @@ impl MpvStream {
             }
         });
         Some(stream)
+    }
+
+    /// Sets how the video is framed: cropped to its picture, and padded over a blurred copy of itself. The crop found for any
+    /// video before is let go, and looked for again. The player is shared, so each stream sets this when it starts.
+    pub fn set_framing(&self, framing: Framing) {
+        let imp = self.imp();
+        imp.framing.set(framing);
+        imp.crop.set(None);
+        imp.crop_candidate.set(None);
+        self.apply_framing_filters();
+        if let Some(timer) = imp.crop_timer.take() {
+            timer.remove();
+        }
+        if framing.crop.is_none() {
+            return;
+        }
+        let weak = self.downgrade();
+        let timer = glib::timeout_add_local(CROP_INTERVAL, move || match weak.upgrade() {
+            Some(stream) => {
+                stream.look_for_crop();
+                glib::ControlFlow::Continue
+            }
+            None => glib::ControlFlow::Break,
+        });
+        imp.crop_timer.replace(Some(timer));
+    }
+
+    /// Puts the filters the framing and the crop found call for in the player's chain.
+    fn apply_framing_filters(&self) {
+        let imp = self.imp();
+        let Some(player) = imp.player.borrow().clone() else { return };
+        let framing = imp.framing.get();
+        let crop = imp.crop.get().map(|rect| framing::trimmed(rect, framing.trim_pixels, player.source_size()));
+        let detector = framing.crop == Some(CropMethod::CropDetect);
+        player.set_framing_filters(detector, crop, framing.backdrop.map(framing::backdrop_filter));
+    }
+
+    /// Looks for where to crop, once an interval: asks the cropdetect filter, or measures a frame decoded from the file.
+    fn look_for_crop(&self) {
+        let imp = self.imp();
+        let Some(player) = imp.player.borrow().clone() else { return };
+        let Some(method) = imp.framing.get().crop else { return };
+        if !imp.loaded.get() {
+            return;
+        }
+        match method {
+            CropMethod::CropDetect => {
+                if let Some(rect) = player.detected_crop() {
+                    self.use_crop(rect, player.source_size());
+                }
+            }
+            CropMethod::Edges | CropMethod::Static => {
+                // A measurement takes a moment, so the next waits for it.
+                let (Some(position), Some((width, height))) = (player.get_double("time-pos"), player.source_size()) else { return };
+                if imp.crop_busy.replace(true) {
+                    return;
+                }
+                let path = imp.path.borrow().clone();
+                let weak = self.downgrade();
+                glib::spawn_future_local(async move {
+                    let rect = gio::spawn_blocking(move || measure_frames(method, &path, position, width, height)).await.ok().flatten();
+                    let Some(stream) = weak.upgrade() else { return };
+                    stream.imp().crop_busy.set(false);
+                    let Some(rect) = rect else { return };
+                    // Two measurements in a row must agree, so a frame that is dark for a moment does not crop the video.
+                    let before = stream.imp().crop_candidate.replace(Some(rect));
+                    if before.is_some_and(|before| framing::agree(before, rect)) {
+                        let size = stream.imp().player.borrow().as_ref().and_then(|player| player.source_size());
+                        stream.use_crop(rect, size);
+                    }
+                });
+            }
+        }
+    }
+
+    /// Crops to `rect`, unless that is the video as it is or little different from the crop in use. A rectangle that covers
+    /// the whole video takes the crop off.
+    fn use_crop(&self, rect: CropRect, source: Option<(i32, i32)>) {
+        let imp = self.imp();
+        let whole = source.is_some_and(|(width, height)| rect.left == 0 && rect.top == 0 && rect.width >= width && rect.height >= height);
+        let next = (!whole).then_some(rect);
+        let differs = match (imp.crop.get(), next) {
+            (None, None) => false,
+            (Some(old), Some(new)) => framing::changed(old, new),
+            _ => true,
+        };
+        if differs {
+            imp.crop.set(next);
+            self.apply_framing_filters();
+        }
     }
 
     /// Calls `callback` before each seek is sent to the player.

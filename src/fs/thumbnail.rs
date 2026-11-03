@@ -982,7 +982,7 @@ fn run_tool(command: &mut Command) -> Option<Vec<u8>> {
 
 /// What `command` wrote to its standard output, or `None` if it reported failure. An error is returned when it cannot
 /// be run, or takes longer than `TOOL_TIMEOUT`: such a run is killed, so a stalled file does not hold its job slot for good.
-pub(super) fn run_program(command: &mut Command) -> std::io::Result<Option<Vec<u8>>> {
+pub(crate) fn run_program(command: &mut Command) -> std::io::Result<Option<Vec<u8>>> {
     run_within(command, TOOL_TIMEOUT)
 }
 

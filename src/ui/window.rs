@@ -894,6 +894,17 @@ impl Window {
             zoom: settings.boolean("remember-zoom"),
             pan: settings.boolean("remember-pan"),
         });
+        let crop_method = crate::mpv::framing::CropMethod::from_name(&settings.string("video-crop-method"));
+        viewer.set_framing(crate::mpv::Framing {
+            crop: settings.boolean("video-crop").then_some(crop_method),
+            trim_pixels: settings.int("video-crop-trim"),
+            backdrop: settings.boolean("video-backdrop").then(|| crate::mpv::framing::Backdrop {
+                aspect: settings.double("video-backdrop-aspect"),
+                zoom: settings.double("video-backdrop-zoom"),
+                blur: settings.int("video-backdrop-blur"),
+                dim: settings.double("video-backdrop-dim"),
+            }),
+        });
         let (animated, millis) = (settings.boolean("sidebar-animations"), settings.int("sidebar-animation-ms").max(0) as u32);
         let imp = self.imp();
         for split in [(*imp.split).clone(), (*imp.playlist_split).clone(), viewer.playlist_split()] {
@@ -3500,7 +3511,15 @@ const WHEEL_VOLUME_STEP: f64 = 5.0;
 const WHEEL_SEEK_STEP: f64 = 5.0;
 
 /// The settings the viewer and the window title are set from, applied again whenever one changes.
-const VIEWER_SETTINGS: [&str; 48] = [
+const VIEWER_SETTINGS: [&str; 56] = [
+    "video-crop",
+    "video-crop-method",
+    "video-crop-trim",
+    "video-backdrop",
+    "video-backdrop-aspect",
+    "video-backdrop-zoom",
+    "video-backdrop-blur",
+    "video-backdrop-dim",
     "remember-file-settings",
     "remember-position",
     "remember-speed",

@@ -2,9 +2,11 @@
 //! events, and renders frames in software into memory for GTK to show. Each player listens for mpv JSON IPC on
 //! `/tmp/rsimgv-mpv-<pid in hex>`. See `stream` for the GTK side.
 
+pub mod framing;
 mod stream;
 mod sys;
 
+pub use framing::{CropRect, Framing};
 pub use stream::MpvStream;
 
 use std::cell::{Cell, RefCell};
@@ -292,6 +294,37 @@ unsafe fn read_frame(node: &sys::mpv_node) -> Result<Frame, String> {
     }
 }
 
+/// The crop in the metadata the cropdetect filter reports: a map of `lavfi.cropdetect.w`, `.h`, `.x` and `.y`, as text.
+///
+/// # Safety
+/// `node` must be a result libmpv filled in and has not freed.
+unsafe fn read_crop(node: &sys::mpv_node) -> Option<CropRect> {
+    if node.format != sys::MPV_FORMAT_NODE_MAP {
+        return None;
+    }
+    let (mut width, mut height, mut left, mut top) = (None, None, None, None);
+    // SAFETY: a node map holds `num` keys and values, valid while the node is.
+    unsafe {
+        let list = &*node.u.list;
+        for index in 0..list.num.max(0) as usize {
+            let key = CStr::from_ptr(*list.keys.add(index)).to_string_lossy();
+            let value = &*list.values.add(index);
+            if value.format != sys::MPV_FORMAT_STRING || value.u.string.is_null() {
+                continue;
+            }
+            let number = CStr::from_ptr(value.u.string).to_string_lossy().trim().parse::<i32>().ok();
+            match key.as_ref() {
+                "lavfi.cropdetect.w" => width = number,
+                "lavfi.cropdetect.h" => height = number,
+                "lavfi.cropdetect.x" => left = number,
+                "lavfi.cropdetect.y" => top = number,
+                _ => {}
+            }
+        }
+    }
+    Some(CropRect { width: width?, height: height?, left: left?, top: top? }).filter(|rect| rect.width > 0 && rect.height > 0)
+}
+
 /// A libmpv player with a software render context.
 pub struct Player {
     handle: *mut sys::mpv_handle,
@@ -305,6 +338,11 @@ pub struct Player {
     orientation: Cell<Orientation>,
     /// The filter that `set_interpolation_filter` last put in the chain.
     interpolation: std::cell::RefCell<Option<String>>,
+    /// The crop filter and the detector that finds where to crop, and the backdrop filter, that `set_framing_filters` put
+    /// in the chain.
+    crop: Cell<Option<CropRect>>,
+    detector: Cell<bool>,
+    backdrop: std::cell::RefCell<Option<String>>,
 }
 
 impl Player {
@@ -320,7 +358,7 @@ impl Player {
             if handle.is_null() {
                 return Err("could not create the mpv player".to_owned());
             }
-            let mut player = Self { handle, render: std::ptr::null_mut(), wakeup: None, render_update: None, rotation: Cell::new(0), orientation: Cell::new(Orientation::default()), interpolation: Default::default() };
+            let mut player = Self { handle, render: std::ptr::null_mut(), wakeup: None, render_update: None, rotation: Cell::new(0), orientation: Cell::new(Orientation::default()), interpolation: Default::default(), crop: Cell::new(None), detector: Cell::new(false), backdrop: Default::default() };
             for (name, value) in [
                 ("vo", "libmpv"),
                 ("hwdec", "auto-safe"),
@@ -386,10 +424,7 @@ impl Player {
         if self.rotation.replace(rotation) == rotation {
             return;
         }
-        if let Err(err) = self.command(&["vf", "remove", UPRIGHT_FILTER_LABEL]) {
-            eprintln!("rsimgv: mpv: could not remove the rotation filter: {err}");
-        }
-        self.add_upright_filter();
+        self.rebuild_front_filters();
         // The frame shown already passed the filters, and a paused video would stay that way, so it is decoded again.
         let _ = self.command(&["seek", "0", "relative+exact"]);
     }
@@ -410,6 +445,7 @@ impl Player {
                 eprintln!("rsimgv: mpv: could not add the orientation filter: {err}");
             }
         }
+        self.refresh_backdrop();
         // The frame shown already passed the filters, and a paused video would stay that way, so it is decoded again.
         let _ = self.command(&["seek", "0", "relative+exact"]);
     }
@@ -428,15 +464,86 @@ impl Player {
             self.command(&["vf", "add", filter])?;
         }
         self.interpolation.replace(filter.map(str::to_owned));
+        // The backdrop is the last filter, so it is put after this one.
+        self.refresh_backdrop();
         Ok(())
     }
 
-    /// Puts the upright filter first, so the filters after it see the video as it is shown.
-    fn add_upright_filter(&self) {
-        let Some(filter) = upright_filter(self.rotation.get()) else { return };
-        if let Err(err) = self.command(&["vf", "pre", &filter]) {
-            eprintln!("rsimgv: mpv: could not add the rotation filter: {err}");
+    /// Sets the filters that frame the video: the detector that finds the picture, the crop to `crop`, and the backdrop. The
+    /// upright filter stays first, so the detector and the crop see the video as it is shown, and the backdrop stays last.
+    /// A change holds up the video, so nothing happens for what is already in the chain.
+    pub fn set_framing_filters(&self, detector: bool, crop: Option<CropRect>, backdrop: Option<String>) {
+        let front = self.detector.replace(detector) != detector || self.crop.replace(crop) != crop;
+        let back = *self.backdrop.borrow() != backdrop;
+        if front {
+            self.rebuild_front_filters();
         }
+        if back {
+            self.backdrop.replace(backdrop);
+            self.refresh_backdrop();
+        }
+        if front || back {
+            // The frame shown already passed the filters, and a paused video would stay that way, so it is decoded again.
+            if self.get_flag("pause") == Some(true) {
+                let _ = self.command(&["seek", "0", "relative+exact"]);
+            }
+        }
+    }
+
+    /// Puts the upright filter, the detector and the crop first in the chain, in that order, in place of any before.
+    fn rebuild_front_filters(&self) {
+        for label in [UPRIGHT_FILTER_LABEL, &format!("@{}", framing::DETECTOR_LABEL), &format!("@{}", framing::CROP_LABEL)] {
+            if let Err(err) = self.command(&["vf", "remove", label]) {
+                eprintln!("rsimgv: mpv: could not remove {label}: {err}");
+            }
+        }
+        let filters = [self.crop.get().map(framing::crop_filter), self.detector.get().then(framing::detector_filter), upright_filter(self.rotation.get())];
+        for filter in filters.into_iter().flatten() {
+            if let Err(err) = self.command(&["vf", "pre", &filter]) {
+                eprintln!("rsimgv: mpv: could not add a filter: {err}");
+            }
+        }
+    }
+
+    /// Puts the backdrop last in the chain, in place of the one before.
+    fn refresh_backdrop(&self) {
+        if let Err(err) = self.command(&["vf", "remove", &format!("@{}", framing::BACKDROP_LABEL)]) {
+            eprintln!("rsimgv: mpv: could not remove the backdrop: {err}");
+        }
+        if let Some(filter) = self.backdrop.borrow().as_deref() {
+            if let Err(err) = self.command(&["vf", "add", filter]) {
+                eprintln!("rsimgv: mpv: could not add the backdrop: {err}");
+            }
+        }
+    }
+
+    /// What the cropdetect filter last found, if it has found anything.
+    pub fn detected_crop(&self) -> Option<CropRect> {
+        let name = CString::new(format!("vf-metadata/{}", framing::DETECTOR_LABEL)).ok()?;
+        // SAFETY: the node is filled in by libmpv, read while it is valid, and freed once read.
+        unsafe {
+            let mut node: sys::mpv_node = std::mem::zeroed();
+            if sys::mpv_get_property(self.handle, name.as_ptr(), sys::MPV_FORMAT_NODE, &mut node as *mut sys::mpv_node as *mut c_void) < 0 {
+                return None;
+            }
+            let found = read_crop(&node);
+            sys::mpv_free_node_contents(&mut node);
+            found
+        }
+    }
+
+    /// The size of the video as decoded and turned upright, before any crop, if it is known.
+    pub fn source_size(&self) -> Option<(i32, i32)> {
+        let (width, height) = (self.get_i64("video-params/w")? as i32, self.get_i64("video-params/h")? as i32);
+        Some(if self.rotation.get().rem_euclid(180) == 90 { (height, width) } else { (width, height) })
+    }
+
+    pub fn get_flag(&self, name: &str) -> Option<bool> {
+        let name = CString::new(name).ok()?;
+        let mut value: c_int = 0;
+        // SAFETY: a flag is written into `value`.
+        let code = unsafe { sys::mpv_get_property(self.handle, name.as_ptr(), sys::MPV_FORMAT_FLAG, &mut value as *mut c_int as *mut c_void) };
+        (code >= 0).then_some(value != 0)
     }
 
     /// The video's current frame, at its own size, as mpv's `screenshot-raw` command captures it, with
