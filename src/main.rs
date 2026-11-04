@@ -7,6 +7,7 @@ mod services;
 mod storage;
 mod keybindings;
 mod mpv;
+mod search;
 mod settings;
 mod ui;
 
