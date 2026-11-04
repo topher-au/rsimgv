@@ -19,7 +19,7 @@ use super::media_viewer::{side_from_name, FolderEnd, ZoomIndicator, VOLUME_STEP}
 use super::key_handler::ActionKeyHandler;
 use super::fs_tree::TreeSnapshot;
 use super::path_bar::OpenTarget;
-use super::{BrowseView, FsTree, HeaderBar, MediaViewer, MessageOverlay, NavigationBar, OverlaySplitView, PathBar, PreferencesDialog, ShownItem};
+use super::{BrowseSearch, BrowseView, FsTree, HeaderBar, MediaViewer, MessageOverlay, NavigationBar, OverlaySplitView, PathBar, PreferencesDialog, ShownItem};
 use super::{Level, Message};
 use super::message_overlay::MessageId;
 use super::keybinds_overlay::KeybindsOverlay;
@@ -77,6 +77,10 @@ mod imp {
         #[template_child]
         pub navigation: TemplateChild<NavigationBar>,
         #[template_child]
+        pub browse_search_button: TemplateChild<gtk::ToggleButton>,
+        #[template_child]
+        pub browse_search_bar: TemplateChild<gtk::SearchBar>,
+        #[template_child]
         pub images_button: TemplateChild<gtk::ToggleButton>,
         #[template_child]
         pub videos_button: TemplateChild<gtk::ToggleButton>,
@@ -112,6 +116,8 @@ mod imp {
         /// The keybinding handler, detached when the window closes.
         pub(super) key_handler: std::cell::OnceCell<ActionKeyHandler>,
         pub(super) settings: std::cell::OnceCell<Settings>,
+        /// The search bar under the header, which filters the browse view of the tab shown.
+        pub(super) browse_search: std::cell::OnceCell<BrowseSearch>,
     }
 
     #[glib::object_subclass]
@@ -271,6 +277,21 @@ impl Window {
         add_show_directories_action(&window, settings);
         settings.bind("browse.show-images", &*window.imp().images_button, "active").build();
         settings.bind("browse.show-videos", &*window.imp().videos_button, "active").build();
+        // The search bar filters the browse view of the tab shown, and its header button shows and hides it.
+        let search_weak = window.downgrade();
+        let browse_search = BrowseSearch::new(&window.imp().browse_search_bar, move |search| {
+            if let Some(window) = search_weak.upgrade() {
+                window.with_browse(|view| view.set_search(search));
+            }
+        });
+        window
+            .imp()
+            .browse_search_bar
+            .bind_property("search-mode-enabled", &*window.imp().browse_search_button, "active")
+            .bidirectional()
+            .sync_create()
+            .build();
+        let _ = window.imp().browse_search.set(browse_search);
 
         window.add_context_actions();
         window.add_tab_actions();
@@ -1055,6 +1076,7 @@ impl Window {
         bound_action(&browse, &weak, "toggle-item-info", Window::toggle_item_info);
         bound_action(&browse, &weak, "thumbnail-larger", |window| window.resize_items(THUMBNAIL_STEP));
         bound_action(&browse, &weak, "thumbnail-smaller", |window| window.resize_items(-THUMBNAIL_STEP));
+        bound_action(&browse, &weak, "toggle-search", Window::toggle_browse_search);
         self.insert_action_group("browse", Some(&browse));
 
         let view = gio::SimpleActionGroup::new();
@@ -3298,6 +3320,10 @@ impl Window {
                 browse.set_active(selected.as_ref() == Some(&page));
             }
         }
+        // The search bar's search applies to the tab shown, so it is given to that tab's view.
+        if let (Some(browse), Some(search)) = (self.active_browse(), self.imp().browse_search.get()) {
+            browse.set_search(search.search());
+        }
         self.sync_sort_actions();
     }
 
@@ -3364,6 +3390,13 @@ impl Window {
             eprintln!("rsimgv: could not remember the sort of {}: {err}", path.display());
         }
         self.sync_sort_actions();
+    }
+
+    /// Shows the search bar over the browse view, or hides it and shows every item again.
+    fn toggle_browse_search(&self) {
+        if let Some(search) = self.imp().browse_search.get() {
+            search.toggle();
+        }
     }
 
     /// The browse view of the selected tab.

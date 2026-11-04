@@ -1,5 +1,6 @@
 mod backdrop;
 mod binding_dialog;
+mod browse_search;
 mod browse_view;
 mod drag;
 mod floating_bar;
@@ -29,6 +30,7 @@ mod rotated_label;
 mod tight_layout;
 mod window;
 
+pub use browse_search::BrowseSearch;
 pub use browse_view::BrowseView;
 pub use floating_bar::FloatingBar;
 pub use item_grid::ItemGrid;

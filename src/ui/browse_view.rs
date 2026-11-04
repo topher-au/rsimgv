@@ -762,6 +762,11 @@ fn is_current_hover(hovered: &Option<Hover>, generation: u64) -> bool {
     hovered.as_ref().is_some_and(|hover| hover.generation == generation)
 }
 
+/// Whether the entry's name starts with a dot, which hides it unless hidden files are shown.
+fn is_hidden(entry: &FileEntry) -> bool {
+    entry.path().file_name().is_some_and(|name| name.as_encoded_bytes().starts_with(b"."))
+}
+
 /// Whether `entry` is a picture or a video, judged by its content type.
 fn is_media(entry: &FileEntry) -> bool {
     entry
@@ -803,6 +808,86 @@ struct Visibility {
     show_videos: bool,
     /// Whether folders are listed at all.
     folders_listed: bool,
+}
+
+/// What a search matches an item's name or attribute against.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SearchField {
+    /// The file or folder's name.
+    #[default]
+    Name,
+    /// Its name, or any attribute it has.
+    AnyAttribute,
+    /// One attribute, shown the way the item's information shows it.
+    Attribute(InfoField),
+}
+
+impl SearchField {
+    /// The fields a search can match, in the order the search field lists them. Only the attributes that do not need a
+    /// picture's or video's metadata are listed, since reading that for every item would make a search slow.
+    pub const ALL: [SearchField; 5] = [
+        SearchField::Name,
+        SearchField::AnyAttribute,
+        SearchField::Attribute(InfoField::Size),
+        SearchField::Attribute(InfoField::Modified),
+        SearchField::Attribute(InfoField::ContentType),
+    ];
+
+    /// The name shown for the field.
+    pub fn title(self) -> &'static str {
+        match self {
+            SearchField::Name => "Name",
+            SearchField::AnyAttribute => "Any Attribute",
+            SearchField::Attribute(field) => field.title(),
+        }
+    }
+}
+
+/// The search over the items: the text to look for, what it is looked for in, and whether the subfolders of the folder
+/// shown are searched too, rather than only its own items.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Search {
+    /// The text, in lower case and without its surrounding spaces. Empty when nothing is searched for.
+    needle: String,
+    field: SearchField,
+    recursive: bool,
+}
+
+impl Search {
+    pub fn new(text: &str, field: SearchField, recursive: bool) -> Self {
+        Self { needle: text.trim().to_lowercase(), field, recursive }
+    }
+
+    /// Whether there is text to search for. Without it, every item is shown.
+    pub fn is_active(&self) -> bool {
+        !self.needle.is_empty()
+    }
+
+    /// Whether the items are the folders' contents, rather than the folder's own: the subfolders are listed too, and
+    /// the items are matched among all of them.
+    fn lists_tree(&self) -> bool {
+        self.recursive && self.is_active()
+    }
+
+    /// Whether `entry` matches the text in the field searched.
+    fn matches(&self, entry: &FileEntry) -> bool {
+        if !self.is_active() {
+            return true;
+        }
+        let contains = |text: &str| text.to_lowercase().contains(&self.needle);
+        match self.field {
+            SearchField::Name => contains(entry.sort_name()),
+            SearchField::AnyAttribute => {
+                contains(entry.sort_name())
+                    || InfoField::ALL
+                        .into_iter()
+                        .filter(|field| !field.needs_metadata())
+                        .filter_map(|field| field.text(entry, None))
+                        .any(|text| contains(&text))
+            }
+            SearchField::Attribute(field) => field.text(entry, None).is_some_and(|text| contains(&text)),
+        }
+    }
 }
 
 /// Orders `a` and `b` by the `by` key. Names are equal under `Name`, so the caller breaks those ties.
@@ -934,6 +1019,8 @@ mod imp {
         /// The sort and filter settings as plain values, from the properties above; see `cache_settings`.
         pub(super) order: Cell<Order>,
         pub(super) visibility: Cell<Visibility>,
+        /// The search the items are filtered by. Set by `set_search`.
+        pub(super) search: RefCell<Search>,
         /// `ascending` or `descending`.
         #[property(get, set)]
         sort_order: RefCell<String>,
@@ -1017,14 +1104,14 @@ mod imp {
                     return true;
                 };
                 let visibility = view.imp().visibility.get();
-                let hidden = entry.path().file_name().is_some_and(|name| name.as_encoded_bytes().starts_with(b"."));
-                let visible_when_hidden = visibility.show_hidden || !hidden;
+                let visible_when_hidden = visibility.show_hidden || !is_hidden(entry);
                 let visible_when_media = !visibility.media_only || entry.is_dir() || is_media(entry);
                 let visible_when_listed = !entry.is_dir() || visibility.folders_listed;
                 let visible_when_kind = entry.is_dir()
                     || !((!visibility.show_images && has_content_type(entry, "image/"))
                         || (!visibility.show_videos && has_content_type(entry, "video/")));
-                visible_when_hidden && visible_when_media && visible_when_kind && visible_when_listed
+                let matched = view.imp().search.borrow().matches(entry);
+                visible_when_hidden && visible_when_media && visible_when_kind && visible_when_listed && matched
             });
 
             // Folders go before the files, or among them when show-directories is inline.
@@ -1278,7 +1365,11 @@ mod imp {
             obj.connect_item_size_notify(|view| view.refresh_items());
             obj.connect_filename_display_notify(|view| view.refresh_items());
             obj.connect_info_layout_notify(|view| view.refresh_items());
-            obj.connect_show_hidden_notify(|view| view.refresh_filter());
+            obj.connect_show_hidden_notify(|view| {
+                view.refresh_filter();
+                // The subfolders searched depend on whether hidden ones are shown.
+                view.relist_if_tree();
+            });
             obj.connect_media_only_notify(|view| view.refresh_filter());
             obj.connect_show_images_notify(|view| view.refresh_filter());
             obj.connect_show_videos_notify(|view| view.refresh_filter());
@@ -1537,6 +1628,11 @@ impl BrowseView {
         if let Some(previous) = imp.reading.take() {
             previous.cancel();
         }
+        if imp.search.borrow().lists_tree() {
+            self.list_tree(path);
+            self.update_monitor();
+            return;
+        }
 
         // The folder is listed afresh, since it may have changed since the last visit.
         let files = FileStore::shared();
@@ -1588,6 +1684,38 @@ impl BrowseView {
         let reading = files.read(path, on_batch, on_done);
         imp.reading.replace(Some(reading));
         self.update_monitor();
+    }
+
+    /// Filters the items by `search`. A search that lists the subfolders lists the whole folder tree under the folder
+    /// shown, which takes a while for a large one, and changes back to the folder's own items when it is turned off.
+    pub fn set_search(&self, search: Search) {
+        let imp = self.imp();
+        if *imp.search.borrow() == search {
+            return;
+        }
+        let was_tree = imp.search.borrow().lists_tree();
+        let is_tree = search.lists_tree();
+        imp.search.replace(search);
+        if was_tree != is_tree {
+            // Listing the folder again gives what the search needs now: its whole tree, or its own items.
+            self.relist();
+        }
+        self.refresh_filter();
+    }
+
+    /// Lists the folder shown afresh, if there is one.
+    fn relist(&self) {
+        if let Some(path) = self.path() {
+            self.set_path(&path);
+        }
+    }
+
+    /// Lists the folder shown again if its subfolders are searched, since which hidden ones are listed depends on the
+    /// setting.
+    fn relist_if_tree(&self) {
+        if self.imp().search.borrow().lists_tree() {
+            self.relist();
+        }
     }
 
     /// Notes whether the viewer is open over the browser. Its items are then not on screen, so thumbnails are no longer
@@ -1736,6 +1864,11 @@ impl BrowseView {
         if imp.active.replace(active) == active {
             return;
         }
+        // A view that is not shown gives up its search, so that it does not keep listing its subfolders. The window
+        // gives the search back when the view is shown again.
+        if !active && imp.search.borrow().lists_tree() {
+            self.set_search(Search::default());
+        }
         self.restart_prefetch();
         self.update_monitor();
         if active {
@@ -1794,10 +1927,84 @@ impl BrowseView {
         imp.refresh_timer.replace(Some(timer));
     }
 
+    /// Lists `root` and every folder under it, one folder at a time, so the items are those of the whole tree, which the
+    /// search then picks from. Hidden folders are only read while hidden files are shown.
+    fn list_tree(&self, root: &Path) {
+        self.imp().loading.set(true);
+        self.set_sorting(false);
+        let queue = Rc::new(RefCell::new(VecDeque::from([root.to_path_buf()])));
+        self.read_tree_folder(queue);
+        self.update_status();
+    }
+
+    /// Reads the next folder waiting in `queue`, adding the folders in it to the queue, and so on until none are left.
+    fn read_tree_folder(&self, queue: Rc<RefCell<VecDeque<PathBuf>>>) {
+        let imp = self.imp();
+        let next = queue.borrow_mut().pop_front();
+        let Some(folder) = next else {
+            self.finish_tree_listing();
+            return;
+        };
+        let show_hidden = self.show_hidden();
+        let on_batch = {
+            let view = self.downgrade();
+            let queue = queue.clone();
+            move |batch: &[FileEntry]| {
+                let Some(view) = view.upgrade() else { return };
+                let subfolders = batch
+                    .iter()
+                    .filter(|entry| entry.is_dir() && (show_hidden || !is_hidden(entry)))
+                    .map(|entry| entry.path().to_path_buf());
+                queue.borrow_mut().extend(subfolders);
+                if let Some(store) = view.imp().store.get() {
+                    store.splice(store.n_items(), 0, batch);
+                }
+            }
+        };
+        let on_done = {
+            let view = self.downgrade();
+            move |_: Result<(), String>| {
+                // A folder that cannot be read is passed over, so that the rest of the tree is still listed.
+                let Some(view) = view.upgrade() else { return };
+                view.imp().reading.take();
+                view.read_tree_folder(queue.clone());
+            }
+        };
+        // Each folder is read afresh, as the folder shown is, since it may have changed since it was last listed.
+        let files = FileStore::shared();
+        files.discard_idle(&folder);
+        let reading = files.read(&folder, on_batch, on_done);
+        imp.reading.replace(Some(reading));
+    }
+
+    /// Ends a listing of the whole tree, as `set_path` ends one: the items are sorted, and an arrangement waiting for the
+    /// folder runs, or else the first item is selected.
+    fn finish_tree_listing(&self) {
+        let imp = self.imp();
+        imp.loading.set(false);
+        self.set_sorting(true);
+        self.attach_selection();
+        let pending = imp
+            .pending
+            .take()
+            .filter(|(folder, _)| self.path().as_deref() == Some(folder.as_path()))
+            .map(|(_, run)| run);
+        if let Some(run) = pending {
+            run(self);
+        } else if self.item_count() > 0 {
+            self.select_first();
+        }
+        self.update_status();
+    }
+
     /// Lists the folder afresh and updates the items to match, keeping the selection on the same item. Does
     /// nothing while the folder is loading, since that listing is already fresh.
     fn refresh(&self) {
         let imp = self.imp();
+        // The subfolders' items are not the folder's listing, so a change in the folder does not reconcile them.
+        if imp.search.borrow().lists_tree() {
+            return;
+        }
         if imp.reading.borrow().is_some() {
             imp.refresh_skipped.set(true);
             return;

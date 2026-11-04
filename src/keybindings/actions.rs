@@ -393,6 +393,9 @@ pub const ACTIONS: &[ActionInfo] = &[
         name: "browse.toggle-media-only", description: "Show only pictures and videos, or every file.", icon: "video-x-generic-symbolic", label: "Toggle Media Only", defaults: &["ctrl+m"],
     },
     ActionInfo {
+        name: "browse.toggle-search", description: "Show the search bar under the header, to filter the items by name or an attribute and include subfolders, or hide it and show every item again.", icon: "system-search-symbolic", label: "Toggle Search", defaults: &["ctrl+shift+f"],
+    },
+    ActionInfo {
         name: "browse.toggle-filename", description: "Show or hide each item's filename.", icon: "insert-text-symbolic", label: "Toggle Filename", defaults: &[],
     },
     ActionInfo {
