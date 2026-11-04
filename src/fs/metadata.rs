@@ -56,7 +56,11 @@ impl MediaMetadata {
             codec: video.and_then(|stream| stream["codec_name"].as_str()).map(str::to_owned),
             audio_codec: audio.and_then(|stream| stream["codec_name"].as_str()).map(str::to_owned),
             audio_channels: audio.and_then(|stream| stream["channels"].as_u64()).map(|channels| channels as u32),
-            bit_rate: number(&format["bit_rate"]).map(|bits| bits as u64),
+            // The video's own rate, which is what a video is encoded at, and the container's total if it has none.
+            bit_rate: video
+                .and_then(|stream| number(&stream["bit_rate"]))
+                .or_else(|| number(&format["bit_rate"]))
+                .map(|bits| bits as u64),
         }
     }
 }
@@ -383,17 +387,17 @@ fn cache_file(root: &Path, path: &Path) -> PathBuf {
     root.join(format!("{digest}.json"))
 }
 
-/// The tags `ffprobe` is asked for, on the file and on each stream: where a video was taken and when it was made. Tag
-/// names are matched exactly, so each spelling a file might use is listed. The tags of pictures are not in `ffprobe`'s
-/// output, so they are read elsewhere.
+/// The tags `ffprobe` is asked for, on each stream: where a video was taken and when it was made. Tag names are matched
+/// exactly, so each spelling a file might use is listed. The tags of pictures are not in `ffprobe`'s output, so they
+/// are read elsewhere.
 const PROBE_TAGS: &str = "location,location-eng,com.apple.quicktime.location.ISO6709,creation_time,date";
 
 /// `ffprobe`'s answer for the file at `path`: its JSON, or `None` if it could not read the file. An error is
 /// returned when `ffprobe` cannot be run at all, or stalls on the file.
 fn run_ffprobe(path: &Path) -> std::io::Result<Option<Value>> {
     let entries = format!(
-        "format=duration,bit_rate:format_tags={PROBE_TAGS}:\
-         stream=codec_type,codec_name,width,height,avg_frame_rate,channels,duration:stream_tags={PROBE_TAGS}:\
+        "format=duration,bit_rate:\
+         stream=codec_type,codec_name,width,height,avg_frame_rate,channels,duration,bit_rate:stream_tags={PROBE_TAGS}:\
          stream_disposition=attached_pic"
     );
     let output = run_program(
