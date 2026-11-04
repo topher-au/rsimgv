@@ -131,6 +131,7 @@ impl MediaInfo {
     }
 
     fn with_root(root: PathBuf) -> Self {
+        purge_old_names(root.clone());
         Self {
             inner: Rc::new(Inner {
                 files: Rc::new(FileMetadataStore { root }),
@@ -280,6 +281,26 @@ impl MediaInfo {
         }
         self.start_jobs();
     }
+}
+
+/// Removes, in the background, the metadata cache files from before the XXH3 names: entries whose name is not a
+/// 16-digit hex digest are never read again. Temporary files that writes left behind go too.
+fn purge_old_names(root: PathBuf) {
+    std::thread::spawn(move || {
+        let Ok(read) = std::fs::read_dir(&root) else { return };
+        for entry in read.flatten() {
+            let path = entry.path();
+            let old = path.extension().is_some_and(|extension| extension == "json")
+                && path.file_stem().is_some_and(|stem| {
+                    let stem = stem.to_string_lossy();
+                    stem.len() != 16 || !stem.bytes().all(|byte| byte.is_ascii_hexdigit())
+                });
+            let temporary = path.extension().is_some_and(|extension| extension == "tmp");
+            if old || temporary {
+                let _ = std::fs::remove_file(&path);
+            }
+        }
+    });
 }
 
 /// A stand-in for a file's name in logs: a hash of the path, with the extension kept.
@@ -508,4 +529,27 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    #[test]
+    fn cache_files_under_the_old_names_are_purged() {
+        let root = std::env::temp_dir().join(format!("rsimgv-metadata-purge-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        // An MD5 name from before the XXH3 names, a temporary file a write left behind, and a current entry.
+        let (old, temporary, current) = (
+            root.join("d41d8cd98f00b204e9800998ecf8427e.json"),
+            root.join("0123456789abcdef.json.1.2.tmp"),
+            root.join("0123456789abcdef.json"),
+        );
+        for file in [&old, &temporary, &current] {
+            std::fs::write(file, "{}").unwrap();
+        }
+        purge_old_names(root.clone());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while old.exists() || temporary.exists() {
+            assert!(std::time::Instant::now() < deadline, "the old files are removed");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(current.exists(), "the current entry is kept");
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }
