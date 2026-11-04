@@ -1,5 +1,5 @@
 //! The search index: a SQLite database of the pictures and videos that have been read. Each file has a row in `file`,
-//! with its path, modification time and size, the metadata derived from its probe, and its movie hash and file type.
+//! with its path, modification time and size, the metadata derived from its probe, and its content hash and file type.
 //! Its `ffprobe` output is a tree, kept in `probe_node`: a row for each dict, list and value, linked to the row above it,
 //! so any key at any depth can be searched for. Each key's name and each string value is kept once, in `probe_word`,
 //! and the nodes refer to it by its id. It is the only store that can search across files.
@@ -20,7 +20,7 @@ use crate::fs::metadata::MediaMetadata;
 use crate::search::query::{matches_all, Facts, Token};
 
 /// The version of the database's layout, kept in `PRAGMA user_version`.
-const VERSION: i64 = 12;
+const VERSION: i64 = 13;
 
 const SCHEMA: &str = "
     CREATE TABLE file (

@@ -14,7 +14,7 @@ use gtk::{gdk_pixbuf, gio, glib};
 use serde_json::{json, Value};
 
 use super::thumbnail::{run_program, write_atomically};
-use crate::storage::file_settings::moviehash;
+use crate::storage::file_settings::content_hash;
 use crate::storage::media_index::MediaIndex;
 use crate::storage::metadata_store::{MetadataStore, Stored};
 
@@ -304,14 +304,14 @@ async fn run(info: MediaInfo, key: Key) {
     }
 }
 
-/// The metadata of the file in `key`, read with `ffprobe`, with its movie hash if `keeps_hash`. `None` if `ffprobe`
+/// The metadata of the file in `key`, read with `ffprobe`, with its content hash if `keeps_hash`. `None` if `ffprobe`
 /// cannot be run.
 fn read(key: &Key, keeps_hash: bool) -> Option<Stored> {
     let path = &key.0;
     let probe = run_ffprobe(path).ok()?.unwrap_or(Value::Null);
     let mut metadata = MediaMetadata::from_probe(&probe);
     size_from_header(&mut metadata, path);
-    let hash = if keeps_hash { moviehash(path).ok() } else { None };
+    let hash = if keeps_hash { content_hash(path).ok() } else { None };
     let file_type = mime_type(path);
     Some(Stored { metadata, hash, file_type: Some(file_type), probe: Some(probe) })
 }

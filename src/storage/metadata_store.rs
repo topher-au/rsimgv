@@ -13,7 +13,7 @@ use crate::search::query::Token;
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Stored {
     pub metadata: MediaMetadata,
-    /// The file's movie hash, which per-file settings are found by.
+    /// The file's content hash, which per-file settings are found by.
     pub hash: Option<String>,
     /// The file's content type.
     pub file_type: Option<String>,
@@ -32,7 +32,7 @@ pub trait MetadataStore {
     /// Forgets the record of the file at `path`, if there is one.
     fn forget(&self, path: &Path) -> io::Result<()>;
 
-    /// Whether the store keeps each file's movie hash, which then has to be read along with its metadata.
+    /// Whether the store keeps each file's content hash, which then has to be read along with its metadata.
     fn keeps_hash(&self) -> bool;
 
     /// The paths of the files whose records match `tokens`. `None` for a store that cannot search across files.

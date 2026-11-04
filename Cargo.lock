@@ -743,6 +743,7 @@ dependencies = [
  "rusqlite",
  "serde_json",
  "serde_yaml_ng",
+ "xxhash-rust",
 ]
 
 [[package]]
@@ -1166,6 +1167,12 @@ name = "winsplit"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3ab703352da6a72f35c39a533526393725640575bb211f61987a2748323ad956"
+
+[[package]]
+name = "xxhash-rust"
+version = "0.8.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "550a2b930b62486a393c52d5c3b84bff264b28aa437ed64694d31e93b1757af7"
 
 [[package]]
 name = "zmij"
