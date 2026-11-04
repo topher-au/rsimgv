@@ -20,7 +20,7 @@ use crate::fs::metadata::MediaMetadata;
 use crate::search::query::{matches_all, Facts, Token};
 
 /// The version of the database's layout, kept in `PRAGMA user_version`.
-const VERSION: i64 = 10;
+const VERSION: i64 = 11;
 
 const SCHEMA: &str = "
     CREATE TABLE file (
@@ -54,6 +54,18 @@ const SCHEMA: &str = "
     CREATE INDEX probe_node_file ON probe_node (file_id);
     CREATE INDEX probe_node_parent ON probe_node (parent_id);
     CREATE INDEX probe_node_key_value ON probe_node (key_id, value COLLATE NOCASE);
+    -- Each node with its file's path, its key's name and its value as text, for reading the index by hand. The
+    -- search and lookups query the tables directly.
+    CREATE VIEW probe_text AS
+        SELECT probe_node.id, probe_node.file_id, file.path, probe_node.parent_id, probe_word.text AS key,
+               probe_node.kind,
+               CASE probe_node.kind
+                   WHEN 2 THEN (SELECT text FROM probe_word WHERE id = probe_node.value)
+                   ELSE probe_node.value
+               END AS value
+        FROM probe_node
+        JOIN file ON file.id = probe_node.file_id
+        LEFT JOIN probe_word ON probe_word.id = probe_node.key_id;
 ";
 
 pub struct MediaIndex {
@@ -78,7 +90,8 @@ impl MediaIndex {
             // The index is a cache of what is read from the files, so an older layout is dropped. The files are read
             // again as they are needed, and recorded in the new layout.
             connection.execute_batch(
-                "DROP TABLE IF EXISTS probe_node; DROP TABLE IF EXISTS probe_word; DROP TABLE IF EXISTS probe_key; \
+                "DROP VIEW IF EXISTS probe_text; DROP TABLE IF EXISTS probe_node; DROP TABLE IF EXISTS probe_word; \
+                 DROP TABLE IF EXISTS probe_key; \
                  DROP TABLE IF EXISTS file; DROP TABLE IF EXISTS probe_field; DROP TABLE IF EXISTS media;",
             )?;
             // Freed pages are given back to the file as they are freed, rather than kept for the next write. The setting
