@@ -67,36 +67,6 @@ pub fn format_fps(fps: f64) -> String {
     format!("{}fps", text.trim_end_matches('0').trim_end_matches('.'))
 }
 
-impl MediaMetadata {
-    /// The metadata as the cache and the index keep it, with `null` for each field that is unknown.
-    pub fn to_json(&self) -> Value {
-        json!({
-            "width": self.width,
-            "height": self.height,
-            "duration": self.duration,
-            "frame_rate": self.frame_rate,
-            "codec": self.codec,
-            "audio_codec": self.audio_codec,
-            "audio_channels": self.audio_channels,
-            "bit_rate": self.bit_rate,
-        })
-    }
-
-    /// The metadata `to_json` wrote. A field that is missing or `null` is unknown.
-    pub fn from_json(value: &Value) -> Self {
-        Self {
-            width: value["width"].as_u64().map(|width| width as u32),
-            height: value["height"].as_u64().map(|height| height as u32),
-            duration: value["duration"].as_f64(),
-            frame_rate: value["frame_rate"].as_f64(),
-            codec: value["codec"].as_str().map(str::to_owned),
-            audio_codec: value["audio_codec"].as_str().map(str::to_owned),
-            audio_channels: value["audio_channels"].as_u64().map(|channels| channels as u32),
-            bit_rate: value["bit_rate"].as_u64(),
-        }
-    }
-}
-
 /// A number ffprobe wrote, which it writes as a string.
 fn number(value: &Value) -> Option<f64> {
     value.as_str().and_then(|text| text.parse().ok()).or_else(|| value.as_f64())
@@ -195,7 +165,7 @@ impl MediaInfo {
                 return Some(known.metadata.clone());
             }
         }
-        let stored = self.store().load(path, mtime)?;
+        let stored = self.store().lookup(path, mtime)?;
         self.remember(path.to_path_buf(), mtime, size, stored.metadata.clone());
         Some(stored.metadata)
     }
@@ -293,7 +263,7 @@ impl MediaInfo {
         let (path, mtime, size) = key.clone();
         eprintln!("playlist-debug: metadata finish {}", anonymous(&path));
         if persist {
-            if let Err(err) = self.store().save(&path, mtime, size, &stored) {
+            if let Err(err) = self.store().record(&path, mtime, size, &stored) {
                 eprintln!("rsimgv: could not save the metadata of {}: {err}", anonymous(&path));
             }
         }
@@ -331,21 +301,26 @@ async fn run(info: MediaInfo, key: Key) {
     }
 }
 
-/// The metadata of the file in `key`, read with `ffprobe`, with its movie hash if `keeps_hash`. A picture's size falls
-/// back to its header when `ffprobe` gives none. `None` if `ffprobe` cannot be run.
+/// The metadata of the file in `key`, read with `ffprobe`, with its movie hash if `keeps_hash`. `None` if `ffprobe`
+/// cannot be run.
 fn read(key: &Key, keeps_hash: bool) -> Option<Stored> {
     let path = &key.0;
     let probe = run_ffprobe(path).ok()?.unwrap_or(Value::Null);
     let mut metadata = MediaMetadata::from_probe(&probe);
+    size_from_header(&mut metadata, path);
+    let hash = if keeps_hash { moviehash(path).ok() } else { None };
+    let file_type = gio::content_type_guess(Some(path), None::<&[u8]>).0.to_string();
+    Some(Stored { metadata, hash, file_type: Some(file_type), probe: Some(probe) })
+}
+
+/// Fills in a picture's size from its header, for when `ffprobe` gave none.
+fn size_from_header(metadata: &mut MediaMetadata, path: &Path) {
     if metadata.width.is_none() {
         if let Some((_, width, height)) = gdk_pixbuf::Pixbuf::file_info(path) {
             metadata.width = Some(width as u32);
             metadata.height = Some(height as u32);
         }
     }
-    let hash = if keeps_hash { moviehash(path).ok() } else { None };
-    let file_type = gio::content_type_guess(Some(path), None::<&[u8]>).0.to_string();
-    Some(Stored { metadata, hash, file_type: Some(file_type) })
 }
 
 /// The search index's database, in the user's data directory.
@@ -353,34 +328,51 @@ fn index_file() -> PathBuf {
     glib::user_data_dir().join("rsimgv").join("media-index.sqlite3")
 }
 
-/// The metadata of each file, kept in the cache: a JSON file per media file, named by its URI's digest, which records
-/// the modification time and size the metadata was read at.
+/// The metadata of each file, kept in the cache: a JSON file per media file, named by its URI's digest. It holds the
+/// file's modification time and size, and the raw `ffprobe` output under `probe`.
 pub struct FileMetadataStore {
     root: PathBuf,
 }
 
 impl MetadataStore for FileMetadataStore {
-    fn load(&self, path: &Path, mtime: i64) -> Option<Stored> {
+    fn lookup(&self, path: &Path, mtime: i64) -> Option<Stored> {
         let file = cache_file(&self.root, path);
         let value: Value = serde_json::from_slice(&std::fs::read(&file).ok()?).ok()?;
         if value["mtime"].as_i64()? != mtime {
-            // Out of date, so the file goes, and the metadata is read and saved again.
-            if let Err(err) = std::fs::remove_file(&file) {
-                eprintln!("rsimgv: could not remove an out-of-date metadata cache file: {err}");
-            }
+            // Out of date, so the file goes, and the metadata is read and recorded again.
+            self.forget_or_log(path);
             return None;
         }
-        let metadata = value.get("metadata").filter(|metadata| metadata.is_object())?;
-        Some(Stored { metadata: MediaMetadata::from_json(metadata), ..Stored::default() })
+        let probe = value.get("probe")?.clone();
+        let mut metadata = MediaMetadata::from_probe(&probe);
+        size_from_header(&mut metadata, path);
+        Some(Stored { metadata, probe: Some(probe), ..Stored::default() })
     }
 
-    fn save(&self, path: &Path, mtime: i64, size: u64, stored: &Stored) -> std::io::Result<()> {
-        let data = json!({ "mtime": mtime, "size": size, "metadata": stored.metadata.to_json() }).to_string();
+    fn record(&self, path: &Path, mtime: i64, size: u64, stored: &Stored) -> std::io::Result<()> {
+        let probe = stored.probe.clone().unwrap_or(Value::Null);
+        let data = json!({ "mtime": mtime, "size": size, "probe": probe }).to_string();
         write_atomically(&cache_file(&self.root, path), data.as_bytes())
+    }
+
+    fn forget(&self, path: &Path) -> std::io::Result<()> {
+        match std::fs::remove_file(cache_file(&self.root, path)) {
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            result => result,
+        }
     }
 
     fn keeps_hash(&self) -> bool {
         false
+    }
+}
+
+impl FileMetadataStore {
+    /// Forgets `path`, logging a failure, since a lookup has no way to report one.
+    fn forget_or_log(&self, path: &Path) {
+        if let Err(err) = self.forget(path) {
+            eprintln!("rsimgv: could not remove an out-of-date metadata cache file: {err}");
+        }
     }
 }
 
@@ -462,21 +454,6 @@ mod tests {
         assert_eq!(format_fps(30.0), "30fps");
         assert_eq!(format_fps(30000.0 / 1001.0), "29.97fps");
         assert_eq!(format_fps(25.5), "25.5fps");
-    }
-
-    #[test]
-    fn metadata_survives_its_json_form() {
-        let metadata = MediaMetadata {
-            width: Some(1920),
-            height: Some(1080),
-            duration: Some(12.5),
-            frame_rate: Some(29.97),
-            codec: Some("h264".into()),
-            audio_codec: None,
-            audio_channels: Some(2),
-            bit_rate: Some(2_500_000),
-        };
-        assert_eq!(MediaMetadata::from_json(&metadata.to_json()), metadata);
     }
 
     #[test]
