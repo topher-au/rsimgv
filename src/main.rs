@@ -27,7 +27,14 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 /// The settings about making thumbnails.
-const THUMBNAIL_KEYS: [&str; 4] = ["thumbnails.threads", "thumbnails.cache", "thumbnails.unload-offscreen", "thumbnails.aggression"];
+const THUMBNAIL_KEYS: [&str; 6] = [
+    "thumbnails.threads",
+    "thumbnails.cache",
+    "thumbnails.unload-offscreen",
+    "thumbnails.aggression",
+    "thumbnails.max-image-size",
+    "thumbnails.max-video-size",
+];
 
 /// Gives the thumbnails what the settings say about making them.
 fn apply_thumbnail_settings(settings: &Settings) {
@@ -36,6 +43,8 @@ fn apply_thumbnail_settings(settings: &Settings) {
     thumbnails.set_disk_cache(settings.boolean("thumbnails.cache"));
     thumbnails.set_unload_offscreen(settings.boolean("thumbnails.unload-offscreen"));
     thumbnails.set_aggression(fs::thumbnail::Aggression::from_name(&settings.string("thumbnails.aggression")));
+    thumbnails.set_max_size(fs::thumbnail::Media::Picture, fs::thumbnail::Size::at_most(settings.int("thumbnails.max-image-size")));
+    thumbnails.set_max_size(fs::thumbnail::Media::Video, fs::thumbnail::Size::at_most(settings.int("thumbnails.max-video-size")));
 }
 
 /// The settings that decide which IPC transports run, and on which ports.

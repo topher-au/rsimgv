@@ -95,6 +95,10 @@ mod imp {
         #[template_child]
         pub thumbnail_aggression_row: TemplateChild<adw::ComboRow>,
         #[template_child]
+        pub thumbnail_max_image_size_row: TemplateChild<adw::ComboRow>,
+        #[template_child]
+        pub thumbnail_max_video_size_row: TemplateChild<adw::ComboRow>,
+        #[template_child]
         pub thumbnail_crop_row: TemplateChild<adw::SwitchRow>,
         #[template_child]
         pub video_frame_previews_row: TemplateChild<adw::SwitchRow>,
@@ -397,6 +401,8 @@ impl PreferencesDialog {
         bind_port(settings, &imp.thumbnail_threads_row, "thumbnails.threads");
         settings.bind("thumbnails.cache", &*imp.thumbnail_cache_row, "active").build();
         settings.bind("thumbnails.unload-offscreen", &*imp.thumbnail_unload_offscreen_row, "active").build();
+        bind_thumbnail_size(settings, &imp.thumbnail_max_image_size_row, "thumbnails.max-image-size");
+        bind_thumbnail_size(settings, &imp.thumbnail_max_video_size_row, "thumbnails.max-video-size");
         settings.bind("thumbnails.crop", &*imp.thumbnail_crop_row, "active").build();
         settings.bind("browse.video-frame-previews", &*imp.video_frame_previews_row, "active").build();
         settings.bind("browse.folder-previews.enabled", &*imp.directory_previews_row, "active").build();
@@ -1374,6 +1380,23 @@ fn bind_tabs(switcher: &adw::ViewSwitcher, stack: &adw::ViewStack) {
         page.set_title(Some(&child.title()));
         page.set_icon_name(child.icon_name().as_deref());
     }
+}
+
+/// Binds a combo row to an integer setting that is one of the thumbnail sizes, by position in the row. A value that is not
+/// one of them shows as the size `Size::at_most` gives it.
+fn bind_thumbnail_size(settings: &Settings, row: &adw::ComboRow, key: &'static str) {
+    settings
+        .bind(key, row, "selected")
+        .mapping(|variant, _| {
+            let size = crate::fs::thumbnail::Size::at_most(variant.get::<i32>()?).pixels();
+            let index = crate::fs::thumbnail::SIZES.iter().position(|pixels| *pixels == size)?;
+            Some((index as u32).to_value())
+        })
+        .set_mapping(|value, _| {
+            let index = value.get::<u32>().ok()? as usize;
+            crate::fs::thumbnail::SIZES.get(index).map(|pixels| pixels.to_variant())
+        })
+        .build();
 }
 
 /// Keeps a port row in step with an integer setting, in both directions.

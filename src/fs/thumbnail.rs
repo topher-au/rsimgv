@@ -45,13 +45,25 @@ const MAX_FRAME_JOBS: usize = 1;
 const TOOL_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// A thumbnail size, in pixels, one of `SIZES`.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct Size(i32);
+
+impl Default for Size {
+    /// The largest size, so that nothing is capped.
+    fn default() -> Self {
+        Self(SIZES[SIZES.len() - 1])
+    }
+}
 
 impl Size {
     /// The smallest size that covers `pixels`: the next size up, which is then scaled down for the item.
     pub fn for_pixels(pixels: i32) -> Self {
         Self(SIZES.iter().copied().find(|&size| size >= pixels).unwrap_or(SIZES[SIZES.len() - 1]))
+    }
+
+    /// The largest size that is at most `pixels`, or the smallest one if `pixels` is below all of them.
+    pub fn at_most(pixels: i32) -> Self {
+        Self(SIZES.iter().copied().rev().find(|&size| size <= pixels).unwrap_or(SIZES[0]))
     }
 
     pub fn pixels(self) -> i32 {
@@ -181,6 +193,9 @@ struct Inner {
     running: Cell<usize>,
     /// The running jobs, each with the flag that stops it.
     cancels: RefCell<HashMap<Key, Arc<AtomicBool>>>,
+    /// The largest size pictures' and videos' thumbnails are made at. A request for a larger size is made at this one.
+    max_image: Cell<Size>,
+    max_video: Cell<Size>,
     /// How eagerly thumbnails are made for items off screen, and whether a video is playing.
     aggression: Cell<Aggression>,
     playing: Cell<bool>,
@@ -282,6 +297,24 @@ impl Thumbnails {
     pub fn set_thread_count(&self, threads: usize) {
         self.inner.max_jobs.set(threads.clamp(1, thread_limit()));
         self.start_jobs();
+    }
+
+    /// Sets the largest size thumbnails of `media` are made at. An item still asks for the size its own size needs, but
+    /// the thumbnail is made no larger than `max`, and is scaled up or down by the item as it is shown.
+    pub fn set_max_size(&self, media: Media, max: Size) {
+        match media {
+            Media::Picture => self.inner.max_image.set(max),
+            Media::Video => self.inner.max_video.set(max),
+        }
+    }
+
+    /// `size`, capped at the largest size set for thumbnails of `media`.
+    fn capped(&self, size: Size, media: Media) -> Size {
+        let max = match media {
+            Media::Picture => self.inner.max_image.get(),
+            Media::Video => self.inner.max_video.get(),
+        };
+        size.min(max)
     }
 
     /// Sets how eagerly thumbnails are made for items that are not on screen. Jobs nothing wants any more are stopped, and
@@ -484,7 +517,7 @@ impl Thumbnails {
         wanted: impl Fn() -> bool + 'static,
         on_done: impl FnOnce(Option<&gdk::Texture>) + 'static,
     ) {
-        let key = key(path, mtime, size, Job::Still(media));
+        let key = key(path, mtime, self.capped(size, media), Job::Still(media));
         self.request(key, None, wanted, move |textures| on_done(textures.first()));
     }
 
@@ -501,7 +534,7 @@ impl Thumbnails {
         wanted: impl Fn() -> bool + 'static,
         on_ready: impl FnOnce(&gdk::Texture) + 'static,
     ) {
-        self.request(key(path, mtime, size, Job::Still(media)), Some(Rc::new(rank)), wanted, move |textures| {
+        self.request(key(path, mtime, self.capped(size, media), Job::Still(media)), Some(Rc::new(rank)), wanted, move |textures| {
             if let Some(texture) = textures.first() {
                 on_ready(texture);
             }
@@ -517,7 +550,7 @@ impl Thumbnails {
         wanted: impl Fn() -> bool + 'static,
         on_ready: impl FnOnce(&[gdk::Texture]) + 'static,
     ) {
-        self.request(key(path, mtime, size, Job::Frames), None, wanted, on_ready);
+        self.request(key(path, mtime, self.capped(size, Media::Video), Job::Frames), None, wanted, on_ready);
     }
 
     fn request(&self, key: Key, rank: Option<Rc<dyn Fn() -> f64>>, wanted: impl Fn() -> bool + 'static, on_ready: impl FnOnce(&[gdk::Texture]) + 'static) {
@@ -1403,6 +1436,16 @@ mod tests {
         for frame in &frames {
             assert!(frame.width <= 128 && frame.height <= 128);
         }
+    }
+
+    #[test]
+    fn a_cap_is_the_largest_size_at_most_the_setting() {
+        assert_eq!(Size::at_most(1).pixels(), 32);
+        assert_eq!(Size::at_most(100).pixels(), 64);
+        assert_eq!(Size::at_most(256).pixels(), 256);
+        assert_eq!(Size::at_most(9000).pixels(), 2048);
+        assert_eq!(Size::for_pixels(1500).min(Size::at_most(512)).pixels(), 512, "an item's size is capped");
+        assert_eq!(Size::for_pixels(100).min(Size::at_most(512)).pixels(), 128, "a smaller item keeps its size");
     }
 
     #[test]
