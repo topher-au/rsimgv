@@ -169,7 +169,7 @@ impl MediaInfo {
                 return Some(known.metadata.clone());
             }
         }
-        let stored = self.store().lookup(path, mtime)?;
+        let stored = self.store().lookup(path, mtime, size)?;
         self.remember(path.to_path_buf(), mtime, size, stored.metadata.clone());
         Some(stored.metadata)
     }
@@ -354,10 +354,10 @@ pub struct FileMetadataStore {
 }
 
 impl MetadataStore for FileMetadataStore {
-    fn lookup(&self, path: &Path, mtime: i64) -> Option<Stored> {
+    fn lookup(&self, path: &Path, mtime: i64, size: u64) -> Option<Stored> {
         let file = cache_file(&self.root, path);
         let value: Value = serde_json::from_slice(&std::fs::read(&file).ok()?).ok()?;
-        if value["mtime"].as_i64()? != mtime {
+        if value["mtime"].as_i64()? != mtime || value["size"].as_u64()? != size {
             // Out of date, so the file goes, and the metadata is read and recorded again.
             self.forget_or_log(path);
             return None;
@@ -492,4 +492,20 @@ mod tests {
     fn no_probe_gives_nothing() {
         assert_eq!(MediaMetadata::from_probe(&Value::Null), MediaMetadata::default());
     }
+
+    #[test]
+    fn a_record_of_another_size_is_out_of_date() {
+        let root = std::env::temp_dir().join(format!("rsimgv-metadata-size-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let store = FileMetadataStore { root: root.clone() };
+        let path = PathBuf::from("/videos/clip.mp4");
+        let stored = Stored { file_type: Some("video/mp4".into()), probe: Some(Value::Null), ..Stored::default() };
+        store.record(&path, 100, 4096, &stored).unwrap();
+        assert_eq!(store.lookup(&path, 100, 4096), Some(stored), "the record is current");
+        assert_eq!(store.lookup(&path, 100, 8192), None, "the size changed but the modification time did not");
+        assert_eq!(store.lookup(&path, 100, 8192), None, "the out-of-date record was removed");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
 }

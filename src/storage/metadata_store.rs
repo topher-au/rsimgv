@@ -22,9 +22,9 @@ pub struct Stored {
 }
 
 pub trait MetadataStore {
-    /// The record of the file at `path`, if it was recorded at this modification time. A record from another time is out
-    /// of date: it is forgotten, and nothing is returned.
-    fn lookup(&self, path: &Path, mtime: i64) -> Option<Stored>;
+    /// The record of the file at `path`, if it was recorded at this modification time and size. A record from
+    /// another time, or of another size, is out of date: it is forgotten, and nothing is returned.
+    fn lookup(&self, path: &Path, mtime: i64, size: u64) -> Option<Stored>;
 
     /// Records what was read from the file at `path`, at this modification time and size.
     fn record(&self, path: &Path, mtime: i64, size: u64, stored: &Stored) -> io::Result<()>;

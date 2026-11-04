@@ -309,34 +309,34 @@ fn insert_node(transaction: &Transaction, file: &str, file_id: i64, slot: Slot, 
 }
 
 impl MetadataStore for MediaIndex {
-    fn lookup(&self, path: &Path, mtime: i64) -> Option<Stored> {
+    fn lookup(&self, path: &Path, mtime: i64, size: u64) -> Option<Stored> {
         let row = self
             .connection
             .query_row(
-                "SELECT mtime, hash, file_type, width, height, duration, frame_rate, codec, audio_codec, bit_rate
+                "SELECT mtime, size, hash, file_type, width, height, duration, frame_rate, codec, audio_codec, bit_rate
                  FROM file WHERE path = ?1",
                 params![path.as_os_str().as_bytes()],
                 |row| {
                     let stored = Stored {
                         metadata: MediaMetadata {
-                            width: row.get::<_, Option<i64>>(3)?.map(|width| width as u32),
-                            height: row.get::<_, Option<i64>>(4)?.map(|height| height as u32),
-                            duration: row.get(5)?,
-                            frame_rate: row.get(6)?,
-                            codec: row.get(7)?,
-                            audio_codec: row.get(8)?,
-                            bit_rate: row.get::<_, Option<i64>>(9)?.map(|bits| bits as u64),
+                            width: row.get::<_, Option<i64>>(4)?.map(|width| width as u32),
+                            height: row.get::<_, Option<i64>>(5)?.map(|height| height as u32),
+                            duration: row.get(6)?,
+                            frame_rate: row.get(7)?,
+                            codec: row.get(8)?,
+                            audio_codec: row.get(9)?,
+                            bit_rate: row.get::<_, Option<i64>>(10)?.map(|bits| bits as u64),
                         },
-                        hash: row.get(1)?,
-                        file_type: row.get(2)?,
+                        hash: row.get(2)?,
+                        file_type: row.get(3)?,
                         probe: None,
                     };
-                    Ok((row.get::<_, i64>(0)?, stored))
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?, stored))
                 },
             )
             .optional();
         match row {
-            Ok(Some((row_mtime, stored))) if row_mtime == mtime => Some(stored),
+            Ok(Some((row_mtime, row_size, stored))) if row_mtime == mtime && row_size as u64 == size => Some(stored),
             Ok(Some(_)) => {
                 self.forget_or_log(path);
                 None
@@ -441,8 +441,8 @@ impl MetadataStore for MediaIndex {
             if !matches_all(tokens, &facts) {
                 continue;
             }
-            match current_mtime(&path) {
-                Some(mtime) if self.lookup(&path, mtime).is_some() => found.push(path),
+            match current_stat(&path) {
+                Some((mtime, size)) if self.lookup(&path, mtime, size).is_some() => found.push(path),
                 Some(_) => {}
                 None => self.forget_or_log(&path),
             }
@@ -465,11 +465,12 @@ fn file_name(path: &Path) -> String {
     path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default()
 }
 
-/// The modification time of the file at `path` in Unix seconds, if it can be read.
+/// The modification time in Unix seconds and the size in bytes of the file at `path`, if they can be read.
 #[allow(dead_code)] // Used by the search, which nothing calls yet.
-fn current_mtime(path: &Path) -> Option<i64> {
-    let modified = std::fs::metadata(path).ok()?.modified().ok()?;
-    Some(modified.duration_since(UNIX_EPOCH).ok()?.as_secs() as i64)
+fn current_stat(path: &Path) -> Option<(i64, u64)> {
+    let metadata = std::fs::metadata(path).ok()?;
+    let modified = metadata.modified().ok()?;
+    Some((modified.duration_since(UNIX_EPOCH).ok()?.as_secs() as i64, metadata.len()))
 }
 
 #[cfg(test)]
@@ -493,9 +494,21 @@ mod tests {
             probe: None,
         };
         index.record(&path, 100, 4096, &stored).unwrap();
-        assert_eq!(index.lookup(&path, 100), Some(stored), "the record is current");
-        assert_eq!(index.lookup(&path, 101), None, "a changed modification time is out of date");
-        assert_eq!(index.lookup(&path, 100), None, "the out-of-date record was removed, so it is gone for good");
+        assert_eq!(index.lookup(&path, 100, 4096), Some(stored), "the record is current");
+        assert_eq!(index.lookup(&path, 101, 4096), None, "a changed modification time is out of date");
+        assert_eq!(index.lookup(&path, 100, 4096), None, "the out-of-date record was removed, so it is gone for good");
+    }
+
+    #[test]
+    fn a_changed_size_is_out_of_date() {
+        let (index, path) = index();
+        let stored = Stored {
+            metadata: MediaMetadata { width: Some(1920), height: Some(1080), ..MediaMetadata::default() },
+            ..Stored::default()
+        };
+        index.record(&path, 100, 4096, &stored).unwrap();
+        assert_eq!(index.lookup(&path, 100, 8192), None, "the size changed but the modification time did not");
+        assert_eq!(index.lookup(&path, 100, 8192), None, "the out-of-date record was removed");
     }
 
     #[test]
