@@ -146,16 +146,17 @@ impl MediaIndex {
     }
 }
 
-/// Records the node for `value` under the file `file_id`, then its children, which are linked to it. The root has no
-/// parent or key. A null is not recorded, as it says nothing.
-fn insert_node(
-    transaction: &Transaction,
-    file_id: i64,
+/// Where a node sits: the key it is under in an object, or its position in an array, and the node above it.
+struct Slot<'a> {
     parent: Option<i64>,
-    key: Option<&str>,
+    parent_label: &'a str,
+    key: Option<&'a str>,
     position: Option<i64>,
-    value: &Value,
-) -> rusqlite::Result<()> {
+}
+
+/// Records the node for `value` under the file `file_id`, then its children, which are linked to it. The root has no
+/// parent or key. A null is not recorded, as it says nothing. Each scalar is logged as it is recorded.
+fn insert_node(transaction: &Transaction, file: &str, file_id: i64, slot: Slot, value: &Value) -> rusqlite::Result<()> {
     let (kind, text, number) = match value {
         Value::Null => return Ok(()),
         Value::Object(_) => ("object", None, None),
@@ -167,18 +168,24 @@ fn insert_node(
     transaction.execute(
         "INSERT INTO probe_node (file_id, parent_id, key, position, kind, value, number)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        params![file_id, parent, key, position, kind, text, number],
+        params![file_id, slot.parent, slot.key, slot.position, kind, text, number],
     )?;
     let id = transaction.last_insert_rowid();
+    let label = slot.key.map_or_else(|| slot.position.map(|index| index.to_string()).unwrap_or_default(), str::to_owned);
+    if let Some(text) = &text {
+        eprintln!("index-update: {file} {label}={text},{}=[{label}={{{label}={text}}}]", slot.parent_label);
+    }
     match value {
         Value::Object(map) => {
             for (child_key, child) in map {
-                insert_node(transaction, file_id, Some(id), Some(child_key), None, child)?;
+                let slot = Slot { parent: Some(id), parent_label: &label, key: Some(child_key), position: None };
+                insert_node(transaction, file, file_id, slot, child)?;
             }
         }
         Value::Array(items) => {
             for (index, child) in items.iter().enumerate() {
-                insert_node(transaction, file_id, Some(id), None, Some(index as i64), child)?;
+                let slot = Slot { parent: Some(id), parent_label: &label, key: None, position: Some(index as i64) };
+                insert_node(transaction, file, file_id, slot, child)?;
             }
         }
         _ => {}
@@ -232,9 +239,12 @@ impl MetadataStore for MediaIndex {
     fn record(&self, path: &Path, mtime: i64, size: u64, stored: &Stored) -> io::Result<()> {
         let key = path.as_os_str().as_bytes();
         let metadata = &stored.metadata;
+        let name = file_name(path);
         let transaction = self.connection.unchecked_transaction().map_err(io::Error::other)?;
         // Replacing the file's row removes its probe nodes with it.
-        transaction.execute("DELETE FROM file WHERE path = ?1", params![key]).map_err(io::Error::other)?;
+        if transaction.execute("DELETE FROM file WHERE path = ?1", params![key]).map_err(io::Error::other)? > 0 {
+            eprintln!("index-update: {name} removed");
+        }
         transaction
             .execute(
                 "INSERT INTO file (path, mtime, size, hash, file_type, width, height, duration, frame_rate, codec,
@@ -259,16 +269,21 @@ impl MetadataStore for MediaIndex {
             .map_err(io::Error::other)?;
         if let Some(probe) = &stored.probe {
             let file_id = transaction.last_insert_rowid();
-            insert_node(&transaction, file_id, None, None, None, probe).map_err(io::Error::other)?;
+            let slot = Slot { parent: None, parent_label: "", key: None, position: None };
+            insert_node(&transaction, &name, file_id, slot, probe).map_err(io::Error::other)?;
         }
         transaction.commit().map_err(io::Error::other)
     }
 
     fn forget(&self, path: &Path) -> io::Result<()> {
-        self.connection
+        let removed = self
+            .connection
             .execute("DELETE FROM file WHERE path = ?1", params![path.as_os_str().as_bytes()])
-            .map(|_| ())
-            .map_err(io::Error::other)
+            .map_err(io::Error::other)?;
+        if removed > 0 {
+            eprintln!("index-update: {} removed", file_name(path));
+        }
+        Ok(())
     }
 
     fn keeps_hash(&self) -> bool {
@@ -334,7 +349,6 @@ impl MediaIndex {
 }
 
 /// The name of the file at `path`, as its last component, lossily.
-#[allow(dead_code)] // Used by the search, which nothing calls yet.
 fn file_name(path: &Path) -> String {
     path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default()
 }
