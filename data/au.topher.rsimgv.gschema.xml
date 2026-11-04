@@ -34,6 +34,10 @@
       <default>true</default>
       <summary>Show videos in the browse view</summary>
     </key>
+    <key name="search-index" type="b">
+      <default>false</default>
+      <summary>Keep the metadata of pictures and videos in a database, for searching</summary>
+    </key>
     <key name="show-directories" type="s">
       <choices>
         <choice value="none"/>
