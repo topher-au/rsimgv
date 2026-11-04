@@ -146,7 +146,8 @@ impl State {
     }
 
     /// Tells GSettings that the keys `changed` have new values, with `origin` (the object that made the change, or
-    /// null for an outside edit) so that it is not told about its own write.
+    /// null for an outside edit). GLib passes no origin for a direct write, so a writer is told about its own change
+    /// too; the tag is passed on for the writers that do give one.
     fn notify(&self, changed: &[String], origin: *mut c_void) {
         let backend = self.backend.load(Ordering::Acquire) as *mut gio::ffi::GSettingsBackend;
         if backend.is_null() || changed.is_empty() {

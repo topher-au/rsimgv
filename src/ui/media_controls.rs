@@ -22,11 +22,15 @@ const SEEK_HOLD: Duration = Duration::from_millis(400);
 /// How long the pointer may be off the volume button and its slider before the slider closes.
 const VOLUME_HIDE_DELAY: Duration = Duration::from_millis(250);
 
-/// The time shown for `micros`, as `HH:MM:SS`.
+/// The time shown for `micros`, as `M:SS`, or `H:MM:SS` once it is an hour or more.
 pub fn format_time(micros: i64) -> String {
     let total = micros.max(0) / 1_000_000;
     let (hours, minutes, seconds) = (total / 3600, total % 3600 / 60, total % 60);
-    format!("{hours:02}:{minutes:02}:{seconds:02}")
+    if hours > 0 {
+        format!("{hours}:{minutes:02}:{seconds:02}")
+    } else {
+        format!("{minutes}:{seconds:02}")
+    }
 }
 
 /// Where a seek by `step` from `current` lands, kept within the media. While the duration is unknown
