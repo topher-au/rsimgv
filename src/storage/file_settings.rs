@@ -37,9 +37,16 @@ const ROUNDS: usize = 8;
 /// each at an offset drawn from the state. An offset that was already sampled is redrawn after folding it into the
 /// state. A file too small to hold one sample is hashed from its movie hash alone.
 pub fn content_hash(path: &Path) -> std::io::Result<String> {
+    Ok(content_hash_and_movie(path)?.0)
+}
+
+/// The content hash of the file at `path`, and its movie hash, which the content hash starts from. Both are read
+/// once, because the movie hash covers the first and last chunks that the content hash would otherwise read again.
+fn content_hash_and_movie(path: &Path) -> std::io::Result<(String, u64)> {
     let mut file = File::open(path)?;
     let size = file.metadata()?.len();
-    let mut state = mix(&[&movie_hash_of(&mut file, size)?.to_le_bytes()]);
+    let movie = movie_hash_of(&mut file, size)?;
+    let mut state = mix(&[&movie.to_le_bytes()]);
     // The sample offsets are CHUNK, CHUNK + SAMPLE, and so on up to the last one that ends before the final chunk.
     // A short file has fewer slots than rounds, and every one of its slots is sampled.
     let slots = size.checked_sub(2 * CHUNK + SAMPLE).map_or(0, |span| span / SAMPLE + 1);
@@ -55,7 +62,7 @@ pub fn content_hash(path: &Path) -> std::io::Result<String> {
         file.read_exact(&mut sample)?;
         state = mix(&[&state, &offset.to_le_bytes(), &sample]);
     }
-    Ok(format!("{:032x}", u128::from_be_bytes(state)))
+    Ok((format!("{:032x}", u128::from_be_bytes(state)), movie))
 }
 
 /// The movie hash of the file: its size plus every little-endian 64-bit word in its first and last 64 KiB, wrapping.
@@ -98,6 +105,37 @@ pub fn settings_file(hash: &str) -> PathBuf {
     config_path().with_file_name("file_settings").join(first).join(format!("{hash}.yaml"))
 }
 
+/// Moves the settings in `old` to `new`, best effort: a failure only means the next open tries again, so opening a
+/// file never fails because of its old settings. With no settings under the new name the old file is renamed.
+/// Otherwise the old keys that the new file lacks are folded into it, and the old file goes. The old names hold 16
+/// hex digits and the new ones 32, so the two files are never the same.
+fn migrate_file(old: &Path, new: &Path) {
+    if !new.exists() {
+        if let Some(parent) = new.parent() {
+            if std::fs::create_dir_all(parent).is_ok() {
+                let _ = std::fs::rename(old, new);
+            }
+        }
+        return;
+    }
+    let Ok(text) = std::fs::read_to_string(old) else { return };
+    let old_values = serde_yaml_ng::from_str::<Value>(&text).ok().and_then(|value| value.as_mapping().cloned()).unwrap_or_default();
+    let mut merged = read_mapping(new);
+    let before = merged.clone();
+    for (key, value) in old_values {
+        if !merged.contains_key(&key) {
+            merged.insert(key, value);
+        }
+    }
+    if merged != before {
+        let Ok(text) = serde_yaml_ng::to_string(&Value::Mapping(merged)) else { return };
+        if crate::storage::atomic_file::write(new, text.as_bytes()).is_err() {
+            return;
+        }
+    }
+    let _ = std::fs::remove_file(old);
+}
+
 /// One file's settings, read from its settings file and written back on each change.
 pub struct FileSettings {
     file: PathBuf,
@@ -109,8 +147,12 @@ pub struct FileSettings {
 
 impl FileSettings {
     /// The settings of the file at `path`. A file with none yet starts empty. `Err` if the file cannot be read.
+    /// Settings kept under the old movie-hash name move to the content-hash name, so play positions survive the change.
     pub fn for_path(path: &Path) -> std::io::Result<Self> {
-        Ok(Self::at(settings_file(&content_hash(path)?)))
+        let (hash, movie) = content_hash_and_movie(path)?;
+        let file = settings_file(&hash);
+        migrate_file(&settings_file(&format!("{movie:016x}")), &file);
+        Ok(Self::at(file))
     }
 
     /// The settings kept in `file`. A missing or unreadable file gives none.
@@ -288,4 +330,62 @@ mod tests {
         let _ = std::fs::remove_dir_all(file.parent().unwrap().parent().unwrap());
     }
 
+    /// A directory for one migration test, removed when the test ends.
+    fn migration_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("rsimgv-migrate-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn settings_under_the_old_name_move_to_the_new_one() {
+        let dir = migration_dir("move");
+        let (old, new) = (dir.join("old.yaml"), dir.join("sub").join("new.yaml"));
+        std::fs::write(&old, "position: 93.5\n").unwrap();
+        migrate_file(&old, &new);
+        assert!(!old.exists(), "the old file goes");
+        assert_eq!(FileSettings::at(new.clone()).get_f64("position"), Some(93.5));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_old_file_is_left_alone_when_there_is_nothing_to_move() {
+        let dir = migration_dir("nothing");
+        let (old, new) = (dir.join("old.yaml"), dir.join("new.yaml"));
+        migrate_file(&old, &new);
+        assert!(!new.exists(), "nothing is created");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn old_keys_join_new_ones_with_the_new_ones_winning() {
+        let dir = migration_dir("merge");
+        let (old, new) = (dir.join("old.yaml"), dir.join("new.yaml"));
+        std::fs::write(&old, "position: 93.5\nspeed: 1.0\n").unwrap();
+        std::fs::write(&new, "speed: 1.5\n").unwrap();
+        migrate_file(&old, &new);
+        let merged = FileSettings::at(new);
+        assert_eq!(merged.get_f64("position"), Some(93.5), "the old key joins");
+        assert_eq!(merged.get_f64("speed"), Some(1.5), "the new value wins");
+        assert!(!old.exists(), "the old file goes");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_unwritable_directory_still_gives_settings() {
+        let dir = migration_dir("readonly");
+        let (old, new) = (dir.join("old.yaml"), dir.join("sub").join("new.yaml"));
+        std::fs::write(&old, "position: 93.5\n").unwrap();
+        std::fs::create_dir_all(new.parent().unwrap()).unwrap();
+        let permissions = std::fs::metadata(new.parent().unwrap()).unwrap().permissions();
+        let mut readonly = permissions.clone();
+        readonly.set_readonly(true);
+        std::fs::set_permissions(new.parent().unwrap(), readonly).unwrap();
+        // The move cannot be made, but the old settings are still found where they are.
+        migrate_file(&old, &new);
+        assert!(old.exists() || new.exists());
+        std::fs::set_permissions(new.parent().unwrap(), permissions).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
