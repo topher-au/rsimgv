@@ -402,6 +402,12 @@
                                     <property name="subtitle">Hides files that are neither pictures nor videos</property>
                                   </object>
                                 </child>
+                                <child>
+                                  <object class="AdwSwitchRow" id="search_index_row">
+                                    <property name="title">Keep metadata in the search index</property>
+                                    <property name="subtitle">Keeps what is read from pictures and videos in a database instead of the metadata cache</property>
+                                  </object>
+                                </child>
                               </object>
                             </child>
                             <child>

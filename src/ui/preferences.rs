@@ -133,6 +133,8 @@ mod imp {
         #[template_child]
         pub show_videos_row: TemplateChild<adw::SwitchRow>,
         #[template_child]
+        pub search_index_row: TemplateChild<adw::SwitchRow>,
+        #[template_child]
         pub playlist_window_headerbar_row: TemplateChild<adw::ComboRow>,
         #[template_child]
         pub default_sort_by_row: TemplateChild<adw::ComboRow>,
@@ -660,6 +662,7 @@ fn bind_switches(settings: &Settings, imp: &imp::PreferencesDialog) {
         ("browse.sort.remember-per-folder", &imp.remember_folder_sort_row),
         ("browse.show-images", &imp.show_images_row),
         ("browse.show-videos", &imp.show_videos_row),
+        ("browse.search-index", &imp.search_index_row),
         ("playlist.fetch-in-background", &imp.playlist_fetch_row),
         ("playlist.repeat", &imp.playlist_repeat_row),
         ("playlist.columns.position", &imp.playlist_column_position_row),
