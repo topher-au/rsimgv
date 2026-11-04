@@ -31,7 +31,6 @@ pub struct MediaMetadata {
     /// The codec of a video, or the format of a picture.
     pub codec: Option<String>,
     pub audio_codec: Option<String>,
-    pub audio_channels: Option<u32>,
     /// In bits per second.
     pub bit_rate: Option<u64>,
 }
@@ -55,7 +54,6 @@ impl MediaMetadata {
             frame_rate: video.and_then(|stream| rational(&stream["avg_frame_rate"])),
             codec: video.and_then(|stream| stream["codec_name"].as_str()).map(str::to_owned),
             audio_codec: audio.and_then(|stream| stream["codec_name"].as_str()).map(str::to_owned),
-            audio_channels: audio.and_then(|stream| stream["channels"].as_u64()).map(|channels| channels as u32),
             // The video's own rate, which is what a video is encoded at, and the container's total if it has none.
             bit_rate: video
                 .and_then(|stream| number(&stream["bit_rate"]))
@@ -397,7 +395,7 @@ const PROBE_TAGS: &str = "location,location-eng,com.apple.quicktime.location.ISO
 fn run_ffprobe(path: &Path) -> std::io::Result<Option<Value>> {
     let entries = format!(
         "format=duration,bit_rate:\
-         stream=codec_type,codec_name,width,height,avg_frame_rate,channels,duration,bit_rate:stream_tags={PROBE_TAGS}:\
+         stream=codec_type,codec_name,width,height,avg_frame_rate,duration,bit_rate:stream_tags={PROBE_TAGS}:\
          stream_disposition=attached_pic"
     );
     let output = run_program(
@@ -419,7 +417,7 @@ mod tests {
             "streams": [
                 {"codec_type": "video", "codec_name": "h264", "width": 1920, "height": 1080,
                  "avg_frame_rate": "30000/1001", "disposition": {"attached_pic": 0}},
-                {"codec_type": "audio", "codec_name": "aac", "channels": 2}
+                {"codec_type": "audio", "codec_name": "aac"}
             ],
             "format": {"duration": "12.500000", "bit_rate": "2500000"}
         });
@@ -430,7 +428,6 @@ mod tests {
         assert!((metadata.frame_rate.unwrap() - 29.97).abs() < 0.01);
         assert_eq!(metadata.codec.as_deref(), Some("h264"));
         assert_eq!(metadata.audio_codec.as_deref(), Some("aac"));
-        assert_eq!(metadata.audio_channels, Some(2));
         assert_eq!(metadata.bit_rate, Some(2_500_000));
     }
 
@@ -454,7 +451,7 @@ mod tests {
             "streams": [
                 {"codec_type": "video", "codec_name": "mjpeg", "width": 300, "height": 300,
                  "disposition": {"attached_pic": 1}},
-                {"codec_type": "audio", "codec_name": "mp3", "channels": 1}
+                {"codec_type": "audio", "codec_name": "mp3"}
             ],
             "format": {"duration": "180.0"}
         });

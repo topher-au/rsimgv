@@ -56,7 +56,7 @@
 //!                                                "media", "media_pending"}, ...]}
 //!                   Each file's metadata, in the order of paths. size is in bytes for a file, and modified is in seconds
 //!                   since the Unix epoch. media holds a picture's or video's width, height, duration (seconds), frame_rate,
-//!                   codec, audio_codec, audio_channels and bit_rate, from what the app has read of it; it is null for a
+//!                   codec, audio_codec and bit_rate, from what the app has read of it; it is null for a
 //!                   folder or other file. A picture or video not read yet is queued, so media is null and media_pending is
 //!                   true until a later request finds it. A path that does not exist gives {"path", "error": "no_such_file"}.
 //!
@@ -443,7 +443,6 @@ fn media_json(media: &MediaMetadata) -> Value {
         "frame_rate": media.frame_rate,
         "codec": media.codec,
         "audio_codec": media.audio_codec,
-        "audio_channels": media.audio_channels,
         "bit_rate": media.bit_rate,
     })
 }

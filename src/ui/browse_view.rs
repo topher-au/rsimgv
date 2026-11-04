@@ -141,16 +141,7 @@ impl InfoField {
                     format!("{} kb/s", bits / 1000)
                 }
             }),
-            InfoField::Audio => {
-                let metadata = metadata?;
-                let codec = metadata.audio_codec.clone()?;
-                Some(match metadata.audio_channels {
-                    Some(1) => format!("{codec}, mono"),
-                    Some(2) => format!("{codec}, stereo"),
-                    Some(channels) => format!("{codec}, {channels} channels"),
-                    None => codec,
-                })
-            }
+            InfoField::Audio => metadata?.audio_codec.clone(),
         }
     }
 }

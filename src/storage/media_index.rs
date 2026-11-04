@@ -20,7 +20,7 @@ use crate::fs::metadata::MediaMetadata;
 use crate::search::query::{matches_all, Facts, Token};
 
 /// The version of the database's layout, kept in `PRAGMA user_version`.
-const VERSION: i64 = 8;
+const VERSION: i64 = 9;
 
 const SCHEMA: &str = "
     CREATE TABLE file (
@@ -36,7 +36,6 @@ const SCHEMA: &str = "
         frame_rate REAL,
         codec TEXT,
         audio_codec TEXT,
-        audio_channels INTEGER,
         bit_rate INTEGER
     );
     CREATE TABLE probe_word (
@@ -275,8 +274,7 @@ impl MetadataStore for MediaIndex {
         let row = self
             .connection
             .query_row(
-                "SELECT mtime, hash, file_type, width, height, duration, frame_rate, codec, audio_codec,
-                        audio_channels, bit_rate
+                "SELECT mtime, hash, file_type, width, height, duration, frame_rate, codec, audio_codec, bit_rate
                  FROM file WHERE path = ?1",
                 params![path.as_os_str().as_bytes()],
                 |row| {
@@ -288,8 +286,7 @@ impl MetadataStore for MediaIndex {
                             frame_rate: row.get(6)?,
                             codec: row.get(7)?,
                             audio_codec: row.get(8)?,
-                            audio_channels: row.get::<_, Option<i64>>(9)?.map(|channels| channels as u32),
-                            bit_rate: row.get::<_, Option<i64>>(10)?.map(|bits| bits as u64),
+                            bit_rate: row.get::<_, Option<i64>>(9)?.map(|bits| bits as u64),
                         },
                         hash: row.get(1)?,
                         file_type: row.get(2)?,
@@ -325,8 +322,8 @@ impl MetadataStore for MediaIndex {
         transaction
             .execute(
                 "INSERT INTO file (path, mtime, size, hash, file_type, width, height, duration, frame_rate, codec,
-                                   audio_codec, audio_channels, bit_rate)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                                   audio_codec, bit_rate)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
                 params![
                     key,
                     mtime,
@@ -339,7 +336,6 @@ impl MetadataStore for MediaIndex {
                     metadata.frame_rate,
                     metadata.codec,
                     metadata.audio_codec,
-                    metadata.audio_channels.map(i64::from),
                     metadata.bit_rate.map(|bits| bits as i64),
                 ],
             )
