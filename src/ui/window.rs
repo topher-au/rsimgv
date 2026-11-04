@@ -9,6 +9,7 @@ use gtk::prelude::*;
 use gtk::{gdk, gio, glib};
 
 use crate::settings::Settings;
+use crate::settings::GuardHandle;
 use crate::keybindings::actions::{Scope, DEFAULT_NOTIFICATION_SECONDS, MAX_NOTIFICATION_SECONDS};
 use super::browse_view::{InfoField, ListedFile};
 use crate::storage::bookmarks::{self, Bookmark};
@@ -116,6 +117,9 @@ mod imp {
         /// The keybinding handler, detached when the window closes.
         pub(super) key_handler: std::cell::OnceCell<ActionKeyHandler>,
         pub(super) settings: std::cell::OnceCell<Settings>,
+        /// The settings connections behind the window's toggle actions, ended when the window is destroyed, so no
+        /// later change can reach the actions while they are being torn down.
+        pub(super) action_guards: RefCell<Vec<GuardHandle>>,
         /// The search bar under the header, which filters the browse view of the tab shown.
         pub(super) browse_search: std::cell::OnceCell<BrowseSearch>,
     }
@@ -220,6 +224,23 @@ impl Window {
             }
             glib::Propagation::Proceed
         });
+        // The settings connections behind the window's toggle actions end here, so no later change can reach the
+        // actions while they are being torn down. The actions leave the window's map too, so setting their state
+        // can never notify a group that is already gone. The window is passed by the signal, which holds it while
+        // this runs.
+        window.connect_destroy(move |window| {
+            for guard in window.imp().action_guards.take() {
+                guard.disconnect();
+            }
+            window.remove_action("show-hidden");
+            window.remove_action("show-directories");
+            window.remove_action("playlist-repeat");
+            window.remove_action("sort-by");
+            window.remove_action("sort-order");
+            for (_, action, _, _, _) in crate::ui::playlist_panel::COLUMNS {
+                window.remove_action(action);
+            }
+        });
         let tree = (*imp.tree).clone();
         let split = (*imp.split).clone();
         // Two toggles show and hide the sidebar: one in the sidebar's header, and one in the main
@@ -263,7 +284,11 @@ impl Window {
         settings.connect_changed("browse.show-hidden", move |settings, _| {
             tree_for_settings.set_show_hidden(settings.boolean("browse.show-hidden"));
         });
-        window.add_action(&settings.create_toggle_action("browse.show-hidden", "show-hidden"));
+        window.add_action(&{
+            let (show_hidden, guard) = settings.create_toggle_action("browse.show-hidden", "show-hidden");
+            window.imp().action_guards.borrow_mut().push(guard);
+            show_hidden
+        });
         add_sort_action(&window, settings, "sort-by", "browse.sort.by");
         add_sort_action(&window, settings, "sort-order", "browse.sort.order");
         settings.connect_changed("browse.sort.remember-per-folder", {
@@ -1264,9 +1289,13 @@ impl Window {
         let weak = self.downgrade();
         // The menu's column toggles are window actions, so they work from any part of the window.
         for (key, action, _, _, _) in crate::ui::playlist_panel::COLUMNS {
-            self.add_action(&settings.create_toggle_action(key, action));
+            let (toggle, guard) = settings.create_toggle_action(key, action);
+            self.add_action(&toggle);
+            self.imp().action_guards.borrow_mut().push(guard);
         }
-        self.add_action(&settings.create_toggle_action("playlist.repeat", "playlist-repeat"));
+        let (repeat, guard) = settings.create_toggle_action("playlist.repeat", "playlist-repeat");
+        self.add_action(&repeat);
+        self.imp().action_guards.borrow_mut().push(guard);
         for name in ["playlist-add-paths", "playlist-remove-paths"] {
             let action = gio::SimpleAction::new(name, Some(&<Vec<String>>::static_variant_type()));
             let weak = weak.clone();
@@ -3649,10 +3678,18 @@ fn add_show_directories_action(window: &Window, settings: &Settings) {
             let _ = settings.set_string("browse.show-directories", value);
         }
     });
-    settings.connect_changed("browse.show-directories", {
-        let action = action.clone();
-        move |settings, _| action.set_state(&shows_directories(settings).to_variant())
-    });
+    let weak = action.downgrade();
+    let guard = weak.clone();
+    window.imp().action_guards.borrow_mut().push(settings.connect_guarded("browse.show-directories", guard, {
+        move |settings| {
+            if let Some(action) = weak.upgrade() {
+                let state = shows_directories(settings).to_variant();
+                if action.state().as_ref() != Some(&state) {
+                    action.set_state(&state);
+                }
+            }
+        }
+    }));
     window.add_action(&action);
 }
 

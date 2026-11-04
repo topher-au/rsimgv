@@ -2,6 +2,7 @@
 //! schema, and `window.sidebar.width` is the key `width` of the child at `window.sidebar`. `Settings` holds a
 //! `gio::Settings` for every group, and gives each call to the one the name is in.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -134,13 +135,46 @@ impl Settings {
         ChangedHandler { group: group.clone(), id }
     }
 
+    /// Runs `update` with these settings whenever `key` changes, while `guard` is alive. Once it is gone the handler
+    /// disconnects itself, so a torn-down window is never touched through its old connections. Use this for updates
+    /// that poke objects which die with the window, such as actions. Disconnect the returned handle when the window
+    /// is destroyed, so no later change can reach its objects while they are being torn down.
+    pub fn connect_guarded<T, F>(&self, key: &str, guard: glib::WeakRef<T>, update: F) -> GuardHandle
+    where
+        T: glib::object::ObjectType,
+        F: Fn(&Settings) + 'static,
+    {
+        let (group, name) = self.locate(key);
+        let group: gio::Settings = group.clone();
+        let settings = self.clone();
+        // The handler's own id, shared with the returned handle: whoever takes it first disconnects, and the other
+        // sees nothing left to do.
+        let id: Rc<RefCell<Option<glib::SignalHandlerId>>> = Rc::new(RefCell::new(None));
+        let own = id.clone();
+        let watched = group.clone();
+        *id.borrow_mut() = Some(group.connect_changed(Some(name), move |_, _| {
+            if own.borrow().is_none() || guard.upgrade().is_none() {
+                if let Some(id) = own.borrow_mut().take() {
+                    watched.disconnect(id);
+                }
+                return;
+            }
+            update(&settings);
+        }));
+        GuardHandle { group: group.clone(), id }
+    }
+
     pub fn disconnect(&self, handler: ChangedHandler) {
         handler.group.disconnect(handler.id);
     }
 
     /// An action called `action_name` that holds the boolean setting `key` as its state, and toggles it when activated.
     /// `gio::Settings::create_action` would name the action after the last part of the key.
-    pub fn create_toggle_action(&self, key: &str, action_name: &str) -> gio::SimpleAction {
+    ///
+    /// The returned handle ends the settings connection: disconnect it when the window is destroyed, so no later
+    /// change can reach the action while it is being torn down. Once the action is gone the handler disconnects
+    /// itself.
+    pub fn create_toggle_action(&self, key: &str, action_name: &str) -> (gio::SimpleAction, GuardHandle) {
         let action = gio::SimpleAction::new_stateful(action_name, None, &self.boolean(key).to_variant());
         action.connect_change_state({
             let settings = self.clone();
@@ -151,16 +185,45 @@ impl Settings {
                     eprintln!("rsimgv: could not save {key}: {err}");
                     return;
                 }
-                action.set_state(&on.to_variant());
+                // The write above already brought the action up to date through the handler below; this is only for
+                // a backend that did not announce it.
+                sync_state(action, on);
             }
         });
-        let weak = action.downgrade();
-        self.connect_changed(key, move |settings, key| {
+        let key = key.to_owned();
+        let live = action.downgrade();
+        let weak = live.clone();
+        let name = key.clone();
+        let guard = self.connect_guarded(&name, live, move |settings| {
             if let Some(action) = weak.upgrade() {
-                action.set_state(&settings.boolean(key).to_variant());
+                sync_state(&action, settings.boolean(&key));
             }
         });
-        action
+        (action, guard)
+    }
+}
+
+/// Ends the settings connection of a guarded update, such as a toggle action's. Disconnecting twice does nothing:
+/// the handler and the handle share the connection, and whoever takes it first disconnects.
+pub struct GuardHandle {
+    group: gio::Settings,
+    id: Rc<RefCell<Option<glib::SignalHandlerId>>>,
+}
+
+impl GuardHandle {
+    pub fn disconnect(&self) {
+        if let Some(id) = self.id.borrow_mut().take() {
+            self.group.disconnect(id);
+        }
+    }
+}
+
+/// Brings `action` to `on`, unless it is there already. Setting the state notifies the action's group, so a
+/// redundant write would poke a window that is being torn down for no reason.
+fn sync_state(action: &gio::SimpleAction, on: bool) {
+    let state = on.to_variant();
+    if action.state().as_ref() != Some(&state) {
+        action.set_state(&state);
     }
 }
 

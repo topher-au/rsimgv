@@ -392,19 +392,31 @@ fn a_change_is_reported_by_its_dotted_name() {
 
 #[test]
 fn a_toggle_action_follows_its_setting_under_its_own_name() {
-    let fixture = Fixture::new("toggle-action");
-    let backend = YamlSettingsBackend::new(fixture.file(), ROOT).unwrap();
-    let schema = fixture.schema("test.tree");
-    let settings = Settings::new(backend.settings(&schema, None));
-    let action = settings.create_toggle_action("window.maximized", "maximize-window");
-    assert_eq!(action.name(), "maximize-window");
+    in_context(|| {
+        let fixture = Fixture::new("toggle-action");
+        let backend = YamlSettingsBackend::new(fixture.file(), ROOT).unwrap();
+        let schema = fixture.schema("test.tree");
+        let settings = Settings::new(backend.settings(&schema, None));
+        let (action, guard) = settings.create_toggle_action("window.maximized", "maximize-window");
+        assert_eq!(action.name(), "maximize-window");
 
-    action.activate(None);
-    assert!(settings.boolean("window.maximized"), "activating toggles the setting");
-    assert_eq!(action.state().and_then(|state| state.get::<bool>()), Some(true));
+        action.activate(None);
+        assert!(settings.boolean("window.maximized"), "activating toggles the setting");
+        assert_eq!(action.state().and_then(|state| state.get::<bool>()), Some(true));
 
-    let other = Settings::new(backend.settings(&schema, None));
-    other.set_boolean("window.maximized", false).unwrap();
-    pump_until(|| action.state().and_then(|state| state.get::<bool>()) == Some(false));
-    assert_eq!(action.state().and_then(|state| state.get::<bool>()), Some(false), "the state follows the setting");
+        let other = Settings::new(backend.settings(&schema, None));
+        other.set_boolean("window.maximized", false).unwrap();
+        pump_until(|| action.state().and_then(|state| state.get::<bool>()) == Some(false));
+        assert_eq!(action.state().and_then(|state| state.get::<bool>()), Some(false), "the state follows the setting");
+
+        // Once the handle is disconnected, changing the setting leaves the action alone.
+        guard.disconnect();
+        other.set_boolean("window.maximized", true).unwrap();
+        assert_eq!(action.state().and_then(|state| state.get::<bool>()), Some(false), "the action is not touched");
+
+        // Once the action is gone its handler disconnects itself: changing the setting touches nothing dead.
+        drop(action);
+        other.set_boolean("window.maximized", false).unwrap();
+        assert!(!settings.boolean("window.maximized"));
+    });
 }
