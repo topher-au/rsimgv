@@ -1,8 +1,8 @@
 //! The search index: a SQLite database of the pictures and videos that have been read. Each file has a row in `file`,
 //! with its path, modification time and size, the metadata derived from its probe, and its movie hash and file type.
 //! Its `ffprobe` output is a tree, kept in `probe_node`: a row for each dict, list and value, linked to the row above it,
-//! so any key at any depth can be searched for. Each key's name is kept once, in `probe_key`, and the nodes refer to it
-//! by its id. It is the only store that can search across files.
+//! so any key at any depth can be searched for. Each key's name and each string value is kept once, in `probe_word`,
+//! and the nodes refer to it by its id. It is the only store that can search across files.
 
 use std::ffi::OsString;
 use std::io;
@@ -20,7 +20,7 @@ use crate::fs::metadata::MediaMetadata;
 use crate::search::query::{matches_all, Facts, Token};
 
 /// The version of the database's layout, kept in `PRAGMA user_version`.
-const VERSION: i64 = 5;
+const VERSION: i64 = 6;
 
 const SCHEMA: &str = "
     CREATE TABLE file (
@@ -39,17 +39,16 @@ const SCHEMA: &str = "
         audio_channels INTEGER,
         bit_rate INTEGER
     );
-    CREATE INDEX file_hash ON file (hash);
-    CREATE TABLE probe_key (
+    CREATE TABLE probe_word (
         id INTEGER PRIMARY KEY,
-        name TEXT NOT NULL UNIQUE
+        text TEXT NOT NULL UNIQUE
     );
+    CREATE INDEX probe_word_search ON probe_word (text COLLATE NOCASE);
     CREATE TABLE probe_node (
         id INTEGER PRIMARY KEY,
         file_id INTEGER NOT NULL REFERENCES file (id) ON DELETE CASCADE,
         parent_id INTEGER REFERENCES probe_node (id) ON DELETE CASCADE,
-        key_id INTEGER REFERENCES probe_key (id),
-        position INTEGER,
+        key_id INTEGER REFERENCES probe_word (id),
         kind INTEGER NOT NULL,
         value
     );
@@ -71,6 +70,8 @@ impl MediaIndex {
         let connection = Connection::open(file).with_context(|| format!("opening {}", file.display()))?;
         connection.busy_timeout(Duration::from_secs(5))?;
         connection.pragma_update(None, "journal_mode", "WAL")?;
+        // WAL is durable enough with NORMAL, and each commit is cheaper than with FULL.
+        connection.pragma_update(None, "synchronous", "NORMAL")?;
         // Deleting a file removes its probe too, which needs the foreign key to be enforced.
         connection.pragma_update(None, "foreign_keys", "ON")?;
         let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
@@ -78,12 +79,17 @@ impl MediaIndex {
             // The index is a cache of what is read from the files, so an older layout is dropped. The files are read
             // again as they are needed, and recorded in the new layout.
             connection.execute_batch(
-                "DROP TABLE IF EXISTS probe_node; DROP TABLE IF EXISTS probe_key; DROP TABLE IF EXISTS file; \
-                 DROP TABLE IF EXISTS probe_field; DROP TABLE IF EXISTS media;",
+                "DROP TABLE IF EXISTS probe_node; DROP TABLE IF EXISTS probe_word; DROP TABLE IF EXISTS probe_key; \
+                 DROP TABLE IF EXISTS file; DROP TABLE IF EXISTS probe_field; DROP TABLE IF EXISTS media;",
             )?;
+            // Freed pages are given back to the file as they are freed, rather than kept for the next write. The setting
+            // applies to a file only when it is rebuilt, so the VACUUM comes first, and before any tables are made.
+            connection.pragma_update(None, "auto_vacuum", "INCREMENTAL")?;
+            connection.execute_batch("VACUUM")?;
             connection.execute_batch(SCHEMA)?;
             connection.pragma_update(None, "user_version", VERSION)?;
         }
+        connection.execute_batch("PRAGMA incremental_vacuum")?;
         Ok(Self { connection })
     }
 
@@ -92,8 +98,8 @@ impl MediaIndex {
     // Nothing searches yet; the search bar will.
     #[allow(dead_code)]
     pub fn files_with_key(&self, key: &str, value: &str) -> rusqlite::Result<Vec<PathBuf>> {
-        // A value is stored as the type it was in the probe, so the text is matched as a string and, if it reads as a
-        // number, as that number too.
+        // A string value is stored as the id of its word, and any other value as its own number, so the text is matched
+        // as a word if the value is a string, and as a number if it reads as one.
         let number = value
             .parse::<i64>()
             .map(SqlValue::Integer)
@@ -101,11 +107,12 @@ impl MediaIndex {
             .unwrap_or(SqlValue::Null);
         let mut statement = self.connection.prepare(
             "SELECT DISTINCT file.path FROM probe_node JOIN file ON file.id = probe_node.file_id
-             WHERE probe_node.key_id IN (SELECT id FROM probe_key WHERE name = ?1 COLLATE NOCASE)
-               AND probe_node.value COLLATE NOCASE IN (?2, ?3)",
+             WHERE probe_node.key_id IN (SELECT id FROM probe_word WHERE text = ?1 COLLATE NOCASE)
+               AND ((probe_node.kind = ?2 AND probe_node.value IN
+                        (SELECT id FROM probe_word WHERE text = ?3 COLLATE NOCASE))
+                 OR (probe_node.kind <> ?2 AND probe_node.value IN (?4)))",
         )?;
-        let text = SqlValue::Text(value.to_owned());
-        let rows = statement.query_map(params![key, text, number], |row| row.get::<_, Vec<u8>>(0))?;
+        let rows = statement.query_map(params![key, Kind::String, value, number], |row| row.get::<_, Vec<u8>>(0))?;
         rows.map(|row| row.map(|bytes| PathBuf::from(OsString::from_vec(bytes)))).collect()
     }
 
@@ -133,8 +140,8 @@ impl MediaIndex {
             |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
         let mut statement = self.connection.prepare(
-            "SELECT probe_node.id, probe_key.name FROM probe_node
-             LEFT JOIN probe_key ON probe_key.id = probe_node.key_id
+            "SELECT probe_node.id, probe_word.text FROM probe_node
+             LEFT JOIN probe_word ON probe_word.id = probe_node.key_id
              WHERE probe_node.parent_id = ?1 ORDER BY probe_node.id",
         )?;
         let children: Vec<(i64, Option<String>)> =
@@ -150,7 +157,11 @@ impl MediaIndex {
                 children.into_iter().map(|(child, _)| self.node_value(child)).collect::<rusqlite::Result<_>>()?,
             ),
             Kind::String => Value::String(match stored {
-                SqlValue::Text(text) => text,
+                SqlValue::Integer(word) => self.connection.query_row(
+                    "SELECT text FROM probe_word WHERE id = ?1",
+                    params![word],
+                    |row| row.get(0),
+                )?,
                 _ => String::new(),
             }),
             Kind::Bool => Value::Bool(matches!(stored, SqlValue::Integer(flag) if flag != 0)),
@@ -209,11 +220,11 @@ fn number_value(number: &serde_json::Number) -> SqlValue {
         .unwrap_or(SqlValue::Null)
 }
 
-/// The id of the key called `name`, which is added the first time it is seen.
-fn intern_key(transaction: &Transaction, name: &str) -> rusqlite::Result<i64> {
+/// The id of the word `text`, which is a key's name or a string value. It is added the first time it is seen.
+fn intern_word(transaction: &Transaction, text: &str) -> rusqlite::Result<i64> {
     transaction.query_row(
-        "INSERT INTO probe_key (name) VALUES (?1) ON CONFLICT (name) DO UPDATE SET name = name RETURNING id",
-        params![name],
+        "INSERT INTO probe_word (text) VALUES (?1) ON CONFLICT (text) DO UPDATE SET text = text RETURNING id",
+        params![text],
         |row| row.get(0),
     )
 }
@@ -221,20 +232,20 @@ fn intern_key(transaction: &Transaction, name: &str) -> rusqlite::Result<i64> {
 /// Records the node for `value` under the file `file_id`, then its children, which are linked to it. The root has no
 /// parent or key. A null is not recorded, as it says nothing. Each scalar is logged as it is recorded.
 fn insert_node(transaction: &Transaction, file: &str, file_id: i64, slot: Slot, value: &Value) -> rusqlite::Result<()> {
-    // A scalar is stored as its own type, so a number is compared as one and a string is kept as the text it was.
+    // A number or bool is stored as its own type, so a number is compared as one. A string is stored as the id of its
+    // word, and is looked up again by that id.
     let (kind, stored, shown) = match value {
         Value::Null => return Ok(()),
         Value::Object(_) => (Kind::Object, SqlValue::Null, None),
         Value::Array(_) => (Kind::Array, SqlValue::Null, None),
-        Value::String(text) => (Kind::String, SqlValue::Text(text.clone()), Some(text.clone())),
+        Value::String(text) => (Kind::String, SqlValue::Integer(intern_word(transaction, text)?), Some(text.clone())),
         Value::Number(number) => (Kind::Number, number_value(number), Some(number.to_string())),
         Value::Bool(flag) => (Kind::Bool, SqlValue::Integer(i64::from(*flag)), Some(flag.to_string())),
     };
-    let key_id = slot.key.map(|key| intern_key(transaction, key)).transpose()?;
+    let key_id = slot.key.map(|key| intern_word(transaction, key)).transpose()?;
     transaction.execute(
-        "INSERT INTO probe_node (file_id, parent_id, key_id, position, kind, value)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        params![file_id, slot.parent, key_id, slot.position, kind, stored],
+        "INSERT INTO probe_node (file_id, parent_id, key_id, kind, value) VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![file_id, slot.parent, key_id, kind, stored],
     )?;
     let id = transaction.last_insert_rowid();
     let label = slot.key.map_or_else(|| slot.position.map(|index| index.to_string()).unwrap_or_default(), str::to_owned);
