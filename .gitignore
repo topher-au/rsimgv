@@ -7,3 +7,5 @@
 /packaging/arch/pkg/
 /packaging/arch/*.tar.gz
 /packaging/arch/*.pkg.tar.*
+# Scratch files
+/temp/
