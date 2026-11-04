@@ -5,6 +5,7 @@
 use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::{HashMap, VecDeque};
 use std::hash::{Hash, Hasher};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::rc::Rc;
@@ -311,8 +312,23 @@ fn read(key: &Key, keeps_hash: bool) -> Option<Stored> {
     let mut metadata = MediaMetadata::from_probe(&probe);
     size_from_header(&mut metadata, path);
     let hash = if keeps_hash { moviehash(path).ok() } else { None };
-    let file_type = gio::content_type_guess(Some(path), None::<&[u8]>).0.to_string();
+    let file_type = mime_type(path);
     Some(Stored { metadata, hash, file_type: Some(file_type), probe: Some(probe) })
+}
+
+/// The MIME type of the file at `path`. It is guessed from the file name, which is instant and reads nothing. Only when
+/// the name does not say what the file is is its start read, to tell from its content.
+fn mime_type(path: &Path) -> String {
+    let (content_type, uncertain) = gio::content_type_guess(Some(path), None::<&[u8]>);
+    let content_type = if uncertain { sniff(path).unwrap_or(content_type) } else { content_type };
+    gio::content_type_get_mime_type(&content_type).map_or_else(|| content_type.to_string(), |mime| mime.to_string())
+}
+
+/// The content type of the first bytes of the file at `path`, for a file whose name does not tell what it is.
+fn sniff(path: &Path) -> Option<glib::GString> {
+    let mut header = [0; 512];
+    let count = std::fs::File::open(path).and_then(|mut file| file.read(&mut header)).ok()?;
+    Some(gio::content_type_guess(Some(path), Some(&header[..count])).0)
 }
 
 /// Fills in a picture's size from its header, for when `ffprobe` gave none.
@@ -345,15 +361,18 @@ impl MetadataStore for FileMetadataStore {
             self.forget_or_log(path);
             return None;
         }
+        // An entry from before the MIME type was kept has none, so it is read again, and written with one.
+        let file_type = value["file_type"].as_str()?.to_owned();
         let probe = value.get("probe")?.clone();
         let mut metadata = MediaMetadata::from_probe(&probe);
         size_from_header(&mut metadata, path);
-        Some(Stored { metadata, probe: Some(probe), ..Stored::default() })
+        Some(Stored { metadata, file_type: Some(file_type), probe: Some(probe), ..Stored::default() })
     }
 
     fn record(&self, path: &Path, mtime: i64, size: u64, stored: &Stored) -> std::io::Result<()> {
         let probe = stored.probe.clone().unwrap_or(Value::Null);
-        let data = json!({ "mtime": mtime, "size": size, "probe": probe }).to_string();
+        let file_type = stored.file_type.clone().unwrap_or_default();
+        let data = json!({ "mtime": mtime, "size": size, "file_type": file_type, "probe": probe }).to_string();
         write_atomically(&cache_file(&self.root, path), data.as_bytes())
     }
 

@@ -20,7 +20,7 @@ use crate::fs::metadata::MediaMetadata;
 use crate::search::query::{matches_all, Facts, Token};
 
 /// The version of the database's layout, kept in `PRAGMA user_version`.
-const VERSION: i64 = 9;
+const VERSION: i64 = 10;
 
 const SCHEMA: &str = "
     CREATE TABLE file (
