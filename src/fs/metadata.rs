@@ -186,11 +186,27 @@ impl MediaInfo {
         self.inner.files.clone()
     }
 
-    /// The metadata of the file at `path`, if it is known for this modification time and size.
+    /// The metadata of the file at `path`, if it is known for this modification time and size: from memory, or else from
+    /// the store. Nothing is read here; a caller that gets nothing queues a read with `request`.
     pub fn get(&self, path: &Path, mtime: i64, size: u64) -> Option<MediaMetadata> {
-        let known = self.inner.known.borrow();
-        let known = known.get(path)?;
-        (known.mtime == mtime && known.size == size).then(|| known.metadata.clone())
+        {
+            let known = self.inner.known.borrow();
+            if let Some(known) = known.get(path).filter(|known| known.mtime == mtime && known.size == size) {
+                return Some(known.metadata.clone());
+            }
+        }
+        let stored = self.store().load(path, mtime)?;
+        self.remember(path.to_path_buf(), mtime, size, stored.metadata.clone());
+        Some(stored.metadata)
+    }
+
+    /// Keeps the metadata of a file in memory, clearing what is kept first if it is full.
+    fn remember(&self, path: PathBuf, mtime: i64, size: u64, metadata: MediaMetadata) {
+        let mut known = self.inner.known.borrow_mut();
+        if known.len() >= MAX_KNOWN {
+            known.clear();
+        }
+        known.insert(path, Known { mtime, size, metadata });
     }
 
     /// The metadata of the file at `path`, if it is known now. Otherwise it is read in the background, and
@@ -281,12 +297,7 @@ impl MediaInfo {
                 eprintln!("rsimgv: could not save the metadata of {}: {err}", anonymous(&path));
             }
         }
-        let mut known = self.inner.known.borrow_mut();
-        if known.len() >= MAX_KNOWN {
-            known.clear();
-        }
-        known.insert(path, Known { mtime, size, metadata: stored.metadata });
-        drop(known);
+        self.remember(path, mtime, size, stored.metadata);
         let waiters = self.inner.waiters.borrow_mut().remove(&key).unwrap_or_default();
         for waiter in waiters {
             if (waiter.wanted)() {
@@ -307,16 +318,10 @@ pub fn anonymous(path: &Path) -> String {
     }
 }
 
-/// Reads one file on a worker thread, then keeps the result on the main loop. What is stored is taken from the store
-/// when it has it, and otherwise read with `ffprobe` and saved.
+/// Reads one file on a worker thread, then keeps the result on the main loop and saves it to the store. The caller has
+/// already looked the file up in the store and found nothing current, so it is read.
 async fn run(info: MediaInfo, key: Key) {
-    let store = info.store();
-    let (path, mtime, size) = key.clone();
-    if let Some(stored) = store.load(&path, mtime, size) {
-        info.finish(key, stored, false);
-        return;
-    }
-    let keeps_hash = store.keeps_hash();
+    let keeps_hash = info.store().keeps_hash();
     let work = key.clone();
     let probed = gio::spawn_blocking(move || read(&work, keeps_hash)).await.ok().flatten();
     match probed {
@@ -355,9 +360,14 @@ pub struct FileMetadataStore {
 }
 
 impl MetadataStore for FileMetadataStore {
-    fn load(&self, path: &Path, mtime: i64, size: u64) -> Option<Stored> {
-        let value: Value = serde_json::from_slice(&std::fs::read(cache_file(&self.root, path)).ok()?).ok()?;
-        if value["mtime"].as_i64()? != mtime || value["size"].as_u64()? != size {
+    fn load(&self, path: &Path, mtime: i64) -> Option<Stored> {
+        let file = cache_file(&self.root, path);
+        let value: Value = serde_json::from_slice(&std::fs::read(&file).ok()?).ok()?;
+        if value["mtime"].as_i64()? != mtime {
+            // Out of date, so the file goes, and the metadata is read and saved again.
+            if let Err(err) = std::fs::remove_file(&file) {
+                eprintln!("rsimgv: could not remove an out-of-date metadata cache file: {err}");
+            }
             return None;
         }
         let metadata = value.get("metadata").filter(|metadata| metadata.is_object())?;
