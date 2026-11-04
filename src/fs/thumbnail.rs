@@ -31,6 +31,8 @@ use gtk::glib::object::Cast;
 use gtk::prelude::PaintableExt;
 use gtk::{gdk, gdk_pixbuf, gio, glib};
 
+use crate::hash::string_hash;
+
 /// Thumbnails made at the same time, unless the settings say otherwise.
 const DEFAULT_THREADS: usize = 4;
 /// Bytes of thumbnails kept in memory; the oldest go first. A 2048-pixel thumbnail alone is 16 MB.
@@ -903,9 +905,9 @@ fn make_cancellable(root: Option<&Path>, key: &Key, cancel: Arc<AtomicBool>) -> 
 /// is one larger than `above` pixels. A thumbnail made for another time is not current and is passed over.
 fn largest_on_disk(root: &Path, path: &Path, mtime: i64, above: i32) -> Option<Pixels> {
     let uri = glib::filename_to_uri(path, None).ok()?;
-    let digest = glib::compute_checksum_for_string(glib::ChecksumType::Md5, uri.as_str())?;
+    let digest = string_hash(uri.as_str());
     SIZES.iter().rev().filter(|size| **size > above).find_map(|size| {
-        let data = std::fs::read(root.join(size.to_string()).join(format!("{digest}.png"))).ok()?;
+        let data = std::fs::read(filed(&root.join(size.to_string()), &format!("{digest}.png"))).ok()?;
         (png_text(&data, "rsimgv::MTime")?.parse::<i64>().ok()? == mtime).then(|| Pixels::from_png(&data)).flatten()
     })
 }
@@ -915,13 +917,13 @@ fn largest_on_disk(root: &Path, path: &Path, mtime: i64, above: i32) -> Option<P
 /// less, or whose thumbnails are not kept on the disk.
 pub fn cached_still_png(path: &Path, max_size: i32) -> Option<(i32, Vec<u8>)> {
     let uri = glib::filename_to_uri(path, None).ok()?;
-    let digest = glib::compute_checksum_for_string(glib::ChecksumType::Md5, uri.as_str())?;
+    let digest = string_hash(uri.as_str());
     let stamp = stamp(path).to_string();
     let root = glib::user_cache_dir().join("rsimgv");
     let found: Vec<(i32, Vec<u8>)> = SIZES
         .iter()
         .filter_map(|&pixels| {
-            let data = std::fs::read(root.join(pixels.to_string()).join(format!("{digest}.png"))).ok()?;
+            let data = std::fs::read(filed(&root.join(pixels.to_string()), &format!("{digest}.png"))).ok()?;
             (png_text(&data, "rsimgv::MTime") == Some(stamp.as_str())).then_some((pixels, data))
         })
         .collect();
@@ -932,10 +934,10 @@ pub fn cached_still_png(path: &Path, max_size: i32) -> Option<(i32, Vec<u8>)> {
 /// they are made without touching the disk. `None` if the file cannot be decoded.
 fn make(root: Option<&Path>, key: &Key) -> Option<Vec<Pixels>> {
     let uri = glib::filename_to_uri(&key.path, None).ok()?;
-    let digest = glib::compute_checksum_for_string(glib::ChecksumType::Md5, uri.as_str())?;
+    let digest = string_hash(uri.as_str());
     match key.job {
         Job::Still(media) => {
-            let file = root.map(|root| root.join(key.size.dir_name()).join(format!("{digest}.png")));
+            let file = root.map(|root| filed(&root.join(key.size.dir_name()), &format!("{digest}.png")));
             let still = cached_or_made(file.as_deref(), &uri, key.mtime, || still_pixbuf(&key.path, key.size, media))?;
             Some(vec![still])
         }
@@ -946,7 +948,7 @@ fn make(root: Option<&Path>, key: &Key) -> Option<Vec<Pixels>> {
             // A frame that cannot be made is left out, and the others still play.
             let frames: Vec<Pixels> = (0..count)
                 .filter_map(|index| {
-                    let file = root.map(|root| root.join("frames").join(key.size.dir_name()).join(format!("{digest}-{index}.png")));
+                    let file = root.map(|root| filed(&root.join("frames").join(key.size.dir_name()), &format!("{digest}-{index}.png")));
                     let at = duration * (index as f64 + 0.5) / count as f64;
                     cached_or_made(file.as_deref(), &uri, key.mtime, || frame_pixbuf(&key.path, at, key.size))
                 })
@@ -1001,7 +1003,7 @@ fn frame_pixbuf(path: &Path, seconds: f64, size: Size) -> Option<gdk_pixbuf::Pix
 /// is asked, and the answer is recorded. With no `root`, `ffprobe` is always asked.
 fn duration_of(root: Option<&Path>, digest: &str, path: &Path, mtime: i64) -> Option<f64> {
     let Some(root) = root else { return video_duration(path) };
-    let record = root.join("durations").join(digest);
+    let record = filed(&root.join("durations"), digest);
     if let Ok(text) = std::fs::read_to_string(&record) {
         let mut lines = text.lines();
         if lines.next().and_then(|line| line.parse::<i64>().ok()) == Some(mtime) {
@@ -1132,6 +1134,12 @@ fn png_text<'a>(data: &'a [u8], keyword: &str) -> Option<&'a str> {
     None
 }
 
+/// The path of the cache file `name` in `folder`, filed under the first two characters of its name, so that no folder
+/// holds very many files: `folder/<first>/<second>/<name>`. Names start with a hex digest, so they are ASCII.
+fn filed(folder: &Path, name: &str) -> PathBuf {
+    folder.join(&name[..1]).join(&name[1..2]).join(name)
+}
+
 /// Writes `data` to `file` through a temporary file, so a reader never sees half of it.
 pub(super) fn write_atomically(file: &Path, data: &[u8]) -> std::io::Result<()> {
     let dir = file.parent().ok_or(std::io::ErrorKind::InvalidInput)?;
@@ -1144,6 +1152,24 @@ mod tests {
     use super::*;
 
     /// A fresh folder for one test: its cache directory, and the path of a file in it.
+    /// The one file under `dir`, at any depth.
+    fn only_file(dir: &Path) -> PathBuf {
+        let mut files = Vec::new();
+        let mut folders = vec![dir.to_path_buf()];
+        while let Some(folder) = folders.pop() {
+            for entry in std::fs::read_dir(&folder).unwrap().flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    folders.push(path);
+                } else {
+                    files.push(path);
+                }
+            }
+        }
+        assert_eq!(files.len(), 1, "one file under {dir:?}");
+        files.pop().unwrap()
+    }
+
     fn folder(name: &str) -> (PathBuf, PathBuf) {
         let dir = std::env::temp_dir().join(format!("rsimgv-thumbs-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -1176,7 +1202,7 @@ mod tests {
         let path = picture(&dir, 600, 300);
         let key = |mtime| key(&path, mtime, Size::for_pixels(128), Job::Still(Media::Picture));
         let first = make(Some(&root), &key(1000)).expect("made");
-        let file = root.join("128").read_dir().unwrap().next().unwrap().unwrap().path();
+        let file = only_file(&root.join("128"));
         let made = gdk_pixbuf::Pixbuf::from_file(&file).unwrap();
         assert!(made.width() <= 128 && made.height() <= 128);
         assert_eq!(made.option("tEXt::rsimgv::MTime").as_deref(), Some("1000"));
@@ -1205,7 +1231,7 @@ mod tests {
 
         // What the cache holds is not read either: a thumbnail cached for the same time is passed over.
         make(Some(&root), &key).expect("cached");
-        let file = root.join("128").read_dir().unwrap().next().unwrap().unwrap().path();
+        let file = only_file(&root.join("128"));
         std::fs::write(&file, b"not a thumbnail").unwrap();
         assert!(make(None, &key).is_some());
         assert_eq!(std::fs::read(&file).unwrap(), b"not a thumbnail", "nothing is rewritten");

@@ -1,5 +1,6 @@
 #![recursion_limit = "256"]
 mod fs;
+mod hash;
 mod overlay;
 mod playlist;
 mod media;

@@ -14,6 +14,7 @@ use gtk::{gdk_pixbuf, gio, glib};
 use serde_json::{json, Value};
 
 use super::thumbnail::{run_program, write_atomically};
+use crate::hash::string_hash;
 use crate::storage::file_settings::content_hash;
 use crate::storage::media_index::MediaIndex;
 use crate::storage::metadata_store::{MetadataStore, Stored};
@@ -400,7 +401,7 @@ impl FileMetadataStore {
 /// The cache file of the metadata of `path`, named by its URI's digest.
 fn cache_file(root: &Path, path: &Path) -> PathBuf {
     let uri = glib::filename_to_uri(path, None).map(|uri| uri.to_string()).unwrap_or_default();
-    let digest = glib::compute_checksum_for_string(glib::ChecksumType::Md5, &uri).unwrap_or_default();
+    let digest = string_hash(&uri);
     root.join(format!("{digest}.json"))
 }
 
