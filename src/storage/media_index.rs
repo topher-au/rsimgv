@@ -20,7 +20,7 @@ use crate::fs::metadata::MediaMetadata;
 use crate::search::query::{matches_all, Facts, Token};
 
 /// The version of the database's layout, kept in `PRAGMA user_version`.
-const VERSION: i64 = 11;
+const VERSION: i64 = 12;
 
 const SCHEMA: &str = "
     CREATE TABLE file (
@@ -66,6 +66,32 @@ const SCHEMA: &str = "
         FROM probe_node
         JOIN file ON file.id = probe_node.file_id
         LEFT JOIN probe_word ON probe_word.id = probe_node.key_id;
+    -- Each scalar with its file's path, its name in the probe (`probe.streams[0].width`) and its value. A name is built
+    -- from the root down. An array item's position is its place among its siblings, since they are recorded in order.
+    CREATE VIEW probe_property AS
+        WITH RECURSIVE
+        step AS (
+            SELECT probe_node.id, probe_node.file_id, probe_node.parent_id, probe_node.kind, probe_node.value,
+                   CASE WHEN probe_node.key_id IS NOT NULL THEN '.' || probe_word.text
+                        ELSE '[' || (ROW_NUMBER() OVER (PARTITION BY probe_node.parent_id ORDER BY probe_node.id) - 1) || ']'
+                   END AS text
+            FROM probe_node
+            LEFT JOIN probe_word ON probe_word.id = probe_node.key_id
+        ),
+        name(id, file_id, kind, value, text) AS (
+            SELECT id, file_id, kind, value, 'probe' FROM step WHERE parent_id IS NULL
+            UNION ALL
+            SELECT step.id, step.file_id, step.kind, step.value, name.text || step.text
+            FROM step JOIN name ON step.parent_id = name.id
+        )
+        SELECT file.path AS file_path, name.text AS name,
+               CASE name.kind
+                   WHEN 2 THEN (SELECT text FROM probe_word WHERE id = name.value)
+                   ELSE name.value
+               END AS value
+        FROM name
+        JOIN file ON file.id = name.file_id
+        WHERE name.kind NOT IN (0, 1);
 ";
 
 pub struct MediaIndex {
@@ -90,7 +116,7 @@ impl MediaIndex {
             // The index is a cache of what is read from the files, so an older layout is dropped. The files are read
             // again as they are needed, and recorded in the new layout.
             connection.execute_batch(
-                "DROP VIEW IF EXISTS probe_text; DROP TABLE IF EXISTS probe_node; DROP TABLE IF EXISTS probe_word; \
+                "DROP VIEW IF EXISTS probe_property; DROP VIEW IF EXISTS probe_text; DROP TABLE IF EXISTS probe_node; DROP TABLE IF EXISTS probe_word; \
                  DROP TABLE IF EXISTS probe_key; \
                  DROP TABLE IF EXISTS file; DROP TABLE IF EXISTS probe_field; DROP TABLE IF EXISTS media;",
             )?;
