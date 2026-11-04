@@ -383,12 +383,23 @@ fn cache_file(root: &Path, path: &Path) -> PathBuf {
     root.join(format!("{digest}.json"))
 }
 
+/// The tags `ffprobe` is asked for, on the file and on each stream: where a video was taken and when it was made. Tag
+/// names are matched exactly, so each spelling a file might use is listed. The tags of pictures are not in `ffprobe`'s
+/// output, so they are read elsewhere.
+const PROBE_TAGS: &str = "location,location-eng,com.apple.quicktime.location.ISO6709,creation_time,date";
+
 /// `ffprobe`'s answer for the file at `path`: its JSON, or `None` if it could not read the file. An error is
 /// returned when `ffprobe` cannot be run at all, or stalls on the file.
 fn run_ffprobe(path: &Path) -> std::io::Result<Option<Value>> {
+    let entries = format!(
+        "format=duration,bit_rate:format_tags={PROBE_TAGS}:\
+         stream=codec_type,codec_name,width,height,avg_frame_rate,channels,duration:stream_tags={PROBE_TAGS}:\
+         stream_disposition=attached_pic"
+    );
     let output = run_program(
         Command::new("ffprobe")
-            .args(["-v", "error", "-print_format", "json", "-show_format", "-show_streams"])
+            .args(["-v", "error", "-print_format", "json", "-show_entries"])
+            .arg(entries)
             .arg(path),
     )?;
     Ok(output.and_then(|output| serde_json::from_slice(&output).ok()))
