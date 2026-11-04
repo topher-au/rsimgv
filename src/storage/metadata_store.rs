@@ -15,8 +15,9 @@ pub struct Stored {
 }
 
 pub trait MetadataStore {
-    /// The record for the file at `path`, if it was saved for this modification time and size.
-    fn load(&self, path: &Path, mtime: i64, size: u64) -> Option<Stored>;
+    /// The record for the file at `path`, if it was saved at this modification time. A record saved at another time is
+    /// out of date, so it is removed, and nothing is returned.
+    fn load(&self, path: &Path, mtime: i64) -> Option<Stored>;
 
     /// Saves the record for the file at `path`, read at this modification time and size.
     fn save(&self, path: &Path, mtime: i64, size: u64, stored: &Stored) -> io::Result<()>;
