@@ -1,7 +1,8 @@
 //! The search index: a SQLite database of the pictures and videos that have been read. Each file has a row in `file`,
 //! with its path, modification time and size, the metadata derived from its probe, and its movie hash and file type.
 //! Its `ffprobe` output is a tree, kept in `probe_node`: a row for each dict, list and value, linked to the row above it,
-//! so any key at any depth can be searched for. It is the only store that can search across files.
+//! so any key at any depth can be searched for. Each key's name is kept once, in `probe_key`, and the nodes refer to it
+//! by its id. It is the only store that can search across files.
 
 use std::ffi::OsString;
 use std::io;
@@ -18,7 +19,7 @@ use crate::fs::metadata::MediaMetadata;
 use crate::search::query::{matches_all, Facts, Token};
 
 /// The version of the database's layout, kept in `PRAGMA user_version`.
-const VERSION: i64 = 3;
+const VERSION: i64 = 4;
 
 const SCHEMA: &str = "
     CREATE TABLE file (
@@ -38,11 +39,15 @@ const SCHEMA: &str = "
         bit_rate INTEGER
     );
     CREATE INDEX file_hash ON file (hash);
+    CREATE TABLE probe_key (
+        id INTEGER PRIMARY KEY,
+        name TEXT NOT NULL UNIQUE
+    );
     CREATE TABLE probe_node (
         id INTEGER PRIMARY KEY,
         file_id INTEGER NOT NULL REFERENCES file (id) ON DELETE CASCADE,
         parent_id INTEGER REFERENCES probe_node (id) ON DELETE CASCADE,
-        key TEXT,
+        key_id INTEGER REFERENCES probe_key (id),
         position INTEGER,
         kind TEXT NOT NULL,
         value TEXT,
@@ -50,7 +55,7 @@ const SCHEMA: &str = "
     );
     CREATE INDEX probe_node_file ON probe_node (file_id);
     CREATE INDEX probe_node_parent ON probe_node (parent_id);
-    CREATE INDEX probe_node_key_value ON probe_node (key COLLATE NOCASE, value COLLATE NOCASE);
+    CREATE INDEX probe_node_key_value ON probe_node (key_id, value COLLATE NOCASE);
 ";
 
 pub struct MediaIndex {
@@ -73,7 +78,7 @@ impl MediaIndex {
             // The index is a cache of what is read from the files, so an older layout is dropped. The files are read
             // again as they are needed, and recorded in the new layout.
             connection.execute_batch(
-                "DROP TABLE IF EXISTS probe_node; DROP TABLE IF EXISTS file; \
+                "DROP TABLE IF EXISTS probe_node; DROP TABLE IF EXISTS probe_key; DROP TABLE IF EXISTS file; \
                  DROP TABLE IF EXISTS probe_field; DROP TABLE IF EXISTS media;",
             )?;
             connection.execute_batch(SCHEMA)?;
@@ -89,7 +94,8 @@ impl MediaIndex {
     pub fn files_with_key(&self, key: &str, value: &str) -> rusqlite::Result<Vec<PathBuf>> {
         let mut statement = self.connection.prepare(
             "SELECT DISTINCT file.path FROM probe_node JOIN file ON file.id = probe_node.file_id
-             WHERE probe_node.key = ?1 COLLATE NOCASE AND probe_node.value = ?2 COLLATE NOCASE",
+             WHERE probe_node.key_id IN (SELECT id FROM probe_key WHERE name = ?1 COLLATE NOCASE)
+               AND probe_node.value = ?2 COLLATE NOCASE",
         )?;
         let rows = statement.query_map(params![key, value], |row| row.get::<_, Vec<u8>>(0))?;
         rows.map(|row| row.map(|bytes| PathBuf::from(OsString::from_vec(bytes)))).collect()
@@ -118,9 +124,11 @@ impl MediaIndex {
             params![id],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
-        let mut statement = self
-            .connection
-            .prepare("SELECT id, key FROM probe_node WHERE parent_id = ?1 ORDER BY id")?;
+        let mut statement = self.connection.prepare(
+            "SELECT probe_node.id, probe_key.name FROM probe_node
+             LEFT JOIN probe_key ON probe_key.id = probe_node.key_id
+             WHERE probe_node.parent_id = ?1 ORDER BY probe_node.id",
+        )?;
         let children: Vec<(i64, Option<String>)> =
             statement.query_map(params![id], |row| Ok((row.get(0)?, row.get(1)?)))?.collect::<rusqlite::Result<_>>()?;
         Ok(match kind.as_str() {
@@ -154,6 +162,15 @@ struct Slot<'a> {
     position: Option<i64>,
 }
 
+/// The id of the key called `name`, which is added the first time it is seen.
+fn intern_key(transaction: &Transaction, name: &str) -> rusqlite::Result<i64> {
+    transaction.query_row(
+        "INSERT INTO probe_key (name) VALUES (?1) ON CONFLICT (name) DO UPDATE SET name = name RETURNING id",
+        params![name],
+        |row| row.get(0),
+    )
+}
+
 /// Records the node for `value` under the file `file_id`, then its children, which are linked to it. The root has no
 /// parent or key. A null is not recorded, as it says nothing. Each scalar is logged as it is recorded.
 fn insert_node(transaction: &Transaction, file: &str, file_id: i64, slot: Slot, value: &Value) -> rusqlite::Result<()> {
@@ -165,10 +182,11 @@ fn insert_node(transaction: &Transaction, file: &str, file_id: i64, slot: Slot, 
         Value::Number(number) => ("number", Some(number.to_string()), number.as_f64()),
         Value::Bool(flag) => ("bool", Some(flag.to_string()), None),
     };
+    let key_id = slot.key.map(|key| intern_key(transaction, key)).transpose()?;
     transaction.execute(
-        "INSERT INTO probe_node (file_id, parent_id, key, position, kind, value, number)
+        "INSERT INTO probe_node (file_id, parent_id, key_id, position, kind, value, number)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        params![file_id, slot.parent, slot.key, slot.position, kind, text, number],
+        params![file_id, slot.parent, key_id, slot.position, kind, text, number],
     )?;
     let id = transaction.last_insert_rowid();
     let label = slot.key.map_or_else(|| slot.position.map(|index| index.to_string()).unwrap_or_default(), str::to_owned);
