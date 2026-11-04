@@ -1,8 +1,7 @@
-//! The search index: a SQLite database with a row for each picture and video that has been read. Besides its metadata,
-//! a row keeps the file's movie hash, which its per-file settings are found by, and its file type, so that files can be
-//! found by what they are as well as by their name. Every field of the `ffprobe` output is also a row of its own, so
-//! that any key can be searched for without the index knowing it in advance. It is the only store that can search
-//! across files.
+//! The search index: a SQLite database of the pictures and videos that have been read. Each file has a row in `file`,
+//! with its path, modification time and size, the metadata derived from its probe, and its movie hash and file type.
+//! Its `ffprobe` output is a tree, kept in `probe_node`: a row for each dict, list and value, linked to the row above it,
+//! so any key at any depth can be searched for. It is the only store that can search across files.
 
 use std::ffi::OsString;
 use std::io;
@@ -11,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, UNIX_EPOCH};
 
 use anyhow::Context;
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde_json::Value;
 
 use super::metadata_store::{MetadataStore, Stored};
@@ -19,11 +18,12 @@ use crate::fs::metadata::MediaMetadata;
 use crate::search::query::{matches_all, Facts, Token};
 
 /// The version of the database's layout, kept in `PRAGMA user_version`.
-const VERSION: i64 = 2;
+const VERSION: i64 = 3;
 
 const SCHEMA: &str = "
-    CREATE TABLE media (
-        path BLOB PRIMARY KEY,
+    CREATE TABLE file (
+        id INTEGER PRIMARY KEY,
+        path BLOB NOT NULL UNIQUE,
         mtime INTEGER NOT NULL,
         size INTEGER NOT NULL,
         hash TEXT,
@@ -37,16 +37,20 @@ const SCHEMA: &str = "
         audio_channels INTEGER,
         bit_rate INTEGER
     );
-    CREATE INDEX media_hash ON media (hash);
-    CREATE TABLE probe_field (
-        path BLOB NOT NULL,
-        field TEXT NOT NULL,
-        name TEXT NOT NULL,
-        value TEXT NOT NULL,
-        number REAL,
-        PRIMARY KEY (path, field)
+    CREATE INDEX file_hash ON file (hash);
+    CREATE TABLE probe_node (
+        id INTEGER PRIMARY KEY,
+        file_id INTEGER NOT NULL REFERENCES file (id) ON DELETE CASCADE,
+        parent_id INTEGER REFERENCES probe_node (id) ON DELETE CASCADE,
+        key TEXT,
+        position INTEGER,
+        kind TEXT NOT NULL,
+        value TEXT,
+        number REAL
     );
-    CREATE INDEX probe_field_lookup ON probe_field (name, value COLLATE NOCASE);
+    CREATE INDEX probe_node_file ON probe_node (file_id);
+    CREATE INDEX probe_node_parent ON probe_node (parent_id);
+    CREATE INDEX probe_node_key_value ON probe_node (key COLLATE NOCASE, value COLLATE NOCASE);
 ";
 
 pub struct MediaIndex {
@@ -62,28 +66,124 @@ impl MediaIndex {
         let connection = Connection::open(file).with_context(|| format!("opening {}", file.display()))?;
         connection.busy_timeout(Duration::from_secs(5))?;
         connection.pragma_update(None, "journal_mode", "WAL")?;
+        // Deleting a file removes its probe too, which needs the foreign key to be enforced.
+        connection.pragma_update(None, "foreign_keys", "ON")?;
         let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
         if version < VERSION {
             // The index is a cache of what is read from the files, so an older layout is dropped. The files are read
             // again as they are needed, and recorded in the new layout.
-            connection.execute_batch("DROP TABLE IF EXISTS probe_field; DROP TABLE IF EXISTS media;")?;
+            connection.execute_batch(
+                "DROP TABLE IF EXISTS probe_node; DROP TABLE IF EXISTS file; \
+                 DROP TABLE IF EXISTS probe_field; DROP TABLE IF EXISTS media;",
+            )?;
             connection.execute_batch(SCHEMA)?;
             connection.pragma_update(None, "user_version", VERSION)?;
         }
         Ok(Self { connection })
     }
 
-    /// The paths of the files with a field called `name`, in the format or any stream, whose value is `value` ignoring
-    /// case. `name` is the last part of the field's path, so `title` finds `format.tags.title` and `streams.0.tags.title`.
+    /// The paths of the files with a key called `key`, at any depth of the probe, whose value is `value` ignoring case.
+    /// So `title` finds `format.tags.title` and `streams.0.tags.title` alike.
     // Nothing searches yet; the search bar will.
     #[allow(dead_code)]
-    pub fn files_with_field(&self, name: &str, value: &str) -> rusqlite::Result<Vec<PathBuf>> {
+    pub fn files_with_key(&self, key: &str, value: &str) -> rusqlite::Result<Vec<PathBuf>> {
         let mut statement = self.connection.prepare(
-            "SELECT DISTINCT path FROM probe_field WHERE name = ?1 AND value = ?2 COLLATE NOCASE",
+            "SELECT DISTINCT file.path FROM probe_node JOIN file ON file.id = probe_node.file_id
+             WHERE probe_node.key = ?1 COLLATE NOCASE AND probe_node.value = ?2 COLLATE NOCASE",
         )?;
-        let rows = statement.query_map(params![name.to_lowercase(), value], |row| row.get::<_, Vec<u8>>(0))?;
+        let rows = statement.query_map(params![key, value], |row| row.get::<_, Vec<u8>>(0))?;
         rows.map(|row| row.map(|bytes| PathBuf::from(OsString::from_vec(bytes)))).collect()
     }
+
+    /// The probe recorded for the file at `path`, rebuilt from its rows, or `None` if there is none.
+    // Nothing reads the probe back yet; the search reads the file's row.
+    #[allow(dead_code)]
+    pub fn probe_of(&self, path: &Path) -> rusqlite::Result<Option<Value>> {
+        let root: Option<i64> = self
+            .connection
+            .query_row(
+                "SELECT probe_node.id FROM probe_node JOIN file ON file.id = probe_node.file_id
+                 WHERE file.path = ?1 AND probe_node.parent_id IS NULL",
+                params![path.as_os_str().as_bytes()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        root.map(|id| self.node_value(id)).transpose()
+    }
+
+    /// The value of the node `id`: its children rebuilt in the order they were recorded, or its scalar.
+    fn node_value(&self, id: i64) -> rusqlite::Result<Value> {
+        let (kind, text): (String, Option<String>) = self.connection.query_row(
+            "SELECT kind, value FROM probe_node WHERE id = ?1",
+            params![id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        let mut statement = self
+            .connection
+            .prepare("SELECT id, key FROM probe_node WHERE parent_id = ?1 ORDER BY id")?;
+        let children: Vec<(i64, Option<String>)> =
+            statement.query_map(params![id], |row| Ok((row.get(0)?, row.get(1)?)))?.collect::<rusqlite::Result<_>>()?;
+        Ok(match kind.as_str() {
+            "object" => Value::Object(
+                children
+                    .into_iter()
+                    .map(|(child, key)| Ok((key.unwrap_or_default(), self.node_value(child)?)))
+                    .collect::<rusqlite::Result<_>>()?,
+            ),
+            "array" => Value::Array(
+                children.into_iter().map(|(child, _)| self.node_value(child)).collect::<rusqlite::Result<_>>()?,
+            ),
+            "string" => Value::String(text.unwrap_or_default()),
+            "bool" => Value::Bool(text.as_deref() == Some("true")),
+            _ => {
+                let text = text.unwrap_or_default();
+                match text.parse::<i64>() {
+                    Ok(integer) => Value::from(integer),
+                    Err(_) => text.parse::<f64>().ok().and_then(serde_json::Number::from_f64).map_or(Value::Null, Value::Number),
+                }
+            }
+        })
+    }
+}
+
+/// Records the node for `value` under the file `file_id`, then its children, which are linked to it. The root has no
+/// parent or key. A null is not recorded, as it says nothing.
+fn insert_node(
+    transaction: &Transaction,
+    file_id: i64,
+    parent: Option<i64>,
+    key: Option<&str>,
+    position: Option<i64>,
+    value: &Value,
+) -> rusqlite::Result<()> {
+    let (kind, text, number) = match value {
+        Value::Null => return Ok(()),
+        Value::Object(_) => ("object", None, None),
+        Value::Array(_) => ("array", None, None),
+        Value::String(text) => ("string", Some(text.clone()), text.parse::<f64>().ok()),
+        Value::Number(number) => ("number", Some(number.to_string()), number.as_f64()),
+        Value::Bool(flag) => ("bool", Some(flag.to_string()), None),
+    };
+    transaction.execute(
+        "INSERT INTO probe_node (file_id, parent_id, key, position, kind, value, number)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![file_id, parent, key, position, kind, text, number],
+    )?;
+    let id = transaction.last_insert_rowid();
+    match value {
+        Value::Object(map) => {
+            for (child_key, child) in map {
+                insert_node(transaction, file_id, Some(id), Some(child_key), None, child)?;
+            }
+        }
+        Value::Array(items) => {
+            for (index, child) in items.iter().enumerate() {
+                insert_node(transaction, file_id, Some(id), None, Some(index as i64), child)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 impl MetadataStore for MediaIndex {
@@ -93,7 +193,7 @@ impl MetadataStore for MediaIndex {
             .query_row(
                 "SELECT mtime, hash, file_type, width, height, duration, frame_rate, codec, audio_codec,
                         audio_channels, bit_rate
-                 FROM media WHERE path = ?1",
+                 FROM file WHERE path = ?1",
                 params![path.as_os_str().as_bytes()],
                 |row| {
                     let stored = Stored {
@@ -133,11 +233,12 @@ impl MetadataStore for MediaIndex {
         let key = path.as_os_str().as_bytes();
         let metadata = &stored.metadata;
         let transaction = self.connection.unchecked_transaction().map_err(io::Error::other)?;
-        transaction.execute("DELETE FROM probe_field WHERE path = ?1", params![key]).map_err(io::Error::other)?;
+        // Replacing the file's row removes its probe nodes with it.
+        transaction.execute("DELETE FROM file WHERE path = ?1", params![key]).map_err(io::Error::other)?;
         transaction
             .execute(
-                "INSERT OR REPLACE INTO media (path, mtime, size, hash, file_type, width, height, duration, frame_rate,
-                                               codec, audio_codec, audio_channels, bit_rate)
+                "INSERT INTO file (path, mtime, size, hash, file_type, width, height, duration, frame_rate, codec,
+                                   audio_codec, audio_channels, bit_rate)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
                 params![
                     key,
@@ -157,39 +258,31 @@ impl MetadataStore for MediaIndex {
             )
             .map_err(io::Error::other)?;
         if let Some(probe) = &stored.probe {
-            let mut fields = Vec::new();
-            flatten(probe, "", &mut fields);
-            let mut insert = transaction
-                .prepare("INSERT INTO probe_field (path, field, name, value, number) VALUES (?1, ?2, ?3, ?4, ?5)")
-                .map_err(io::Error::other)?;
-            for field in &fields {
-                insert
-                    .execute(params![key, field.field, field.name, field.value, field.number])
-                    .map_err(io::Error::other)?;
-            }
+            let file_id = transaction.last_insert_rowid();
+            insert_node(&transaction, file_id, None, None, None, probe).map_err(io::Error::other)?;
         }
         transaction.commit().map_err(io::Error::other)
     }
 
     fn forget(&self, path: &Path) -> io::Result<()> {
-        let key = path.as_os_str().as_bytes();
-        let transaction = self.connection.unchecked_transaction().map_err(io::Error::other)?;
-        transaction.execute("DELETE FROM probe_field WHERE path = ?1", params![key]).map_err(io::Error::other)?;
-        transaction.execute("DELETE FROM media WHERE path = ?1", params![key]).map_err(io::Error::other)?;
-        transaction.commit().map_err(io::Error::other)
+        self.connection
+            .execute("DELETE FROM file WHERE path = ?1", params![path.as_os_str().as_bytes()])
+            .map(|_| ())
+            .map_err(io::Error::other)
     }
 
     fn keeps_hash(&self) -> bool {
         true
     }
 
-    /// Matches each row's values, then keeps only the files that are still as the row says: a file that has gone, or
+    /// Matches each file's row, then keeps only the files that are still as the row says: a file that has gone, or
     /// changed since, is forgotten rather than found.
-    #[allow(dead_code)] // Nothing searches yet; the search bar will.
+    // Nothing searches yet; the search bar will.
+    #[allow(dead_code)]
     fn search(&self, tokens: &[Token]) -> Option<Vec<PathBuf>> {
         let rows = self
             .connection
-            .prepare("SELECT path, mtime, size, file_type, width, height, duration, frame_rate FROM media")
+            .prepare("SELECT path, mtime, size, file_type, width, height, duration, frame_rate FROM file")
             .and_then(|mut statement| {
                 statement
                     .query_map([], |row| {
@@ -240,64 +333,6 @@ impl MediaIndex {
     }
 }
 
-/// One value of the `ffprobe` output, as a row of the probe table.
-struct ProbeField {
-    /// Its path in the output, such as `streams.0.tags.title`.
-    field: String,
-    /// The last part of the path that is not a position in an array, lower case, such as `title`.
-    name: String,
-    value: String,
-    /// The value as a number, when it reads as one.
-    number: Option<f64>,
-}
-
-/// Adds every value under `value` to `out`, named by its path below `field`. Objects and arrays are walked, so keys
-/// that ffprobe did not name in advance are included, and null values are left out.
-fn flatten(value: &Value, field: &str, out: &mut Vec<ProbeField>) {
-    match value {
-        Value::Object(map) => {
-            for (key, child) in map {
-                flatten(child, &join(field, key), out);
-            }
-        }
-        Value::Array(items) => {
-            for (index, child) in items.iter().enumerate() {
-                flatten(child, &join(field, &index.to_string()), out);
-            }
-        }
-        Value::Null => {}
-        scalar => {
-            let value = match scalar {
-                Value::String(text) => text.clone(),
-                other => other.to_string(),
-            };
-            out.push(ProbeField {
-                field: field.to_owned(),
-                name: name_of(field),
-                number: value.parse().ok(),
-                value,
-            });
-        }
-    }
-}
-
-fn join(prefix: &str, key: &str) -> String {
-    if prefix.is_empty() {
-        key.to_owned()
-    } else {
-        format!("{prefix}.{key}")
-    }
-}
-
-/// The last part of `field` that is not a position in an array, in lower case.
-fn name_of(field: &str) -> String {
-    field
-        .rsplit('.')
-        .find(|part| !part.bytes().all(|byte| byte.is_ascii_digit()))
-        .unwrap_or_default()
-        .to_lowercase()
-}
-
 /// The name of the file at `path`, as its last component, lossily.
 #[allow(dead_code)] // Used by the search, which nothing calls yet.
 fn file_name(path: &Path) -> String {
@@ -338,7 +373,22 @@ mod tests {
     }
 
     #[test]
-    fn any_probe_field_is_searchable_by_its_name_and_value() {
+    fn a_probe_is_kept_as_a_tree_and_rebuilt_as_it_was() {
+        let (index, path) = index();
+        let probe = json!({
+            "streams": [
+                {"index": 0, "codec_type": "video", "width": 1920, "tags": {"encoder": "Lavf"}},
+                {"index": 1, "codec_type": "audio", "disposition": {"default": 1, "forced": false}},
+            ],
+            "format": {"format_name": "mov", "duration": "12.5", "tags": {"title": "Holiday"}},
+        });
+        let stored = Stored { probe: Some(probe.clone()), ..Stored::default() };
+        index.record(&path, 100, 4096, &stored).unwrap();
+        assert_eq!(index.probe_of(&path).unwrap(), Some(probe));
+    }
+
+    #[test]
+    fn any_key_at_any_depth_is_searchable_by_its_value() {
         let (index, path) = index();
         let probe = json!({
             "format": {"tags": {"title": "Holiday"}, "duration": "12.5"},
@@ -346,21 +396,11 @@ mod tests {
         });
         let stored = Stored { probe: Some(probe), ..Stored::default() };
         index.record(&path, 100, 4096, &stored).unwrap();
-        assert_eq!(index.files_with_field("title", "holiday").unwrap(), vec![path.clone()], "any case matches");
-        assert_eq!(index.files_with_field("encoder", "Lavf").unwrap(), vec![path.clone()], "a stream's tag is found");
-        assert_eq!(index.files_with_field("default", "1").unwrap(), vec![path.clone()], "a disposition is found");
-        assert!(index.files_with_field("title", "Summer").unwrap().is_empty());
+        assert_eq!(index.files_with_key("title", "holiday").unwrap(), vec![path.clone()], "any case matches");
+        assert_eq!(index.files_with_key("encoder", "Lavf").unwrap(), vec![path.clone()], "a stream's tag is found");
+        assert_eq!(index.files_with_key("default", "1").unwrap(), vec![path.clone()], "a disposition is found");
+        assert!(index.files_with_key("title", "Summer").unwrap().is_empty());
         index.forget(&path).unwrap();
-        assert!(index.files_with_field("title", "Holiday").unwrap().is_empty(), "forgetting removes the fields too");
-    }
-
-    #[test]
-    fn probe_values_keep_their_numbers() {
-        let mut fields = Vec::new();
-        flatten(&json!({"format": {"duration": "12.5", "format_name": "mov"}}), "", &mut fields);
-        let duration = fields.iter().find(|field| field.name == "duration").unwrap();
-        assert_eq!(duration.number, Some(12.5));
-        let format_name = fields.iter().find(|field| field.name == "format_name").unwrap();
-        assert_eq!(format_name.number, None);
+        assert!(index.files_with_key("title", "Holiday").unwrap().is_empty(), "forgetting removes the probe too");
     }
 }
