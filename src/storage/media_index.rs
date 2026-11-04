@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, UNIX_EPOCH};
 
 use anyhow::Context;
+use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, ToSql, ToSqlOutput, Value as SqlValue, ValueRef};
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde_json::Value;
 
@@ -19,7 +20,7 @@ use crate::fs::metadata::MediaMetadata;
 use crate::search::query::{matches_all, Facts, Token};
 
 /// The version of the database's layout, kept in `PRAGMA user_version`.
-const VERSION: i64 = 4;
+const VERSION: i64 = 5;
 
 const SCHEMA: &str = "
     CREATE TABLE file (
@@ -49,9 +50,8 @@ const SCHEMA: &str = "
         parent_id INTEGER REFERENCES probe_node (id) ON DELETE CASCADE,
         key_id INTEGER REFERENCES probe_key (id),
         position INTEGER,
-        kind TEXT NOT NULL,
-        value TEXT,
-        number REAL
+        kind INTEGER NOT NULL,
+        value
     );
     CREATE INDEX probe_node_file ON probe_node (file_id);
     CREATE INDEX probe_node_parent ON probe_node (parent_id);
@@ -92,12 +92,20 @@ impl MediaIndex {
     // Nothing searches yet; the search bar will.
     #[allow(dead_code)]
     pub fn files_with_key(&self, key: &str, value: &str) -> rusqlite::Result<Vec<PathBuf>> {
+        // A value is stored as the type it was in the probe, so the text is matched as a string and, if it reads as a
+        // number, as that number too.
+        let number = value
+            .parse::<i64>()
+            .map(SqlValue::Integer)
+            .or_else(|_| value.parse::<f64>().map(SqlValue::Real))
+            .unwrap_or(SqlValue::Null);
         let mut statement = self.connection.prepare(
             "SELECT DISTINCT file.path FROM probe_node JOIN file ON file.id = probe_node.file_id
              WHERE probe_node.key_id IN (SELECT id FROM probe_key WHERE name = ?1 COLLATE NOCASE)
-               AND probe_node.value = ?2 COLLATE NOCASE",
+               AND probe_node.value COLLATE NOCASE IN (?2, ?3)",
         )?;
-        let rows = statement.query_map(params![key, value], |row| row.get::<_, Vec<u8>>(0))?;
+        let text = SqlValue::Text(value.to_owned());
+        let rows = statement.query_map(params![key, text, number], |row| row.get::<_, Vec<u8>>(0))?;
         rows.map(|row| row.map(|bytes| PathBuf::from(OsString::from_vec(bytes)))).collect()
     }
 
@@ -119,7 +127,7 @@ impl MediaIndex {
 
     /// The value of the node `id`: its children rebuilt in the order they were recorded, or its scalar.
     fn node_value(&self, id: i64) -> rusqlite::Result<Value> {
-        let (kind, text): (String, Option<String>) = self.connection.query_row(
+        let (kind, stored): (Kind, SqlValue) = self.connection.query_row(
             "SELECT kind, value FROM probe_node WHERE id = ?1",
             params![id],
             |row| Ok((row.get(0)?, row.get(1)?)),
@@ -131,26 +139,56 @@ impl MediaIndex {
         )?;
         let children: Vec<(i64, Option<String>)> =
             statement.query_map(params![id], |row| Ok((row.get(0)?, row.get(1)?)))?.collect::<rusqlite::Result<_>>()?;
-        Ok(match kind.as_str() {
-            "object" => Value::Object(
+        Ok(match kind {
+            Kind::Object => Value::Object(
                 children
                     .into_iter()
                     .map(|(child, key)| Ok((key.unwrap_or_default(), self.node_value(child)?)))
                     .collect::<rusqlite::Result<_>>()?,
             ),
-            "array" => Value::Array(
+            Kind::Array => Value::Array(
                 children.into_iter().map(|(child, _)| self.node_value(child)).collect::<rusqlite::Result<_>>()?,
             ),
-            "string" => Value::String(text.unwrap_or_default()),
-            "bool" => Value::Bool(text.as_deref() == Some("true")),
-            _ => {
-                let text = text.unwrap_or_default();
-                match text.parse::<i64>() {
-                    Ok(integer) => Value::from(integer),
-                    Err(_) => text.parse::<f64>().ok().and_then(serde_json::Number::from_f64).map_or(Value::Null, Value::Number),
-                }
-            }
+            Kind::String => Value::String(match stored {
+                SqlValue::Text(text) => text,
+                _ => String::new(),
+            }),
+            Kind::Bool => Value::Bool(matches!(stored, SqlValue::Integer(flag) if flag != 0)),
+            Kind::Number => match stored {
+                SqlValue::Integer(integer) => Value::from(integer),
+                SqlValue::Real(real) => serde_json::Number::from_f64(real).map_or(Value::Null, Value::Number),
+                _ => Value::Null,
+            },
         })
+    }
+}
+
+/// What a probe node is. It is stored as its number, so the table does not repeat its name.
+#[derive(Clone, Copy)]
+enum Kind {
+    Object = 0,
+    Array = 1,
+    String = 2,
+    Number = 3,
+    Bool = 4,
+}
+
+impl ToSql for Kind {
+    fn to_sql(&self) -> rusqlite::Result<ToSqlOutput<'_>> {
+        Ok(ToSqlOutput::from(*self as i64))
+    }
+}
+
+impl FromSql for Kind {
+    fn column_result(value: ValueRef<'_>) -> FromSqlResult<Self> {
+        match i64::column_result(value)? {
+            0 => Ok(Kind::Object),
+            1 => Ok(Kind::Array),
+            2 => Ok(Kind::String),
+            3 => Ok(Kind::Number),
+            4 => Ok(Kind::Bool),
+            code => Err(FromSqlError::OutOfRange(code)),
+        }
     }
 }
 
@@ -160,6 +198,15 @@ struct Slot<'a> {
     parent_label: &'a str,
     key: Option<&'a str>,
     position: Option<i64>,
+}
+
+/// A JSON number as an integer when it is one, otherwise as a real.
+fn number_value(number: &serde_json::Number) -> SqlValue {
+    number
+        .as_i64()
+        .map(SqlValue::Integer)
+        .or_else(|| number.as_f64().map(SqlValue::Real))
+        .unwrap_or(SqlValue::Null)
 }
 
 /// The id of the key called `name`, which is added the first time it is seen.
@@ -174,23 +221,24 @@ fn intern_key(transaction: &Transaction, name: &str) -> rusqlite::Result<i64> {
 /// Records the node for `value` under the file `file_id`, then its children, which are linked to it. The root has no
 /// parent or key. A null is not recorded, as it says nothing. Each scalar is logged as it is recorded.
 fn insert_node(transaction: &Transaction, file: &str, file_id: i64, slot: Slot, value: &Value) -> rusqlite::Result<()> {
-    let (kind, text, number) = match value {
+    // A scalar is stored as its own type, so a number is compared as one and a string is kept as the text it was.
+    let (kind, stored, shown) = match value {
         Value::Null => return Ok(()),
-        Value::Object(_) => ("object", None, None),
-        Value::Array(_) => ("array", None, None),
-        Value::String(text) => ("string", Some(text.clone()), text.parse::<f64>().ok()),
-        Value::Number(number) => ("number", Some(number.to_string()), number.as_f64()),
-        Value::Bool(flag) => ("bool", Some(flag.to_string()), None),
+        Value::Object(_) => (Kind::Object, SqlValue::Null, None),
+        Value::Array(_) => (Kind::Array, SqlValue::Null, None),
+        Value::String(text) => (Kind::String, SqlValue::Text(text.clone()), Some(text.clone())),
+        Value::Number(number) => (Kind::Number, number_value(number), Some(number.to_string())),
+        Value::Bool(flag) => (Kind::Bool, SqlValue::Integer(i64::from(*flag)), Some(flag.to_string())),
     };
     let key_id = slot.key.map(|key| intern_key(transaction, key)).transpose()?;
     transaction.execute(
-        "INSERT INTO probe_node (file_id, parent_id, key_id, position, kind, value, number)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        params![file_id, slot.parent, key_id, slot.position, kind, text, number],
+        "INSERT INTO probe_node (file_id, parent_id, key_id, position, kind, value)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![file_id, slot.parent, key_id, slot.position, kind, stored],
     )?;
     let id = transaction.last_insert_rowid();
     let label = slot.key.map_or_else(|| slot.position.map(|index| index.to_string()).unwrap_or_default(), str::to_owned);
-    if let Some(text) = &text {
+    if let Some(text) = &shown {
         eprintln!("index-update: {file} {label}={text},{}=[{label}={{{label}={text}}}]", slot.parent_label);
     }
     match value {
