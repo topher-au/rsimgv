@@ -201,8 +201,9 @@ struct Inner {
     /// How eagerly thumbnails are made for items off screen, and whether a video is playing.
     aggression: Cell<Aggression>,
     playing: Cell<bool>,
-    /// Whether the timer that stops jobs nothing wants is running.
+    /// Whether the timer that stops jobs nothing wants is running, and the timers themselves.
     watching: Cell<bool>,
+    timers: Timers,
     /// What to call when the level is set.
     aggression_watchers: RefCell<Vec<Rc<dyn Fn()>>>,
     /// How many jobs may run at the same time.
@@ -221,6 +222,23 @@ struct Inner {
     unload_pending: Cell<bool>,
     /// The things that could not be made, so they are not tried again.
     failed: RefCell<HashSet<Key>>,
+}
+
+/// The timers that follow the running jobs and let go of thumbnails nothing shows. They are owned here so that
+/// dropping the thumbnails removes them: `timeout_add_local` puts them on the process's main context, where a timer
+/// holds a callback that may not be run from another thread.
+#[derive(Default)]
+struct Timers {
+    watch: RefCell<Option<glib::SourceId>>,
+    unload: RefCell<Option<glib::SourceId>>,
+}
+
+impl Drop for Timers {
+    fn drop(&mut self) {
+        for source in [self.watch.get_mut().take(), self.unload.get_mut().take()].into_iter().flatten() {
+            source.remove();
+        }
+    }
 }
 
 /// How long after an item leaves the screen its thumbnail is let go, so a quick scroll back finds it still there.
@@ -378,15 +396,19 @@ impl Thumbnails {
         if self.inner.watching.replace(true) {
             return;
         }
-        let thumbnails = self.clone();
-        glib::timeout_add_local(Duration::from_millis(100), move || {
-            if thumbnails.inner.running.get() == 0 {
-                thumbnails.inner.watching.set(false);
+        // The timer holds only a weak reference, so it does not keep the thumbnails alive. Dropping them removes it.
+        let inner = Rc::downgrade(&self.inner);
+        let source = glib::timeout_add_local(Duration::from_millis(100), move || {
+            let Some(inner) = inner.upgrade() else { return glib::ControlFlow::Break };
+            if inner.running.get() == 0 {
+                inner.watching.set(false);
+                *inner.timers.watch.borrow_mut() = None;
                 return glib::ControlFlow::Break;
             }
-            thumbnails.stop_unwanted();
+            Thumbnails { inner }.stop_unwanted();
             glib::ControlFlow::Continue
         });
+        *self.inner.timers.watch.borrow_mut() = Some(source);
     }
 
     /// Sets whether thumbnails are read from and written to the disk. What is already there is left alone: it is
@@ -415,11 +437,15 @@ impl Thumbnails {
         if self.inner.unload_pending.replace(true) {
             return;
         }
-        let thumbnails = self.clone();
-        glib::timeout_add_local_once(UNLOAD_DELAY, move || {
+        let inner = Rc::downgrade(&self.inner);
+        let source = glib::timeout_add_local_once(UNLOAD_DELAY, move || {
+            let Some(inner) = inner.upgrade() else { return };
+            *inner.timers.unload.borrow_mut() = None;
+            let thumbnails = Thumbnails { inner };
             thumbnails.inner.unload_pending.set(false);
             thumbnails.unload_offscreen();
         });
+        *self.inner.timers.unload.borrow_mut() = Some(source);
     }
 
     /// Forgets what is no longer on screen, and lets go of the thumbnails that leaves with nothing to show them.
@@ -1248,9 +1274,14 @@ mod tests {
         let again = thumbnails.clone();
         let seen = Rc::new(Cell::new(0));
         let counted = seen.clone();
-        thumbnails.request(key.clone(), None, || true, move |_| {
-            again.request(key.clone(), None, || true, move |textures| counted.set(textures.len()));
-        });
+        // A context of its own, so a job left behind does not outlive the test on the process's context.
+        glib::MainContext::new()
+            .with_thread_default(|| {
+                thumbnails.request(key.clone(), None, || true, move |_| {
+                    again.request(key.clone(), None, || true, move |textures| counted.set(textures.len()));
+                });
+            })
+            .expect("a fresh main context is not owned");
         assert_eq!(seen.get(), 1);
     }
 
@@ -1328,7 +1359,10 @@ mod tests {
         };
         thumbnails.inner.waiters.borrow_mut().insert(job.clone(), vec![waiter(false), waiter(true), waiter(false)]);
 
-        thumbnails.request(job.clone(), None, || true, |_| {});
+        // A context of its own, so the job it starts does not outlive the test on the process's context.
+        glib::MainContext::new()
+            .with_thread_default(|| thumbnails.request(job.clone(), None, || true, |_| {}))
+            .expect("a fresh main context is not owned");
 
         assert_eq!(thumbnails.inner.waiters.borrow()[&job].len(), 2);
     }
@@ -1392,7 +1426,12 @@ mod tests {
         thumbnails.remember(job.clone(), vec![Pixels::from_file(&path).expect("read").texture()]);
         let on_screen = Rc::new(Cell::new(true));
         let flag = on_screen.clone();
-        thumbnails.request(job, None, move || flag.get(), |_| {});
+        // A context of its own, so a job a test leaves behind does not outlive it on the process's context.
+        glib::MainContext::new()
+            .with_thread_default(|| {
+                thumbnails.request(job, None, move || flag.get(), |_| {});
+            })
+            .expect("a fresh main context is not owned");
         (thumbnails, path, on_screen)
     }
 
