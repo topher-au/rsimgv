@@ -209,6 +209,8 @@ mod imp {
         #[template_child]
         pub remember_volume_row: TemplateChild<adw::SwitchRow>,
         #[template_child]
+        pub remember_aspect_row: TemplateChild<adw::SwitchRow>,
+        #[template_child]
         pub remember_rotation_row: TemplateChild<adw::SwitchRow>,
         #[template_child]
         pub remember_zoom_row: TemplateChild<adw::SwitchRow>,
@@ -722,6 +724,7 @@ fn bind_switches(settings: &Settings, imp: &imp::PreferencesDialog) {
         ("remember.position", &imp.remember_position_row),
         ("remember.speed", &imp.remember_speed_row),
         ("remember.volume", &imp.remember_volume_row),
+        ("remember.aspect", &imp.remember_aspect_row),
         ("remember.rotation", &imp.remember_rotation_row),
         ("remember.zoom", &imp.remember_zoom_row),
         ("remember.pan", &imp.remember_pan_row),
@@ -1496,6 +1499,7 @@ impl PreferencesDialog {
             imp.remember_position_row.clone(),
             imp.remember_speed_row.clone(),
             imp.remember_volume_row.clone(),
+            imp.remember_aspect_row.clone(),
             imp.remember_rotation_row.clone(),
             imp.remember_zoom_row.clone(),
         ];

@@ -418,6 +418,10 @@ mod tests {
             "video.volume-down",
             Binding { target: Some("video".to_owned()), ..Binding::new("ctrl+down".to_owned(), Scope::Video) }
         ));
+        assert!(table.insert(
+            "video.set-aspect",
+            Binding { target: Some("16:9".to_owned()), ..Binding::new("ctrl+9".to_owned(), Scope::Video) }
+        ));
         let text = table.to_yaml();
         assert!(text.contains("target: application"));
         assert!(!text.contains("target: video"));
@@ -425,8 +429,11 @@ mod tests {
         assert!(loaded.apply_yaml(&text).is_empty());
         assert_eq!(loaded.bindings("video.volume-up"), table.bindings("video.volume-up"));
         assert_eq!(loaded.bindings("video.volume-down"), table.bindings("video.volume-down"));
+        assert_eq!(loaded.bindings("video.set-aspect"), table.bindings("video.set-aspect"));
         let (action, binding) = loaded.resolve_binding("ctrl+up", &[Scope::View, Scope::Video]).unwrap();
         assert_eq!((action.name, binding.target.as_deref()), ("video.volume-up", Some("application")));
+        let (action, binding) = loaded.resolve_binding("ctrl+9", &[Scope::View, Scope::Video]).unwrap();
+        assert_eq!((action.name, binding.target.as_deref()), ("video.set-aspect", Some("16:9")));
 
         // A target an action does not take is reported, and its entry skipped.
         let problems = loaded.apply_yaml("schema: 1\nactions:\n  video.volume-up:\n    - key: ctrl+u\n      target: elsewhere\n  view.next:\n    - key: ctrl+t\n      target: application\n");

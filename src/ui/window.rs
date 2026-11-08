@@ -996,6 +996,7 @@ impl Window {
             position: settings.boolean("remember.position"),
             speed: settings.boolean("remember.speed"),
             volume: settings.boolean("remember.volume"),
+            aspect: settings.boolean("remember.aspect"),
             rotation: settings.boolean("remember.rotation"),
             zoom: settings.boolean("remember.zoom"),
             pan: settings.boolean("remember.pan"),
@@ -1217,6 +1218,8 @@ impl Window {
         bound_action(&video, &weak, "toggle-backdrop", |window| window.toggle_setting("video.backdrop.enabled"));
         bound_action(&video, &weak, "toggle-crop", Window::toggle_crop);
         bound_action(&video, &weak, "cycle-crop-ratio", Window::cycle_crop_ratio);
+        target_action(&video, &weak, "video.set-aspect", |window, aspect| window.set_video_aspect(aspect));
+        bound_action(&video, &weak, "cycle-aspect", |window| window.cycle_video_aspect());
         bound_action(&video, &weak, "edit-crop", |window| window.imp().viewer.toggle_manual_crop());
         bound_action(&video, &weak, "lock-crop", |window| window.imp().viewer.toggle_crop_lock());
         bound_action(&video, &weak, "set-thumbnail-frame", |window| window.imp().viewer.set_thumbnail_frame());
@@ -2680,6 +2683,18 @@ impl Window {
         self.notify(&format!("Crop shape: {next}"));
     }
 
+    /// Sets the output aspect ratio of the video shown, or gives it its own back, and says so over the window.
+    fn set_video_aspect(&self, aspect: &str) {
+        let aspect = self.imp().viewer.set_aspect(aspect);
+        self.notify(&format!("Aspect: {aspect}"));
+    }
+
+    /// Cycles the output aspect ratio of the video shown, and says the new ratio over the window.
+    fn cycle_video_aspect(&self) {
+        let aspect = self.imp().viewer.cycle_aspect();
+        self.notify(&format!("Aspect: {aspect}"));
+    }
+
     /// Shows the browse items' filenames, or hides them.
     fn toggle_filename(&self) {
         if let Some(settings) = self.imp().settings.get() {
@@ -3706,7 +3721,7 @@ const WHEEL_VOLUME_STEP: f64 = 5.0;
 const WHEEL_SEEK_STEP: f64 = 5.0;
 
 /// The settings the viewer and the window title are set from, applied again whenever one changes.
-const VIEWER_SETTINGS: [&str; 64] = [
+const VIEWER_SETTINGS: [&str; 65] = [
     "video.crop.enabled",
     "video.crop.method",
     "video.crop.trim",
@@ -3719,6 +3734,7 @@ const VIEWER_SETTINGS: [&str; 64] = [
     "remember.position",
     "remember.speed",
     "remember.volume",
+    "remember.aspect",
     "remember.rotation",
     "remember.zoom",
     "remember.pan",
@@ -4539,6 +4555,21 @@ pub fn action_parameter(name: &str, value: Option<f64>, target: Option<&str>) ->
         (None, Some(target)) => Some(target.to_variant()),
         (None, None) => None,
     }
+}
+
+/// Adds the action `full_name` (with its group, such as `video.set-aspect`) to `map`, which is that group, running
+/// `run` on the window with the target it is activated with, or the action's default when it is given none.
+fn target_action(map: &impl IsA<gio::ActionMap>, window: &glib::WeakRef<Window>, full_name: &'static str, run: fn(&Window, &str)) {
+    let name = full_name.split_once('.').map_or(full_name, |(_, name)| name);
+    let default = target_info(full_name).map_or("", |info| info.default);
+    let action = gio::SimpleAction::new(name, Some(glib::VariantTy::STRING));
+    let window = window.clone();
+    action.connect_activate(move |_, parameter| {
+        let Some(window) = window.upgrade() else { return };
+        let target = parameter.and_then(|parameter| parameter.get::<String>()).unwrap_or_else(|| default.to_owned());
+        run(&window, &target);
+    });
+    map.add_action(&action);
 }
 
 /// Adds the volume action `full_name` (with its group, such as `video.volume`) to `map`, which is that group,

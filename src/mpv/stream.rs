@@ -255,6 +255,8 @@ mod imp {
         /// candidate is the last measurement made from frames, which the next must agree with to be used.
         pub(super) path: RefCell<std::path::PathBuf>,
         pub(super) framing: Cell<Framing>,
+        /// The output aspect ratio override, or `None` for the video's own.
+        pub(super) aspect: Cell<Option<(i32, i32)>>,
         pub(super) crop: Cell<Option<CropRect>>,
         pub(super) crop_candidate: Cell<Option<CropRect>>,
         /// Whether the crop in use is held, so it is not looked for again.
@@ -637,6 +639,18 @@ impl MpvStream {
         }
         self.apply_framing_filters();
         self.schedule_crop_check();
+    }
+
+    /// Overrides the aspect ratio the video is output at, or gives it its own when `aspect` is `None`. The player is
+    /// shared, so each stream sets this when it starts.
+    pub fn set_aspect(&self, aspect: Option<(i32, i32)>) {
+        let imp = self.imp();
+        imp.aspect.set(aspect);
+        let Some(player) = imp.player.borrow().clone() else { return };
+        match aspect {
+            Some((width, height)) => player.set_string("video-aspect-override", &format!("{width}:{height}")),
+            None => player.set_string("video-aspect-override", "no"),
+        }
     }
 
     /// The crop in use, if the picture is cropped.

@@ -194,6 +194,7 @@ pub struct Remember {
     pub position: bool,
     pub speed: bool,
     pub volume: bool,
+    pub aspect: bool,
     pub rotation: bool,
     pub zoom: bool,
     /// Where a zoomed picture is panned to, which only means something with the zoom it goes with.
@@ -202,7 +203,7 @@ pub struct Remember {
 
 impl Default for Remember {
     fn default() -> Self {
-        Self { enabled: true, position: true, speed: true, volume: false, rotation: false, zoom: true, pan: true }
+        Self { enabled: true, position: true, speed: true, volume: false, aspect: true, rotation: false, zoom: true, pan: true }
     }
 }
 
@@ -214,6 +215,7 @@ impl Remember {
                 "position" => self.position,
                 "speed" => self.speed,
                 "volume" | "muted" => self.volume,
+                "aspect" => self.aspect,
                 "rotation" | "mirrored" => self.rotation,
                 "fit" | "zoom" => self.zoom,
                 "pan-x" | "pan-y" => self.zoom && self.pan,
@@ -486,6 +488,8 @@ mod imp {
         /// Which of a file's settings are kept, and the volume and mute state the video started with, so a change to them
         /// can be told from the level a video merely inherited.
         pub(super) remember: Cell<Remember>,
+        /// The output aspect ratio set for the video shown, as a ratio name, or `None` for its own.
+        pub(super) aspect: RefCell<Option<String>>,
         /// How videos played by mpv are framed.
         pub(super) framing: Cell<crate::mpv::Framing>,
         pub(super) audio_at_load: Cell<(f64, bool)>,
@@ -1454,6 +1458,31 @@ impl MediaViewer {
     /// Sets which of a file's settings are kept for it.
     pub fn set_remember(&self, remember: Remember) {
         self.imp().remember.set(remember);
+    }
+
+    /// Sets the output aspect ratio of the video shown, as one of the common ratios or `auto` for the video's own, and
+    /// returns the ratio as it is now. Only the mpv player can change it.
+    pub fn set_aspect(&self, aspect: &str) -> String {
+        let aspect = crate::mpv::framing::aspect_from_name(aspect).map(|_| aspect.to_owned());
+        self.imp().aspect.replace(aspect.clone());
+        let stream = self.imp().media.borrow().as_ref().and_then(|media| media.downcast_ref::<crate::mpv::MpvStream>().cloned());
+        if let Some(stream) = stream {
+            stream.set_aspect(aspect.as_deref().and_then(crate::mpv::framing::aspect_from_name));
+        }
+        aspect.unwrap_or_else(|| "auto".to_owned())
+    }
+
+    /// Cycles the output aspect ratio of the video shown through the common ratios and back to its own, and returns the
+    /// ratio it settles on.
+    pub fn cycle_aspect(&self) -> String {
+        use crate::keybindings::actions::ASPECT_TARGETS;
+        let current = self.imp().aspect.borrow().clone();
+        let index = current
+            .as_deref()
+            .and_then(|current| ASPECT_TARGETS.iter().position(|(name, _)| *name == current))
+            .unwrap_or(0);
+        let (next, _) = ASPECT_TARGETS[(index + 1) % ASPECT_TARGETS.len()];
+        self.set_aspect(next)
     }
 
     /// Sets the application volume, which a video without a volume of its own follows.
@@ -2754,6 +2783,15 @@ impl MediaViewer {
         }
         imp.shown_any.set(true);
         if video {
+            // The output aspect ratio is kept for the video when the settings say to, and the video's own is used otherwise.
+            let aspect = settings
+                .as_ref()
+                .filter(|_| imp.remember.get().aspect)
+                .and_then(|settings| settings.get_str("aspect"))
+                .filter(|aspect| crate::mpv::framing::aspect_from_name(aspect).is_some())
+                .map(str::to_owned);
+            imp.aspect.replace(aspect.clone());
+            let output_aspect = aspect.as_deref().and_then(crate::mpv::framing::aspect_from_name);
             // libmpv plays the video if it is chosen and starts; otherwise GTK's media backend does.
             let media: gtk::MediaStream = imp
                 .use_mpv
@@ -2765,6 +2803,7 @@ impl MediaViewer {
                     let speed = settings.as_ref().filter(|_| imp.remember.get().speed).and_then(|settings| settings.get_f64("speed")).unwrap_or(1.0);
                     stream.set_speed(speed);
                     stream.set_framing(imp.framing.get());
+                    stream.set_aspect(output_aspect);
                     if let Some(crop) = settings.as_ref().and_then(saved_crop) {
                         if let Some(crops) = VideoCrops::shared() {
                             let _ = crops.set(&path, crop);
@@ -2989,6 +3028,8 @@ impl MediaViewer {
                     changes.push(("volume", Some(audio.0.into())));
                     changes.push(("muted", audio.1.then(|| true.into())));
                 }
+                // The output aspect ratio is kept as the ratio's name, or cleared when the video's own is used.
+                changes.push(("aspect", imp.aspect.borrow().clone().map(serde_yaml_ng::Value::String)));
                 changes
             }
             None if imp.canvas.texture().is_some() => {

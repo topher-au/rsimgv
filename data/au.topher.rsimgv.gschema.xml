@@ -690,6 +690,10 @@
       <default>false</default>
       <summary>Keep the volume and mute state of a video</summary>
     </key>
+    <key name="aspect" type="b">
+      <default>true</default>
+      <summary>Keep the output aspect ratio set for a video</summary>
+    </key>
     <key name="rotation" type="b">
       <default>false</default>
       <summary>Keep how a picture or video was turned and mirrored</summary>

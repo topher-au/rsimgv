@@ -276,10 +276,19 @@ impl VolumeTarget {
 /// The targets a binding of a volume action can choose between.
 pub const VOLUME_TARGETS: &[(&str, &str)] = &[(VolumeTarget::Video.name(), "Current Video"), (VolumeTarget::Application.name(), "Application")];
 
+/// The aspect ratios a binding of the set-aspect action can choose between, and that the cycle action steps through.
+pub const ASPECT_TARGETS: &[(&str, &str)] =
+    &[("auto", "Original"), ("4:3", "4:3"), ("16:9", "16:9"), ("9:16", "9:16"), ("1:1", "1:1"), ("3:2", "3:2"), ("2:3", "2:3"), ("21:9", "21:9")];
+
 /// The target the action `name` takes from its bindings, if it takes one.
 pub fn target_info(name: &str) -> Option<TargetInfo> {
-    matches!(name, "video.volume" | "video.volume-up" | "video.volume-down")
-        .then_some(TargetInfo { label: "Volume", default: VolumeTarget::Video.name(), choices: VOLUME_TARGETS })
+    match name {
+        "video.volume" | "video.volume-up" | "video.volume-down" => {
+            Some(TargetInfo { label: "Volume", default: VolumeTarget::Video.name(), choices: VOLUME_TARGETS })
+        }
+        "video.set-aspect" => Some(TargetInfo { label: "Aspect ratio", default: "auto", choices: ASPECT_TARGETS }),
+        _ => None,
+    }
 }
 
 /// The value the action `name` takes from its bindings, if it takes one.
@@ -664,6 +673,12 @@ pub const ACTIONS: &[ActionInfo] = &[
         name: "video.cycle-crop-ratio", description: "Cycle the shape the video is cropped to through auto and the standard aspect ratios.", icon: "object-select-symbolic", label: "Cycle Crop Shape", defaults: &[],
     },
     ActionInfo {
+        name: "video.set-aspect", description: "Set the output aspect ratio of the video to the ratio the binding chooses, or back to the video's own with Original.", icon: "video-display-symbolic", label: "Set Aspect Ratio", defaults: &[],
+    },
+    ActionInfo {
+        name: "video.cycle-aspect", description: "Cycle the output aspect ratio of the video through Original and the common aspect ratios.", icon: "object-select-symbolic", label: "Cycle Aspect Ratio", defaults: &[],
+    },
+    ActionInfo {
         name: "video.edit-crop", description: "Drag the crop over the video, then apply it or cancel.", icon: "edit-crop-symbolic", label: "Edit Crop", defaults: &[],
     },
     ActionInfo {
@@ -745,6 +760,11 @@ mod tests {
             assert_eq!(info.title(None), "Current Video");
         }
         assert!(target_info("video.mute").is_none());
+
+        let aspect = target_info("video.set-aspect").expect("the aspect action takes a ratio");
+        assert_eq!(aspect.default, "auto");
+        assert!(aspect.has("16:9") && aspect.has("21:9") && !aspect.has("elsewhere"));
+        assert_eq!(aspect.title(Some("16:9")), "16:9");
     }
 
     #[test]
