@@ -107,9 +107,11 @@ pub fn with_aspect(rect: CropRect, aspect: Option<(i32, i32)>) -> CropRect {
     }
 }
 
-/// The label of the filter that finds the picture, and the one that crops to it.
+/// The label of the filter that finds the picture, the one that crops to it, and the one that sets the output shape after
+/// the crop.
 pub const DETECTOR_LABEL: &str = "rsimgv-cropdetect";
 pub const CROP_LABEL: &str = "rsimgv-crop";
+pub const ASPECT_LABEL: &str = "rsimgv-aspect";
 
 /// The brightness step, in levels of mean luma, that marks a picture's border, and the mean change per column or row that
 /// counts as motion.
@@ -136,6 +138,24 @@ pub fn detector_filter() -> String {
 /// The `crop` filter for `rect` as an `vf` argument.
 pub fn crop_filter(rect: CropRect) -> String {
     format!("@{CROP_LABEL}:crop=w={}:h={}:x={}:y={}", rect.width, rect.height, rect.left, rect.top)
+}
+
+/// The `setsar` filter that stretches the cropped picture by sample aspect ratio `sar`, as a `vf` argument. It goes after
+/// the crop, so it changes the shape of the picture rather than the shape cropped out of the video.
+pub fn aspect_filter(sar: f64) -> String {
+    format!("@{ASPECT_LABEL}:setsar={sar:.6}")
+}
+
+/// The sample aspect ratio that stretches a `width` by `height` cropped picture to `aspect`, which is the shape left to
+/// right of a square-pixel picture. `None` when either shape is not usable.
+pub fn aspect_sar(width: i32, height: i32, aspect: (i32, i32)) -> Option<f64> {
+    if width <= 0 || height <= 0 || aspect.0 <= 0 || aspect.1 <= 0 {
+        return None;
+    }
+    let current = f64::from(width) / f64::from(height);
+    let target = f64::from(aspect.0) / f64::from(aspect.1);
+    let sar = target / current;
+    (sar.is_finite() && sar > 0.0).then_some(sar)
 }
 
 /// The rectangle, as (x, y, width, height), of a `width` by `height` picture shown as big as fits an `area_width` by `area_height`
@@ -618,6 +638,15 @@ mod tests {
     fn letterbox_bars_are_removed() {
         let gray = frame(|x, y| if (110..610).contains(&y) { (60 + (x * 7 + y * 3) % 60) as u8 } else { 0 });
         assert_eq!(find_picture(&gray, W, H, 12.0, 0), rect(1280, 500, 0, 110));
+    }
+
+    #[test]
+    fn the_output_aspect_stretches_the_cropped_picture() {
+        let sar = aspect_sar(640, 480, (16, 9)).unwrap();
+        assert!((sar - 4.0 / 3.0).abs() < 1e-9, "{sar}");
+        assert_eq!(aspect_sar(640, 480, (4, 3)), Some(1.0));
+        assert_eq!(aspect_sar(0, 480, (16, 9)), None);
+        assert_eq!(aspect_filter(sar), "@rsimgv-aspect:setsar=1.333333");
     }
 
     #[test]

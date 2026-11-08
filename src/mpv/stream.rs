@@ -641,16 +641,14 @@ impl MpvStream {
         self.schedule_crop_check();
     }
 
-    /// Overrides the aspect ratio the video is output at, or gives it its own when `aspect` is `None`. The player is
-    /// shared, so each stream sets this when it starts.
+    /// Overrides the aspect ratio the video is output at, or gives it its own when `aspect` is `None`. The filter goes
+    /// after the crop, so it stretches the cropped picture rather than the video before the crop. The player is shared, so
+    /// each stream sets this when it starts.
     pub fn set_aspect(&self, aspect: Option<(i32, i32)>) {
         let imp = self.imp();
         imp.aspect.set(aspect);
-        let Some(player) = imp.player.borrow().clone() else { return };
-        match aspect {
-            Some((width, height)) => player.set_string("video-aspect-override", &format!("{width}:{height}")),
-            None => player.set_string("video-aspect-override", "no"),
-        }
+        self.apply_framing_filters();
+        self.invalidate_contents();
     }
 
     /// The crop in use, if the picture is cropped.
@@ -752,8 +750,13 @@ impl MpvStream {
         let crop = base
             .map(|rect| framing::with_aspect(rect, framing.aspect))
             .map(|rect| framing::trimmed(rect, framing.trim_pixels, source));
+        // The output aspect is set after the crop, so it stretches the picture that is left.
+        let aspect = imp.aspect.get().and_then(|aspect| {
+            let rect = crop.or_else(full)?;
+            framing::aspect_sar(rect.width, rect.height, aspect).map(framing::aspect_filter)
+        });
         let detector = !imp.crop_locked.get() && framing.crop == Some(CropMethod::CropDetect);
-        player.set_framing_filters(detector, crop);
+        player.set_framing_filters(detector, crop, aspect);
     }
 
     /// Looks for where to crop: asks the cropdetect filter, or measures a frame decoded from the file. The next look is set when

@@ -274,8 +274,16 @@ fn upright_filter(rotation: i64) -> Option<String> {
 
 /// The filters that go first in the chain, as one list for `vf pre`, which puts them in the order given: the upright filter, then
 /// the detector, then the crop, so the detector and the crop see the video as it is shown. `None` when there are none.
-fn front_filters(rotation: i64, detector: bool, crop: Option<CropRect>) -> Option<String> {
-    let filters: Vec<String> = [upright_filter(rotation), detector.then(framing::detector_filter), crop.map(framing::crop_filter)].into_iter().flatten().collect();
+fn front_filters(rotation: i64, detector: bool, crop: Option<CropRect>, aspect: Option<&str>) -> Option<String> {
+    let filters: Vec<String> = [
+        upright_filter(rotation),
+        detector.then(framing::detector_filter),
+        crop.map(framing::crop_filter),
+        aspect.map(str::to_owned),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
     (!filters.is_empty()).then(|| filters.join(","))
 }
 
@@ -375,9 +383,11 @@ pub struct Player {
     orientation: Cell<Orientation>,
     /// The filter that `set_interpolation_filter` last put in the chain.
     interpolation: std::cell::RefCell<Option<String>>,
-    /// The crop filter and the detector that finds where to crop that `set_framing_filters` put in the chain.
+    /// The crop filter and the detector that finds where to crop, and the aspect filter after the crop, that
+    /// `set_framing_filters` put in the chain.
     crop: Cell<Option<CropRect>>,
     detector: Cell<bool>,
+    aspect: RefCell<Option<String>>,
     /// Whether frames may be rendered, and how many times the output has been found rotated since the video was reconfigured.
     gate: Arc<RenderGate>,
     rotation_checks: Cell<u32>,
@@ -408,7 +418,7 @@ impl Player {
             if handle.is_null() {
                 return Err("could not create the mpv player".to_owned());
             }
-            let mut player = Self { id: NEXT_PLAYER_ID.fetch_add(1, Ordering::Relaxed), handle, render: std::ptr::null_mut(), gl, gl_backdrop: RefCell::default(), renderer: None, wakeup: None, rotation: Cell::new(0), orientation: Cell::new(Orientation::default()), interpolation: Default::default(), crop: Cell::new(None), detector: Cell::new(false), gate: Arc::default(), rotation_checks: Cell::new(0), ipc };
+            let mut player = Self { id: NEXT_PLAYER_ID.fetch_add(1, Ordering::Relaxed), handle, render: std::ptr::null_mut(), gl, gl_backdrop: RefCell::default(), renderer: None, wakeup: None, rotation: Cell::new(0), orientation: Cell::new(Orientation::default()), interpolation: Default::default(), crop: Cell::new(None), detector: Cell::new(false), aspect: RefCell::default(), gate: Arc::default(), rotation_checks: Cell::new(0), ipc };
             for (name, value) in [
                 ("vo", "libmpv"),
                 // The software renderer has no way to share a hardware decoder's surfaces, and the turn, crop and interpolation
@@ -543,14 +553,18 @@ impl Player {
         Ok(())
     }
 
-    /// Sets the filters that frame the video: the detector that finds the picture, and the crop to `crop`. The upright filter
-    /// stays first, so the detector and the crop see the video as it is shown. A change holds up the video, so nothing
-    /// happens for what is already in the chain.
-    pub fn set_framing_filters(&self, detector: bool, crop: Option<CropRect>) {
-        if self.detector.replace(detector) == detector && self.crop.replace(crop) == crop {
+    /// Sets the filters that frame the video: the detector that finds the picture, the crop to `crop`, and the aspect filter
+    /// after it. The upright filter stays first, so the detector and the crop see the video as it is shown. A change holds
+    /// up the video, so nothing happens for what is already in the chain.
+    pub fn set_framing_filters(&self, detector: bool, crop: Option<CropRect>, aspect: Option<String>) {
+        let detector_changed = self.detector.replace(detector) != detector;
+        let crop_changed = self.crop.replace(crop) != crop;
+        let aspect_changed = *self.aspect.borrow() != aspect;
+        if !(detector_changed || crop_changed || aspect_changed) {
             return;
         }
         self.crop.set(crop);
+        self.aspect.replace(aspect);
         self.rebuild_front_filters();
         // The frame shown already passed the filters, and a paused video would stay that way, so it is decoded again.
         if self.get_flag("pause") == Some(true) {
@@ -562,11 +576,18 @@ impl Player {
     /// command to take the old ones out and one to put the new ones in. The filters from the user's options and SVP stay.
     fn rebuild_front_filters(&self) {
         // Removing a label that is not in the chain does nothing.
-        let labels = [UPRIGHT_FILTER_LABEL.to_owned(), format!("@{}", framing::DETECTOR_LABEL), format!("@{}", framing::CROP_LABEL)].join(",");
+        let labels = [
+            UPRIGHT_FILTER_LABEL.to_owned(),
+            format!("@{}", framing::DETECTOR_LABEL),
+            format!("@{}", framing::CROP_LABEL),
+            format!("@{}", framing::ASPECT_LABEL),
+        ]
+        .join(",");
         if let Err(err) = self.command(&["vf", "remove", &labels]) {
             eprintln!("rsimgv: mpv: could not remove {labels}: {err}");
         }
-        if let Some(filters) = front_filters(self.rotation.get(), self.detector.get(), self.crop.get()) {
+        let aspect = self.aspect.borrow();
+        if let Some(filters) = front_filters(self.rotation.get(), self.detector.get(), self.crop.get(), aspect.as_deref()) {
             if let Err(err) = self.command(&["vf", "pre", &filters]) {
                 eprintln!("rsimgv: mpv: could not add the filters: {err}");
             }
@@ -894,13 +915,15 @@ mod tests {
 
     #[test]
     fn the_front_filters_are_one_list_in_order() {
-        assert_eq!(front_filters(0, false, None), None);
+        assert_eq!(front_filters(0, false, None, None), None);
         let crop = CropRect { width: 404, height: 720, left: 438, top: 0 };
-        assert_eq!(front_filters(0, false, Some(crop)).as_deref(), Some("@rsimgv-crop:crop=w=404:h=720:x=438:y=0"));
-        let all = front_filters(90, true, Some(crop)).unwrap();
-        let (upright, detector, crop) = (all.find("@rsimgv-upright:"), all.find("@rsimgv-cropdetect:"), all.find("@rsimgv-crop:"));
-        assert!(upright < detector && detector < crop && upright.is_some());
-        assert_eq!(all.matches(",@rsimgv-").count(), 2, "the filters are separated by commas, and the one in brackets keeps its own");
+        assert_eq!(front_filters(0, false, Some(crop), None).as_deref(), Some("@rsimgv-crop:crop=w=404:h=720:x=438:y=0"));
+        let aspect = framing::aspect_filter(1.333333);
+        let all = front_filters(90, true, Some(crop), Some(&aspect)).unwrap();
+        let (upright, detector, crop, aspect) =
+            (all.find("@rsimgv-upright:"), all.find("@rsimgv-cropdetect:"), all.find("@rsimgv-crop:"), all.find("@rsimgv-aspect:"));
+        assert!(upright < detector && detector < crop && crop < aspect && upright.is_some());
+        assert_eq!(all.matches(",@rsimgv-").count(), 3, "the filters are separated by commas, and the one in brackets keeps its own");
     }
 
     #[test]
