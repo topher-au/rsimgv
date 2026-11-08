@@ -9,7 +9,7 @@ use gtk::subclass::prelude::*;
 use gtk::{gio, glib};
 
 use crate::keybindings::{
-    self, actions::target_info, actions::value_info, actions::ActionInfo, actions::Scope, actions::ACTIONS, Binding, BindingTable,
+    self, actions::all, actions::target_info, actions::value_info, actions::ActionInfo, actions::Scope, Binding, BindingTable,
 };
 use super::binding_dialog;
 use super::key_handler::chord_from_event;
@@ -66,7 +66,7 @@ mod imp {
             // The popup lists each action's name over its description; the button shows the name.
             // Each item's string holds the action's name, label and description, so the search matches any of them.
             let texts: Vec<String> =
-                ACTIONS.iter().map(|action| format!("{}\n{}\n{}", action.name, action.label, action.description)).collect();
+                all().iter().map(|action| format!("{}\n{}\n{}", action.name, action.label, action.description)).collect();
             let texts: Vec<&str> = texts.iter().map(String::as_str).collect();
             let actions = gtk::DropDown::new(
                 Some(gtk::StringList::new(&texts)),
@@ -405,7 +405,7 @@ mod imp {
             let action = item.item().and_downcast::<gtk::StringObject>().and_then(|object| {
                 let text = object.string();
                 let name = text.split('\n').next().unwrap_or_default().to_owned();
-                ACTIONS.iter().find(|action| action.name == name)
+                all().into_iter().find(|action| action.name == name)
             });
             let (Some(child), Some(action)) = (item.child(), action) else { return };
             if let Some(line) = child.downcast_ref::<gtk::Box>() {
@@ -515,7 +515,7 @@ impl KeybindingList {
             list.remove(&row);
         }
         let mut bindings = Vec::new();
-        for action in ACTIONS {
+        for action in all() {
             for binding in keybindings::with_table(|table| table.bindings(action.name).to_vec()) {
                 let clashes = keybindings::with_table(|table| table.conflicts(action.name, &binding.chord, binding.context));
                 list.append(&self.binding_row(action, &binding, &clashes));
@@ -646,7 +646,8 @@ impl KeybindingList {
     /// Adds a chord to the action picked beside the add button.
     fn add_binding(&self) {
         let Some(picker) = self.imp().actions.get() else { return };
-        let Some(action) = ACTIONS.get(picker.selected() as usize) else { return };
+        let actions = all();
+        let Some(action) = actions.get(picker.selected() as usize).copied() else { return };
         let weak = self.downgrade();
         binding_dialog::show(self, action, None, move |binding| {
             if let Some(list) = weak.upgrade() {

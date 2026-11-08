@@ -154,6 +154,13 @@
                     </property>
                   </object>
                 </child>
+                <child>
+                  <object class="GtkBox" id="plugin_panels">
+                    <property name="orientation">vertical</property>
+                    <property name="spacing">6</property>
+                    <style><class name="rsimgv-sidebar-section"/></style>
+                  </object>
+                </child>
               </object>
             </property>
           </object>

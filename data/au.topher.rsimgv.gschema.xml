@@ -14,6 +14,7 @@
     <child name="mouse" schema="au.topher.rsimgv.mouse"/>
     <child name="remote" schema="au.topher.rsimgv.remote"/>
     <child name="scripts" schema="au.topher.rsimgv.scripts"/>
+    <child name="plugins" schema="au.topher.rsimgv.plugins"/>
   </schema>
   <schema id="au.topher.rsimgv.browse" path="/au/topher/rsimgv/browse/">
     <child name="info" schema="au.topher.rsimgv.browse.info"/>
@@ -843,6 +844,20 @@
     <key name="list" type="as">
       <default>[]</default>
       <summary>Scripts listed in the preferences, each a JSON object with its name, command and wait flag</summary>
+    </key>
+  </schema>
+  <schema id="au.topher.rsimgv.plugins" path="/au/topher/rsimgv/plugins/">
+    <key name="disabled" type="as">
+      <default>[]</default>
+      <summary>Plugin ids that are not loaded</summary>
+    </key>
+    <key name="extra-directories" type="as">
+      <default>[]</default>
+      <summary>Additional directories searched for plugins</summary>
+    </key>
+    <key name="auto-reload" type="b">
+      <default>true</default>
+      <summary>Watch Python plugin files and reload them when they change</summary>
     </key>
   </schema>
 </schemalist>

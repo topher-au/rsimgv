@@ -25,8 +25,9 @@ use std::time::Duration;
 use gtk::glib;
 use serde_json::{json, Value};
 
-/// How long a transport waits for the GTK thread to answer before it gives up.
-const ANSWER_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long a transport waits for the GTK thread to answer before it gives up. Plugin actions may wait for a
+/// network request to a model, so this is generous rather than a UI responsiveness bound.
+const ANSWER_TIMEOUT: Duration = Duration::from_secs(180);
 /// The largest HTTP body accepted, in bytes.
 const MAX_BODY: usize = 1 << 20;
 /// How often an idle listener checks whether it has been told to stop.

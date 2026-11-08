@@ -6,7 +6,10 @@ use crate::settings::{ChangedHandler, Settings};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use adw::prelude::{ActionRowExt, AdwDialogExt, PreferencesGroupExt, PreferencesPageExt, PreferencesRowExt};
+use adw::prelude::{
+    ActionRowExt, AdwDialogExt, ComboRowExt, EntryRowExt, ExpanderRowExt, PreferencesGroupExt, PreferencesPageExt,
+    PreferencesRowExt,
+};
 use adw::subclass::prelude::*;
 
 use super::keybinding_list::KeybindingList;
@@ -299,6 +302,10 @@ mod imp {
         #[template_child]
         pub scripts_list: TemplateChild<gtk::ListBox>,
         #[template_child]
+        pub plugins_list: TemplateChild<gtk::ListBox>,
+        #[template_child]
+        pub plugin_auto_reload_row: TemplateChild<adw::SwitchRow>,
+        #[template_child]
         pub add_script_button: TemplateChild<gtk::Button>,
         #[template_child]
         pub edit_script_button: TemplateChild<gtk::Button>,
@@ -412,6 +419,7 @@ impl PreferencesDialog {
         dialog.bind_sections();
         tighten(imp.section_stack.upcast_ref());
         dialog.bind_scripts(settings);
+        dialog.bind_plugins(settings);
         imp.about_version_row.set_subtitle(env!("CARGO_PKG_VERSION"));
         imp.app_version.set_label(env!("CARGO_PKG_VERSION"));
         let gtk_version = format!("{}.{}.{}", gtk::major_version(), gtk::minor_version(), gtk::micro_version());
@@ -582,6 +590,138 @@ impl PreferencesDialog {
 }
 
 impl PreferencesDialog {
+    /// Lists the plugins, with a reload button and the settings each exposes, and binds the auto-reload switch.
+    fn bind_plugins(&self, settings: &Settings) {
+        settings.bind("plugins.auto-reload", &*self.imp().plugin_auto_reload_row, "active").build();
+
+        let list = self.imp().plugins_list.clone();
+        list.remove_all();
+        let value = crate::plugins::list();
+        for plugin in value["plugins"].as_array().into_iter().flatten() {
+            let name = plugin["name"].as_str().unwrap_or("Plugin");
+            let id = plugin["id"].as_str().unwrap_or_default().to_owned();
+            let runtime = plugin["runtime"].as_str().unwrap_or_default();
+            let description = plugin["description"].as_str().unwrap_or_default();
+            let running = plugin["running"].as_bool().unwrap_or(false);
+            let error = plugin["error"].as_str();
+            let subtitle = match error {
+                Some(error) => format!("{id} · {runtime} · {error}"),
+                None if description.is_empty() => {
+                    format!("{id} · {runtime} · {}", if running { "running" } else { "not running" })
+                }
+                None => format!("{description} · {runtime} · {}", if running { "running" } else { "not running" }),
+            };
+
+            let settings = crate::plugins::plugin_settings(&id);
+            let row: gtk::Widget = if settings.is_empty() {
+                adw::ActionRow::builder().title(name).subtitle(&subtitle).build().upcast()
+            } else {
+                let expander = adw::ExpanderRow::builder().title(name).subtitle(&subtitle).build();
+                let values = crate::plugins::plugin_config(&id);
+                for setting in settings {
+                    let current = values.get(&setting.key).cloned().unwrap_or(setting.default.clone());
+                    let key = setting.key.clone();
+                    let plugin_id = id.clone();
+                    let widget: gtk::Widget = match setting.kind.as_str() {
+                        "bool" => {
+                            let row = adw::SwitchRow::builder()
+                                .title(&setting.label)
+                                .subtitle(&setting.description)
+                                .active(current.as_bool().unwrap_or(false))
+                                .build();
+                            row.connect_active_notify(move |row| {
+                                let _ = crate::plugins::set_plugin_setting(
+                                    &plugin_id,
+                                    &key,
+                                    serde_json::Value::Bool(row.is_active()),
+                                );
+                            });
+                            row.upcast()
+                        }
+                        "int" => {
+                            let minimum = setting.min.unwrap_or(0) as f64;
+                            let maximum = setting.max.unwrap_or(1_000_000) as f64;
+                            let value = current.as_i64().unwrap_or(minimum as i64) as f64;
+                            let row = adw::SpinRow::with_range(minimum, maximum, 1.0);
+                            row.set_title(&setting.label);
+                            row.set_subtitle(&setting.description);
+                            row.set_value(value.clamp(minimum, maximum));
+                            row.connect_value_notify(move |row| {
+                                let _ = crate::plugins::set_plugin_setting(
+                                    &plugin_id,
+                                    &key,
+                                    serde_json::Value::from(row.value() as i64),
+                                );
+                            });
+                            row.upcast()
+                        }
+                        "choice" => {
+                            let choices: Vec<&str> = setting.choices.iter().map(String::as_str).collect();
+                            let row = adw::ComboRow::builder()
+                                .title(&setting.label)
+                                .subtitle(&setting.description)
+                                .model(&gtk::StringList::new(&choices))
+                                .build();
+                            let selected = current
+                                .as_str()
+                                .and_then(|value| setting.choices.iter().position(|choice| choice == value))
+                                .unwrap_or(0);
+                            row.set_selected(selected as u32);
+                            let choices = setting.choices.clone();
+                            row.connect_selected_notify(move |row| {
+                                if let Some(choice) = choices.get(row.selected() as usize) {
+                                    let _ = crate::plugins::set_plugin_setting(
+                                        &plugin_id,
+                                        &key,
+                                        serde_json::Value::String(choice.clone()),
+                                    );
+                                }
+                            });
+                            row.upcast()
+                        }
+                        _ => {
+                            let row = adw::EntryRow::builder()
+                                .title(&setting.label)
+                                .text(current.as_str().unwrap_or_default())
+                                .build();
+                            if !setting.description.is_empty() {
+                                row.set_tooltip_text(Some(&setting.description));
+                            }
+                            row.connect_apply(move |row| {
+                                let _ = crate::plugins::set_plugin_setting(
+                                    &plugin_id,
+                                    &key,
+                                    serde_json::Value::String(row.text().to_string()),
+                                );
+                            });
+                            row.upcast()
+                        }
+                    };
+                    expander.add_row(&widget);
+                }
+                expander.upcast()
+            };
+
+            let reload = gtk::Button::from_icon_name("view-refresh-symbolic");
+            reload.set_tooltip_text(Some("Reload plugin"));
+            reload.set_valign(gtk::Align::Center);
+            reload.add_css_class("flat");
+            let reload_id = id.clone();
+            reload.connect_clicked(move |_| {
+                if let Err(err) = crate::plugins::reload(Some(&reload_id)) {
+                    eprintln!("rsimgv: {err}");
+                }
+            });
+
+            if let Some(row) = row.downcast_ref::<adw::ActionRow>() {
+                row.add_suffix(&reload);
+            } else if let Some(row) = row.downcast_ref::<adw::ExpanderRow>() {
+                row.add_suffix(&reload);
+            }
+            list.append(&row);
+        }
+    }
+
     /// Lists the scripts, and adds, edits or removes them through a dialog. Each change is saved to the
     /// `scripts` setting, and the list follows that setting.
     fn bind_scripts(&self, settings: &Settings) {

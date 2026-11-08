@@ -75,6 +75,14 @@ mod imp {
         pub(super) playlist_panel: std::cell::OnceCell<PlaylistPanel>,
         #[template_child]
         pub filesystem_expander: TemplateChild<gtk::Expander>,
+        /// The bottom of the sidebar, where plugin panels are added.
+        #[template_child]
+        pub plugin_panels: TemplateChild<gtk::Box>,
+        /// The header's main menu, which gets a section for plugin menu items.
+        #[template_child]
+        pub menu_button: TemplateChild<gtk::MenuButton>,
+        /// The position of that section, so a reload can remove it before adding a new one.
+        pub(super) plugin_menu_section: Cell<Option<u32>>,
         #[template_child]
         pub filesystem_root_button: TemplateChild<gtk::ToggleButton>,
         #[template_child]
@@ -405,8 +413,12 @@ impl Window {
         });
         imp.viewer.connect_item_changed({
             let weak = window.downgrade();
-            move |_, _| {
+            move |_, path| {
                 if let Some(window) = weak.upgrade() {
+                    crate::plugins::queue_event(
+                        "viewer.item_changed",
+                        serde_json::json!({"path": path.to_string_lossy()}),
+                    );
                     window.update_title();
                     window.refresh_keybinds_overlay();
                 }
@@ -525,6 +537,8 @@ impl Window {
         imp.tab_view.add_controller(scroll);
         window.navigate(&start_location(settings));
         window.reselect_last_file(settings);
+        crate::plugins::build_panels(&window);
+        crate::plugins::build_menu(&window);
         window
     }
 
@@ -549,6 +563,24 @@ impl Window {
     /// The folder the window shows, or `None` before the first navigation.
     pub fn current_path(&self) -> Option<PathBuf> {
         self.imp().current_path.borrow().clone()
+    }
+
+    /// The box at the bottom of the sidebar where plugin panels are added.
+    pub fn plugin_panel_host(&self) -> gtk::Box {
+        self.imp().plugin_panels.clone()
+    }
+
+    /// The window's main menu, which plugin items are appended to.
+    pub fn plugin_menu(&self) -> Option<gio::Menu> {
+        self.imp().menu_button.menu_model().and_then(|model| model.downcast::<gio::Menu>().ok())
+    }
+
+    pub fn plugin_menu_section(&self) -> Option<u32> {
+        self.imp().plugin_menu_section.get()
+    }
+
+    pub fn set_plugin_menu_section(&self, index: Option<u32>) {
+        self.imp().plugin_menu_section.set(index);
     }
 
     /// Records `folder`, the one the browser has open, as the last folder, for the window to open at when `start.location`
@@ -603,6 +635,7 @@ impl Window {
                 Reveal::Expand => imp.tree.reveal_path(path),
                 Reveal::SelectOnly => imp.tree.reveal_path_selecting_only(path),
             }
+            crate::plugins::queue_event("folder.navigated", serde_json::json!({"path": path.to_string_lossy()}));
             return true;
         }
 
@@ -614,6 +647,7 @@ impl Window {
             Reveal::SelectOnly => imp.tree.reveal_path_selecting_only(path),
         }
         imp.updating.set(false);
+        crate::plugins::queue_event("folder.navigated", serde_json::json!({"path": path.to_string_lossy()}));
         true
     }
 
@@ -889,6 +923,9 @@ impl Window {
             imp.viewer_fullscreened.set(true);
         }
         self.update_title();
+        if let Some(item) = self.viewer_item() {
+            crate::plugins::queue_event("viewer.opened", serde_json::json!({"path": item.path.to_string_lossy()}));
+        }
     }
 
     /// Shows the browse page, leaving whatever the viewer holds loaded for when it comes back.
@@ -932,6 +969,7 @@ impl Window {
         let imp = self.imp();
         imp.viewer.close();
         self.hide_viewer_page();
+        crate::plugins::queue_event("viewer.closed", serde_json::json!({}));
     }
 
     /// Shows the item selected in the browse view in the viewer, or returns from the viewer to the browse view. The
@@ -1096,6 +1134,18 @@ impl Window {
             }
         });
         self.add_action(&notify);
+        // Menu items contributed by plugins name this action and pass the full plugin action name.
+        let plugin_action = gio::SimpleAction::new("plugin-action", Some(glib::VariantTy::STRING));
+        plugin_action.connect_activate({
+            let weak = weak.clone();
+            move |_, parameter| {
+                let Some(window) = weak.upgrade() else { return };
+                if let Some(name) = parameter.and_then(|parameter| parameter.get::<String>()) {
+                    crate::plugins::invoke_action(&name, &window);
+                }
+            }
+        });
+        self.add_action(&plugin_action);
         bound_action(self, &weak, "toggle-keybinds", Window::toggle_keybinds_overlay);
         bound_action(self, &weak, "settings", Window::show_preferences);
         bound_action(self, &weak, "viewing-history", Window::show_viewing_history);
@@ -2404,6 +2454,9 @@ impl Window {
     /// Runs the action `name` on this window, as a key binding would, passing `value` if the action takes one and
     /// choosing `target` if it takes one. Returns whether it ran.
     pub fn run_action_with(&self, name: &str, value: Option<f64>, target: Option<&str>) -> bool {
+        if name.starts_with("plugin.") {
+            return crate::plugins::invoke_action(name, self);
+        }
         WidgetExt::activate_action(self, name, action_parameter(name, value, target).as_ref()).is_ok()
     }
 
@@ -3647,6 +3700,10 @@ impl Window {
                     if window.active_browse().as_ref() == Some(view) {
                         window.imp().navigation.set_selected((!name.is_empty()).then(|| name.to_owned()));
                     }
+                    crate::plugins::queue_event(
+                        "selection.changed",
+                        serde_json::json!({"path": view.path().map(|path| path.to_string_lossy().into_owned()), "selected": name}),
+                    );
                 }
             }
         });

@@ -74,14 +74,14 @@ use crate::fs::metadata::{MediaInfo, MediaMetadata};
 use crate::fs::thumbnail;
 use crate::storage::bookmarks;
 use crate::services::ipc::Error;
-use crate::keybindings::actions::{find, target_info, ACTIONS, DEFAULT_NOTIFICATION_SECONDS, NOTIFICATION_LEVELS};
+use crate::keybindings::actions::{all, find, target_info, DEFAULT_NOTIFICATION_SECONDS, NOTIFICATION_LEVELS};
 use crate::ui::{Level, Message, Window};
 use crate::ui::message_overlay::Position;
 
 pub fn handle(window: &Window, method: &str, params: &Value) -> Result<Value, Error> {
     match method {
         "actions.list" => {
-            let actions: Vec<Value> = ACTIONS
+            let actions: Vec<Value> = all()
                 .iter()
                 .map(|action| {
                     json!({
@@ -101,6 +101,14 @@ pub fn handle(window: &Window, method: &str, params: &Value) -> Result<Value, Er
             let name = text_param(params, "name")?;
             if find(name).is_none() {
                 return Err(Error::new("unknown_action", format!("no action named {name}")));
+            }
+            if name.starts_with("plugin.") {
+                return crate::plugins::invoke_action_sync(
+                    name,
+                    window,
+                    std::time::Duration::from_secs(120),
+                )
+                .map_err(|err| Error::new("plugin_error", err));
             }
             if find(name).is_some_and(|action| action.takes_notification()) {
                 let message = text_param(params, "message")?;
@@ -383,6 +391,39 @@ pub fn handle(window: &Window, method: &str, params: &Value) -> Result<Value, Er
         "bookmarks.remove" => {
             let path = Path::new(text_param(params, "path")?);
             window.remove_bookmark(path);
+            Ok(json!({}))
+        }
+        "plugins.list" => Ok(crate::plugins::list()),
+        "plugins.settings" => {
+            let id = text_param(params, "id")?;
+            let settings: Vec<Value> = crate::plugins::plugin_settings(id)
+                .into_iter()
+                .map(|setting| {
+                    json!({
+                        "key": setting.key,
+                        "label": setting.label,
+                        "description": setting.description,
+                        "kind": setting.kind,
+                        "default": setting.default,
+                        "choices": setting.choices,
+                        "min": setting.min,
+                        "max": setting.max,
+                    })
+                })
+                .collect();
+            Ok(json!({"settings": settings, "values": crate::plugins::plugin_config(id)}))
+        }
+        "plugins.set-setting" => {
+            let id = text_param(params, "id")?.to_owned();
+            let key = text_param(params, "key")?.to_owned();
+            let value = params.get("value").cloned().unwrap_or(Value::Null);
+            crate::plugins::set_plugin_setting(&id, &key, value)
+                .map_err(|err| Error::new("plugin_error", err))?;
+            Ok(json!({}))
+        }
+        "plugins.reload" => {
+            let id = optional_text(params, "id")?;
+            crate::plugins::reload(id).map_err(|err| Error::new("plugin_error", err))?;
             Ok(json!({}))
         }
         _ => Err(Error::new("unknown_method", format!("no method named {method}"))),
