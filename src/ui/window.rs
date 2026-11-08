@@ -329,7 +329,7 @@ impl Window {
         let panel = PlaylistPanel::new(settings);
         let _ = window.imp().playlist_panel.set(panel);
         window.setup_playlist_splits(settings);
-        GtkWindowExt::connect_focus_widget_notify(&window, |window| window.update_handle_highlights());
+        GtkWindowExt::connect_focus_widget_notify(&window, |window| window.update_context_highlights());
         if settings.boolean("playlist.detached") {
             window.detach_playlist(settings);
         }
@@ -1180,14 +1180,15 @@ impl Window {
         self.insert_action_group("tree", Some(&tree));
     }
 
-    /// Lights the drag handle of the sidebar that holds the focus: the folder tree's or the playlist's.
-    fn update_handle_highlights(&self) {
+    /// Marks the sidebar that holds the focus as the active context.
+    fn update_context_highlights(&self) {
         let imp = self.imp();
         let scopes = self.active_scopes();
-        imp.split.set_handle_active(scopes.contains(&Scope::Tree));
+        let tree = scopes.contains(&Scope::Tree);
         let playlist = scopes.contains(&Scope::Playlist);
-        imp.playlist_split.set_handle_active(playlist);
-        imp.viewer.playlist_split().set_handle_active(playlist);
+        imp.split.set_sidebar_active(tree);
+        imp.playlist_split.set_sidebar_active(playlist);
+        imp.viewer.playlist_split().set_sidebar_active(playlist);
     }
 
     /// Where the keyboard focus is: in the folder tree, in the playlist, or else in the content, the browse view or the
@@ -1229,7 +1230,7 @@ impl Window {
         self.focus_pane(next.unwrap_or(FocusPane::Content));
     }
 
-    /// Moves the focus to `pane`, showing it first if it is hidden, then outlines it for a moment and names it over the
+    /// Moves the focus to `pane`, showing it first if it is hidden, then pulses it for a moment and names it over the
     /// window.
     fn focus_pane(&self, pane: FocusPane) {
         let imp = self.imp();
@@ -1652,6 +1653,8 @@ impl Window {
         for split in [&browse, &viewer] {
             split.set_user_sidebar_width((width > 0).then_some(width));
             split.set_sidebar_position(gtk::PackType::End);
+            // Docked, the playlist can narrow to 180px; in its own window it has no such limit.
+            split.set_min_sidebar_width(180);
             split.connect_show_sidebar_changed({
                 let weak = self.downgrade();
                 move |view, shown| {
@@ -4387,7 +4390,7 @@ enum FocusPane {
     Playlist,
 }
 
-/// How long the outline around a pane the focus moved to stays up, and how long its name does.
+/// How long the line along the bottom of a pane the focus moved to stays up, and how long its name does.
 const FOCUS_PULSE: std::time::Duration = std::time::Duration::from_millis(700);
 const FOCUS_NOTICE: std::time::Duration = std::time::Duration::from_millis(1200);
 

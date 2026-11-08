@@ -3,6 +3,17 @@
   background-color: var(--window-bg-color);
 }
 
+// The sidebar that owns the active context: an accent gradient fades up from its bottom edge.
+.sidebar-pane.active-context,
+.overlay-pane.active-context {
+  background-image: linear-gradient(
+    to top,
+    color-mix(in srgb, var(--accent-bg-color) 65%, transparent) 0,
+    color-mix(in srgb, var(--accent-bg-color) 25%, transparent) 4px,
+    transparent 12px
+  );
+}
+
 // Grip on the sidebar's inner edge, dragged to resize the sidebar.
 .rsimgv-split-handle {
   background-color: transparent;
@@ -10,10 +21,5 @@
 
   &:hover {
     background-color: rgba(128, 128, 128, 0.35);
-  }
-
-  // The sidebar's context is active: the focus is in it.
-  &.active {
-    background-color: color-mix(in srgb, #{"var(--accent-bg-color)"} 70%, transparent);
   }
 }

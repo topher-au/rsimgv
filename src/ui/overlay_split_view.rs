@@ -546,13 +546,13 @@ impl OverlaySplitView {
         }
     }
 
-    /// Lights the drag handle, to show that the sidebar holds the keyboard focus.
-    pub fn set_handle_active(&self, active: bool) {
-        let handle = &self.imp().handle;
+    /// Marks the sidebar as holding the active context, so the style sheet can point at it.
+    pub fn set_sidebar_active(&self, active: bool) {
+        let sidebar = &self.imp().sidebar_box;
         if active {
-            handle.add_css_class("active");
+            sidebar.add_css_class("active-context");
         } else {
-            handle.remove_css_class("active");
+            sidebar.remove_css_class("active-context");
         }
     }
 
