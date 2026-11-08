@@ -424,6 +424,8 @@ mod imp {
         pub(super) thumbnail_bar: ThumbnailBar,
         /// Slides the thumbnail bar in from its edge and out again.
         pub(super) bar_revealer: gtk::Revealer,
+        /// Slides the thumbnail bar in and out when it sits beside the picture, rather than floating over it.
+        pub(super) bar_dock: gtk::Revealer,
         /// The side of the picture the bar is on (bottom for `None`), and whether it is turned on.
         pub(super) bar_side: Cell<Option<gtk::PositionType>>,
         pub(super) bar_shown: Cell<bool>,
@@ -696,6 +698,7 @@ mod imp {
             // after, lie over them.
             obj.media_overlay();
             self.bar_revealer.set_transition_duration(BAR_SLIDE_MS);
+            self.bar_dock.set_transition_duration(BAR_SLIDE_MS);
             self.overlay.add_overlay(&self.bar_revealer);
             self.pin_button.connect_toggled({
                 let weak = weak.clone();
@@ -809,12 +812,15 @@ impl MediaViewer {
 
     /// Puts the thumbnail bar on the `side` of the picture, turned on or off. Floating (`overlay`), it lies over
     /// the picture and slides in only while the pointer is near that edge, unless `pinned`. A pinned bar never floats:
-    /// it sits beside the picture, so the overlay over the picture keeps to the picture's own area. Turning it on shows
-    /// it briefly.
+    /// it sits beside the picture, so the overlay over the picture keeps to the picture's own area. Turning it on or
+    /// off slides it, as the settings say.
     pub fn set_thumbnail_bar(&self, side: gtk::PositionType, shown: bool, overlay: bool, pinned: bool) {
         let imp = self.imp();
         let turned_on = shown && !imp.bar_shown.get();
         let floating = overlay && !pinned;
+        // A change of only whether the bar is shown, on the same side and in the same mode, slides the bar already in
+        // place rather than taking it out and putting it back, which would show it at once.
+        let in_place = imp.bar_side.get() == Some(side) && imp.bar_overlay.get() == floating;
         imp.bar_side.set(Some(side));
         imp.bar_shown.set(shown);
         imp.bar_overlay.set(floating);
@@ -822,27 +828,57 @@ impl MediaViewer {
         self.place_status_bar();
         let bar = &imp.thumbnail_bar;
         let revealer = &imp.bar_revealer;
+        let dock = &imp.bar_dock;
         bar.set_side(side);
         bar.set_toggles(pinned, overlay);
+
+        if in_place && bar.parent().is_some() {
+            if floating {
+                if turned_on && !pinned {
+                    self.peek_thumbnail_bar();
+                } else {
+                    self.reveal_near(imp.pointer.get());
+                }
+            } else {
+                dock.set_reveal_child(shown);
+            }
+            return;
+        }
 
         // Take the bar out of wherever it is, then put it where it now goes.
         let body = &*imp.body;
         if bar.parent().as_ref() == Some(body.upcast_ref::<gtk::Widget>()) {
             body.remove(bar);
-        } else if revealer.child().is_some() {
+        }
+        if dock.parent().as_ref() == Some(body.upcast_ref::<gtk::Widget>()) {
+            body.remove(dock);
+        }
+        if dock.child().is_some() {
+            dock.set_child(None::<&gtk::Widget>);
+        }
+        if revealer.child().is_some() {
             revealer.set_child(None::<&gtk::Widget>);
         }
-        revealer.set_visible(shown && floating);
-        bar.set_visible(shown);
+        revealer.set_visible(false);
+        bar.set_visible(true);
 
         if !floating {
             // The viewer box runs across the bar: a column with the bar above or below, a row beside.
             let horizontal = matches!(side, gtk::PositionType::Top | gtk::PositionType::Bottom);
             body.set_orientation(if horizontal { gtk::Orientation::Vertical } else { gtk::Orientation::Horizontal });
+            dock.set_transition_type(match side {
+                gtk::PositionType::Top => gtk::RevealerTransitionType::SlideDown,
+                gtk::PositionType::Bottom => gtk::RevealerTransitionType::SlideUp,
+                gtk::PositionType::Left => gtk::RevealerTransitionType::SlideRight,
+                _ => gtk::RevealerTransitionType::SlideLeft,
+            });
+            dock.set_child(Some(bar));
+            dock.set_visible(true);
+            dock.set_reveal_child(shown);
             if matches!(side, gtk::PositionType::Top | gtk::PositionType::Left) {
-                body.prepend(bar);
+                body.prepend(dock);
             } else {
-                body.append(bar);
+                body.append(dock);
             }
             return;
         }
@@ -857,6 +893,7 @@ impl MediaViewer {
         revealer.set_valign(valign);
         revealer.set_transition_type(transition);
         revealer.set_child(Some(bar));
+        revealer.set_visible(true);
         if turned_on && !pinned {
             self.peek_thumbnail_bar();
         } else {
@@ -1150,7 +1187,9 @@ impl MediaViewer {
 
     /// Sets whether the thumbnail bar slides in and out, and how long that takes, in milliseconds.
     pub fn set_bar_animation(&self, enabled: bool, millis: u32) {
-        self.imp().bar_revealer.set_transition_duration(if enabled { millis } else { 0 });
+        let duration = if enabled { millis } else { 0 };
+        self.imp().bar_revealer.set_transition_duration(duration);
+        self.imp().bar_dock.set_transition_duration(duration);
     }
 
     /// Plays later videos with libmpv, or with GTK's own media backend.
