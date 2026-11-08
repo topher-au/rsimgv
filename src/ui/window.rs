@@ -864,6 +864,7 @@ impl Window {
         self.refresh_keybinds_overlay();
         imp.pages.set_visible_child(&*imp.viewer);
         imp.viewer.grab_focus();
+        self.update_context_highlights();
         if imp.settings.get().is_some_and(|settings| settings.boolean("viewer.open-fullscreen")) && !self.is_fullscreen() {
             self.fullscreen();
             imp.viewer_fullscreened.set(true);
@@ -904,6 +905,7 @@ impl Window {
         if imp.viewer_fullscreened.take() {
             self.unfullscreen();
         }
+        self.update_context_highlights();
         self.update_title();
     }
 
@@ -1655,6 +1657,7 @@ impl Window {
         }
         let split = self.active_playlist_split();
         split.set_show_sidebar(!split.show_sidebar());
+        self.update_context_highlights();
     }
 
     /// The split view the playlist is beside now: the viewer's while it is shown, else the browse view's.
@@ -2972,6 +2975,7 @@ impl Window {
 
     pub fn set_show_sidebar(&self, shown: bool) {
         self.imp().split.set_show_sidebar(shown);
+        self.update_context_highlights();
     }
 
     /// Goes one step back, or forward, in the folders shown. Returns whether there was a step to take.
