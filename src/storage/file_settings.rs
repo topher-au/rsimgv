@@ -1,7 +1,7 @@
 //! Settings kept for each file, such as where a video was left. They are found by the file's contents rather
 //! than its path, so they follow a file that is moved or renamed.
 //!
-//! A file is known by its movie hash (see `moviehash`), and its settings are one YAML file,
+//! A file is known by its content hash (see `content_hash`), and its settings are one YAML file,
 //! `file_settings/<first character>/<hash>.yaml` in the config directory, with every value at its root:
 //!
 //! ```yaml
@@ -13,23 +13,62 @@
 //! turn and mirror (`rotation` in degrees, and `mirrored`) here, and a picture's fit mode, zoom and pan. The preferences
 //! choose which of these are kept.
 
+use std::collections::HashSet;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 use serde_yaml_ng::{Mapping, Value};
+use xxhash_rust::xxh3::xxh3_128;
 
 use crate::settings::config_path;
 
-/// How many bytes are hashed from each end of the file.
+/// How many bytes are hashed from each end of the file, for the movie hash.
 const CHUNK: u64 = 65536;
 
-/// The file's movie hash, as 16 lowercase hex digits: its size plus every little-endian 64-bit word in its first
-/// and last 64 KiB, wrapping. Each chunk is padded with zeros to 64 KiB, and a file shorter than that is hashed
-/// from the start twice, as the reference implementation does.
-pub fn moviehash(path: &Path) -> std::io::Result<String> {
+/// How many bytes are read at each sample from the middle of the file.
+const SAMPLE: u64 = 65536;
+
+/// How many samples are mixed into the content hash.
+const ROUNDS: usize = 8;
+
+/// The file's content hash, as 32 lowercase hex digits. It starts from the movie hash (see `movie_hash_of`), which
+/// seeds an XXH3-128 state. Then up to `ROUNDS` samples of `SAMPLE` bytes from the middle of the file are mixed in,
+/// each at an offset drawn from the state. An offset that was already sampled is redrawn after folding it into the
+/// state. A file too small to hold one sample is hashed from its movie hash alone.
+pub fn content_hash(path: &Path) -> std::io::Result<String> {
+    Ok(content_hash_and_movie(path)?.0)
+}
+
+/// The content hash of the file at `path`, and its movie hash, which the content hash starts from. Both are read
+/// once, because the movie hash covers the first and last chunks that the content hash would otherwise read again.
+fn content_hash_and_movie(path: &Path) -> std::io::Result<(String, u64)> {
     let mut file = File::open(path)?;
     let size = file.metadata()?.len();
+    let movie = movie_hash_of(&mut file, size)?;
+    let mut state = mix(&[&movie.to_le_bytes()]);
+    // The sample offsets are CHUNK, CHUNK + SAMPLE, and so on up to the last one that ends before the final chunk.
+    // A short file has fewer slots than rounds, and every one of its slots is sampled.
+    let slots = size.checked_sub(2 * CHUNK + SAMPLE).map_or(0, |span| span / SAMPLE + 1);
+    let mut seen = HashSet::new();
+    for _ in 0..slots.min(ROUNDS as u64) {
+        let mut offset = sample_offset(&state, slots);
+        while !seen.insert(offset) {
+            state = mix(&[&state, b"again", &offset.to_le_bytes()]);
+            offset = sample_offset(&state, slots);
+        }
+        file.seek(SeekFrom::Start(offset))?;
+        let mut sample = vec![0u8; SAMPLE as usize];
+        file.read_exact(&mut sample)?;
+        state = mix(&[&state, &offset.to_le_bytes(), &sample]);
+    }
+    Ok((format!("{:032x}", u128::from_be_bytes(state)), movie))
+}
+
+/// The movie hash of the file: its size plus every little-endian 64-bit word in its first and last 64 KiB, wrapping.
+/// Each chunk is padded with zeros to 64 KiB, and a file shorter than that is hashed from the start twice, as the
+/// reference implementation does.
+fn movie_hash_of(file: &mut File, size: u64) -> std::io::Result<u64> {
     let mut hash = size;
     let mut chunk = vec![0u8; CHUNK as usize];
     for offset in [0, size.saturating_sub(CHUNK)] {
@@ -46,13 +85,55 @@ pub fn moviehash(path: &Path) -> std::io::Result<String> {
             hash = hash.wrapping_add(u64::from_le_bytes(word.try_into().expect("8 bytes")));
         }
     }
-    Ok(format!("{hash:016x}"))
+    Ok(hash)
 }
 
-/// Where the settings for the file with movie hash `hash` are kept.
+/// The XXH3-128 digest of the parts, in canonical big-endian order.
+fn mix(parts: &[&[u8]]) -> [u8; 16] {
+    xxh3_128(&parts.concat()).to_be_bytes()
+}
+
+/// The offset of a sample: one of `slots` offsets, each a sample apart, chosen by the state's first eight bytes.
+fn sample_offset(state: &[u8; 16], slots: u64) -> u64 {
+    let draw = u64::from_le_bytes(state[..8].try_into().expect("8 bytes"));
+    CHUNK + (draw % slots) * SAMPLE
+}
+
+/// Where the settings for the file with content hash `hash` are kept.
 pub fn settings_file(hash: &str) -> PathBuf {
     let first = hash.chars().next().unwrap_or('0').to_string();
     config_path().with_file_name("file_settings").join(first).join(format!("{hash}.yaml"))
+}
+
+/// Moves the settings in `old` to `new`, best effort: a failure only means the next open tries again, so opening a
+/// file never fails because of its old settings. With no settings under the new name the old file is renamed.
+/// Otherwise the old keys that the new file lacks are folded into it, and the old file goes. The old names hold 16
+/// hex digits and the new ones 32, so the two files are never the same.
+fn migrate_file(old: &Path, new: &Path) {
+    if !new.exists() {
+        if let Some(parent) = new.parent() {
+            if std::fs::create_dir_all(parent).is_ok() {
+                let _ = std::fs::rename(old, new);
+            }
+        }
+        return;
+    }
+    let Ok(text) = std::fs::read_to_string(old) else { return };
+    let old_values = serde_yaml_ng::from_str::<Value>(&text).ok().and_then(|value| value.as_mapping().cloned()).unwrap_or_default();
+    let mut merged = read_mapping(new);
+    let before = merged.clone();
+    for (key, value) in old_values {
+        if !merged.contains_key(&key) {
+            merged.insert(key, value);
+        }
+    }
+    if merged != before {
+        let Ok(text) = serde_yaml_ng::to_string(&Value::Mapping(merged)) else { return };
+        if crate::storage::atomic_file::write(new, text.as_bytes()).is_err() {
+            return;
+        }
+    }
+    let _ = std::fs::remove_file(old);
 }
 
 /// One file's settings, read from its settings file and written back on each change.
@@ -66,8 +147,12 @@ pub struct FileSettings {
 
 impl FileSettings {
     /// The settings of the file at `path`. A file with none yet starts empty. `Err` if the file cannot be read.
+    /// Settings kept under the old movie-hash name move to the content-hash name, so play positions survive the change.
     pub fn for_path(path: &Path) -> std::io::Result<Self> {
-        Ok(Self::at(settings_file(&moviehash(path)?)))
+        let (hash, movie) = content_hash_and_movie(path)?;
+        let file = settings_file(&hash);
+        migrate_file(&settings_file(&format!("{movie:016x}")), &file);
+        Ok(Self::at(file))
     }
 
     /// The settings kept in `file`. A missing or unreadable file gives none.
@@ -187,27 +272,47 @@ mod tests {
         let _ = std::fs::remove_dir_all(file.parent().unwrap());
     }
 
-    fn hash_of(name: &str, data: &[u8]) -> String {
-        let path = std::env::temp_dir().join(format!("rsimgv-moviehash-{}-{name}", std::process::id()));
+    /// Writes `data` to a temporary file, hashes it with `hash`, and removes the file.
+    fn hashed<T>(name: &str, data: &[u8], hash: impl Fn(&Path) -> std::io::Result<T>) -> T {
+        let path = std::env::temp_dir().join(format!("rsimgv-content-hash-{}-{name}", std::process::id()));
         std::fs::write(&path, data).unwrap();
-        let hash = moviehash(&path).unwrap();
+        let hash = hash(&path).unwrap();
         let _ = std::fs::remove_file(&path);
         hash
     }
 
+    fn movie_hex(path: &Path) -> std::io::Result<String> {
+        let mut file = File::open(path)?;
+        let size = file.metadata()?.len();
+        Ok(format!("{:016x}", movie_hash_of(&mut file, size)?))
+    }
+
     #[test]
-    fn hashes_match_the_reference_implementation() {
+    fn movie_hashes_match_the_reference_implementation() {
         // The expected hashes are from the Python reference.
-        assert_eq!(hash_of("empty", b""), "0000000000000000");
-        assert_eq!(hash_of("short", b"hello world"), "deee40ded9a1a3bf");
+        assert_eq!(hashed("empty", b"", movie_hex), "0000000000000000");
+        assert_eq!(hashed("short", b"hello world", movie_hex), "deee40ded9a1a3bf");
         let big: Vec<u8> = (0..200_000u32).map(|i| ((i * 7 + i / 3) % 256) as u8).collect();
-        assert_eq!(hash_of("big", &big), "b5345e8b0a374deb");
+        assert_eq!(hashed("big", &big, movie_hex), "b5345e8b0a374deb");
+    }
+
+    #[test]
+    fn content_hashes_match_the_reference_implementation() {
+        // The expected hashes are from the Python reference. The 1 MiB file has enough room for every sample, the
+        // 500,000- and 200,000-byte files have room for fewer than that, and the tiny one gets none.
+        let sampled: Vec<u8> = (0..1_048_576u32).map(|i| ((i * 7 + i / 3) % 256) as u8).collect();
+        assert_eq!(hashed("content-sampled", &sampled, content_hash), "298066986b8c77949906f41c1ff35562");
+        let short: Vec<u8> = (0..500_000u32).map(|i| ((i * 7 + i / 3) % 256) as u8).collect();
+        assert_eq!(hashed("content-short", &short, content_hash), "451d1ba129fd6be04a84d6afe71ab7ce");
+        let tiny: Vec<u8> = (0..200_000u32).map(|i| ((i * 7 + i / 3) % 256) as u8).collect();
+        assert_eq!(hashed("content-tiny", &tiny, content_hash), "7e15106d564eebf110d7445a280dfa26");
+        assert_eq!(hashed("content-none", b"hello world", content_hash), "03649688e5ae62c86767443494f2c847");
     }
 
     #[test]
     fn settings_are_kept_under_the_hash_characters() {
-        let file = settings_file("b5345e8b0a374deb");
-        assert!(file.ends_with("file_settings/b/b5345e8b0a374deb.yaml"));
+        let file = settings_file("b5345e8b0a374deb2f1c9d4e6a8b0c3d");
+        assert!(file.ends_with("file_settings/b/b5345e8b0a374deb2f1c9d4e6a8b0c3d.yaml"));
     }
 
     #[test]
@@ -223,5 +328,64 @@ mod tests {
         settings.remove("note").unwrap();
         assert!(!file.exists());
         let _ = std::fs::remove_dir_all(file.parent().unwrap().parent().unwrap());
+    }
+
+    /// A directory for one migration test, removed when the test ends.
+    fn migration_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("rsimgv-migrate-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn settings_under_the_old_name_move_to_the_new_one() {
+        let dir = migration_dir("move");
+        let (old, new) = (dir.join("old.yaml"), dir.join("sub").join("new.yaml"));
+        std::fs::write(&old, "position: 93.5\n").unwrap();
+        migrate_file(&old, &new);
+        assert!(!old.exists(), "the old file goes");
+        assert_eq!(FileSettings::at(new.clone()).get_f64("position"), Some(93.5));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_old_file_is_left_alone_when_there_is_nothing_to_move() {
+        let dir = migration_dir("nothing");
+        let (old, new) = (dir.join("old.yaml"), dir.join("new.yaml"));
+        migrate_file(&old, &new);
+        assert!(!new.exists(), "nothing is created");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn old_keys_join_new_ones_with_the_new_ones_winning() {
+        let dir = migration_dir("merge");
+        let (old, new) = (dir.join("old.yaml"), dir.join("new.yaml"));
+        std::fs::write(&old, "position: 93.5\nspeed: 1.0\n").unwrap();
+        std::fs::write(&new, "speed: 1.5\n").unwrap();
+        migrate_file(&old, &new);
+        let merged = FileSettings::at(new);
+        assert_eq!(merged.get_f64("position"), Some(93.5), "the old key joins");
+        assert_eq!(merged.get_f64("speed"), Some(1.5), "the new value wins");
+        assert!(!old.exists(), "the old file goes");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_unwritable_directory_still_gives_settings() {
+        let dir = migration_dir("readonly");
+        let (old, new) = (dir.join("old.yaml"), dir.join("sub").join("new.yaml"));
+        std::fs::write(&old, "position: 93.5\n").unwrap();
+        std::fs::create_dir_all(new.parent().unwrap()).unwrap();
+        let permissions = std::fs::metadata(new.parent().unwrap()).unwrap().permissions();
+        let mut readonly = permissions.clone();
+        readonly.set_readonly(true);
+        std::fs::set_permissions(new.parent().unwrap(), readonly).unwrap();
+        // The move cannot be made, but the old settings are still found where they are.
+        migrate_file(&old, &new);
+        assert!(old.exists() || new.exists());
+        std::fs::set_permissions(new.parent().unwrap(), permissions).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

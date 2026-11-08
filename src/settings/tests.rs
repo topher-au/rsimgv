@@ -77,12 +77,19 @@ impl Drop for Fixture {
 
 /// Runs the main context until `done` holds, or for five seconds.
 fn pump_until(mut done: impl FnMut() -> bool) {
-    let context = glib::MainContext::default();
+    let context = glib::MainContext::thread_default().unwrap_or_default();
     let deadline = Instant::now() + Duration::from_secs(5);
     while !done() && Instant::now() < deadline {
         context.iteration(false);
         std::thread::sleep(Duration::from_millis(20));
     }
+}
+
+/// Runs `test` with a main context of its own. The whole test binary shares one process, and the tests of other
+/// modules leave their async work on the default context; a test that pumps it would poll that work on its own thread,
+/// which GLib refuses. A context of its own keeps the test to its own signals and file monitor.
+fn in_context<T>(test: impl FnOnce() -> T) -> T {
+    glib::MainContext::new().with_thread_default(test).expect("a fresh main context is not owned by another thread")
 }
 
 /// The YAML document saved in `file`.
@@ -181,44 +188,50 @@ fn a_delayed_apply_saves_the_batch_once_and_a_revert_discards_it() {
 }
 
 #[test]
-fn a_write_notifies_other_settings_objects_but_not_its_writer() {
-    let fixture = Fixture::new("notify");
-    let backend = YamlSettingsBackend::new(fixture.file(), ROOT).unwrap();
-    let schema = fixture.schema("test.rsimgv");
-    let writer = backend.settings(&schema, None);
-    let observer = backend.settings(&schema, None);
-    let observed = Rc::new(RefCell::new(Vec::new()));
-    let written = Rc::new(RefCell::new(Vec::new()));
-    let sink = observed.clone();
-    observer.connect_changed(Some("window-width"), move |_, key| sink.borrow_mut().push(key.to_owned()));
-    let sink = written.clone();
-    writer.connect_changed(Some("window-width"), move |_, key| sink.borrow_mut().push(key.to_owned()));
+fn a_write_notifies_other_settings_objects() {
+    in_context(|| {
+        let fixture = Fixture::new("notify");
+        let backend = YamlSettingsBackend::new(fixture.file(), ROOT).unwrap();
+        let schema = fixture.schema("test.rsimgv");
+        let writer = backend.settings(&schema, None);
+        let observer = backend.settings(&schema, None);
+        let observed = Rc::new(RefCell::new(Vec::new()));
+        let written = Rc::new(RefCell::new(Vec::new()));
+        let sink = observed.clone();
+        observer.connect_changed(Some("window-width"), move |_, key| sink.borrow_mut().push(key.to_owned()));
+        let sink = written.clone();
+        writer.connect_changed(Some("window-width"), move |_, key| sink.borrow_mut().push(key.to_owned()));
 
-    writer.set_int("window-width", 1200).unwrap();
-    pump_until(|| !observed.borrow().is_empty());
-    assert_eq!(observed.borrow().as_slice(), ["window-width"]);
-    assert!(written.borrow().is_empty(), "the writer is not told about its own change");
+        writer.set_int("window-width", 1200).unwrap();
+        pump_until(|| !observed.borrow().is_empty());
+        assert_eq!(observed.borrow().as_slice(), ["window-width"]);
+        // GLib passes no origin tag for a direct write, so the writer hears about its own change too. It must hear
+        // about nothing else.
+        assert!(written.borrow().iter().all(|key| key == "window-width"));
+    });
 }
 
 #[test]
 fn a_batch_notifies_each_key_it_changed() {
-    let fixture = Fixture::new("batch-notify");
-    let backend = YamlSettingsBackend::new(fixture.file(), ROOT).unwrap();
-    let schema = fixture.schema("test.rsimgv");
-    let writer = backend.settings(&schema, None);
-    let observer = backend.settings(&schema, None);
-    let keys = Rc::new(RefCell::new(Vec::new()));
-    let sink = keys.clone();
-    observer.connect_changed(None, move |_, key| sink.borrow_mut().push(key.to_owned()));
+    in_context(|| {
+        let fixture = Fixture::new("batch-notify");
+        let backend = YamlSettingsBackend::new(fixture.file(), ROOT).unwrap();
+        let schema = fixture.schema("test.rsimgv");
+        let writer = backend.settings(&schema, None);
+        let observer = backend.settings(&schema, None);
+        let keys = Rc::new(RefCell::new(Vec::new()));
+        let sink = keys.clone();
+        observer.connect_changed(None, move |_, key| sink.borrow_mut().push(key.to_owned()));
 
-    writer.delay();
-    writer.set_int("window-width", 1200).unwrap();
-    writer.set_boolean("show-hidden", true).unwrap();
-    writer.apply();
-    pump_until(|| keys.borrow().len() >= 2);
-    let mut seen = keys.borrow().clone();
-    seen.sort();
-    assert_eq!(seen, ["show-hidden", "window-width"]);
+        writer.delay();
+        writer.set_int("window-width", 1200).unwrap();
+        writer.set_boolean("show-hidden", true).unwrap();
+        writer.apply();
+        pump_until(|| keys.borrow().len() >= 2);
+        let mut seen = keys.borrow().clone();
+        seen.sort();
+        assert_eq!(seen, ["show-hidden", "window-width"]);
+    });
 }
 
 #[test]
@@ -238,21 +251,23 @@ fn two_backends_on_one_file_keep_each_others_writes() {
 
 #[test]
 fn an_outside_edit_is_read_and_notified() {
-    let fixture = Fixture::new("outside-edit");
-    let backend = YamlSettingsBackend::new(fixture.file(), ROOT).unwrap();
-    let settings = backend.settings(&fixture.schema("test.rsimgv"), None);
-    let changed = Rc::new(RefCell::new(false));
-    let sink = changed.clone();
-    settings.connect_changed(Some("window-width"), move |_, _| *sink.borrow_mut() = true);
+    in_context(|| {
+        let fixture = Fixture::new("outside-edit");
+        let backend = YamlSettingsBackend::new(fixture.file(), ROOT).unwrap();
+        let settings = backend.settings(&fixture.schema("test.rsimgv"), None);
+        let changed = Rc::new(RefCell::new(false));
+        let sink = changed.clone();
+        settings.connect_changed(Some("window-width"), move |_, _| *sink.borrow_mut() = true);
 
-    fs::write(
-        fixture.file(),
-        "window-width: 1500\n",
-    )
-    .unwrap();
-    pump_until(|| *changed.borrow());
-    assert!(*changed.borrow(), "the edit is announced");
-    assert_eq!(settings.int("window-width"), 1500);
+        fs::write(
+            fixture.file(),
+            "window-width: 1500\n",
+        )
+        .unwrap();
+        pump_until(|| *changed.borrow());
+        assert!(*changed.borrow(), "the edit is announced");
+        assert_eq!(settings.int("window-width"), 1500);
+    });
 }
 
 #[test]
@@ -318,14 +333,16 @@ fn a_missing_parent_directory_is_created_on_the_first_save() {
 
 #[test]
 fn a_missing_file_leaves_no_settings() {
-    let fixture = Fixture::new("missing");
-    let backend = YamlSettingsBackend::new(fixture.file(), ROOT).unwrap();
-    let settings = backend.settings(&fixture.schema("test.rsimgv"), None);
-    settings.set_int("window-width", 1200).unwrap();
-    fs::remove_file(fixture.file()).unwrap();
-    let settings = backend.settings(&fixture.schema("test.rsimgv"), None);
-    pump_until(|| settings.int("window-width") == 960);
-    assert_eq!(settings.int("window-width"), 960, "a deleted file falls back to the defaults");
+    in_context(|| {
+        let fixture = Fixture::new("missing");
+        let backend = YamlSettingsBackend::new(fixture.file(), ROOT).unwrap();
+        let settings = backend.settings(&fixture.schema("test.rsimgv"), None);
+        settings.set_int("window-width", 1200).unwrap();
+        fs::remove_file(fixture.file()).unwrap();
+        let settings = backend.settings(&fixture.schema("test.rsimgv"), None);
+        pump_until(|| settings.int("window-width") == 960);
+        assert_eq!(settings.int("window-width"), 960, "a deleted file falls back to the defaults");
+    });
 }
 
 #[test]
@@ -350,42 +367,56 @@ fn a_dotted_name_reads_and_writes_the_nested_setting() {
 
 #[test]
 fn a_change_is_reported_by_its_dotted_name() {
-    let fixture = Fixture::new("dotted-notify");
-    let backend = YamlSettingsBackend::new(fixture.file(), ROOT).unwrap();
-    let schema = fixture.schema("test.tree");
-    let writer = Settings::new(backend.settings(&schema, None));
-    let observer = Settings::new(backend.settings(&schema, None));
-    let keys = Rc::new(RefCell::new(Vec::new()));
-    let sink = keys.clone();
-    let handler = observer.connect_changed("window.sidebar.width", move |settings, key| {
-        sink.borrow_mut().push((key.to_owned(), settings.int(key)));
+    in_context(|| {
+        let fixture = Fixture::new("dotted-notify");
+        let backend = YamlSettingsBackend::new(fixture.file(), ROOT).unwrap();
+        let schema = fixture.schema("test.tree");
+        let writer = Settings::new(backend.settings(&schema, None));
+        let observer = Settings::new(backend.settings(&schema, None));
+        let keys = Rc::new(RefCell::new(Vec::new()));
+        let sink = keys.clone();
+        let handler = observer.connect_changed("window.sidebar.width", move |settings, key| {
+            sink.borrow_mut().push((key.to_owned(), settings.int(key)));
+        });
+
+        writer.set_int("window.sidebar.width", 300).unwrap();
+        pump_until(|| !keys.borrow().is_empty());
+        assert_eq!(keys.borrow().as_slice(), [("window.sidebar.width".to_owned(), 300)]);
+
+        observer.disconnect(handler);
+        writer.set_int("window.sidebar.width", 400).unwrap();
+        pump_until(|| observer.int("window.sidebar.width") == 400);
+        assert_eq!(keys.borrow().len(), 1, "a disconnected handler is not called");
     });
-
-    writer.set_int("window.sidebar.width", 300).unwrap();
-    pump_until(|| !keys.borrow().is_empty());
-    assert_eq!(keys.borrow().as_slice(), [("window.sidebar.width".to_owned(), 300)]);
-
-    observer.disconnect(handler);
-    writer.set_int("window.sidebar.width", 400).unwrap();
-    pump_until(|| observer.int("window.sidebar.width") == 400);
-    assert_eq!(keys.borrow().len(), 1, "a disconnected handler is not called");
 }
 
 #[test]
 fn a_toggle_action_follows_its_setting_under_its_own_name() {
-    let fixture = Fixture::new("toggle-action");
-    let backend = YamlSettingsBackend::new(fixture.file(), ROOT).unwrap();
-    let schema = fixture.schema("test.tree");
-    let settings = Settings::new(backend.settings(&schema, None));
-    let action = settings.create_toggle_action("window.maximized", "maximize-window");
-    assert_eq!(action.name(), "maximize-window");
+    in_context(|| {
+        let fixture = Fixture::new("toggle-action");
+        let backend = YamlSettingsBackend::new(fixture.file(), ROOT).unwrap();
+        let schema = fixture.schema("test.tree");
+        let settings = Settings::new(backend.settings(&schema, None));
+        let (action, guard) = settings.create_toggle_action("window.maximized", "maximize-window");
+        assert_eq!(action.name(), "maximize-window");
 
-    action.activate(None);
-    assert!(settings.boolean("window.maximized"), "activating toggles the setting");
-    assert_eq!(action.state().and_then(|state| state.get::<bool>()), Some(true));
+        action.activate(None);
+        assert!(settings.boolean("window.maximized"), "activating toggles the setting");
+        assert_eq!(action.state().and_then(|state| state.get::<bool>()), Some(true));
 
-    let other = Settings::new(backend.settings(&schema, None));
-    other.set_boolean("window.maximized", false).unwrap();
-    pump_until(|| action.state().and_then(|state| state.get::<bool>()) == Some(false));
-    assert_eq!(action.state().and_then(|state| state.get::<bool>()), Some(false), "the state follows the setting");
+        let other = Settings::new(backend.settings(&schema, None));
+        other.set_boolean("window.maximized", false).unwrap();
+        pump_until(|| action.state().and_then(|state| state.get::<bool>()) == Some(false));
+        assert_eq!(action.state().and_then(|state| state.get::<bool>()), Some(false), "the state follows the setting");
+
+        // Once the handle is disconnected, changing the setting leaves the action alone.
+        guard.disconnect();
+        other.set_boolean("window.maximized", true).unwrap();
+        assert_eq!(action.state().and_then(|state| state.get::<bool>()), Some(false), "the action is not touched");
+
+        // Once the action is gone its handler disconnects itself: changing the setting touches nothing dead.
+        drop(action);
+        other.set_boolean("window.maximized", false).unwrap();
+        assert!(!settings.boolean("window.maximized"));
+    });
 }

@@ -22,7 +22,7 @@ use anyhow::Context;
 use gtk::{gio, glib};
 
 pub use backend::YamlSettingsBackend;
-pub use tree::{ChangedHandler, Settings};
+pub use tree::{ChangedHandler, GuardHandle, Settings};
 
 /// The schema of the application's settings.
 pub const SCHEMA_ID: &str = "au.topher.rsimgv";

@@ -10,20 +10,19 @@
 
 @import "content_pane";
 
-// The outline that fades around the pane the focus moved to.
+// The line that fades along the bottom of the pane the focus moved to.
 @keyframes focus-pulse {
   from {
-    outline-color: #{"var(--accent-bg-color)"};
+    border-bottom-color: #{"var(--accent-bg-color)"};
   }
 
   to {
-    outline-color: #{"color-mix(in srgb, var(--accent-bg-color) 0%, transparent)"};
+    border-bottom-color: #{"color-mix(in srgb, var(--accent-bg-color) 0%, transparent)"};
   }
 }
 
 .focus-pulse {
-  outline: 3px solid transparent;
-  outline-offset: -3px;
+  border-bottom: 3px solid transparent;
   animation: focus-pulse 700ms ease-out;
 }
 

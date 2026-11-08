@@ -34,6 +34,10 @@
       <default>true</default>
       <summary>Show videos in the browse view</summary>
     </key>
+    <key name="search-index" type="b">
+      <default>false</default>
+      <summary>Keep the metadata of pictures and videos in a database, for searching</summary>
+    </key>
     <key name="show-directories" type="s">
       <choices>
         <choice value="none"/>
@@ -148,6 +152,16 @@
     <key name="unload-offscreen" type="b">
       <default>true</default>
       <summary>Free the memory of thumbnails scrolled out of view, and load them again when they come back</summary>
+    </key>
+    <key name="max-image-size" type="i">
+      <default>2048</default>
+      <range min="32" max="2048"/>
+      <summary>The largest size, in pixels, that thumbnails of pictures are made at, whatever the size of the item. One of the thumbnail sizes: 32, 64, 128, 256, 512, 1024 or 2048</summary>
+    </key>
+    <key name="max-video-size" type="i">
+      <default>2048</default>
+      <range min="32" max="2048"/>
+      <summary>The largest size, in pixels, that thumbnails of videos and their frames are made at, whatever the size of the item. One of the thumbnail sizes: 32, 64, 128, 256, 512, 1024 or 2048</summary>
     </key>
     <key name="crop" type="b">
       <default>false</default>

@@ -1,6 +1,6 @@
 // Fills the whole output with the picture, as big as fits and centred, over a blurred, dimmed copy of it that covers the output.
 // It needs --keepaspect=no, as hooks only draw inside the video's rectangle, and that makes the rectangle the whole output. The
-// @NAMES@ are filled in by rsimgv, as --glsl-shader-opts is not available to the renderer libmpv embeds.
+// The placeholders are filled in by rsimgv, as --glsl-shader-opts is not available to the renderer libmpv embeds.
 
 //!DESC rsimgv backdrop: shrink the part that covers the output
 //!HOOK MAIN

@@ -402,6 +402,12 @@
                                     <property name="subtitle">Hides files that are neither pictures nor videos</property>
                                   </object>
                                 </child>
+                                <child>
+                                  <object class="AdwSwitchRow" id="search_index_row">
+                                    <property name="title">Keep metadata in the search index</property>
+                                    <property name="subtitle">Keeps what is read from pictures and videos in a database instead of the metadata cache</property>
+                                  </object>
+                                </child>
                               </object>
                             </child>
                             <child>
@@ -1434,6 +1440,44 @@
                               <object class="AdwSwitchRow" id="thumbnail_unload_offscreen_row">
                                 <property name="title">Unload offscreen thumbnails</property>
                                 <property name="subtitle">Frees the memory of thumbnails scrolled out of view, and loads them again when they come back</property>
+                              </object>
+                            </child>
+                            <child>
+                              <object class="AdwComboRow" id="thumbnail_max_image_size_row">
+                                <property name="title">Largest picture thumbnail</property>
+                                <property name="subtitle">Thumbnails of pictures are made no larger than this, whatever the size of the item</property>
+                                <property name="model">
+                                  <object class="GtkStringList">
+                                    <items>
+                                      <item>32 px</item>
+                                      <item>64 px</item>
+                                      <item>128 px</item>
+                                      <item>256 px</item>
+                                      <item>512 px</item>
+                                      <item>1024 px</item>
+                                      <item>2048 px</item>
+                                    </items>
+                                  </object>
+                                </property>
+                              </object>
+                            </child>
+                            <child>
+                              <object class="AdwComboRow" id="thumbnail_max_video_size_row">
+                                <property name="title">Largest video thumbnail</property>
+                                <property name="subtitle">Thumbnails and frames of videos are made no larger than this, whatever the size of the item</property>
+                                <property name="model">
+                                  <object class="GtkStringList">
+                                    <items>
+                                      <item>32 px</item>
+                                      <item>64 px</item>
+                                      <item>128 px</item>
+                                      <item>256 px</item>
+                                      <item>512 px</item>
+                                      <item>1024 px</item>
+                                      <item>2048 px</item>
+                                    </items>
+                                  </object>
+                                </property>
                               </object>
                             </child>
                           </object>

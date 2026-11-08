@@ -2095,7 +2095,7 @@ impl MediaViewer {
         self.refresh_status();
         self.update_navigation(index, len);
 
-        // The file's settings are read on a worker thread: the moviehash reads the file, and the settings file is parsed.
+        // The file's settings are read on a worker thread: the content hash reads the file, and the settings file is parsed.
         // With none kept, the file is not read.
         let keep = imp.remember.get().enabled;
         let weak = self.downgrade();

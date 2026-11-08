@@ -753,7 +753,7 @@ impl Element {
             justify: Justify::default(),
             speed_format: SpeedFormat::default(),
             rotation_format: RotationFormat::default(),
-            parts: ["state", "time", "percent"].map(str::to_owned).to_vec(),
+            parts: ["state", "time", "percent", "speed"].map(str::to_owned).to_vec(),
             visibility: Visibility::Always,
             seconds: 2.0,
             items: Items::All,

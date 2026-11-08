@@ -9,6 +9,7 @@ use gtk::prelude::*;
 use gtk::{gdk, gio, glib};
 
 use crate::settings::Settings;
+use crate::settings::GuardHandle;
 use crate::keybindings::actions::{Scope, DEFAULT_NOTIFICATION_SECONDS, MAX_NOTIFICATION_SECONDS};
 use super::browse_view::{InfoField, ListedFile};
 use crate::storage::bookmarks::{self, Bookmark};
@@ -19,7 +20,7 @@ use super::media_viewer::{side_from_name, FolderEnd, ZoomIndicator, VOLUME_STEP}
 use super::key_handler::ActionKeyHandler;
 use super::fs_tree::TreeSnapshot;
 use super::path_bar::OpenTarget;
-use super::{BrowseView, FsTree, HeaderBar, MediaViewer, MessageOverlay, NavigationBar, OverlaySplitView, PathBar, PreferencesDialog, ShownItem};
+use super::{BrowseSearch, BrowseView, FsTree, HeaderBar, MediaViewer, MessageOverlay, NavigationBar, OverlaySplitView, PathBar, PreferencesDialog, ShownItem};
 use super::{Level, Message};
 use super::message_overlay::MessageId;
 use super::keybinds_overlay::KeybindsOverlay;
@@ -77,6 +78,10 @@ mod imp {
         #[template_child]
         pub navigation: TemplateChild<NavigationBar>,
         #[template_child]
+        pub browse_search_button: TemplateChild<gtk::ToggleButton>,
+        #[template_child]
+        pub browse_search_bar: TemplateChild<gtk::SearchBar>,
+        #[template_child]
         pub images_button: TemplateChild<gtk::ToggleButton>,
         #[template_child]
         pub videos_button: TemplateChild<gtk::ToggleButton>,
@@ -112,6 +117,11 @@ mod imp {
         /// The keybinding handler, detached when the window closes.
         pub(super) key_handler: std::cell::OnceCell<ActionKeyHandler>,
         pub(super) settings: std::cell::OnceCell<Settings>,
+        /// The settings connections behind the window's toggle actions, ended when the window is destroyed, so no
+        /// later change can reach the actions while they are being torn down.
+        pub(super) action_guards: RefCell<Vec<GuardHandle>>,
+        /// The search bar under the header, which filters the browse view of the tab shown.
+        pub(super) browse_search: std::cell::OnceCell<BrowseSearch>,
     }
 
     #[glib::object_subclass]
@@ -214,6 +224,23 @@ impl Window {
             }
             glib::Propagation::Proceed
         });
+        // The settings connections behind the window's toggle actions end here, so no later change can reach the
+        // actions while they are being torn down. The actions leave the window's map too, so setting their state
+        // can never notify a group that is already gone. The window is passed by the signal, which holds it while
+        // this runs.
+        window.connect_destroy(move |window| {
+            for guard in window.imp().action_guards.take() {
+                guard.disconnect();
+            }
+            window.remove_action("show-hidden");
+            window.remove_action("show-directories");
+            window.remove_action("playlist-repeat");
+            window.remove_action("sort-by");
+            window.remove_action("sort-order");
+            for (_, action, _, _, _) in crate::ui::playlist_panel::COLUMNS {
+                window.remove_action(action);
+            }
+        });
         let tree = (*imp.tree).clone();
         let split = (*imp.split).clone();
         // Two toggles show and hide the sidebar: one in the sidebar's header, and one in the main
@@ -257,7 +284,11 @@ impl Window {
         settings.connect_changed("browse.show-hidden", move |settings, _| {
             tree_for_settings.set_show_hidden(settings.boolean("browse.show-hidden"));
         });
-        window.add_action(&settings.create_toggle_action("browse.show-hidden", "show-hidden"));
+        window.add_action(&{
+            let (show_hidden, guard) = settings.create_toggle_action("browse.show-hidden", "show-hidden");
+            window.imp().action_guards.borrow_mut().push(guard);
+            show_hidden
+        });
         add_sort_action(&window, settings, "sort-by", "browse.sort.by");
         add_sort_action(&window, settings, "sort-order", "browse.sort.order");
         settings.connect_changed("browse.sort.remember-per-folder", {
@@ -271,6 +302,21 @@ impl Window {
         add_show_directories_action(&window, settings);
         settings.bind("browse.show-images", &*window.imp().images_button, "active").build();
         settings.bind("browse.show-videos", &*window.imp().videos_button, "active").build();
+        // The search bar filters the browse view of the tab shown, and its header button shows and hides it.
+        let search_weak = window.downgrade();
+        let browse_search = BrowseSearch::new(&window.imp().browse_search_bar, move |search| {
+            if let Some(window) = search_weak.upgrade() {
+                window.with_browse(|view| view.set_search(search));
+            }
+        });
+        window
+            .imp()
+            .browse_search_bar
+            .bind_property("search-mode-enabled", &*window.imp().browse_search_button, "active")
+            .bidirectional()
+            .sync_create()
+            .build();
+        let _ = window.imp().browse_search.set(browse_search);
 
         window.add_context_actions();
         window.add_tab_actions();
@@ -283,7 +329,7 @@ impl Window {
         let panel = PlaylistPanel::new(settings);
         let _ = window.imp().playlist_panel.set(panel);
         window.setup_playlist_splits(settings);
-        GtkWindowExt::connect_focus_widget_notify(&window, |window| window.update_handle_highlights());
+        GtkWindowExt::connect_focus_widget_notify(&window, |window| window.update_context_highlights());
         if settings.boolean("playlist.detached") {
             window.detach_playlist(settings);
         }
@@ -1055,6 +1101,7 @@ impl Window {
         bound_action(&browse, &weak, "toggle-item-info", Window::toggle_item_info);
         bound_action(&browse, &weak, "thumbnail-larger", |window| window.resize_items(THUMBNAIL_STEP));
         bound_action(&browse, &weak, "thumbnail-smaller", |window| window.resize_items(-THUMBNAIL_STEP));
+        bound_action(&browse, &weak, "toggle-search", Window::toggle_browse_search);
         self.insert_action_group("browse", Some(&browse));
 
         let view = gio::SimpleActionGroup::new();
@@ -1133,14 +1180,15 @@ impl Window {
         self.insert_action_group("tree", Some(&tree));
     }
 
-    /// Lights the drag handle of the sidebar that holds the focus: the folder tree's or the playlist's.
-    fn update_handle_highlights(&self) {
+    /// Marks the sidebar that holds the focus as the active context.
+    fn update_context_highlights(&self) {
         let imp = self.imp();
         let scopes = self.active_scopes();
-        imp.split.set_handle_active(scopes.contains(&Scope::Tree));
+        let tree = scopes.contains(&Scope::Tree);
         let playlist = scopes.contains(&Scope::Playlist);
-        imp.playlist_split.set_handle_active(playlist);
-        imp.viewer.playlist_split().set_handle_active(playlist);
+        imp.split.set_sidebar_active(tree);
+        imp.playlist_split.set_sidebar_active(playlist);
+        imp.viewer.playlist_split().set_sidebar_active(playlist);
     }
 
     /// Where the keyboard focus is: in the folder tree, in the playlist, or else in the content, the browse view or the
@@ -1182,7 +1230,7 @@ impl Window {
         self.focus_pane(next.unwrap_or(FocusPane::Content));
     }
 
-    /// Moves the focus to `pane`, showing it first if it is hidden, then outlines it for a moment and names it over the
+    /// Moves the focus to `pane`, showing it first if it is hidden, then pulses it for a moment and names it over the
     /// window.
     fn focus_pane(&self, pane: FocusPane) {
         let imp = self.imp();
@@ -1242,9 +1290,13 @@ impl Window {
         let weak = self.downgrade();
         // The menu's column toggles are window actions, so they work from any part of the window.
         for (key, action, _, _, _) in crate::ui::playlist_panel::COLUMNS {
-            self.add_action(&settings.create_toggle_action(key, action));
+            let (toggle, guard) = settings.create_toggle_action(key, action);
+            self.add_action(&toggle);
+            self.imp().action_guards.borrow_mut().push(guard);
         }
-        self.add_action(&settings.create_toggle_action("playlist.repeat", "playlist-repeat"));
+        let (repeat, guard) = settings.create_toggle_action("playlist.repeat", "playlist-repeat");
+        self.add_action(&repeat);
+        self.imp().action_guards.borrow_mut().push(guard);
         for name in ["playlist-add-paths", "playlist-remove-paths"] {
             let action = gio::SimpleAction::new(name, Some(&<Vec<String>>::static_variant_type()));
             let weak = weak.clone();
@@ -1601,6 +1653,8 @@ impl Window {
         for split in [&browse, &viewer] {
             split.set_user_sidebar_width((width > 0).then_some(width));
             split.set_sidebar_position(gtk::PackType::End);
+            // Docked, the playlist can narrow to 180px; in its own window it has no such limit.
+            split.set_min_sidebar_width(180);
             split.connect_show_sidebar_changed({
                 let weak = self.downgrade();
                 move |view, shown| {
@@ -3298,6 +3352,10 @@ impl Window {
                 browse.set_active(selected.as_ref() == Some(&page));
             }
         }
+        // The search bar's search applies to the tab shown, so it is given to that tab's view.
+        if let (Some(browse), Some(search)) = (self.active_browse(), self.imp().browse_search.get()) {
+            browse.set_search(search.search());
+        }
         self.sync_sort_actions();
     }
 
@@ -3364,6 +3422,13 @@ impl Window {
             eprintln!("rsimgv: could not remember the sort of {}: {err}", path.display());
         }
         self.sync_sort_actions();
+    }
+
+    /// Shows the search bar over the browse view, or hides it and shows every item again.
+    fn toggle_browse_search(&self) {
+        if let Some(search) = self.imp().browse_search.get() {
+            search.toggle();
+        }
     }
 
     /// The browse view of the selected tab.
@@ -3616,10 +3681,18 @@ fn add_show_directories_action(window: &Window, settings: &Settings) {
             let _ = settings.set_string("browse.show-directories", value);
         }
     });
-    settings.connect_changed("browse.show-directories", {
-        let action = action.clone();
-        move |settings, _| action.set_state(&shows_directories(settings).to_variant())
-    });
+    let weak = action.downgrade();
+    let guard = weak.clone();
+    window.imp().action_guards.borrow_mut().push(settings.connect_guarded("browse.show-directories", guard, {
+        move |settings| {
+            if let Some(action) = weak.upgrade() {
+                let state = shows_directories(settings).to_variant();
+                if action.state().as_ref() != Some(&state) {
+                    action.set_state(&state);
+                }
+            }
+        }
+    }));
     window.add_action(&action);
 }
 
@@ -4317,7 +4390,7 @@ enum FocusPane {
     Playlist,
 }
 
-/// How long the outline around a pane the focus moved to stays up, and how long its name does.
+/// How long the line along the bottom of a pane the focus moved to stays up, and how long its name does.
 const FOCUS_PULSE: std::time::Duration = std::time::Duration::from_millis(700);
 const FOCUS_NOTICE: std::time::Duration = std::time::Duration::from_millis(1200);
 

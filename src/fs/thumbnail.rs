@@ -31,6 +31,8 @@ use gtk::glib::object::Cast;
 use gtk::prelude::PaintableExt;
 use gtk::{gdk, gdk_pixbuf, gio, glib};
 
+use crate::hash::string_hash;
+
 /// Thumbnails made at the same time, unless the settings say otherwise.
 const DEFAULT_THREADS: usize = 4;
 /// Bytes of thumbnails kept in memory; the oldest go first. A 2048-pixel thumbnail alone is 16 MB.
@@ -45,13 +47,25 @@ const MAX_FRAME_JOBS: usize = 1;
 const TOOL_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// A thumbnail size, in pixels, one of `SIZES`.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct Size(i32);
+
+impl Default for Size {
+    /// The largest size, so that nothing is capped.
+    fn default() -> Self {
+        Self(SIZES[SIZES.len() - 1])
+    }
+}
 
 impl Size {
     /// The smallest size that covers `pixels`: the next size up, which is then scaled down for the item.
     pub fn for_pixels(pixels: i32) -> Self {
         Self(SIZES.iter().copied().find(|&size| size >= pixels).unwrap_or(SIZES[SIZES.len() - 1]))
+    }
+
+    /// The largest size that is at most `pixels`, or the smallest one if `pixels` is below all of them.
+    pub fn at_most(pixels: i32) -> Self {
+        Self(SIZES.iter().copied().rev().find(|&size| size <= pixels).unwrap_or(SIZES[0]))
     }
 
     pub fn pixels(self) -> i32 {
@@ -181,11 +195,15 @@ struct Inner {
     running: Cell<usize>,
     /// The running jobs, each with the flag that stops it.
     cancels: RefCell<HashMap<Key, Arc<AtomicBool>>>,
+    /// The largest size pictures' and videos' thumbnails are made at. A request for a larger size is made at this one.
+    max_image: Cell<Size>,
+    max_video: Cell<Size>,
     /// How eagerly thumbnails are made for items off screen, and whether a video is playing.
     aggression: Cell<Aggression>,
     playing: Cell<bool>,
-    /// Whether the timer that stops jobs nothing wants is running.
+    /// Whether the timer that stops jobs nothing wants is running, and the timers themselves.
     watching: Cell<bool>,
+    timers: Timers,
     /// What to call when the level is set.
     aggression_watchers: RefCell<Vec<Rc<dyn Fn()>>>,
     /// How many jobs may run at the same time.
@@ -204,6 +222,23 @@ struct Inner {
     unload_pending: Cell<bool>,
     /// The things that could not be made, so they are not tried again.
     failed: RefCell<HashSet<Key>>,
+}
+
+/// The timers that follow the running jobs and let go of thumbnails nothing shows. They are owned here so that
+/// dropping the thumbnails removes them: `timeout_add_local` puts them on the process's main context, where a timer
+/// holds a callback that may not be run from another thread.
+#[derive(Default)]
+struct Timers {
+    watch: RefCell<Option<glib::SourceId>>,
+    unload: RefCell<Option<glib::SourceId>>,
+}
+
+impl Drop for Timers {
+    fn drop(&mut self) {
+        for source in [self.watch.get_mut().take(), self.unload.get_mut().take()].into_iter().flatten() {
+            source.remove();
+        }
+    }
 }
 
 /// How long after an item leaves the screen its thumbnail is let go, so a quick scroll back finds it still there.
@@ -284,6 +319,24 @@ impl Thumbnails {
         self.start_jobs();
     }
 
+    /// Sets the largest size thumbnails of `media` are made at. An item still asks for the size its own size needs, but
+    /// the thumbnail is made no larger than `max`, and is scaled up or down by the item as it is shown.
+    pub fn set_max_size(&self, media: Media, max: Size) {
+        match media {
+            Media::Picture => self.inner.max_image.set(max),
+            Media::Video => self.inner.max_video.set(max),
+        }
+    }
+
+    /// `size`, capped at the largest size set for thumbnails of `media`.
+    fn capped(&self, size: Size, media: Media) -> Size {
+        let max = match media {
+            Media::Picture => self.inner.max_image.get(),
+            Media::Video => self.inner.max_video.get(),
+        };
+        size.min(max)
+    }
+
     /// Sets how eagerly thumbnails are made for items that are not on screen. Jobs nothing wants any more are stopped, and
     /// the others go on.
     pub fn set_aggression(&self, level: Aggression) {
@@ -343,15 +396,19 @@ impl Thumbnails {
         if self.inner.watching.replace(true) {
             return;
         }
-        let thumbnails = self.clone();
-        glib::timeout_add_local(Duration::from_millis(100), move || {
-            if thumbnails.inner.running.get() == 0 {
-                thumbnails.inner.watching.set(false);
+        // The timer holds only a weak reference, so it does not keep the thumbnails alive. Dropping them removes it.
+        let inner = Rc::downgrade(&self.inner);
+        let source = glib::timeout_add_local(Duration::from_millis(100), move || {
+            let Some(inner) = inner.upgrade() else { return glib::ControlFlow::Break };
+            if inner.running.get() == 0 {
+                inner.watching.set(false);
+                *inner.timers.watch.borrow_mut() = None;
                 return glib::ControlFlow::Break;
             }
-            thumbnails.stop_unwanted();
+            Thumbnails { inner }.stop_unwanted();
             glib::ControlFlow::Continue
         });
+        *self.inner.timers.watch.borrow_mut() = Some(source);
     }
 
     /// Sets whether thumbnails are read from and written to the disk. What is already there is left alone: it is
@@ -380,11 +437,15 @@ impl Thumbnails {
         if self.inner.unload_pending.replace(true) {
             return;
         }
-        let thumbnails = self.clone();
-        glib::timeout_add_local_once(UNLOAD_DELAY, move || {
+        let inner = Rc::downgrade(&self.inner);
+        let source = glib::timeout_add_local_once(UNLOAD_DELAY, move || {
+            let Some(inner) = inner.upgrade() else { return };
+            *inner.timers.unload.borrow_mut() = None;
+            let thumbnails = Thumbnails { inner };
             thumbnails.inner.unload_pending.set(false);
             thumbnails.unload_offscreen();
         });
+        *self.inner.timers.unload.borrow_mut() = Some(source);
     }
 
     /// Forgets what is no longer on screen, and lets go of the thumbnails that leaves with nothing to show them.
@@ -484,7 +545,7 @@ impl Thumbnails {
         wanted: impl Fn() -> bool + 'static,
         on_done: impl FnOnce(Option<&gdk::Texture>) + 'static,
     ) {
-        let key = key(path, mtime, size, Job::Still(media));
+        let key = key(path, mtime, self.capped(size, media), Job::Still(media));
         self.request(key, None, wanted, move |textures| on_done(textures.first()));
     }
 
@@ -501,7 +562,7 @@ impl Thumbnails {
         wanted: impl Fn() -> bool + 'static,
         on_ready: impl FnOnce(&gdk::Texture) + 'static,
     ) {
-        self.request(key(path, mtime, size, Job::Still(media)), Some(Rc::new(rank)), wanted, move |textures| {
+        self.request(key(path, mtime, self.capped(size, media), Job::Still(media)), Some(Rc::new(rank)), wanted, move |textures| {
             if let Some(texture) = textures.first() {
                 on_ready(texture);
             }
@@ -517,7 +578,7 @@ impl Thumbnails {
         wanted: impl Fn() -> bool + 'static,
         on_ready: impl FnOnce(&[gdk::Texture]) + 'static,
     ) {
-        self.request(key(path, mtime, size, Job::Frames), None, wanted, on_ready);
+        self.request(key(path, mtime, self.capped(size, Media::Video), Job::Frames), None, wanted, on_ready);
     }
 
     fn request(&self, key: Key, rank: Option<Rc<dyn Fn() -> f64>>, wanted: impl Fn() -> bool + 'static, on_ready: impl FnOnce(&[gdk::Texture]) + 'static) {
@@ -870,9 +931,9 @@ fn make_cancellable(root: Option<&Path>, key: &Key, cancel: Arc<AtomicBool>) -> 
 /// is one larger than `above` pixels. A thumbnail made for another time is not current and is passed over.
 fn largest_on_disk(root: &Path, path: &Path, mtime: i64, above: i32) -> Option<Pixels> {
     let uri = glib::filename_to_uri(path, None).ok()?;
-    let digest = glib::compute_checksum_for_string(glib::ChecksumType::Md5, uri.as_str())?;
+    let digest = string_hash(uri.as_str());
     SIZES.iter().rev().filter(|size| **size > above).find_map(|size| {
-        let data = std::fs::read(root.join(size.to_string()).join(format!("{digest}.png"))).ok()?;
+        let data = std::fs::read(filed(&root.join(size.to_string()), &format!("{digest}.png"))).ok()?;
         (png_text(&data, "rsimgv::MTime")?.parse::<i64>().ok()? == mtime).then(|| Pixels::from_png(&data)).flatten()
     })
 }
@@ -882,13 +943,13 @@ fn largest_on_disk(root: &Path, path: &Path, mtime: i64, above: i32) -> Option<P
 /// less, or whose thumbnails are not kept on the disk.
 pub fn cached_still_png(path: &Path, max_size: i32) -> Option<(i32, Vec<u8>)> {
     let uri = glib::filename_to_uri(path, None).ok()?;
-    let digest = glib::compute_checksum_for_string(glib::ChecksumType::Md5, uri.as_str())?;
+    let digest = string_hash(uri.as_str());
     let stamp = stamp(path).to_string();
     let root = glib::user_cache_dir().join("rsimgv");
     let found: Vec<(i32, Vec<u8>)> = SIZES
         .iter()
         .filter_map(|&pixels| {
-            let data = std::fs::read(root.join(pixels.to_string()).join(format!("{digest}.png"))).ok()?;
+            let data = std::fs::read(filed(&root.join(pixels.to_string()), &format!("{digest}.png"))).ok()?;
             (png_text(&data, "rsimgv::MTime") == Some(stamp.as_str())).then_some((pixels, data))
         })
         .collect();
@@ -899,10 +960,10 @@ pub fn cached_still_png(path: &Path, max_size: i32) -> Option<(i32, Vec<u8>)> {
 /// they are made without touching the disk. `None` if the file cannot be decoded.
 fn make(root: Option<&Path>, key: &Key) -> Option<Vec<Pixels>> {
     let uri = glib::filename_to_uri(&key.path, None).ok()?;
-    let digest = glib::compute_checksum_for_string(glib::ChecksumType::Md5, uri.as_str())?;
+    let digest = string_hash(uri.as_str());
     match key.job {
         Job::Still(media) => {
-            let file = root.map(|root| root.join(key.size.dir_name()).join(format!("{digest}.png")));
+            let file = root.map(|root| filed(&root.join(key.size.dir_name()), &format!("{digest}.png")));
             let still = cached_or_made(file.as_deref(), &uri, key.mtime, || still_pixbuf(&key.path, key.size, media))?;
             Some(vec![still])
         }
@@ -913,7 +974,7 @@ fn make(root: Option<&Path>, key: &Key) -> Option<Vec<Pixels>> {
             // A frame that cannot be made is left out, and the others still play.
             let frames: Vec<Pixels> = (0..count)
                 .filter_map(|index| {
-                    let file = root.map(|root| root.join("frames").join(key.size.dir_name()).join(format!("{digest}-{index}.png")));
+                    let file = root.map(|root| filed(&root.join("frames").join(key.size.dir_name()), &format!("{digest}-{index}.png")));
                     let at = duration * (index as f64 + 0.5) / count as f64;
                     cached_or_made(file.as_deref(), &uri, key.mtime, || frame_pixbuf(&key.path, at, key.size))
                 })
@@ -968,7 +1029,7 @@ fn frame_pixbuf(path: &Path, seconds: f64, size: Size) -> Option<gdk_pixbuf::Pix
 /// is asked, and the answer is recorded. With no `root`, `ffprobe` is always asked.
 fn duration_of(root: Option<&Path>, digest: &str, path: &Path, mtime: i64) -> Option<f64> {
     let Some(root) = root else { return video_duration(path) };
-    let record = root.join("durations").join(digest);
+    let record = filed(&root.join("durations"), digest);
     if let Ok(text) = std::fs::read_to_string(&record) {
         let mut lines = text.lines();
         if lines.next().and_then(|line| line.parse::<i64>().ok()) == Some(mtime) {
@@ -1099,6 +1160,12 @@ fn png_text<'a>(data: &'a [u8], keyword: &str) -> Option<&'a str> {
     None
 }
 
+/// The path of the cache file `name` in `folder`, filed under the first two characters of its name, so that no folder
+/// holds very many files: `folder/<first>/<second>/<name>`. Names start with a hex digest, so they are ASCII.
+fn filed(folder: &Path, name: &str) -> PathBuf {
+    folder.join(&name[..1]).join(&name[1..2]).join(name)
+}
+
 /// Writes `data` to `file` through a temporary file, so a reader never sees half of it.
 pub(super) fn write_atomically(file: &Path, data: &[u8]) -> std::io::Result<()> {
     let dir = file.parent().ok_or(std::io::ErrorKind::InvalidInput)?;
@@ -1111,6 +1178,24 @@ mod tests {
     use super::*;
 
     /// A fresh folder for one test: its cache directory, and the path of a file in it.
+    /// The one file under `dir`, at any depth.
+    fn only_file(dir: &Path) -> PathBuf {
+        let mut files = Vec::new();
+        let mut folders = vec![dir.to_path_buf()];
+        while let Some(folder) = folders.pop() {
+            for entry in std::fs::read_dir(&folder).unwrap().flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    folders.push(path);
+                } else {
+                    files.push(path);
+                }
+            }
+        }
+        assert_eq!(files.len(), 1, "one file under {dir:?}");
+        files.pop().unwrap()
+    }
+
     fn folder(name: &str) -> (PathBuf, PathBuf) {
         let dir = std::env::temp_dir().join(format!("rsimgv-thumbs-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -1143,7 +1228,7 @@ mod tests {
         let path = picture(&dir, 600, 300);
         let key = |mtime| key(&path, mtime, Size::for_pixels(128), Job::Still(Media::Picture));
         let first = make(Some(&root), &key(1000)).expect("made");
-        let file = root.join("128").read_dir().unwrap().next().unwrap().unwrap().path();
+        let file = only_file(&root.join("128"));
         let made = gdk_pixbuf::Pixbuf::from_file(&file).unwrap();
         assert!(made.width() <= 128 && made.height() <= 128);
         assert_eq!(made.option("tEXt::rsimgv::MTime").as_deref(), Some("1000"));
@@ -1172,7 +1257,7 @@ mod tests {
 
         // What the cache holds is not read either: a thumbnail cached for the same time is passed over.
         make(Some(&root), &key).expect("cached");
-        let file = root.join("128").read_dir().unwrap().next().unwrap().unwrap().path();
+        let file = only_file(&root.join("128"));
         std::fs::write(&file, b"not a thumbnail").unwrap();
         assert!(make(None, &key).is_some());
         assert_eq!(std::fs::read(&file).unwrap(), b"not a thumbnail", "nothing is rewritten");
@@ -1189,9 +1274,14 @@ mod tests {
         let again = thumbnails.clone();
         let seen = Rc::new(Cell::new(0));
         let counted = seen.clone();
-        thumbnails.request(key.clone(), None, || true, move |_| {
-            again.request(key.clone(), None, || true, move |textures| counted.set(textures.len()));
-        });
+        // A context of its own, so a job left behind does not outlive the test on the process's context.
+        glib::MainContext::new()
+            .with_thread_default(|| {
+                thumbnails.request(key.clone(), None, || true, move |_| {
+                    again.request(key.clone(), None, || true, move |textures| counted.set(textures.len()));
+                });
+            })
+            .expect("a fresh main context is not owned");
         assert_eq!(seen.get(), 1);
     }
 
@@ -1269,7 +1359,10 @@ mod tests {
         };
         thumbnails.inner.waiters.borrow_mut().insert(job.clone(), vec![waiter(false), waiter(true), waiter(false)]);
 
-        thumbnails.request(job.clone(), None, || true, |_| {});
+        // A context of its own, so the job it starts does not outlive the test on the process's context.
+        glib::MainContext::new()
+            .with_thread_default(|| thumbnails.request(job.clone(), None, || true, |_| {}))
+            .expect("a fresh main context is not owned");
 
         assert_eq!(thumbnails.inner.waiters.borrow()[&job].len(), 2);
     }
@@ -1333,7 +1426,12 @@ mod tests {
         thumbnails.remember(job.clone(), vec![Pixels::from_file(&path).expect("read").texture()]);
         let on_screen = Rc::new(Cell::new(true));
         let flag = on_screen.clone();
-        thumbnails.request(job, None, move || flag.get(), |_| {});
+        // A context of its own, so a job a test leaves behind does not outlive it on the process's context.
+        glib::MainContext::new()
+            .with_thread_default(|| {
+                thumbnails.request(job, None, move || flag.get(), |_| {});
+            })
+            .expect("a fresh main context is not owned");
         (thumbnails, path, on_screen)
     }
 
@@ -1403,6 +1501,16 @@ mod tests {
         for frame in &frames {
             assert!(frame.width <= 128 && frame.height <= 128);
         }
+    }
+
+    #[test]
+    fn a_cap_is_the_largest_size_at_most_the_setting() {
+        assert_eq!(Size::at_most(1).pixels(), 32);
+        assert_eq!(Size::at_most(100).pixels(), 64);
+        assert_eq!(Size::at_most(256).pixels(), 256);
+        assert_eq!(Size::at_most(9000).pixels(), 2048);
+        assert_eq!(Size::for_pixels(1500).min(Size::at_most(512)).pixels(), 512, "an item's size is capped");
+        assert_eq!(Size::for_pixels(100).min(Size::at_most(512)).pixels(), 128, "a smaller item keeps its size");
     }
 
     #[test]

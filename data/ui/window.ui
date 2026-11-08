@@ -200,6 +200,13 @@
                       </object>
                     </child>
                   <child>
+                    <object class="GtkToggleButton" id="browse_search_button">
+                      <property name="icon-name">system-search-symbolic</property>
+                      <property name="tooltip-text">Search this folder</property>
+                      <style><class name="flat"/></style>
+                    </object>
+                  </child>
+                  <child>
                     <object class="GtkToggleButton" id="images_button">
                       <property name="icon-name">image-x-generic-symbolic</property>
                       <property name="tooltip-text">Show pictures</property>
@@ -311,6 +318,10 @@
                   </object>
                 </child>
               </object>
+            </child>
+            <child type="top">
+              <!-- Slides down from under the header, filled in by the browse search. -->
+              <object class="GtkSearchBar" id="browse_search_bar"/>
             </child>
             <property name="content">
               <!-- The playlist is a sidebar below the header, on the opposite side from the browse split's. -->

@@ -24,7 +24,7 @@ const SHUFFLE_TAG: &str = "#X-RSIMGV-SHUFFLE:";
 /// The items are kept in the order the user made them, which is what is saved. Shuffling makes a second order, in
 /// `shuffled`, that is what the list shows and plays in while it is on. Changing the order in one leaves the other as
 /// it was, and removing an item removes it from both.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default)]
 pub struct Playlist {
     items: Vec<PathBuf>,
     shuffled: Option<Vec<PathBuf>>,
@@ -36,6 +36,21 @@ pub struct Playlist {
     /// The file the playlist was last loaded from or saved to, which saving it again writes to.
     source: Option<PathBuf>,
 }
+
+/// Two playlists are the same when their items, orders, current item and titles are. The file a playlist was loaded
+/// from or saved to is where it goes next, not part of what it holds, so a saved playlist and the one read back from
+/// its own file are equal even though that file does not record its own name.
+impl PartialEq for Playlist {
+    fn eq(&self, other: &Self) -> bool {
+        self.items == other.items
+            && self.shuffled == other.shuffled
+            && self.members == other.members
+            && self.current == other.current
+            && self.titles == other.titles
+    }
+}
+
+impl Eq for Playlist {}
 
 /// Where `Playlist::move_items` takes a group of items: one place up or down, or to the start or the end.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

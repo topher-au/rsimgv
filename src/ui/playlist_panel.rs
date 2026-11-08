@@ -23,8 +23,6 @@ use crate::fs::metadata::{anonymous, MediaInfo};
 use crate::playlist;
 use crate::services::scripts;
 
-/// How wide the panel is, in pixels.
-const PANEL_WIDTH: i32 = 400;
 /// The columns in order: the setting that shows each, the window action that toggles it, the menu label of that action,
 /// its title, and how wide it starts, in pixels. The position column is -1 wide, which is as wide as its marker, and cannot be resized.
 pub const COLUMNS: [(&str, &str, &str, &str, i32); 4] = [
@@ -219,7 +217,6 @@ impl PlaylistPanel {
 
         let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
     content.add_css_class("playlist-panel");
-        content.set_width_request(PANEL_WIDTH);
         content.append(&scroller);
         content.append(&search);
         content.append(toolbar.widget());
