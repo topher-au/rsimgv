@@ -18,6 +18,24 @@ const STRIP_WIDTH: f32 = 6.0;
 const HOLE_SIZE: f32 = 3.0;
 const HOLE_PITCH: f32 = 6.0;
 
+/// Paints the dark strips down the sides of a `width` by `height` picture, and their holes. It is used over a picture
+/// that fills the area, as a cropped square does, and beside one that is fitted between the strips.
+pub(super) fn paint_strips(snapshot: &gtk::Snapshot, width: f32, height: f32) {
+    let strip = STRIP_WIDTH.min(width / 4.0);
+    for x in [0.0, width - strip] {
+        snapshot.append_color(&STRIP_COLOUR, &graphene::Rect::new(x, 0.0, strip, height));
+    }
+    let left = (strip - HOLE_SIZE) / 2.0;
+    let right = width - strip + left;
+    let mut y = (HOLE_PITCH - HOLE_SIZE) / 2.0;
+    while y + HOLE_SIZE <= height {
+        for x in [left, right] {
+            snapshot.append_color(&HOLE_COLOUR, &graphene::Rect::new(x, y, HOLE_SIZE, HOLE_SIZE));
+        }
+        y += HOLE_PITCH;
+    }
+}
+
 mod imp {
     use super::*;
 
@@ -62,16 +80,7 @@ mod imp {
                 &texture,
                 &graphene::Rect::new(strip + (free - shown_width) / 2.0, (height - shown_height) / 2.0, shown_width, shown_height),
             );
-
-            let left = (strip - HOLE_SIZE) / 2.0;
-            let right = width - strip + left;
-            let mut y = (HOLE_PITCH - HOLE_SIZE) / 2.0;
-            while y + HOLE_SIZE <= height {
-                for x in [left, right] {
-                    snapshot.append_color(&HOLE_COLOUR, &graphene::Rect::new(x, y, HOLE_SIZE, HOLE_SIZE));
-                }
-                y += HOLE_PITCH;
-            }
+            paint_strips(snapshot, width, height);
         }
     }
 }

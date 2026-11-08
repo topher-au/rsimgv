@@ -1,6 +1,6 @@
-//! How a browse item's thumbnail is painted: a picture cropped to a square that fills the item, a picture between
-//! film strips, or a folder's icon with pictures scattered over it. The thumbnails themselves are not changed, so
-//! the same texture serves each way of painting it.
+//! How a browse item's thumbnail is painted: a picture cropped to a square that fills the item, with a video's film
+//! strips over it, a picture between film strips, or a folder's icon with pictures scattered over it. The thumbnails
+//! themselves are not changed, so the same texture serves each way of painting it.
 
 use std::cell::{Cell, RefCell};
 
@@ -9,7 +9,7 @@ use gtk::prelude::*;
 use gtk::subclass::prelude::*;
 use gtk::{gdk, glib, graphene};
 
-use super::film_strip::FilmStrip;
+use super::film_strip::{paint_strips, FilmStrip};
 
 /// The side of each scattered picture, as a share of the shorter side of the item, when up to `PHOTO_FULL_COUNT`
 /// are shown. More pictures than that are smaller, so they fit.
@@ -59,6 +59,8 @@ mod imp {
     #[derive(Default)]
     pub struct SquareThumbnail {
         pub(super) texture: RefCell<Option<gdk::Texture>>,
+        /// Whether the picture has the film strips of a video over its sides.
+        pub(super) film: Cell<bool>,
     }
 
     #[glib::object_subclass]
@@ -83,6 +85,9 @@ mod imp {
             let Some(texture) = self.texture.borrow().clone() else { return };
             let Some(snapshot) = snapshot.downcast_ref::<gtk::Snapshot>() else { return };
             paint_cover(snapshot, &texture, 0.0, 0.0, width as f32, height as f32);
+            if self.film.get() {
+                paint_strips(snapshot, width as f32, height as f32);
+            }
         }
     }
 
@@ -161,9 +166,11 @@ glib::wrapper! {
 }
 
 impl SquareThumbnail {
-    pub fn new(texture: &gdk::Texture) -> Self {
+    /// `texture` cropped to a square, with film strips when `film` is set.
+    pub fn new(texture: &gdk::Texture, film: bool) -> Self {
         let square: Self = glib::Object::new();
         square.imp().texture.replace(Some(texture.clone()));
+        square.imp().film.set(film);
         square
     }
 }
@@ -217,7 +224,7 @@ impl ScatteredThumbnail {
 /// The paintable that shows a picture: cropped to a square if `crop`, between film strips if `film`, or as it is.
 pub fn picture_paintable(texture: &gdk::Texture, crop: bool, film: bool) -> gdk::Paintable {
     if crop {
-        SquareThumbnail::new(texture).upcast()
+        SquareThumbnail::new(texture, film).upcast()
     } else if film {
         FilmStrip::new(texture).upcast()
     } else {
