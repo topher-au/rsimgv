@@ -188,9 +188,9 @@ impl BindingTable {
             .collect()
     }
 
-    /// The YAML file text for the bindings that differ from the defaults. A binding with a value, a script or a
-    /// context other than the action's own is a mapping of `key`, and `value`, `script` and `context` when it has
-    /// them (a notification is `message`, `level` and `seconds`); any other is just its chord.
+    /// The YAML file text for the bindings that differ from the defaults. A binding with a value, a target, a script or
+    /// a context other than the action's own is a mapping of `key`, and `value`, `target`, `script` and `context` when
+    /// it has them (a notification is `message`, `level` and `seconds`); any other is just its chord.
     pub fn to_yaml(&self) -> String {
         let mut actions = Mapping::new();
         for (action, bindings) in ACTIONS.iter().zip(&self.chords) {
@@ -237,8 +237,8 @@ impl BindingTable {
 
     /// Applies the actions in a YAML file over the table: each listed action gets the bindings the file gives it.
     /// Returns what could not be applied: unknown actions, invalid chords, unknown contexts, contexts the action
-    /// cannot be bound in, a script binding that names no script, a notification with no message or with a level or a
-    /// duration that does not fit, or a file that cannot be read.
+    /// cannot be bound in, a target the action does not take, a script binding that names no script, a notification
+    /// with no message or with a level or a duration that does not fit, or a file that cannot be read.
     pub fn apply_yaml(&mut self, text: &str) -> Vec<String> {
         let root: Value = match serde_yaml_ng::from_str(text) {
             Ok(root) => root,
