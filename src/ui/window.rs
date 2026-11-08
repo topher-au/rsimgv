@@ -1151,7 +1151,7 @@ impl Window {
         bound_action(&video, &weak, "mute", |window| window.imp().viewer.toggle_mute());
         bound_action(&video, &weak, "toggle-svp", |window| window.toggle_setting("video.svp.enabled"));
         bound_action(&video, &weak, "toggle-backdrop", |window| window.toggle_setting("video.backdrop.enabled"));
-        bound_action(&video, &weak, "toggle-crop", |window| window.toggle_setting("video.crop.enabled"));
+        bound_action(&video, &weak, "toggle-crop", Window::toggle_crop);
         bound_action(&video, &weak, "cycle-crop-ratio", Window::cycle_crop_ratio);
         bound_action(&video, &weak, "edit-crop", |window| window.imp().viewer.toggle_manual_crop());
         bound_action(&video, &weak, "lock-crop", |window| window.imp().viewer.toggle_crop_lock());
@@ -2581,6 +2581,14 @@ impl Window {
             // The keys are in the schema, so the write cannot fail.
             let _ = settings.set_boolean(key, !settings.boolean(key));
         }
+    }
+
+    /// Turns crop detection on or off, and says so over the window.
+    fn toggle_crop(&self) {
+        let Some(settings) = self.imp().settings.get() else { return };
+        let on = !settings.boolean("video.crop.enabled");
+        let _ = settings.set_boolean("video.crop.enabled", on);
+        self.notify(if on { "Crop on" } else { "Crop off" });
     }
 
     /// Cycles the shape the video is cropped to through auto and the standard aspect ratios.
