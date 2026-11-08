@@ -17,6 +17,7 @@ use gtk::{gdk, gio, glib};
 use super::drag;
 use super::image_canvas::{Fit, ImageCanvas, OriginalFocus, Placement, Scaling};
 use crate::storage::file_settings::FileSettings;
+use crate::storage::watch_history::{format_duration, WatchHistory};
 use crate::fs::thumbnail::Thumbnails;
 use crate::media::orientation::Orientation;
 use crate::fs::metadata::MediaInfo;
@@ -218,6 +219,42 @@ impl Remember {
     }
 }
 
+/// The settings that decide what is counted in the viewing history, and whether its totals are shown.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HistorySettings {
+    /// Whether new views are counted.
+    pub enabled: bool,
+    /// Whether pictures are counted, and how long one must stay on screen to count.
+    pub images: bool,
+    pub image_seconds: i32,
+    /// Whether videos are counted, and how much of one must play to count.
+    pub videos: bool,
+    pub video_percent: i32,
+    /// Whether the views and time watched for the item shown are shown in the status bar and overlays.
+    pub show_stats: bool,
+}
+
+impl Default for HistorySettings {
+    fn default() -> Self {
+        Self { enabled: true, images: true, image_seconds: 2, videos: true, video_percent: 90, show_stats: true }
+    }
+}
+
+/// How often the in-app watch timer adds up the time the item has been watched.
+const WATCH_TICK: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// The longest a single tick can add, so a suspended application does not count its sleep as watching.
+const WATCH_TICK_MAX: f64 = 1.0;
+
+/// How much of the shown item has been watched in this visit, and whether it has become a view.
+#[derive(Debug, Clone, Copy, Default)]
+struct WatchSession {
+    /// The time spent watching, in seconds, measured by the application rather than by the media backend.
+    seconds: f64,
+    /// Whether the item has been watched long enough, or far enough, to count as a view.
+    counted: bool,
+}
+
 /// The settings changes that save how `orientation` turns and mirrors what is shown.
 fn orientation_settings(orientation: Orientation) -> Vec<(&'static str, Option<serde_yaml_ng::Value>)> {
     vec![
@@ -372,6 +409,9 @@ mod imp {
         pub status_fps: TemplateChild<gtk::Label>,
         #[template_child]
         pub status_size: TemplateChild<gtk::Label>,
+        /// The views and time watched for the item shown, from the viewing history.
+        #[template_child]
+        pub status_views: TemplateChild<gtk::Label>,
         /// The thumbnails of the items, floating over an edge of the picture.
         pub(super) thumbnail_bar: ThumbnailBar,
         /// Slides the thumbnail bar in from its edge and out again.
@@ -440,6 +480,20 @@ mod imp {
         pub(super) cursor_hide: RefCell<Option<glib::SourceId>>,
         /// Whether the status bar under the item is shown.
         pub(super) status_shown: Cell<bool>,
+        /// What is counted in the viewing history, and whether its totals are shown.
+        pub(super) history: Cell<HistorySettings>,
+        /// The viewing history of the item shown, if it has one.
+        pub(super) watch_hash: RefCell<Option<String>>,
+        /// The views and watched time already recorded for the item shown, before this visit.
+        pub(super) watch_stored: Cell<(u64, f64)>,
+        /// How much of the item shown has been watched in this visit.
+        pub(super) watch_session: Cell<WatchSession>,
+        /// When the in-app watch timer last added to the session.
+        pub(super) watch_last_tick: Cell<Option<std::time::Instant>>,
+        /// The in-app timer that counts the time the item shown is watched.
+        pub(super) watch_timer: RefCell<Option<glib::SourceId>>,
+        /// The views and whole seconds last written to the status bar, so it is not rewritten on every tick.
+        pub(super) watch_shown: Cell<(u64, u64, bool)>,
         /// Where the video controls sit, and the drag that is moving them, with the layout and width it started from.
         pub(super) controls_layout: Cell<ControlsLayout>,
         pub(super) controls_drag: Cell<Option<(ControlsDrag, ControlsLayout, f64)>>,
@@ -1559,6 +1613,9 @@ impl MediaViewer {
         ] {
             values.insert(name, label.label().to_string());
         }
+        let (views, watched) = self.watch_totals();
+        values.insert("views", views.to_string());
+        values.insert("watch-time", format_duration(watched));
         // How the item is turned, and for a picture how far it is zoomed.
         let media = imp.media.borrow().clone();
         let orientation = match media.as_ref().map(|media| media.downcast_ref::<crate::mpv::MpvStream>().map(crate::mpv::MpvStream::orientation)) {
@@ -1929,6 +1986,171 @@ impl MediaViewer {
         self.emit_by_name::<()>("back-requested", &[]);
     }
 
+    /// Sets what is counted in the viewing history, and whether its totals are shown.
+    pub fn set_history(&self, history: HistorySettings) {
+        self.imp().history.set(history);
+        self.refresh_watch_stats();
+    }
+
+    /// Reads what the history already holds for the item that is about to be shown, whose settings are `settings`. The
+    /// content hash in those settings is the file's key in the history.
+    fn prepare_watch(&self, settings: Option<&FileSettings>) {
+        let imp = self.imp();
+        let hash = settings.and_then(FileSettings::hash).map(str::to_owned);
+        let stored = hash
+            .as_deref()
+            .and_then(|hash| WatchHistory::shared()?.entry(hash).ok().flatten())
+            .map_or((0, 0.0), |entry| (entry.views, entry.watched_seconds));
+        imp.watch_hash.replace(hash);
+        imp.watch_stored.set(stored);
+        imp.watch_session.set(WatchSession::default());
+        imp.watch_shown.set((u64::MAX, u64::MAX, false));
+        self.refresh_watch_stats();
+    }
+
+    /// Starts the in-app timer that counts how long the item shown is watched. It counts a picture while it is on
+    /// screen, and a video only while it is playing. The time is the application's own, so a video played faster or
+    /// slower adds the time actually spent watching it, not the part of it that went by.
+    fn begin_watch_session(&self) {
+        let imp = self.imp();
+        let settings = imp.history.get();
+        let video = imp.media.borrow().is_some();
+        let wanted = settings.enabled && (if video { settings.videos } else { settings.images });
+        if !wanted || imp.watch_hash.borrow().is_none() || imp.watch_timer.borrow().is_some() {
+            return;
+        }
+        imp.watch_last_tick.set(Some(std::time::Instant::now()));
+        let weak = self.downgrade();
+        let source = glib::timeout_add_local(WATCH_TICK, move || {
+            let Some(viewer) = weak.upgrade() else { return glib::ControlFlow::Break };
+            if viewer.imp().watch_hash.borrow().is_none() {
+                viewer.imp().watch_timer.take();
+                return glib::ControlFlow::Break;
+            }
+            viewer.tick_watch();
+            glib::ControlFlow::Continue
+        });
+        imp.watch_timer.replace(Some(source));
+    }
+
+    /// Adds the time since the last tick to the item's watch session, if it was being watched, and marks it as viewed
+    /// once it has been watched long enough or far enough.
+    fn tick_watch(&self) {
+        let imp = self.imp();
+        let now = std::time::Instant::now();
+        let Some(last) = imp.watch_last_tick.replace(Some(now)) else { return };
+        let delta = now.saturating_duration_since(last).as_secs_f64().min(WATCH_TICK_MAX);
+        let settings = imp.history.get();
+        if !settings.enabled {
+            return;
+        }
+        let mut session = imp.watch_session.get();
+        let media = imp.media.borrow().clone();
+        match &media {
+            Some(media) => {
+                if !settings.videos {
+                    return;
+                }
+                // Only time the video is actually playing counts.
+                if !media.is_playing() {
+                    return;
+                }
+                session.seconds += delta;
+                let duration = media.duration() as f64 / MICROS;
+                if !session.counted && duration > 0.0 {
+                    let position = media.timestamp() as f64 / MICROS;
+                    let percent = f64::from(settings.video_percent.clamp(1, 100));
+                    if position >= duration * percent / 100.0 {
+                        session.counted = true;
+                    }
+                }
+            }
+            None => {
+                if !settings.images {
+                    return;
+                }
+                session.seconds += delta;
+                if !session.counted && session.seconds >= f64::from(settings.image_seconds.max(0)) {
+                    session.counted = true;
+                }
+            }
+        }
+        imp.watch_session.set(session);
+        self.refresh_watch_stats();
+    }
+
+    /// Marks the item shown as viewed, as a video that has reached its end is, whatever part of it was watched.
+    fn count_watch_view(&self) {
+        let imp = self.imp();
+        let settings = imp.history.get();
+        if !settings.enabled || !settings.videos {
+            return;
+        }
+        let mut session = imp.watch_session.get();
+        session.counted = true;
+        imp.watch_session.set(session);
+    }
+
+    /// Saves this visit to the history: one more view if it counted, and the time spent watching. Called when the item
+    /// is left, and when a video ends.
+    fn finish_watch_session(&self) {
+        if let Some(source) = self.imp().watch_timer.take() {
+            source.remove();
+        }
+        let imp = self.imp();
+        let session = imp.watch_session.replace(WatchSession::default());
+        imp.watch_last_tick.set(None);
+        if session.seconds < 0.5 && !session.counted {
+            return;
+        }
+        let Some(hash) = imp.watch_hash.borrow().clone() else { return };
+        let Some(path) = self.shown_path() else { return };
+        let Some(history) = WatchHistory::shared() else { return };
+        if let Err(err) = history.record(&hash, &path, session.counted, session.seconds) {
+            eprintln!("rsimgv: could not save the viewing history: {err}");
+            return;
+        }
+        if let Ok(Some(entry)) = history.entry(&hash) {
+            imp.watch_stored.set((entry.views, entry.watched_seconds));
+        }
+        self.refresh_watch_stats();
+    }
+
+    /// The views and watched time for the item shown: what the history holds, plus this visit.
+    fn watch_totals(&self) -> (u64, f64) {
+        let imp = self.imp();
+        let (stored_views, stored_seconds) = imp.watch_stored.get();
+        let session = imp.watch_session.get();
+        (stored_views + u64::from(session.counted), stored_seconds + session.seconds)
+    }
+
+    /// Shows the views and time watched for the item shown, from the history plus this visit, when the settings ask for
+    /// them.
+    fn refresh_watch_stats(&self) {
+        let imp = self.imp();
+        let (views, seconds) = self.watch_totals();
+        let show = imp.history.get().show_stats;
+        let signature = (views, seconds.floor() as u64, show);
+        if imp.watch_shown.get() == signature {
+            return;
+        }
+        imp.watch_shown.set(signature);
+        let text = if show {
+            let mut parts = Vec::new();
+            if views > 0 {
+                parts.push(format!("{views} view{}", if views == 1 { "" } else { "s" }));
+            }
+            if seconds >= 0.5 {
+                parts.push(format!("{} watched", format_duration(seconds)));
+            }
+            parts.join(" · ")
+        } else {
+            String::new()
+        };
+        imp.status_views.set_label(&text);
+        imp.status_views.set_visible(!text.is_empty());
+    }
+
     /// Shows or hides the status bar under the item: its position, name, resolution, frame rate and file size.
     pub fn set_status_bar(&self, shown: bool) {
         let imp = self.imp();
@@ -2096,8 +2318,9 @@ impl MediaViewer {
         self.update_navigation(index, len);
 
         // The file's settings are read on a worker thread: the content hash reads the file, and the settings file is parsed.
-        // With none kept, the file is not read.
-        let keep = imp.remember.get().enabled;
+        // With none kept, the file is not read. The viewing history is keyed by the same hash, so it is read too when
+        // the history is on.
+        let keep = imp.remember.get().enabled || imp.history.get().enabled;
         let weak = self.downgrade();
         glib::spawn_future_local(async move {
             let settings = gio::spawn_blocking({
@@ -2121,6 +2344,7 @@ impl MediaViewer {
             return;
         }
         let video = is_video(&path);
+        self.prepare_watch(settings.as_ref());
         // A video stepped to from another item starts after a short wait, which the next step cancels.
         if video && imp.delay_video.replace(false) {
             let weak = self.downgrade();
@@ -2172,6 +2396,11 @@ impl MediaViewer {
                 let weak = self.downgrade();
                 move |media| {
                     let Some(viewer) = weak.upgrade() else { return };
+                    if media.is_ended() {
+                        // Reaching the end is a view, whatever part of it was watched, and the visit is saved now.
+                        viewer.count_watch_view();
+                        viewer.finish_watch_session();
+                    }
                     if !media.is_ended() || viewer.imp().repeat.get() || !viewer.imp().auto_advance.get() {
                         return;
                     }
@@ -2226,6 +2455,7 @@ impl MediaViewer {
                 media.play();
             });
             imp.media.replace(Some(media));
+            self.begin_watch_session();
             self.refresh_overlay();
         } else {
             imp.pages.set_visible_child(&*imp.canvas);
@@ -2283,6 +2513,7 @@ impl MediaViewer {
             imp.canvas.restore(placement);
         }
         self.update_zoom_indicator();
+        self.begin_watch_session();
     }
 
     /// Decodes the pictures either side of the item at `index`, so that stepping to them shows them at once.
@@ -2325,6 +2556,13 @@ impl MediaViewer {
         if let Some(source) = imp.video_start.take() {
             source.remove();
         }
+        self.finish_watch_session();
+        imp.watch_hash.take();
+        imp.watch_stored.set((0, 0.0));
+        imp.watch_session.set(WatchSession::default());
+        imp.watch_last_tick.set(None);
+        imp.watch_shown.set((u64::MAX, u64::MAX, false));
+        imp.status_views.set_visible(false);
         self.hide_overlay();
         self.cancel_svp_timer();
         imp.svp_held.set(false);

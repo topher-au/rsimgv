@@ -932,6 +932,14 @@ impl Window {
             zoom: settings.boolean("remember.zoom"),
             pan: settings.boolean("remember.pan"),
         });
+        viewer.set_history(super::media_viewer::HistorySettings {
+            enabled: settings.boolean("history.enabled"),
+            images: settings.boolean("history.images"),
+            image_seconds: settings.int("history.image-seconds"),
+            videos: settings.boolean("history.videos"),
+            video_percent: settings.int("history.video-percent"),
+            show_stats: settings.boolean("history.show-stats"),
+        });
         let crop_method = crate::mpv::framing::CropMethod::from_name(&settings.string("video.crop.method"));
         viewer.set_framing(crate::mpv::Framing {
             crop: settings.boolean("video.crop.enabled").then_some(crop_method),
@@ -1012,6 +1020,7 @@ impl Window {
         self.add_action(&notify);
         bound_action(self, &weak, "toggle-keybinds", Window::toggle_keybinds_overlay);
         bound_action(self, &weak, "settings", Window::show_preferences);
+        bound_action(self, &weak, "viewing-history", Window::show_viewing_history);
         bound_action(self, &weak, "settings-keybindings", |window| window.present_preferences(Some("keybindings")));
         bound_action(self, &weak, "open-folder", Window::open_folder);
         bound_action(self, &weak, "bookmark-folder", Window::bookmark_current_folder);
@@ -3549,6 +3558,14 @@ impl Window {
         self.present_preferences(None);
     }
 
+    /// Shows the pictures and videos that have been viewed, and how long each has been watched.
+    fn show_viewing_history(&self) {
+        match crate::storage::watch_history::WatchHistory::shared() {
+            Some(history) => super::history_dialog::present(self, history),
+            None => self.notify("The viewing history is not available"),
+        }
+    }
+
     /// Opens the preferences dialog on the page named `page`, or on the first page.
     fn present_preferences(&self, page: Option<&str>) {
         if let Some(settings) = self.imp().settings.get() {
@@ -3567,7 +3584,7 @@ const WHEEL_VOLUME_STEP: f64 = 5.0;
 const WHEEL_SEEK_STEP: f64 = 5.0;
 
 /// The settings the viewer and the window title are set from, applied again whenever one changes.
-const VIEWER_SETTINGS: [&str; 55] = [
+const VIEWER_SETTINGS: [&str; 61] = [
     "video.crop.enabled",
     "video.crop.method",
     "video.crop.trim",
@@ -3582,6 +3599,12 @@ const VIEWER_SETTINGS: [&str; 55] = [
     "remember.rotation",
     "remember.zoom",
     "remember.pan",
+    "history.enabled",
+    "history.images",
+    "history.image-seconds",
+    "history.videos",
+    "history.video-percent",
+    "history.show-stats",
     "window.sidebar.animations",
     "window.sidebar.animation-ms",
     "video.controls.locked",

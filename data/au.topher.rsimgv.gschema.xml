@@ -10,6 +10,7 @@
     <child name="image" schema="au.topher.rsimgv.image"/>
     <child name="video" schema="au.topher.rsimgv.video"/>
     <child name="remember" schema="au.topher.rsimgv.remember"/>
+    <child name="history" schema="au.topher.rsimgv.history"/>
     <child name="mouse" schema="au.topher.rsimgv.mouse"/>
     <child name="remote" schema="au.topher.rsimgv.remote"/>
     <child name="scripts" schema="au.topher.rsimgv.scripts"/>
@@ -33,10 +34,6 @@
     <key name="show-videos" type="b">
       <default>true</default>
       <summary>Show videos in the browse view</summary>
-    </key>
-    <key name="search-index" type="b">
-      <default>false</default>
-      <summary>Keep the metadata of pictures and videos in a database, for searching</summary>
     </key>
     <key name="show-directories" type="s">
       <choices>
@@ -671,6 +668,34 @@
     <key name="pan" type="b">
       <default>true</default>
       <summary>Keep where a zoomed picture was panned to</summary>
+    </key>
+  </schema>
+  <schema id="au.topher.rsimgv.history" path="/au/topher/rsimgv/history/">
+    <key name="enabled" type="b">
+      <default>true</default>
+      <summary>Keep a history of the pictures and videos that are viewed, with how many times and how long each has been watched</summary>
+    </key>
+    <key name="images" type="b">
+      <default>true</default>
+      <summary>Count pictures in the viewing history</summary>
+    </key>
+    <key name="image-seconds" type="i">
+      <range min="0" max="60"/>
+      <default>2</default>
+      <summary>How long a picture stays on screen before it counts as viewed, in seconds; 0 counts it at once</summary>
+    </key>
+    <key name="videos" type="b">
+      <default>true</default>
+      <summary>Count videos in the viewing history</summary>
+    </key>
+    <key name="video-percent" type="i">
+      <range min="1" max="100"/>
+      <default>90</default>
+      <summary>How much of a video has to play before it counts as viewed, as a percentage of its length</summary>
+    </key>
+    <key name="show-stats" type="b">
+      <default>true</default>
+      <summary>Show the views and time watched for the item shown in the viewer's status bar and overlays</summary>
     </key>
   </schema>
   <schema id="au.topher.rsimgv.mouse" path="/au/topher/rsimgv/mouse/">

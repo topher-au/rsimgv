@@ -296,6 +296,10 @@
                           </section>
                           <section>
                             <item>
+                              <attribute name="label">Viewing History</attribute>
+                              <attribute name="action">win.viewing-history</attribute>
+                            </item>
+                            <item>
                               <attribute name="label">Preferences</attribute>
                               <attribute name="action">app.preferences</attribute>
                             </item>

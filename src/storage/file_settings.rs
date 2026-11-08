@@ -161,6 +161,12 @@ impl FileSettings {
         Self { base: values.clone(), file, values }
     }
 
+    /// The content hash the settings are kept under, which is also the file's key in other stores, such as the viewing
+    /// history. It is the settings file's name without `.yaml`.
+    pub fn hash(&self) -> Option<&str> {
+        self.file.file_stem().and_then(|stem| stem.to_str())
+    }
+
     /// The value of `key`, if it is set.
     pub fn get(&self, key: &str) -> Option<&Value> {
         self.values.get(key)

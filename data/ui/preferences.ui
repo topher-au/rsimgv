@@ -169,6 +169,66 @@
                             </child>
                             <child>
                               <object class="AdwPreferencesGroup">
+                                <property name="title">Viewing History</property>
+                                <property name="description">Time is counted as it is watched, so faster playback counts less and slower playback counts more.</property>
+                                <child>
+                                  <object class="AdwSwitchRow" id="history_enabled_row">
+                                    <property name="title">Track viewing history</property>
+                                    <property name="subtitle">Keeps how many times and how long each picture and video has been watched</property>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="AdwSwitchRow" id="history_images_row">
+                                    <property name="title">Count pictures</property>
+                                    <property name="subtitle">A picture counts as viewed once it has been on screen for the time below</property>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="AdwSpinRow" id="history_image_seconds_row">
+                                    <property name="title">Picture view time</property>
+                                    <property name="subtitle">Seconds a picture must stay on screen to count as viewed</property>
+                                    <property name="digits">0</property>
+                                    <property name="adjustment">
+                                      <object class="GtkAdjustment">
+                                        <property name="lower">0</property>
+                                        <property name="upper">60</property>
+                                        <property name="step-increment">1</property>
+                                        <property name="page-increment">5</property>
+                                      </object>
+                                    </property>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="AdwSwitchRow" id="history_videos_row">
+                                    <property name="title">Count videos</property>
+                                    <property name="subtitle">A video counts as viewed once the part below has played</property>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="AdwSpinRow" id="history_video_percent_row">
+                                    <property name="title">Video watch percentage</property>
+                                    <property name="subtitle">How much of a video has to play to count as viewed</property>
+                                    <property name="digits">0</property>
+                                    <property name="adjustment">
+                                      <object class="GtkAdjustment">
+                                        <property name="lower">1</property>
+                                        <property name="upper">100</property>
+                                        <property name="step-increment">5</property>
+                                        <property name="page-increment">10</property>
+                                      </object>
+                                    </property>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="AdwSwitchRow" id="history_show_stats_row">
+                                    <property name="title">Show views and watch time</property>
+                                    <property name="subtitle">In the viewer's status bar and overlays</property>
+                                  </object>
+                                </child>
+                              </object>
+                            </child>
+                            <child>
+                              <object class="AdwPreferencesGroup">
                                 <property name="title">Animations</property>
                                 <child>
                                   <object class="AdwSwitchRow" id="sidebar_animations_row">
@@ -400,12 +460,6 @@
                                   <object class="AdwSwitchRow" id="media_only_row">
                                     <property name="title">Only show compatible media files</property>
                                     <property name="subtitle">Hides files that are neither pictures nor videos</property>
-                                  </object>
-                                </child>
-                                <child>
-                                  <object class="AdwSwitchRow" id="search_index_row">
-                                    <property name="title">Keep metadata in the search index</property>
-                                    <property name="subtitle">Keeps what is read from pictures and videos in a database instead of the metadata cache</property>
                                   </object>
                                 </child>
                               </object>

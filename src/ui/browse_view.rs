@@ -17,6 +17,7 @@ use gtk::subclass::prelude::*;
 use gtk::{gio, glib};
 
 use crate::fs::thumbnail::{Media as ThumbnailMedia, Size as ThumbnailSize, Thumbnails};
+use crate::storage::watch_history::{format_duration, WatchHistory};
 use super::drag;
 use super::thumbnail_paint::{picture_paintable, ScatteredThumbnail, MAX_PHOTOS, PHOTO_SHARE};
 use crate::fs::metadata::{MediaInfo, MediaMetadata};
@@ -51,11 +52,13 @@ pub enum InfoField {
     Codec,
     Bitrate,
     Audio,
+    Views,
+    Watched,
 }
 
 impl InfoField {
     /// Every field, in the order the preferences list them.
-    pub const ALL: [InfoField; 9] = [
+    pub const ALL: [InfoField; 11] = [
         InfoField::Size,
         InfoField::Modified,
         InfoField::ContentType,
@@ -65,6 +68,8 @@ impl InfoField {
         InfoField::Codec,
         InfoField::Bitrate,
         InfoField::Audio,
+        InfoField::Views,
+        InfoField::Watched,
     ];
 
     /// Whether the field is read from a picture's or video's metadata, rather than the file's own information.
@@ -87,6 +92,8 @@ impl InfoField {
             InfoField::Codec => "Codec",
             InfoField::Bitrate => "Bit rate",
             InfoField::Audio => "Audio",
+            InfoField::Views => "Views",
+            InfoField::Watched => "Watched",
         }
     }
 
@@ -102,6 +109,8 @@ impl InfoField {
             InfoField::Codec => "codec",
             InfoField::Bitrate => "bit-rate",
             InfoField::Audio => "audio",
+            InfoField::Views => "views",
+            InfoField::Watched => "watched",
         }
     }
 
@@ -142,8 +151,22 @@ impl InfoField {
                 }
             }),
             InfoField::Audio => metadata?.audio_codec.clone(),
+            InfoField::Views => {
+                let (views, _) = watch_totals(entry.path())?;
+                (views > 0).then(|| format!("{views} view{}", if views == 1 { "" } else { "s" }))
+            }
+            InfoField::Watched => {
+                let (_, seconds) = watch_totals(entry.path())?;
+                (seconds >= 0.5).then(|| format!("{} watched", format_duration(seconds)))
+            }
         }
     }
+}
+
+/// The views and watched time recorded for the file at `path`, looked up by the path the browse view lists it at. The
+/// history is keyed by content hash, but reading each file in a folder to find its hash would be far too slow here.
+fn watch_totals(path: &Path) -> Option<(u64, f64)> {
+    WatchHistory::shared()?.totals_at(path).ok().flatten()
 }
 
 /// The info for `entry`: its chosen fields that have a value, joined by `separator`.

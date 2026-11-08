@@ -34,6 +34,8 @@ pub const PROPERTIES: &[(&str, &str)] = &[
     ("playlist-count", "How many items the viewer steps through"),
     ("resolution", "The width and height of the item"),
     ("file-size", "The size of the file"),
+    ("views", "How many times the item has been viewed"),
+    ("watch-time", "How long the item has been watched, such as 12m 05s"),
 ];
 
 /// `icon`, an emoji such as ▶️, as the plain character of the font, which the text variation selector asks for.
@@ -66,6 +68,8 @@ pub fn sample(name: &str) -> Option<String> {
         "playlist-count" => "12",
         "resolution" => "1920 × 1080",
         "file-size" => "48.2 MB",
+        "views" => "3",
+        "watch-time" => "12m 05s",
         _ => return None,
     };
     Some(value.to_owned())

@@ -55,8 +55,9 @@ library of pictures and videos without leaving the window.
   that direction.
 - **Manual location entry**: click the current folder in the path bar to type a path. A leading `~` means
   your home folder.
-- **Settings** in a preferences dialog, saved as YAML and applied immediately.
+- **Settings** in a preferences dialog, saved as YAML and applied immediately. Metadata and the viewing history are kept in `media-index.sqlite3` in the user's data directory (`RSIMGV_DATA` overrides its folder).
 - **Hidden files** can be shown from the main menu.
+- **Viewing history**: how many times each picture or video has been viewed, and how long it has been watched, measured by an in-app timer so faster or slower playback counts the time actually spent. The viewer's status bar and overlays show the totals, the Viewing History item in the main menu lists recent files, and the History preferences choose what counts as a view. The counts can also be shown in the browse view's item info.
 - **Playlist**: one list of pictures and videos from anywhere, in your own order, kept between runs and shared by the windows. Playing it leaves the folder you are browsing, and the item selected there, as they were. See [Playlist](#playlist).
 - **Scripts** are commands listed on the Scripts tab of the Integration page, with `%file%` standing for the item they run on. The Run Script action in the keybinding editor binds a key to one: it runs on the item under the cursor, or on the one the viewer shows. A script that waits to finish has the folder listed again when it ends.
 - **Messages** appear over the window: notifications that go away by themselves, and persistent messages that stay until dismissed. A script that fails reports it this way, and other programs can show their own through the remote control server (`messages.show`). F1 shows a list of the keybindings in force where you are, and hides it again. Skipping through a video shows a progress bar and the time over it, which the Overlay tab of the Viewer page sets up. With SVP on, skipping leaves it out until a moment after the last skip, and a new video starts without it, so neither waits for SVP to load; the SVP tab of the Videos page sets how long that is, or turns it off. V turns SVP on or off while watching. The Show Notification action in the keybinding editor binds a key to a notification: each binding sets its message, level and how many seconds it stays.
@@ -176,7 +177,7 @@ src/
   playlist/          the playlist and its file formats
   services/          IPC, the remote control server and user scripts
   settings/          GSettings settings and YAML storage (store.rs)
-  storage/           atomic file writes, bookmarks and per-file settings
+  storage/           atomic file writes, bookmarks, per-file settings, the metadata and viewing-history database
   ui/                widgets: window, folder tree, browse view, path bar,
                      navigation bar, header bar, preferences, split view
 native/              GObject subclass for GSettings (backend.c)
