@@ -416,9 +416,18 @@
                                   </object>
                                 </child>
                                 <child>
-                                  <object class="AdwSwitchRow" id="video_frame_previews_row">
-                                    <property name="title">Video frame previews</property>
-                                    <property name="subtitle">Plays a video's frames while the pointer is over it, or while it is the item last selected and the pointer is over none. The frames take time to make</property>
+                                  <object class="AdwComboRow" id="video_frame_previews_row">
+                                    <property name="title">Video previews</property>
+                                    <property name="subtitle">Plays a video while the pointer is over it, or while it is the item last selected and the pointer is over none: with captured frames, or with an embedded player. The frames take time to make</property>
+                                    <property name="model">
+                                      <object class="GtkStringList">
+                                        <items>
+                                          <item>None</item>
+                                          <item>Frames</item>
+                                          <item>Embedded Player</item>
+                                        </items>
+                                      </object>
+                                    </property>
                                   </object>
                                 </child>
                               </object>

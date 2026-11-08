@@ -381,12 +381,24 @@ pub struct Player {
     /// Whether frames may be rendered, and how many times the output has been found rotated since the video was reconfigured.
     gate: Arc<RenderGate>,
     rotation_checks: Cell<u32>,
+    /// Whether this player listens on the window's IPC socket, which it removes when it goes.
+    ipc: bool,
 }
 
 impl Player {
     /// A player set up to play without a window of its own, rendering with `gl` if it is given and otherwise into memory, with
     /// the mpv command line options in `extra` applied over rsimgv's own. Options that would give it a window are left out.
     pub fn new(extra: &str, gl: Option<gtk::gdk::GLContext>) -> Result<Self, String> {
+        Self::with_ipc(extra, gl, true)
+    }
+
+    /// A player for a browse view's video preview, which does not listen for commands on an IPC socket: the window's
+    /// player already has it. Otherwise it is made as `new` makes one.
+    pub fn new_preview(extra: &str, gl: Option<gtk::gdk::GLContext>) -> Result<Self, String> {
+        Self::with_ipc(extra, gl, false)
+    }
+
+    fn with_ipc(extra: &str, gl: Option<gtk::gdk::GLContext>, ipc: bool) -> Result<Self, String> {
         // SAFETY: plain libmpv calls on a handle this function owns until it is returned.
         unsafe {
             // libmpv refuses to start unless numbers are formatted the C way, and GTK sets the locale from the
@@ -396,7 +408,7 @@ impl Player {
             if handle.is_null() {
                 return Err("could not create the mpv player".to_owned());
             }
-            let mut player = Self { id: NEXT_PLAYER_ID.fetch_add(1, Ordering::Relaxed), handle, render: std::ptr::null_mut(), gl, gl_backdrop: RefCell::default(), renderer: None, wakeup: None, rotation: Cell::new(0), orientation: Cell::new(Orientation::default()), interpolation: Default::default(), crop: Cell::new(None), detector: Cell::new(false), gate: Arc::default(), rotation_checks: Cell::new(0) };
+            let mut player = Self { id: NEXT_PLAYER_ID.fetch_add(1, Ordering::Relaxed), handle, render: std::ptr::null_mut(), gl, gl_backdrop: RefCell::default(), renderer: None, wakeup: None, rotation: Cell::new(0), orientation: Cell::new(Orientation::default()), interpolation: Default::default(), crop: Cell::new(None), detector: Cell::new(false), gate: Arc::default(), rotation_checks: Cell::new(0), ipc };
             for (name, value) in [
                 ("vo", "libmpv"),
                 // The software renderer has no way to share a hardware decoder's surfaces, and the turn, crop and interpolation
@@ -431,10 +443,12 @@ impl Player {
                 player.set_option("sigmoid-upscaling", "no")?;
             }
             // Other programs can drive the player through mpv's JSON IPC on this socket, unless the user's
-            // options name another.
-            let socket = ipc_socket_path();
-            if let Err(err) = player.set_option("input-ipc-server", &socket.to_string_lossy()) {
-                eprintln!("rsimgv: mpv: could not open the IPC socket {}: {err}", socket.display());
+            // options name another. A preview player leaves the socket to the window's player.
+            if ipc {
+                let socket = ipc_socket_path();
+                if let Err(err) = player.set_option("input-ipc-server", &socket.to_string_lossy()) {
+                    eprintln!("rsimgv: mpv: could not open the IPC socket {}: {err}", socket.display());
+                }
             }
             player.set_option("config-dir", &config_dir().to_string_lossy())?;
             for (name, value) in parse_options(extra) {
@@ -857,7 +871,9 @@ impl Drop for Player {
             self.renderer.take();
             sys::mpv_terminate_destroy(self.handle);
             // mpv removes its socket when it ends, unless it was stopped; the socket is not needed once it has ended.
-            let _ = std::fs::remove_file(ipc_socket_path());
+            if self.ipc {
+                let _ = std::fs::remove_file(ipc_socket_path());
+            }
             if let Some(callback) = self.wakeup.take() {
                 drop(Box::from_raw(callback));
             }

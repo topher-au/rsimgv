@@ -199,6 +199,8 @@ mod imp {
     pub struct MpvStream {
         /// The shared player, while this is the current stream.
         pub(super) player: RefCell<Option<Rc<Player>>>,
+        /// Which shared player this stream plays through: the viewer's, or the browse view's previews'.
+        pub(super) slot: Cell<super::Slot>,
         /// The turn and mirror the user gave the video. The player is shared, so each load sets it again.
         pub(super) orientation: Cell<Orientation>,
         /// Whether the player has loaded this stream's file, so events from the file before it are ignored.
@@ -398,12 +400,79 @@ glib::wrapper! {
 }
 
 thread_local! {
-    /// The shared player, with the mpv options, whether it renders with OpenGL and the config generation it was made with.
+    /// The viewer's shared player, with the mpv options, whether it renders with OpenGL and the config generation it was made with.
     static SHARED: RefCell<Option<(String, bool, u64, Rc<Player>)>> = const { RefCell::new(None) };
-    /// The stream the shared player is playing for.
+    /// The stream the viewer's shared player is playing for.
     static CURRENT: RefCell<glib::WeakRef<MpvStream>> = RefCell::new(glib::WeakRef::new());
-    /// Whether the shared player renders with OpenGL, as the preferences ask.
+    /// The shared player the browse view's video previews use, made apart from the viewer's so a preview never takes the
+    /// viewer's video away. It is reused for each video previewed.
+    static PREVIEW_SHARED: RefCell<Option<(String, bool, u64, Rc<Player>)>> = const { RefCell::new(None) };
+    /// The stream the preview player is playing for.
+    static PREVIEW_CURRENT: RefCell<glib::WeakRef<MpvStream>> = RefCell::new(glib::WeakRef::new());
+    /// Whether the shared players render with OpenGL, as the preferences ask.
     static RENDER_WITH_OPENGL: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Which shared player a stream plays through: the viewer's, or the browse view's previews'.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum Slot {
+    #[default]
+    Viewer,
+    Preview,
+}
+
+impl Slot {
+    /// The shared player in this slot, made with `options` and the current mpv.conf, if it is still current.
+    fn shared(self, options: &str, opengl: bool, generation: u64) -> Option<Rc<Player>> {
+        let current = |shared: &Option<(String, bool, u64, Rc<Player>)>| {
+            shared
+                .as_ref()
+                .filter(|(made_with, made_opengl, made_at, _)| made_with == options && *made_opengl == opengl && *made_at == generation)
+                .map(|(_, _, _, player)| player.clone())
+        };
+        match self {
+            Slot::Viewer => SHARED.with(|shared| current(&shared.borrow())),
+            Slot::Preview => PREVIEW_SHARED.with(|shared| current(&shared.borrow())),
+        }
+    }
+
+    fn take_shared(self) -> Option<(String, bool, u64, Rc<Player>)> {
+        match self {
+            Slot::Viewer => SHARED.with(|shared| shared.take()),
+            Slot::Preview => PREVIEW_SHARED.with(|shared| shared.take()),
+        }
+    }
+
+    fn keep(self, player: (String, bool, u64, Rc<Player>)) {
+        match self {
+            Slot::Viewer => SHARED.with(|shared| shared.replace(Some(player))),
+            Slot::Preview => PREVIEW_SHARED.with(|shared| shared.replace(Some(player))),
+        };
+    }
+
+    /// The stream this slot's player plays for.
+    fn current(self) -> Option<MpvStream> {
+        match self {
+            Slot::Viewer => CURRENT.with(|current| current.borrow().upgrade()),
+            Slot::Preview => PREVIEW_CURRENT.with(|current| current.borrow().upgrade()),
+        }
+    }
+
+    /// Points this slot at `stream`, returning the stream it pointed at before.
+    fn replace_current(self, stream: glib::WeakRef<MpvStream>) -> glib::WeakRef<MpvStream> {
+        match self {
+            Slot::Viewer => CURRENT.with(|current| current.replace(stream)),
+            Slot::Preview => PREVIEW_CURRENT.with(|current| current.replace(stream)),
+        }
+    }
+
+    /// Forgets `stream` as this slot's stream, if it still is.
+    fn clear_current(self, stream: &MpvStream) {
+        let is_current = self.current().as_ref() == Some(stream);
+        if is_current {
+            self.replace_current(glib::WeakRef::new());
+        }
+    }
 }
 
 /// Sets whether videos are rendered with OpenGL. The next video opened uses it.
@@ -411,8 +480,8 @@ pub fn set_render_with_opengl(on: bool) {
     RENDER_WITH_OPENGL.with(|flag| flag.set(on));
 }
 
-/// Calls `handle` on the main thread with the current stream, once for any number of calls made before it runs.
-fn main_thread_waker(handle: fn(&MpvStream)) -> impl Fn() + Send + Sync + 'static {
+/// Calls `MpvStream::handle_events` on the main thread for the stream in `slot`, once for any number of calls made before it runs.
+fn main_thread_waker(slot: Slot) -> impl Fn() + Send + Sync + 'static {
     let pending = Arc::new(AtomicBool::new(false));
     move || {
         if pending.swap(true, Ordering::AcqRel) {
@@ -421,8 +490,8 @@ fn main_thread_waker(handle: fn(&MpvStream)) -> impl Fn() + Send + Sync + 'stati
         let pending = pending.clone();
         glib::MainContext::default().invoke(move || {
             pending.store(false, Ordering::Release);
-            if let Some(stream) = CURRENT.with(|current| current.borrow().upgrade()) {
-                handle(&stream);
+            if let Some(stream) = slot.current() {
+                MpvStream::handle_events(&stream);
             }
         });
     }
@@ -440,39 +509,38 @@ fn gl_player(options: &str) -> Option<Player> {
     made.ok()
 }
 
-/// The shared player made with `options` and the current mpv.conf, made now if there is none yet or it was made with
-/// other options or an older mpv.conf.
-fn shared_player(options: &str) -> Option<Rc<Player>> {
+/// The shared player in `slot` made with `options` and the current mpv.conf, made now if there is none yet or it was made
+/// with other options or an older mpv.conf.
+fn shared_player(slot: Slot, options: &str) -> Option<Rc<Player>> {
     let generation = config_generation();
     let opengl = RENDER_WITH_OPENGL.with(Cell::get);
-    if let Some(player) = SHARED.with(|shared| {
-        shared
-            .borrow()
-            .as_ref()
-            .filter(|(made_with, made_opengl, made_at, _)| made_with == options && *made_opengl == opengl && *made_at == generation)
-            .map(|(_, _, _, player)| player.clone())
-    }) {
+    if let Some(player) = slot.shared(options, opengl, generation) {
         return Some(player);
     }
     // The old player goes first, so its IPC socket is free for the new one.
-    let old = SHARED.with(|shared| shared.take());
-    if let Some(stream) = CURRENT.with(|current| current.borrow().upgrade()) {
+    let old = slot.take_shared();
+    if let Some(stream) = slot.current() {
         stream.imp().player.take();
     }
     drop(old);
-    let mut player = match gl_player(options).map_or_else(|| Player::new(options, None), Ok) {
+    // Preview players render in software at the size of a thumbnail, and do not take the viewer's IPC socket.
+    let made = match slot {
+        Slot::Viewer => gl_player(options).map_or_else(|| Player::new(options, None), Ok),
+        Slot::Preview => Player::new_preview(options, None),
+    };
+    let mut player = match made {
         Ok(player) => player,
         Err(err) => {
             eprintln!("rsimgv: mpv: {err}");
             return None;
         }
     };
-    player.set_wakeup(main_thread_waker(MpvStream::handle_events));
+    player.set_wakeup(main_thread_waker(slot));
     // Frames are rendered on a thread of their own, and made into textures here.
     let id = player.id();
     player.start_renderer(move |frame| {
         glib::MainContext::default().invoke(move || {
-            if let Some(stream) = CURRENT.with(|current| current.borrow().upgrade()) {
+            if let Some(stream) = slot.current() {
                 stream.frame_rendered(id, frame);
             }
         });
@@ -483,7 +551,7 @@ fn shared_player(options: &str) -> Option<Rc<Player>> {
     player.observe_double(SPEED, "speed");
     player.observe_double(ESTIMATED_FPS, "estimated-vf-fps");
     let player = Rc::new(player);
-    SHARED.with(|shared| shared.replace(Some((options.to_owned(), opengl, generation, player.clone()))));
+    slot.keep((options.to_owned(), opengl, generation, player.clone()));
     Some(player)
 }
 
@@ -500,20 +568,29 @@ impl MpvStream {
         let Some(player) = self.imp().player.take() else { return };
         let _ = player.command(&["stop"]);
         // The player now plays for no stream, unless a later stream has already taken it over.
-        CURRENT.with(|current| {
-            if current.borrow().upgrade().as_ref() == Some(self) {
-                current.replace(glib::WeakRef::new());
-            }
-        });
+        self.imp().slot.get().clear_current(self);
     }
 
     /// A stream of the video in `path`, paused until it is played, loaded into the shared player made with the mpv
     /// command line options in `options`. It becomes the current stream. `None` if libmpv could not start.
     pub fn for_path(path: &Path, options: &str) -> Option<Self> {
-        let player = shared_player(options)?;
+        Self::start_in(Slot::Viewer, path, options)
+    }
+
+    /// A stream of the video in `path` for a browse view's preview, paused until it is played. It uses a player of its
+    /// own, which is kept for the next preview, so it never takes over the viewer's video. `None` if libmpv could not
+    /// start.
+    pub fn for_preview(path: &Path, options: &str) -> Option<Self> {
+        Self::start_in(Slot::Preview, path, options)
+    }
+
+    /// A stream of the video in `path` loaded into the shared player of `slot`.
+    fn start_in(slot: Slot, path: &Path, options: &str) -> Option<Self> {
+        let player = shared_player(slot, options)?;
         let stream: Self = glib::Object::new();
+        stream.imp().slot.set(slot);
         // The stream before lets go of the player, which now plays for this one.
-        let previous = CURRENT.with(|current| current.replace(stream.downgrade()));
+        let previous = slot.replace_current(stream.downgrade());
         if let Some(previous) = previous.upgrade() {
             previous.imp().player.take();
         }

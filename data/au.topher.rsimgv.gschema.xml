@@ -62,9 +62,14 @@
       <default>'ellipsized'</default>
       <summary>How item names are shown: off, wrapped to two lines, or ellipsized</summary>
     </key>
-    <key name="video-frame-previews" type="b">
-      <default>true</default>
-      <summary>Generate the frames a video plays while it is under the pointer, or is the item last selected and the pointer is over none</summary>
+    <key name="video-frame-previews" type="s">
+      <choices>
+        <choice value="none"/>
+        <choice value="frames"/>
+        <choice value="embedded"/>
+      </choices>
+      <default>'frames'</default>
+      <summary>How a video previews while it is the active item: not at all, with a sequence of captured frames, or with an embedded player</summary>
     </key>
   </schema>
   <schema id="au.topher.rsimgv.browse.info" path="/au/topher/rsimgv/browse/info/">

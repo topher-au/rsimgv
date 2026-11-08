@@ -17,9 +17,11 @@ use gtk::subclass::prelude::*;
 use gtk::{gio, glib};
 
 use crate::fs::thumbnail::{Media as ThumbnailMedia, Size as ThumbnailSize, Thumbnails};
+use crate::storage::video_crops::VideoCrops;
 use crate::storage::watch_history::{format_duration, WatchHistory};
 use super::drag;
 use super::thumbnail_paint::{picture_paintable, ScatteredThumbnail, MAX_PHOTOS, PHOTO_SHARE};
+use super::video_preview::VideoPreview;
 use crate::fs::metadata::{MediaInfo, MediaMetadata};
 use crate::fs::{natural_cmp, FileEntry, FileStore, Reading};
 
@@ -334,6 +336,33 @@ fn wanted_at(view: &BrowseView, cell: &gtk::Box, path: &Path, size: i32) -> impl
 /// The image in a cell's visual part.
 fn icon_of(cell: &gtk::Box) -> Option<gtk::Image> {
     cell.first_child().and_then(|visual| visual.first_child()).and_downcast::<gtk::Image>()
+}
+
+/// The picture in a cell's visual part, where an embedded video preview is shown.
+fn player_of(cell: &gtk::Box) -> Option<gtk::Picture> {
+    cell.first_child().and_then(|visual| visual.last_child()).and_downcast::<gtk::Picture>()
+}
+
+/// How a video previews while it is the active item.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum VideoPreviews {
+    #[default]
+    None,
+    /// A sequence of frames captured ahead of time and played in turn.
+    Frames,
+    /// The video itself, in a player embedded in the item.
+    Embedded,
+}
+
+impl VideoPreviews {
+    /// The mode a setting value names, or `None` for any other.
+    fn from_name(name: &str) -> Self {
+        match name {
+            "frames" => Self::Frames,
+            "embedded" => Self::Embedded,
+            _ => Self::None,
+        }
+    }
 }
 
 /// Shows the still thumbnail of `entry` in `icon` once it is made, as long as the cell still shows `entry`.
@@ -971,9 +1000,12 @@ mod imp {
         /// Crop each picture and video thumbnail to a square that fills the item's visual part.
         #[property(get, set)]
         thumbnail_crop: Cell<bool>,
-        /// Generate the frames a video plays while it is the active item.
+        /// How a video previews while it is the active item: `none`, `frames` or `embedded`.
         #[property(get, set)]
-        video_frame_previews: Cell<bool>,
+        video_frame_previews: RefCell<String>,
+        /// The mpv command line options videos are played with, which an embedded preview uses too.
+        #[property(get, set)]
+        mpv_options: RefCell<String>,
         /// Show a cascade of a folder's first pictures and videos over its icon.
         #[property(get, set)]
         directory_previews: Cell<bool>,
@@ -993,6 +1025,8 @@ mod imp {
         /// The video whose frames are playing: the active item, when it is a video.
         pub(super) hovered: RefCell<Option<Hover>>,
         pub(super) hover_generation: Cell<u64>,
+        /// The video playing in an embedded player in the active item.
+        pub(super) embedded: RefCell<Option<Embedded>>,
         /// The folder whose preview pictures are cycling, if any.
         pub(super) cycle: RefCell<Option<Cycle>>,
         pub(super) cycle_timer: RefCell<Option<glib::SourceId>>,
@@ -1116,6 +1150,7 @@ mod imp {
             self.sort_order.replace("ascending".to_owned());
             self.info_fields
                 .replace(vec![InfoField::Size, InfoField::Modified]);
+            self.video_frame_previews.replace("none".to_owned());
 
             // The sorter and filter read their settings as plain values, kept up to date as the properties change.
             obj.cache_settings();
@@ -1321,7 +1356,12 @@ mod imp {
                     }
                 },
                 |widget| {
-                    // A spare cell must not keep its item's thumbnail in memory.
+                    // A spare cell must not keep its item's thumbnail or preview in memory.
+                    if let Some(cell) = widget.downcast_ref::<gtk::Box>() {
+                        if let Some(view) = cell.ancestor(super::BrowseView::static_type()).and_downcast::<super::BrowseView>() {
+                            view.stop_embedded_in(cell);
+                        }
+                    }
                     let thumbnails = Thumbnails::shared();
                     if thumbnails.unloads_offscreen() {
                         if let Some(icon) = widget.downcast_ref::<gtk::Box>().and_then(icon_of) {
@@ -1440,6 +1480,13 @@ struct Hover {
     generation: u64,
 }
 
+/// The video playing in an embedded player in a cell.
+struct Embedded {
+    cell: glib::WeakRef<gtk::Box>,
+    path: PathBuf,
+    stream: crate::mpv::MpvStream,
+}
+
 /// The item at the top of the view and how far it is above the view's top edge.
 #[derive(Clone)]
 struct TopItem {
@@ -1525,7 +1572,7 @@ fn drag_content(cell: &gtk::Widget) -> Option<gtk::gdk::ContentProvider> {
 /// Lays out one item: a visual box of exactly the item size, the name, and the info line.
 fn style_item(view: &BrowseView, cell: &gtk::Box, entry: &FileEntry) {
     let size = view.item_size();
-    let Some(visual) = cell.first_child().and_downcast::<gtk::Box>() else { return };
+    let Some(visual) = cell.first_child().and_downcast::<gtk::Overlay>() else { return };
     let Some(name) = visual.next_sibling().and_downcast::<gtk::Label>() else { return };
     let Some(info) = name.next_sibling().and_downcast::<gtk::Label>() else { return };
     let Some(icon) = visual.first_child().and_downcast::<gtk::Image>() else { return };
@@ -1753,8 +1800,27 @@ impl BrowseView {
     /// wanted for them, except at the highest aggressiveness, which makes them for the whole folder.
     pub fn set_covered(&self, covered: bool) {
         if self.imp().covered.replace(covered) != covered {
+            if covered {
+                self.stop_hover();
+                self.stop_embedded();
+            }
             self.restart_prefetch();
+            if !covered {
+                self.update_previews_when_shown();
+            }
         }
+    }
+
+    /// Brings the previews back to the active item once the view is shown again, as the pointer may not move to do it.
+    fn update_previews_when_shown(&self) {
+        let view = self.downgrade();
+        glib::idle_add_local_once(move || {
+            if let Some(view) = view.upgrade() {
+                if view.imp().active.get() && !view.imp().covered.get() {
+                    view.update_previews();
+                }
+            }
+        });
     }
 
     /// Whether a thumbnail is wanted for the item at `position`: it is near enough to the items in view for the
@@ -1904,6 +1970,10 @@ impl BrowseView {
         self.update_monitor();
         if active {
             self.refresh();
+            self.update_previews_when_shown();
+        } else {
+            self.stop_hover();
+            self.stop_embedded();
         }
     }
 
@@ -2819,16 +2889,32 @@ impl BrowseView {
         self.update_previews();
     }
 
-    /// Whether `cell` shows a video whose frames are to play.
-    fn plays_video_frames(&self, cell: &gtk::Box) -> bool {
-        self.video_frame_previews() && entry_in(self, cell).is_some_and(|entry| thumbnail_media(&entry) == Some(ThumbnailMedia::Video))
+    /// Whether `cell` shows a video.
+    fn is_video_cell(&self, cell: &gtk::Box) -> bool {
+        entry_in(self, cell).is_some_and(|entry| thumbnail_media(&entry) == Some(ThumbnailMedia::Video))
+    }
+
+    /// Plays the preview of the video in the active item, in the way the setting asks, and stops any other preview.
+    fn update_video_preview(&self) {
+        let mode = VideoPreviews::from_name(&self.video_frame_previews());
+        if mode != VideoPreviews::Frames {
+            self.stop_hover();
+        }
+        if mode != VideoPreviews::Embedded {
+            self.stop_embedded();
+        }
+        match mode {
+            VideoPreviews::None => {}
+            VideoPreviews::Frames => self.update_frame_preview(),
+            VideoPreviews::Embedded => self.update_embedded_preview(),
+        }
     }
 
     /// Plays the frames of the video in the active item, and stops the ones playing in any other.
-    fn update_video_preview(&self) {
+    fn update_frame_preview(&self) {
         let target = self
             .active_cell()
-            .filter(|cell| self.plays_video_frames(cell))
+            .filter(|cell| self.is_video_cell(cell))
             .and_then(|cell| entry_in(self, &cell).map(|entry| (cell, entry.path().to_path_buf())));
         let playing = self.imp().hovered.borrow().as_ref().map(|hover| (hover.cell.upgrade(), hover.path.clone()));
         if let (Some((cell, path)), Some((Some(playing_cell), playing_path))) = (&target, &playing) {
@@ -2839,6 +2925,24 @@ impl BrowseView {
         self.stop_hover();
         if let Some((cell, _)) = target {
             self.play_video_frames(&cell);
+        }
+    }
+
+    /// Starts the embedded player on the video in the active item, and stops one playing in any other.
+    fn update_embedded_preview(&self) {
+        let target = self
+            .active_cell()
+            .filter(|cell| self.is_video_cell(cell))
+            .and_then(|cell| entry_in(self, &cell).map(|entry| (cell, entry.path().to_path_buf())));
+        let playing = self.imp().embedded.borrow().as_ref().map(|embedded| (embedded.cell.upgrade(), embedded.path.clone()));
+        if let (Some((cell, path)), Some((Some(playing_cell), playing_path))) = (&target, &playing) {
+            if cell == playing_cell && path == playing_path {
+                return;
+            }
+        }
+        self.stop_embedded();
+        if let Some((cell, _)) = target {
+            self.play_embedded(&cell);
         }
     }
 
@@ -2936,10 +3040,65 @@ impl BrowseView {
         }
     }
 
+    /// Plays the video in `cell` in an embedded player, cropped to the crop locked for it and filling the item when
+    /// thumbnails are cropped to a square. The player is kept and reused for the next preview.
+    fn play_embedded(&self, cell: &gtk::Box) {
+        let Some(entry) = entry_in(self, cell) else { return };
+        let Some(player) = player_of(cell) else { return };
+        let path = entry.path().to_path_buf();
+        let Some(stream) = crate::mpv::MpvStream::for_preview(&path, &self.mpv_options()) else { return };
+        stream.set_loop(true);
+        stream.set_muted(true);
+        let crop = VideoCrops::shared().and_then(|crops| crops.get(&path).ok().flatten());
+        stream.set_framing(crate::mpv::Framing {
+            crop: crop.is_some().then_some(crate::mpv::framing::CropMethod::CropDetect),
+            ..Default::default()
+        });
+        if let Some(crop) = crop {
+            stream.lock_crop(Some(crop));
+        }
+        stream.set_scale(f64::from(cell.scale_factor()));
+        player.set_paintable(Some(&VideoPreview::new(&stream, self.thumbnail_crop())));
+        player.set_visible(true);
+        if let Some(icon) = icon_of(cell) {
+            icon.set_visible(false);
+        }
+        stream.play();
+        self.imp().embedded.replace(Some(Embedded {
+            cell: cell.downgrade(),
+            path,
+            stream,
+        }));
+    }
+
+    /// Stops the embedded preview, if one is playing, and shows the still thumbnail again.
+    fn stop_embedded(&self) {
+        let Some(embedded) = self.imp().embedded.take() else { return };
+        embedded.stream.stop();
+        let Some(cell) = embedded.cell.upgrade() else { return };
+        if let Some(player) = player_of(&cell) {
+            player.set_paintable(None::<&gtk::gdk::Paintable>);
+            player.set_visible(false);
+        }
+        if let Some(icon) = icon_of(&cell) {
+            icon.set_visible(true);
+        }
+    }
+
+    /// Stops the embedded preview if it is playing in `cell`, as when the cell stops showing its item.
+    fn stop_embedded_in(&self, cell: &gtk::Box) {
+        let ours = self.imp().embedded.borrow().as_ref().and_then(|embedded| embedded.cell.upgrade());
+        if ours.as_ref() == Some(cell) {
+            self.stop_embedded();
+        }
+    }
+
     /// Rebinds every item so a size or layout change shows, keeping the item at the top of the view
     /// where it was.
     fn refresh_items(&self) {
         let imp = self.imp();
+        self.stop_hover();
+        self.stop_embedded();
         let anchor = top_item_anchor(&imp.grid);
         imp.grid.set_cell_size(self.item_size(), self.cell_height());
         imp.grid.refresh();
@@ -3026,15 +3185,12 @@ pub(crate) mod tests {
     }
 
     /// The visual box (the icon's frame) of every rendered item.
-    fn rendered_visuals(view: &BrowseView) -> Vec<gtk::Box> {
+    fn rendered_visuals(view: &BrowseView) -> Vec<gtk::Overlay> {
         let mut visuals = Vec::new();
         let mut child = view.imp().grid.first_child();
         while let Some(widget) = child {
             child = widget.next_sibling();
-            if let Some(visual) = widget
-                .first_child()
-                .and_downcast::<gtk::Box>()
-            {
+            if let Some(visual) = widget.first_child().and_downcast::<gtk::Overlay>() {
                 visuals.push(visual);
             }
         }
@@ -3376,6 +3532,14 @@ mod scan_tests {
         let mut scans = FolderScans::default();
         scans.keep(folder(0), 1, Rc::default());
         assert!(scans.get(&folder(0), 2).is_none());
+    }
+
+    #[test]
+    fn video_preview_modes_are_named_by_the_setting() {
+        assert_eq!(VideoPreviews::from_name("none"), VideoPreviews::None);
+        assert_eq!(VideoPreviews::from_name("frames"), VideoPreviews::Frames);
+        assert_eq!(VideoPreviews::from_name("embedded"), VideoPreviews::Embedded);
+        assert_eq!(VideoPreviews::from_name("something else"), VideoPreviews::None);
     }
 }
 

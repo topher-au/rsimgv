@@ -103,7 +103,7 @@ mod imp {
         #[template_child]
         pub thumbnail_crop_video_row: TemplateChild<adw::SwitchRow>,
         #[template_child]
-        pub video_frame_previews_row: TemplateChild<adw::SwitchRow>,
+        pub video_frame_previews_row: TemplateChild<adw::ComboRow>,
         #[template_child]
         pub directory_previews_row: TemplateChild<adw::SwitchRow>,
         #[template_child]
@@ -420,7 +420,6 @@ impl PreferencesDialog {
         bind_thumbnail_size(settings, &imp.thumbnail_max_image_size_row, "thumbnails.max-image-size");
         bind_thumbnail_size(settings, &imp.thumbnail_max_video_size_row, "thumbnails.max-video-size");
         settings.bind("thumbnails.crop", &*imp.thumbnail_crop_row, "active").build();
-        settings.bind("browse.video-frame-previews", &*imp.video_frame_previews_row, "active").build();
         settings.bind("browse.folder-previews.enabled", &*imp.directory_previews_row, "active").build();
         settings.bind("browse.folder-previews.cycle", &*imp.folder_preview_cycle_row, "active").build();
         bind_port(settings, &imp.folder_preview_count_row, "browse.folder-previews.count");
@@ -750,7 +749,8 @@ fn bind_switches(settings: &Settings, imp: &imp::PreferencesDialog) {
 
 /// Binds each combo row to a string setting whose value is one of `choices`, by position in the row.
 fn bind_choices(settings: &Settings, imp: &imp::PreferencesDialog) {
-    let combos: [(&str, &glib::Object, &[&str]); 22] = [
+    let combos: [(&str, &glib::Object, &[&str]); 23] = [
+        ("browse.video-frame-previews", imp.video_frame_previews_row.upcast_ref(), &["none", "frames", "embedded"]),
         ("thumbnails.aggression", imp.thumbnail_aggression_row.upcast_ref(), &["low", "standard", "increased", "high", "extreme"]),
         ("video.crop.method", imp.video_crop_method_row.upcast_ref(), &["cropdetect", "edges", "static", "across"]),
         ("video.crop.ratio", imp.video_crop_ratio_row.upcast_ref(), &["auto", "4:3", "16:9", "9:16", "1:1", "3:2", "2:3", "21:9"]),

@@ -7,17 +7,30 @@
     <property name="halign">center</property>
     <property name="valign">start</property>
     <child>
-      <object class="GtkBox" id="visual">
+      <object class="GtkOverlay" id="visual">
         <property name="halign">center</property>
         <property name="valign">start</property>
         <property name="overflow">hidden</property>
         <style><class name="rsimgv-visual"/></style>
-        <child>
+        <property name="child">
           <object class="GtkImage" id="icon">
             <property name="halign">center</property>
             <property name="valign">center</property>
             <property name="hexpand">true</property>
             <property name="vexpand">true</property>
+          </object>
+        </property>
+        <child type="overlay">
+          <object class="GtkPicture" id="player">
+            <property name="halign">fill</property>
+            <property name="valign">fill</property>
+            <property name="hexpand">true</property>
+            <property name="vexpand">true</property>
+            <property name="content-fit">fill</property>
+            <property name="can-shrink">true</property>
+            <property name="can-target">false</property>
+            <property name="focusable">false</property>
+            <property name="visible">false</property>
           </object>
         </child>
       </object>

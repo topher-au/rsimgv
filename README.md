@@ -48,6 +48,9 @@ library of pictures and videos without leaving the window.
   files, in natural name order. Item size is adjustable, names can be ellipsized or wrapped, and the info
   line shows size and modification time.
 - **Media filter**: only pictures and videos are listed by default. Turn it off to see every file.
+- **Video previews**: while a video is the active item, its preview can play a sequence of captured frames or an embedded
+  player in the item's frame. The preview follows the video's locked crop, and fills the square when thumbnails are cropped
+  that way.
 - **Search** in the browse view: the search button in the header, or Ctrl+Shift+F, slides a bar down under the header. It filters the folder's items by name, by any attribute, or by one attribute such as size, modified time or type. With Subfolders on, the bar searches the whole folder tree under the folder shown, and the folders' matches are listed together.
 - **Path bar** in the header with clickable breadcrumbs. It starts at home when you are inside it, and at
   `/` otherwise. Middle-click or Ctrl-click opens a new tab or window (currently both navigate in place).

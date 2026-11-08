@@ -3521,6 +3521,7 @@ impl Window {
             settings.bind("browse.show-videos", browse, "show-videos").build();
             settings.bind("thumbnails.crop", browse, "thumbnail-crop").build();
             settings.bind("browse.video-frame-previews", browse, "video-frame-previews").build();
+            settings.bind("video.mpv.args", browse, "mpv-options").build();
             settings.bind("browse.folder-previews.enabled", browse, "directory-previews").build();
             settings.bind("browse.folder-previews.cycle", browse, "folder-preview-cycle").build();
             settings.bind("browse.folder-previews.count", browse, "folder-preview-count").build();

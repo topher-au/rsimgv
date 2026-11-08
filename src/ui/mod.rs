@@ -7,6 +7,7 @@ mod drag;
 mod floating_bar;
 mod film_strip;
 mod thumbnail_paint;
+mod video_preview;
 mod thumbnail_bar;
 mod image_canvas;
 mod item_grid;
