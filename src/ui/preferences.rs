@@ -229,6 +229,8 @@ mod imp {
         #[template_child]
         pub history_videos_row: TemplateChild<adw::SwitchRow>,
         #[template_child]
+        pub history_video_seconds_row: TemplateChild<adw::SpinRow>,
+        #[template_child]
         pub history_video_percent_row: TemplateChild<adw::SpinRow>,
         #[template_child]
         pub history_show_stats_row: TemplateChild<adw::SwitchRow>,
@@ -444,21 +446,25 @@ impl PreferencesDialog {
         bind_port(settings, &imp.zoom_step_row, "image.zoom-step");
         bind_port(settings, &imp.sidebar_animation_ms_row, "window.sidebar.animation-ms");
         bind_port(settings, &imp.history_image_seconds_row, "history.image-seconds");
+        bind_port(settings, &imp.history_video_seconds_row, "history.video-seconds");
         bind_port(settings, &imp.history_video_percent_row, "history.video-percent");
         // The history's options mean nothing while it is off, and each count's threshold means nothing while it is off.
         {
             let settings = settings.clone();
             let watch_settings = settings.clone();
             let (images, image_seconds) = (imp.history_images_row.clone(), imp.history_image_seconds_row.clone());
-            let (videos, video_percent) = (imp.history_videos_row.clone(), imp.history_video_percent_row.clone());
+            let (videos, video_seconds) = (imp.history_videos_row.clone(), imp.history_video_seconds_row.clone());
+            let video_percent = imp.history_video_percent_row.clone();
             let show_stats = imp.history_show_stats_row.clone();
             let update = move || {
                 let enabled = watch_settings.boolean("history.enabled");
+                let videos_enabled = enabled && watch_settings.boolean("history.videos");
                 images.set_sensitive(enabled);
                 videos.set_sensitive(enabled);
                 show_stats.set_sensitive(enabled);
                 image_seconds.set_sensitive(enabled && watch_settings.boolean("history.images"));
-                video_percent.set_sensitive(enabled && watch_settings.boolean("history.videos"));
+                video_seconds.set_sensitive(videos_enabled);
+                video_percent.set_sensitive(videos_enabled);
             };
             update();
             for key in ["history.enabled", "history.images", "history.videos"] {
@@ -960,13 +966,17 @@ pub(crate) mod tests {
 
         // The viewing history rows are bound to their settings, and its options go with its switch.
         assert!(imp.history_enabled_row.is_active(), "the viewing history is on by default");
+        assert_eq!(settings.int("history.image-seconds"), 5, "a picture counts after five seconds by default");
+        assert_eq!(settings.int("history.video-seconds"), 20, "twenty seconds of a video counts as a view by default");
         assert_eq!(settings.int("history.video-percent"), 10, "a tenth of a video counts as a view by default");
         settings.set_boolean("history.enabled", false).unwrap();
         assert!(!imp.history_enabled_row.is_active(), "the row follows history.enabled");
         assert!(!imp.history_images_row.is_sensitive(), "the options are off with the history");
+        assert!(!imp.history_video_seconds_row.is_sensitive());
         assert!(!imp.history_video_percent_row.is_sensitive());
         settings.set_boolean("history.enabled", true).unwrap();
         assert!(imp.history_images_row.is_sensitive());
+        assert!(imp.history_video_seconds_row.is_sensitive());
         assert!(imp.history_video_percent_row.is_sensitive());
         imp.video_crop_ratio_row.set_selected(2);
         assert_eq!(settings.string("video.crop.ratio"), "16:9");
@@ -981,9 +991,12 @@ pub(crate) mod tests {
         settings.reset("thumbnails.crop-video");
         imp.history_image_seconds_row.set_value(4.0);
         assert_eq!(settings.int("history.image-seconds"), 4);
+        imp.history_video_seconds_row.set_value(30.0);
+        assert_eq!(settings.int("history.video-seconds"), 30);
         imp.history_video_percent_row.set_value(75.0);
         assert_eq!(settings.int("history.video-percent"), 75);
         settings.reset("history.image-seconds");
+        settings.reset("history.video-seconds");
         settings.reset("history.video-percent");
         imp.history_show_stats_row.set_active(false);
         assert!(!settings.boolean("history.show-stats"));

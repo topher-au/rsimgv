@@ -232,8 +232,10 @@ pub struct HistorySettings {
     /// Whether pictures are counted, and how long one must stay on screen to count.
     pub images: bool,
     pub image_seconds: i32,
-    /// Whether videos are counted, and how much of one must play to count.
+    /// Whether videos are counted, and how much of one must play to count: either `video_seconds` of it, or
+    /// `video_percent` of its length.
     pub videos: bool,
+    pub video_seconds: i32,
     pub video_percent: i32,
     /// Whether the views and time watched for the item shown are shown in the status bar and overlays.
     pub show_stats: bool,
@@ -241,7 +243,15 @@ pub struct HistorySettings {
 
 impl Default for HistorySettings {
     fn default() -> Self {
-        Self { enabled: true, images: true, image_seconds: 2, videos: true, video_percent: 10, show_stats: true }
+        Self {
+            enabled: true,
+            images: true,
+            image_seconds: 5,
+            videos: true,
+            video_seconds: 20,
+            video_percent: 10,
+            show_stats: true,
+        }
     }
 }
 
@@ -2473,9 +2483,12 @@ impl MediaViewer {
                         }
                     }
                     let duration = media.duration() as f64 / MICROS;
-                    if !session.counted && duration > 0.0 {
+                    if !session.counted {
                         let percent = f64::from(settings.video_percent.clamp(1, 100));
-                        if session.media_seconds >= duration * percent / 100.0 {
+                        let by_percent = duration > 0.0 && session.media_seconds >= duration * percent / 100.0;
+                        let by_seconds = session.media_seconds >= f64::from(settings.video_seconds.max(0));
+                        // A short clip can count by either measure, so a long video is not the only one that does.
+                        if by_percent || by_seconds {
                             session.counted = true;
                         }
                     }

@@ -1016,6 +1016,7 @@ impl Window {
             images: settings.boolean("history.images"),
             image_seconds: settings.int("history.image-seconds"),
             videos: settings.boolean("history.videos"),
+            video_seconds: settings.int("history.video-seconds"),
             video_percent: settings.int("history.video-percent"),
             show_stats: settings.boolean("history.show-stats"),
         });
@@ -3738,7 +3739,7 @@ const WHEEL_VOLUME_STEP: f64 = 5.0;
 const WHEEL_SEEK_STEP: f64 = 5.0;
 
 /// The settings the viewer and the window title are set from, applied again whenever one changes.
-const VIEWER_SETTINGS: [&str; 65] = [
+const VIEWER_SETTINGS: [&str; 66] = [
     "video.crop.enabled",
     "video.crop.method",
     "video.crop.trim",
@@ -3759,6 +3760,7 @@ const VIEWER_SETTINGS: [&str; 65] = [
     "history.images",
     "history.image-seconds",
     "history.videos",
+    "history.video-seconds",
     "history.video-percent",
     "history.show-stats",
     "window.sidebar.animations",

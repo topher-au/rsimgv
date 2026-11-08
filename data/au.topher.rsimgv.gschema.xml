@@ -718,17 +718,22 @@
     </key>
     <key name="image-seconds" type="i">
       <range min="0" max="60"/>
-      <default>2</default>
+      <default>5</default>
       <summary>How long a picture stays on screen before it counts as viewed, in seconds; 0 counts it at once</summary>
     </key>
     <key name="videos" type="b">
       <default>true</default>
       <summary>Count videos in the viewing history</summary>
     </key>
+    <key name="video-seconds" type="i">
+      <range min="0" max="3600"/>
+      <default>20</default>
+      <summary>How long a video has to play before it counts as viewed, in seconds; 0 counts it once it starts</summary>
+    </key>
     <key name="video-percent" type="i">
       <range min="1" max="100"/>
       <default>10</default>
-      <summary>How much of a video has to play, in the current playback, before it counts as viewed, as a percentage of its length</summary>
+      <summary>How much of a video has to play, in the current playback, before it counts as viewed, as a percentage of its length; either this or the seconds below is enough</summary>
     </key>
     <key name="show-stats" type="b">
       <default>true</default>

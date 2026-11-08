@@ -201,13 +201,28 @@
                                 <child>
                                   <object class="AdwSwitchRow" id="history_videos_row">
                                     <property name="title">Count videos</property>
-                                    <property name="subtitle">A video counts as viewed once the part below has played</property>
+                                    <property name="subtitle">A video counts as viewed once it has played for the time below, or the part below has played</property>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="AdwSpinRow" id="history_video_seconds_row">
+                                    <property name="title">Video watch time</property>
+                                    <property name="subtitle">Seconds of a video that must play to count as viewed, or 0 once it starts</property>
+                                    <property name="digits">0</property>
+                                    <property name="adjustment">
+                                      <object class="GtkAdjustment">
+                                        <property name="lower">0</property>
+                                        <property name="upper">3600</property>
+                                        <property name="step-increment">5</property>
+                                        <property name="page-increment">30</property>
+                                      </object>
+                                    </property>
                                   </object>
                                 </child>
                                 <child>
                                   <object class="AdwSpinRow" id="history_video_percent_row">
                                     <property name="title">Video watch percentage</property>
-                                    <property name="subtitle">How much of a video has to play in the current playback to count as viewed</property>
+                                    <property name="subtitle">How much of a video has to play in the current playback to count as viewed; either this or the time above is enough</property>
                                     <property name="digits">0</property>
                                     <property name="adjustment">
                                       <object class="GtkAdjustment">
