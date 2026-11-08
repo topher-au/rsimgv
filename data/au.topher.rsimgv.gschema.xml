@@ -690,8 +690,8 @@
     </key>
     <key name="video-percent" type="i">
       <range min="1" max="100"/>
-      <default>90</default>
-      <summary>How much of a video has to play before it counts as viewed, as a percentage of its length</summary>
+      <default>10</default>
+      <summary>How much of a video has to play, in the current playback, before it counts as viewed, as a percentage of its length</summary>
     </key>
     <key name="show-stats" type="b">
       <default>true</default>

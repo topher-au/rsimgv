@@ -207,7 +207,7 @@
                                 <child>
                                   <object class="AdwSpinRow" id="history_video_percent_row">
                                     <property name="title">Video watch percentage</property>
-                                    <property name="subtitle">How much of a video has to play to count as viewed</property>
+                                    <property name="subtitle">How much of a video has to play in the current playback to count as viewed</property>
                                     <property name="digits">0</property>
                                     <property name="adjustment">
                                       <object class="GtkAdjustment">

@@ -236,7 +236,7 @@ pub struct HistorySettings {
 
 impl Default for HistorySettings {
     fn default() -> Self {
-        Self { enabled: true, images: true, image_seconds: 2, videos: true, video_percent: 90, show_stats: true }
+        Self { enabled: true, images: true, image_seconds: 2, videos: true, video_percent: 10, show_stats: true }
     }
 }
 
@@ -246,11 +246,19 @@ const WATCH_TICK: std::time::Duration = std::time::Duration::from_millis(250);
 /// The longest a single tick can add, so a suspended application does not count its sleep as watching.
 const WATCH_TICK_MAX: f64 = 1.0;
 
+/// The largest jump in playback position one tick accepts as watched. A larger jump is a seek, not time spent watching.
+/// It is generous enough for the fastest playback speed.
+const WATCH_MEDIA_STEP_MAX: f64 = 5.0;
+
 /// How much of the shown item has been watched in this visit, and whether it has become a view.
 #[derive(Debug, Clone, Copy, Default)]
 struct WatchSession {
     /// The time spent watching, in seconds, measured by the application rather than by the media backend.
     seconds: f64,
+    /// The part of the video that has actually played in this visit, in seconds of its own length, ignoring seeks.
+    media_seconds: f64,
+    /// Where the video was when the timer last looked, to tell playing from a seek.
+    last_position: Option<f64>,
     /// Whether the item has been watched long enough, or far enough, to count as a view.
     counted: bool,
 }
@@ -2019,6 +2027,12 @@ impl MediaViewer {
         if !wanted || imp.watch_hash.borrow().is_none() || imp.watch_timer.borrow().is_some() {
             return;
         }
+        // A video starts from the place it is at, so the part before the first tick is not mistaken for a seek.
+        if let Some(media) = imp.media.borrow().as_ref() {
+            let mut session = imp.watch_session.get();
+            session.last_position = Some(media.timestamp() as f64 / MICROS);
+            imp.watch_session.set(session);
+        }
         imp.watch_last_tick.set(Some(std::time::Instant::now()));
         let weak = self.downgrade();
         let source = glib::timeout_add_local(WATCH_TICK, move || {
@@ -2051,19 +2065,26 @@ impl MediaViewer {
                 if !settings.videos {
                     return;
                 }
-                // Only time the video is actually playing counts.
-                if !media.is_playing() {
-                    return;
-                }
-                session.seconds += delta;
-                let duration = media.duration() as f64 / MICROS;
-                if !session.counted && duration > 0.0 {
-                    let position = media.timestamp() as f64 / MICROS;
-                    let percent = f64::from(settings.video_percent.clamp(1, 100));
-                    if position >= duration * percent / 100.0 {
-                        session.counted = true;
+                let position = media.timestamp() as f64 / MICROS;
+                if media.is_playing() {
+                    session.seconds += delta;
+                    // Only the part that played counts, not a jump made by seeking.
+                    if let Some(last) = session.last_position {
+                        let step = position - last;
+                        if step > 0.0 && step <= WATCH_MEDIA_STEP_MAX {
+                            session.media_seconds += step;
+                        }
+                    }
+                    let duration = media.duration() as f64 / MICROS;
+                    if !session.counted && duration > 0.0 {
+                        let percent = f64::from(settings.video_percent.clamp(1, 100));
+                        if session.media_seconds >= duration * percent / 100.0 {
+                            session.counted = true;
+                        }
                     }
                 }
+                // A seek made while paused is not watched either, so it becomes the new starting place.
+                session.last_position = Some(position);
             }
             None => {
                 if !settings.images {

@@ -948,6 +948,7 @@ pub(crate) mod tests {
 
         // The viewing history rows are bound to their settings, and its options go with its switch.
         assert!(imp.history_enabled_row.is_active(), "the viewing history is on by default");
+        assert_eq!(settings.int("history.video-percent"), 10, "a tenth of a video counts as a view by default");
         settings.set_boolean("history.enabled", false).unwrap();
         assert!(!imp.history_enabled_row.is_active(), "the row follows history.enabled");
         assert!(!imp.history_images_row.is_sensitive(), "the options are off with the history");
