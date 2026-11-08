@@ -419,6 +419,9 @@ fn shared_player(options: &str) -> Option<Rc<Player>> {
     Some(player)
 }
 
+/// How many frames one `frame-seek` may step at a time, so a huge bound does not flood the player.
+const MAX_FRAME_STEPS: u64 = 1000;
+
 impl MpvStream {
     /// Stops the video and lets go of the player, which stays alive for the next video. Nothing plays after this.
     pub fn stop(&self) {
@@ -752,6 +755,22 @@ impl MpvStream {
             let seconds = imp.position.get() as f64 / 1_000_000.0;
             self.fps().map(|fps| (seconds * fps).round() as i64)
         })
+    }
+
+    /// Steps `frames` frames forward, or back when it is negative, and pauses as a frame step does. Returns whether
+    /// the player took every step.
+    pub fn step_frames(&self, frames: i64) -> bool {
+        if frames == 0 {
+            return true;
+        }
+        let Some(player) = self.imp().player.borrow().clone() else { return false };
+        let command = if frames >= 0 { "frame-step" } else { "frame-back-step" };
+        for _ in 0..frames.unsigned_abs().min(MAX_FRAME_STEPS) {
+            if player.command(&[command]).is_err() {
+                return false;
+            }
+        }
+        true
     }
 
     /// Handles the events waiting from libmpv.

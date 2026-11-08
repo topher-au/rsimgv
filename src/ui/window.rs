@@ -1141,6 +1141,7 @@ impl Window {
         bound_action(&video, &weak, "seek-forward", |window| window.imp().viewer.seek(SEEK_STEP));
         bound_action(&video, &weak, "seek-backward", |window| window.imp().viewer.seek(-SEEK_STEP));
         valued_action(&video, &weak, "video.seek", |window, seconds| window.imp().viewer.seek((seconds * 1_000_000.0) as i64));
+        valued_action(&video, &weak, "video.frame-seek", |window, frames| window.imp().viewer.frame_seek(frames.round() as i64));
         valued_action(&video, &weak, "video.volume", |window, percent| window.imp().viewer.adjust_volume(percent / 100.0));
         valued_action(&video, &weak, "video.set-speed", |window, speed| window.imp().viewer.set_speed(speed));
         valued_action(&video, &weak, "video.adjust-speed", |window, percent| window.imp().viewer.adjust_speed(percent / 100.0));

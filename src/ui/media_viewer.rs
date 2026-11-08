@@ -1695,6 +1695,26 @@ impl MediaViewer {
         }
     }
 
+    /// Steps the video by `frames` frames, back when it is negative. Frame seeking needs mpv.
+    pub fn frame_seek(&self, frames: i64) {
+        if frames == 0 {
+            return;
+        }
+        let media = self.imp().media.borrow().clone();
+        let Some(media) = media else { return };
+        let Some(stream) = media.downcast_ref::<crate::mpv::MpvStream>() else {
+            self.announce("Frame seeking needs a video played by mpv", true);
+            return;
+        };
+        if !stream.step_frames(frames) {
+            self.announce("Could not step the video", true);
+            return;
+        }
+        self.imp().seek_forward.set(frames > 0);
+        self.note_change(Trigger::Seek);
+        self.refresh_overlay();
+    }
+
     /// Sets the layout of the overlay over the item.
     pub fn set_overlay_layout(&self, layout: Layout) {
         let overlay = self.media_overlay();

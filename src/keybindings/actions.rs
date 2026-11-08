@@ -177,6 +177,8 @@ pub enum Unit {
     Times,
     /// An angle, shown as `n°`.
     Degrees,
+    /// A number of frames, shown as `+n` or `-n`.
+    Frames,
 }
 
 /// The value a binding passes to an action that takes one: what it is called and counts, the range it is kept
@@ -206,6 +208,7 @@ impl ValueInfo {
             Unit::Percent => format!("{signed}%"),
             Unit::Times => format!("{number}\u{d7}"),
             Unit::Degrees => format!("{number}\u{b0}"),
+            Unit::Frames => signed,
         }
     }
 }
@@ -214,6 +217,7 @@ impl ValueInfo {
 pub fn value_info(name: &str) -> Option<ValueInfo> {
     match name {
         "video.seek" => Some(ValueInfo { label: "Seconds", unit: Unit::Seconds, min: -3600.0, max: 3600.0, step: 1.0, digits: 1, default: 10.0 }),
+        "video.frame-seek" => Some(ValueInfo { label: "Frames", unit: Unit::Frames, min: -1000.0, max: 1000.0, step: 1.0, digits: 0, default: 1.0 }),
         "video.volume" => Some(ValueInfo { label: "Change", unit: Unit::Percent, min: -100.0, max: 100.0, step: 1.0, digits: 0, default: 5.0 }),
         "video.set-speed" => Some(ValueInfo { label: "Speed", unit: Unit::Times, min: MIN_SPEED, max: MAX_SPEED, step: 0.25, digits: 2, default: 1.0 }),
         "view.set-rotation" => Some(ValueInfo { label: "Degrees", unit: Unit::Degrees, min: 0.0, max: 270.0, step: 90.0, digits: 0, default: 0.0 }),
@@ -553,6 +557,9 @@ pub const ACTIONS: &[ActionInfo] = &[
     },
     ActionInfo {
         name: "video.seek", description: "Move the playback position by the number of seconds bound; a negative number goes back.", icon: "media-seek-forward-symbolic", label: "Seek", defaults: &[],
+    },
+    ActionInfo {
+        name: "video.frame-seek", description: "Step by the number of frames bound, forwards or back with a negative number.", icon: "media-skip-forward-symbolic", label: "Seek by Frames", defaults: &[],
     },
     ActionInfo {
         name: "video.set-speed", description: "Play at the speed bound, such as 2 for double speed or 0.5 for half; 1 is normal.", icon: "power-profile-performance-symbolic", label: "Set Speed", defaults: &[],
