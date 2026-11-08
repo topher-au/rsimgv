@@ -118,6 +118,11 @@ impl InfoField {
         Self::ALL.into_iter().find(|field| field.key() == key)
     }
 
+    /// Whether the field is one of the viewing-history fields, which inline layouts start on a new line.
+    fn is_watch(self) -> bool {
+        matches!(self, InfoField::Views | InfoField::Watched)
+    }
+
     /// The field's text for `entry`, if it has one. The metadata fields need `metadata`, once it is read.
     fn text(self, entry: &FileEntry, metadata: Option<&MediaMetadata>) -> Option<String> {
         let info = entry.info();
@@ -169,13 +174,24 @@ fn watch_totals(path: &Path) -> Option<(u64, f64)> {
     WatchHistory::shared()?.totals_at(path).ok().flatten()
 }
 
-/// The info for `entry`: its chosen fields that have a value, joined by `separator`.
-fn info_text(entry: &FileEntry, fields: &[InfoField], separator: &str, metadata: Option<&MediaMetadata>) -> String {
-    fields
-        .iter()
-        .filter_map(|field| field.text(entry, metadata))
-        .collect::<Vec<_>>()
-        .join(separator)
+/// The info for `entry`: its chosen fields that have a value, joined by `separator`. In inline layouts,
+/// `break_before_watch` starts the viewing-history fields on a line of their own; stacked layouts already put each field
+/// on its own line, so the break is left to `separator`.
+fn info_text(entry: &FileEntry, fields: &[InfoField], separator: &str, break_before_watch: bool, metadata: Option<&MediaMetadata>) -> String {
+    let values: Vec<(InfoField, String)> = fields.iter().filter_map(|field| field.text(entry, metadata).map(|text| (*field, text))).collect();
+    let break_at = break_before_watch.then(|| values.iter().position(|(field, _)| field.is_watch())).flatten();
+    let mut text = String::new();
+    for (index, (_, value)) in values.iter().enumerate() {
+        if index > 0 {
+            if Some(index) == break_at {
+                text.push('\n');
+            } else {
+                text.push_str(separator);
+            }
+        }
+        text.push_str(value);
+    }
+    text
 }
 
 /// The tooltip for an item: its name, kind and path, then each of its details in a grid. The metadata details need
@@ -1573,12 +1589,13 @@ fn update_info(view: &BrowseView, cell: &gtk::Box, entry: &FileEntry, info: &gtk
         String::new()
     } else {
         let separator = if layout == "stacked" { "\n" } else { " · " };
+        let break_before_watch = layout != "stacked";
         let metadata = if fields.iter().any(|field| field.needs_metadata()) && thumbnail_media(entry).is_some() {
             request_metadata(view, cell, entry)
         } else {
             None
         };
-        info_text(entry, &fields, separator, metadata.as_ref())
+        info_text(entry, &fields, separator, break_before_watch, metadata.as_ref())
     };
     info.set_label(&text);
     info.set_visible(!text.is_empty());
@@ -2492,11 +2509,15 @@ impl BrowseView {
         // The visual is the item's square, as style_item sizes it.
         visual.set_size_request(self.item_size(), self.item_size());
         cell.set_size_request(self.item_size(), -1);
-        // Two lines of text are measured when names wrap and when info is stacked, so the rows fit them.
+        // Two lines of text are measured when names wrap, when info is stacked, and when inline info has both ordinary
+        // fields and viewing-history fields, which start on a line of their own.
         let name_lines = if self.filename_display() == "wrapped" { "Ag\nAg" } else { "Ag" };
         name.set_label(name_lines);
         name.set_visible(self.filename_display() != "off");
-        let info_lines = if self.info_layout() == "stacked" { "Ag\nAg" } else { "Ag" };
+        let fields = self.imp().info_fields.borrow();
+        let two_info_lines = self.info_layout() == "stacked"
+            || (fields.iter().any(|field| field.is_watch()) && fields.iter().any(|field| !field.is_watch()));
+        let info_lines = if two_info_lines { "Ag\nAg" } else { "Ag" };
         info.set_label(info_lines);
         info.set_visible(self.info_layout() != "disabled");
         cell.measure(gtk::Orientation::Vertical, self.item_size()).1
