@@ -577,6 +577,12 @@ impl MpvStream {
         Self::start_in(Slot::Viewer, path, options)
     }
 
+    /// Makes the player the browse view's previews use ahead of the first preview, so starting it does not hold up the
+    /// window. The player is kept for the previews that follow.
+    pub fn prewarm_preview(options: &str) {
+        let _ = shared_player(Slot::Preview, options);
+    }
+
     /// A stream of the video in `path` for a browse view's preview, paused until it is played. It uses a player of its
     /// own, which is kept for the next preview, so it never takes over the viewer's video. `None` if libmpv could not
     /// start.

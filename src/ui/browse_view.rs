@@ -41,6 +41,11 @@ const REFRESH_DELAY: std::time::Duration = std::time::Duration::from_millis(250)
 const KEYBOARD_IDLE_DELAY: std::time::Duration = std::time::Duration::from_millis(800);
 /// How long each frame of a hovered video shows.
 const FRAME_INTERVAL: std::time::Duration = std::time::Duration::from_millis(350);
+/// How long the active item must stay a video before its embedded preview starts, so sweeping the pointer across videos
+/// does not load each of them.
+const EMBEDDED_START_DELAY: std::time::Duration = std::time::Duration::from_millis(120);
+/// How long after the embedded preview is chosen the preview player is made, so the first video does not wait for it.
+const EMBEDDED_WARMUP_DELAY: std::time::Duration = std::time::Duration::from_millis(400);
 
 /// Pieces of information shown under an item's name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1027,6 +1032,12 @@ mod imp {
         pub(super) hover_generation: Cell<u64>,
         /// The video playing in an embedded player in the active item.
         pub(super) embedded: RefCell<Option<Embedded>>,
+        /// The timer that starts the embedded preview once the active item has stayed a moment, and the cell and path it
+        /// will show.
+        pub(super) embedded_timer: RefCell<Option<glib::SourceId>>,
+        pub(super) pending_embedded: RefCell<Option<(glib::WeakRef<gtk::Box>, PathBuf)>>,
+        /// The timer that makes the preview player ahead of the first preview.
+        pub(super) embedded_warmup: RefCell<Option<glib::SourceId>>,
         /// The folder whose preview pictures are cycling, if any.
         pub(super) cycle: RefCell<Option<Cycle>>,
         pub(super) cycle_timer: RefCell<Option<glib::SourceId>>,
@@ -1446,7 +1457,11 @@ mod imp {
             obj.connect_thumbnail_crop_notify(|view| view.refresh_items());
             obj.connect_directory_previews_notify(|view| view.refresh_items());
             obj.connect_folder_preview_cycle_notify(|view| view.update_cycle());
-            obj.connect_video_frame_previews_notify(|view| view.update_video_preview());
+            obj.connect_video_frame_previews_notify(|view| {
+                view.update_video_preview();
+                view.prewarm_embedded_player();
+            });
+            obj.connect_mpv_options_notify(|view| view.prewarm_embedded_player());
             obj.connect_folder_preview_count_notify(|view| view.refresh_items());
             obj.connect_folder_preview_fit_notify(|view| view.refresh_items());
             obj.connect_show_directories_notify(|view| {
@@ -1821,6 +1836,28 @@ impl BrowseView {
                 }
             }
         });
+    }
+
+    /// Makes the embedded preview player ahead of the first preview, along with the crop store, so neither is made while
+    /// the pointer waits for the video to start. It waits for the view to settle first.
+    fn prewarm_embedded_player(&self) {
+        if VideoPreviews::from_name(&self.video_frame_previews()) != VideoPreviews::Embedded {
+            return;
+        }
+        if self.imp().embedded_warmup.borrow().is_some() {
+            return;
+        }
+        let view = self.downgrade();
+        let timer = glib::timeout_add_local_once(EMBEDDED_WARMUP_DELAY, move || {
+            let Some(view) = view.upgrade() else { return };
+            view.imp().embedded_warmup.take();
+            if VideoPreviews::from_name(&view.video_frame_previews()) != VideoPreviews::Embedded {
+                return;
+            }
+            let _ = VideoCrops::shared();
+            crate::mpv::MpvStream::prewarm_preview(&view.mpv_options());
+        });
+        self.imp().embedded_warmup.replace(Some(timer));
     }
 
     /// Whether a thumbnail is wanted for the item at `position`: it is near enough to the items in view for the
@@ -2928,7 +2965,8 @@ impl BrowseView {
         }
     }
 
-    /// Starts the embedded player on the video in the active item, and stops one playing in any other.
+    /// Starts the embedded player on the video in the active item, and stops one playing in any other. The video waits a
+    /// moment first, so sweeping the pointer across the items loads only the one it stops on.
     fn update_embedded_preview(&self) {
         let target = self
             .active_cell()
@@ -2940,10 +2978,41 @@ impl BrowseView {
                 return;
             }
         }
+        let waiting = self.imp().pending_embedded.borrow().as_ref().is_some_and(|(waiting_cell, waiting_path)| {
+            target.as_ref().is_some_and(|(cell, path)| waiting_cell.upgrade().as_ref() == Some(cell) && waiting_path == path)
+        });
+        if waiting {
+            return;
+        }
         self.stop_embedded();
         if let Some((cell, _)) = target {
-            self.play_embedded(&cell);
+            self.schedule_embedded(&cell);
         }
+    }
+
+    /// Starts the embedded preview on `cell` once it has stayed the active item for a moment.
+    fn schedule_embedded(&self, cell: &gtk::Box) {
+        let Some(entry) = entry_in(self, cell) else { return };
+        let path = entry.path().to_path_buf();
+        self.imp().pending_embedded.replace(Some((cell.downgrade(), path.clone())));
+        let view = self.downgrade();
+        let weak_cell = cell.downgrade();
+        let timer = glib::timeout_add_local_once(EMBEDDED_START_DELAY, move || {
+            let Some(view) = view.upgrade() else { return };
+            view.imp().embedded_timer.take();
+            view.imp().pending_embedded.take();
+            if VideoPreviews::from_name(&view.video_frame_previews()) != VideoPreviews::Embedded
+                || view.imp().covered.get()
+                || !view.imp().active.get()
+            {
+                return;
+            }
+            let Some(cell) = weak_cell.upgrade() else { return };
+            if shows(&view, &cell, &path) {
+                view.play_embedded(&cell);
+            }
+        });
+        self.imp().embedded_timer.replace(Some(timer));
     }
 
     /// Starts playing the frames of the video in `cell`, once they are made.
@@ -3071,8 +3140,12 @@ impl BrowseView {
         }));
     }
 
-    /// Stops the embedded preview, if one is playing, and shows the still thumbnail again.
+    /// Stops the embedded preview, if one is playing or about to, and shows the still thumbnail again.
     fn stop_embedded(&self) {
+        if let Some(timer) = self.imp().embedded_timer.take() {
+            timer.remove();
+        }
+        self.imp().pending_embedded.take();
         let Some(embedded) = self.imp().embedded.take() else { return };
         embedded.stream.stop();
         let Some(cell) = embedded.cell.upgrade() else { return };
@@ -3085,10 +3158,11 @@ impl BrowseView {
         }
     }
 
-    /// Stops the embedded preview if it is playing in `cell`, as when the cell stops showing its item.
+    /// Stops the embedded preview if it is playing, or about to play, in `cell`, as when the cell stops showing its item.
     fn stop_embedded_in(&self, cell: &gtk::Box) {
         let ours = self.imp().embedded.borrow().as_ref().and_then(|embedded| embedded.cell.upgrade());
-        if ours.as_ref() == Some(cell) {
+        let waiting = self.imp().pending_embedded.borrow().as_ref().and_then(|(waiting_cell, _)| waiting_cell.upgrade());
+        if ours.as_ref() == Some(cell) || waiting.as_ref() == Some(cell) {
             self.stop_embedded();
         }
     }
