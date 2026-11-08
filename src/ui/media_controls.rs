@@ -40,6 +40,15 @@ pub fn seek_target(current: i64, step: i64, duration: i64) -> i64 {
     if duration > 0 { target.min(duration) } else { target }
 }
 
+/// `micros` as the time it takes to watch at `speed` times normal, when `scaled`; otherwise as it is.
+pub fn scaled_time(micros: i64, speed: f64, scaled: bool) -> i64 {
+    if scaled && speed > 0.0 {
+        (micros as f64 / speed).round() as i64
+    } else {
+        micros
+    }
+}
+
 /// The volume button's icon for a volume level and mute state.
 pub fn volume_icon(volume: f64, muted: bool) -> &'static str {
     if muted || volume <= 0.0 {
@@ -103,6 +112,8 @@ mod imp {
         pub(super) muted: Cell<bool>,
         /// When the user last moved the position slider.
         pub(super) seeked_at: Cell<Option<std::time::Instant>>,
+        /// Whether playback times are shown as the time they take at the playback speed.
+        pub(super) scale_times: Cell<bool>,
     }
 
     #[glib::object_subclass]
@@ -302,6 +313,12 @@ impl MediaControls {
         self.imp().auto_advance_button.set_active(on);
     }
 
+    /// Sets whether the time and length are shown as the time they take at the playback speed.
+    pub fn set_time_scaling(&self, scaled: bool) {
+        self.imp().scale_times.set(scaled);
+        self.refresh();
+    }
+
     /// Stops the video: it pauses, and goes back to its start.
     pub fn stop(&self) {
         if let Some(media) = self.imp().media.borrow().clone() {
@@ -435,8 +452,13 @@ impl MediaControls {
 
         let (icon, tooltip) = if playing { ("media-playback-pause-symbolic", "Pause") } else { ("media-playback-start-symbolic", "Play") };
         set_button(&imp.play_button, icon, tooltip);
-        imp.time_label.set_label(&format_time(position));
-        imp.duration_label.set_label(&format_time(duration));
+        let speed = media
+            .as_ref()
+            .and_then(|media| media.downcast_ref::<crate::mpv::MpvStream>())
+            .and_then(crate::mpv::MpvStream::speed)
+            .unwrap_or(1.0);
+        imp.time_label.set_label(&format_time(scaled_time(position, speed, imp.scale_times.get())));
+        imp.duration_label.set_label(&format_time(scaled_time(duration, speed, imp.scale_times.get())));
 
         let seconds = duration as f64 / MICROS;
         if imp.position.adjustment().upper() != seconds {
@@ -506,6 +528,14 @@ mod tests {
         assert_eq!(format_time(65_000_000), "1:05");
         assert_eq!(format_time(3_725_000_000), "1:02:05");
         assert_eq!(format_time(-5), "0:00");
+    }
+
+    #[test]
+    fn times_grow_or_shrink_with_the_playback_speed() {
+        assert_eq!(scaled_time(600_000_000, 0.25, true), 2_400_000_000);
+        assert_eq!(scaled_time(600_000_000, 2.0, true), 300_000_000);
+        assert_eq!(scaled_time(600_000_000, 0.25, false), 600_000_000);
+        assert_eq!(scaled_time(600_000_000, 0.0, true), 600_000_000, "an unknown speed changes nothing");
     }
 
     #[test]

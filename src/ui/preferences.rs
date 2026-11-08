@@ -169,6 +169,8 @@ mod imp {
         #[template_child]
         pub video_start_delay_row: TemplateChild<adw::SpinRow>,
         #[template_child]
+        pub video_scaled_times_row: TemplateChild<adw::SwitchRow>,
+        #[template_child]
         pub mpv_group: TemplateChild<adw::PreferencesGroup>,
         #[template_child]
         pub gstreamer_group: TemplateChild<adw::PreferencesGroup>,
@@ -732,6 +734,7 @@ fn bind_switches(settings: &Settings, imp: &imp::PreferencesDialog) {
         ("viewer.thumbnail-bar.shown", &imp.thumbnail_bar_shown_row),
         ("viewer.thumbnail-bar.overlay", &imp.thumbnail_bar_overlay_row),
         ("viewer.thumbnail-bar.pinned", &imp.thumbnail_bar_pinned_row),
+        ("video.scaled-times", &imp.video_scaled_times_row),
         ("history.enabled", &imp.history_enabled_row),
         ("history.images", &imp.history_images_row),
         ("history.videos", &imp.history_videos_row),
@@ -962,6 +965,10 @@ pub(crate) mod tests {
         imp.video_crop_ratio_row.set_selected(2);
         assert_eq!(settings.string("video.crop.ratio"), "16:9");
         settings.reset("video.crop.ratio");
+        assert!(imp.video_scaled_times_row.is_active(), "playback times are scaled by default");
+        imp.video_scaled_times_row.set_active(false);
+        assert!(!settings.boolean("video.scaled-times"));
+        settings.reset("video.scaled-times");
         imp.history_image_seconds_row.set_value(4.0);
         assert_eq!(settings.int("history.image-seconds"), 4);
         imp.history_video_percent_row.set_value(75.0);

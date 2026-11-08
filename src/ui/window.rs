@@ -926,6 +926,7 @@ impl Window {
         viewer.set_auto_hide_cursor(settings.boolean("viewer.auto-hide-cursor"));
         viewer.set_blurred_background(settings.boolean("viewer.blurred-background"));
         viewer.set_status_bar(settings.boolean("viewer.status-bar.shown"));
+        viewer.set_time_scaling(settings.boolean("video.scaled-times"));
         viewer.set_svp(crate::mpv::svp::Config::from_settings(settings));
         self.apply_folder_end();
         viewer.set_remember(super::media_viewer::Remember {
@@ -3627,7 +3628,7 @@ const WHEEL_VOLUME_STEP: f64 = 5.0;
 const WHEEL_SEEK_STEP: f64 = 5.0;
 
 /// The settings the viewer and the window title are set from, applied again whenever one changes.
-const VIEWER_SETTINGS: [&str; 62] = [
+const VIEWER_SETTINGS: [&str; 63] = [
     "video.crop.enabled",
     "video.crop.method",
     "video.crop.trim",
@@ -3669,6 +3670,7 @@ const VIEWER_SETTINGS: [&str; 62] = [
     "image.unlock-minimum-zoom",
     "image.zoom-step",
     "video.start-delay",
+    "video.scaled-times",
     "image.expand-up-to-factor",
     "image.keep-fit",
     "image.fit",

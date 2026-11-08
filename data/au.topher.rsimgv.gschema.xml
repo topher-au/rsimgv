@@ -470,6 +470,10 @@
       <range min="0" max="2000"/>
       <summary>How long, in milliseconds, a video waits to start after stepping to it with next or previous; 0 starts it at once</summary>
     </key>
+    <key name="scaled-times" type="b">
+      <default>true</default>
+      <summary>Show playback times and lengths as the time they take at the playback speed, so a 10-minute video at 25% speed shows 40 minutes</summary>
+    </key>
   </schema>
   <schema id="au.topher.rsimgv.video.mpv" path="/au/topher/rsimgv/video/mpv/">
     <key name="args" type="s">

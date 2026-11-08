@@ -23,7 +23,7 @@ use crate::fs::thumbnail::Thumbnails;
 use crate::media::orientation::Orientation;
 use crate::fs::metadata::MediaInfo;
 use crate::fs::thumbnail::Pixels;
-use super::media_controls::MediaControls;
+use super::media_controls::{scaled_time, MediaControls};
 use super::crop_editor::{CropEditor, CropFraction};
 use super::overlay_split_view::OverlaySplitView;
 use crate::mpv::framing::{CropRect, Framing};
@@ -524,6 +524,8 @@ mod imp {
         pub(super) cursor_hide: RefCell<Option<glib::SourceId>>,
         /// Whether the status bar under the item is shown.
         pub(super) status_shown: Cell<bool>,
+        /// Whether playback times are shown as the time they take at the playback speed.
+        pub(super) scale_times: Cell<bool>,
         /// What is counted in the viewing history, and whether its totals are shown.
         pub(super) history: Cell<HistorySettings>,
         /// The viewing history of the item shown, if it has one.
@@ -1574,6 +1576,9 @@ impl MediaViewer {
             // SVP's target rate follows the speed, so its filter is rebuilt for it.
             self.apply_svp(&stream, speed, true);
         }
+        // The times are shown as the time they now take.
+        imp.controls.set_time_scaling(imp.scale_times.get());
+        self.refresh_overlay();
     }
 
     /// Sets the SVP settings, and applies them to the video shown.
@@ -1932,16 +1937,19 @@ impl MediaViewer {
             values.insert("loading", "Loading...".to_owned());
             return values;
         }
-        values.insert("time-pos", clock(position));
-        if duration > 0 {
-            values.insert("duration", clock(duration));
-            values.insert("time-remaining", clock(duration - position.clamp(0, duration)));
-            values.insert("percent-pos", format!("{:.0}", fraction(position, duration) * 100.0));
-        }
         let speed = match media.downcast_ref::<crate::mpv::MpvStream>() {
             Some(stream) => stream.speed(),
             None => Some(1.0),
         };
+        let scaled = imp.scale_times.get();
+        let factor_speed = speed.unwrap_or(1.0);
+        values.insert("time-pos", clock(scaled_time(position, factor_speed, scaled)));
+        if duration > 0 {
+            values.insert("duration", clock(scaled_time(duration, factor_speed, scaled)));
+            let remaining = duration - position.clamp(0, duration);
+            values.insert("time-remaining", clock(scaled_time(remaining, factor_speed, scaled)));
+            values.insert("percent-pos", format!("{:.0}", fraction(position, duration) * 100.0));
+        }
         if let Some(speed) = speed {
             let speed_text = format!("{speed:.2}").trim_end_matches('0').trim_end_matches('.').to_owned();
             if (speed - 1.0).abs() > 1e-6 {
@@ -2442,12 +2450,19 @@ impl MediaViewer {
         imp.status_views.set_visible(!text.is_empty());
     }
 
-    /// Shows or hides the status bar under the item: its position, name, resolution, frame rate and file size.
+    /// Sets whether the status bar under the item is shown.
     pub fn set_status_bar(&self, shown: bool) {
         let imp = self.imp();
         imp.status_shown.set(shown);
         imp.status_bar.set_visible(shown);
         self.refresh_status();
+    }
+
+    /// Sets whether playback times are shown as the time they take at the playback speed.
+    pub fn set_time_scaling(&self, scaled: bool) {
+        self.imp().scale_times.set(scaled);
+        self.imp().controls.set_time_scaling(scaled);
+        self.refresh_overlay();
     }
 
     /// Puts the status bar under the item. In fullscreen it is left out, as the overlay's status element is there

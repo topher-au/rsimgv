@@ -954,6 +954,12 @@
                                     </property>
                                   </object>
                                 </child>
+                                <child>
+                                  <object class="AdwSwitchRow" id="video_scaled_times_row">
+                                    <property name="title">Scale times by playback speed</property>
+                                    <property name="subtitle">A 10-minute video at 25% speed shows 40 minutes, the time it actually takes</property>
+                                  </object>
+                                </child>
                               </object>
                             </child>
                             <child>
