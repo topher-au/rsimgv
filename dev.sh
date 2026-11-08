@@ -4,6 +4,7 @@
 #   ./dev.sh             rebuild, then run rsimgv (extra arguments are passed to it)
 #   ./dev.sh test        rebuild, then run the test suite
 #   ./dev.sh gdb         rebuild, then run rsimgv under gdb (extra arguments are passed to it)
+#   ./dev.sh cargo ...   run a Cargo command in the build environment (for example, `./dev.sh cargo check`)
 #
 # The GSettings schema, the GResource bundle and the SVP plugins are all produced in builddir/, so the schema
 # directory is pointed there and the test binary is given the bundle's path and the plugins' directory.
@@ -13,14 +14,27 @@ cd "$(dirname "$0")"
 if [ ! -d builddir ]; then
     meson setup builddir
 fi
+
+# The crate embeds the bundle and the plugins at compile time, so Cargo needs their paths and the files themselves
+# even when it only checks the code.
+export RSIMGV_GRESOURCE="$PWD/builddir/rsimgv.gresource"
+export RSIMGV_SVP_PLUGINS="$PWD/builddir"
+
+# Pass a command through to Cargo, using the same target directory as the Meson build. Only the artifacts Cargo
+# compiles against are rebuilt, not the application binary.
+if [ "${1:-}" = "cargo" ]; then
+    shift
+    meson compile -C builddir rsimgv_gresource svpflow
+    export CARGO_TARGET_DIR="$PWD/builddir/target"
+    exec cargo "$@"
+fi
+
 meson compile -C builddir
 
 # Compiled every time, so a renamed or edited schema is never stale.
 mkdir -p builddir/data
 glib-compile-schemas --targetdir="$PWD/builddir/data" data
 export GSETTINGS_SCHEMA_DIR="$PWD/builddir/data"
-export RSIMGV_GRESOURCE="$PWD/builddir/rsimgv.gresource"
-export RSIMGV_SVP_PLUGINS="$PWD/builddir"
 
 if [ "${1:-}" = "test" ]; then
     shift

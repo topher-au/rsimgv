@@ -83,8 +83,9 @@ Build-time:
 For development, `dev.sh` sets up the build directory if needed, rebuilds, and runs the app from it:
 
 ```sh
-./dev.sh          # rebuild and run rsimgv
-./dev.sh test     # rebuild and run the test suite
+./dev.sh              # rebuild and run rsimgv
+./dev.sh test         # rebuild and run the test suite
+./dev.sh cargo check  # run a Cargo command in the build environment
 ```
 
 Tests need a display. On a machine without one, run them under `xvfb-run -a`.
