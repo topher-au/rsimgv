@@ -1107,6 +1107,7 @@ impl MediaViewer {
         let initial = stream.crop().map(|rect| CropFraction::from_rect(rect, source)).unwrap_or_else(CropFraction::full);
         imp.crop_edit.set(Some(CropEdit { framing: imp.framing.get(), locked: stream.crop_locked(), crop: stream.crop() }));
         self.pause();
+        stream.begin_uncrop_preview();
         stream.unlock_crop();
         stream.set_framing(Framing { crop: None, trim_pixels: 0, aspect: None, backdrop: None });
         stream.lock_crop(None);
@@ -1159,6 +1160,7 @@ impl MediaViewer {
             Some(crop) => {
                 let Some(source) = stream.source_size() else { return };
                 let rect = crop.to_rect(source);
+                stream.begin_crop_preview(rect);
                 stream.lock_crop(Some(rect));
                 // A dragged crop is exact, so the standard shape is let go.
                 let _ = crate::settings::app_settings().set_string("video.crop.ratio", "auto");
@@ -1167,6 +1169,9 @@ impl MediaViewer {
             }
             None => {
                 if state.locked {
+                    if let Some(crop) = state.crop {
+                        stream.begin_crop_preview(crop);
+                    }
                     stream.lock_crop(state.crop);
                 }
                 self.announce("Crop editing cancelled", false);

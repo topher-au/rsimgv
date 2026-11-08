@@ -32,7 +32,6 @@ const ESTIMATED_FRAME_NUMBER: u64 = 6;
 
 /// The widest a frame is rendered, in pixels; wider sizes are scaled down to keep software rendering quick.
 const MAX_FRAME_WIDTH: i32 = 2560;
-
 /// The widest a video can be and still be rendered at its own size, however much bigger it is shown: it is rendered by the CPU,
 /// which scales every pixel it is asked for, and GTK scales the frame up on the GPU for little cost. What mpv draws in the frame,
 /// such as subtitles and its OSD, is scaled up with it, so it is softer than if it were drawn at the size shown. Wider videos
@@ -40,6 +39,25 @@ const MAX_FRAME_WIDTH: i32 = 2560;
 const OWN_SIZE_MAX_WIDTH: i32 = 1280;
 
 const MICROS: f64 = 1_000_000.0;
+
+/// What a frame was before the framing changed, so it can be drawn where the new framing will put it while the player
+/// makes a new frame.
+#[derive(Clone, Copy)]
+pub(super) struct Transition {
+    kind: TransitionKind,
+    /// The video's own size before the change.
+    source: (i32, i32),
+    /// The crop the old frame was, or the crop the new frame will be.
+    crop: CropRect,
+}
+
+#[derive(Clone, Copy)]
+enum TransitionKind {
+    /// The old frame is cropped, and is drawn inside the crop in the full picture.
+    Uncrop,
+    /// The old frame is the full picture, and is drawn cropped to the new crop.
+    Crop,
+}
 
 /// How often the video is looked at for where to crop it, at first, and the longest wait between looks once what is found has
 /// stopped changing. The wait doubles for each look that finds the crop as it was.
@@ -111,6 +129,35 @@ fn grab_gray(path: &Path, seconds: f64, width: i32, height: i32) -> Option<Vec<u
 const ACROSS_FRAMES: usize = 4;
 const ACROSS_GAP: f64 = 2.0;
 
+/// Draws the old frame where the new framing will put it, until the player renders a frame with that framing.
+fn draw_transition(snapshot: &gtk::Snapshot, width: f64, height: f64, frame: &gdk::Texture, transition: Transition) {
+    let whole = gtk::graphene::Rect::new(0.0, 0.0, width as f32, height as f32);
+    snapshot.append_color(&gdk::RGBA::BLACK, &whole);
+    let (source_width, source_height) = (f64::from(transition.source.0.max(1)), f64::from(transition.source.1.max(1)));
+    let (crop_width, crop_height) = (f64::from(transition.crop.width.max(0)), f64::from(transition.crop.height.max(0)));
+    if crop_width <= 0.0 || crop_height <= 0.0 {
+        return;
+    }
+    match transition.kind {
+        TransitionKind::Uncrop => {
+            let (x, y, width, height) = framing::fitted(width, height, source_width, source_height);
+            let (crop_x, crop_y) = (x + width * f64::from(transition.crop.left) / source_width, y + height * f64::from(transition.crop.top) / source_height);
+            let (crop_width, crop_height) = (width * crop_width / source_width, height * crop_height / source_height);
+            snapshot.append_texture(frame, &gtk::graphene::Rect::new(crop_x as f32, crop_y as f32, crop_width as f32, crop_height as f32));
+        }
+        TransitionKind::Crop => {
+            let (crop_x, crop_y, crop_width, crop_height) = framing::fitted(width, height, crop_width, crop_height);
+            let full_width = crop_width * source_width / f64::from(transition.crop.width.max(1));
+            let full_height = crop_height * source_height / f64::from(transition.crop.height.max(1));
+            let x = crop_x - full_width * f64::from(transition.crop.left) / source_width;
+            let y = crop_y - full_height * f64::from(transition.crop.top) / source_height;
+            snapshot.push_clip(&whole);
+            snapshot.append_texture(frame, &gtk::graphene::Rect::new(x as f32, y as f32, full_width as f32, full_height as f32));
+            snapshot.pop();
+        }
+    }
+}
+
 /// Where to crop the video at `path`, which is `width` by `height`, at `position` seconds, found by `method` from frames decoded
 /// from the file. The frames are scaled down by ffmpeg, and the rectangle found in them is scaled back up. This reads the file,
 /// so it runs on a worker thread.
@@ -161,6 +208,8 @@ mod imp {
         pub(super) level: Cell<Option<f64>>,
         /// The latest frame, and the video's size, which the frame's intrinsic size is.
         pub(super) frame: RefCell<Option<gdk::Texture>>,
+        /// A frame to keep drawing at a crop's place while the player changes its framing.
+        pub(super) transition: RefCell<Option<Transition>>,
         pub(super) frame_size: Cell<(i32, i32)>,
         /// The size frames are rendered at, in device pixels: the size shown, so mpv's OSD is drawn sharp.
         pub(super) render_size: Cell<(i32, i32)>,
@@ -295,8 +344,13 @@ mod imp {
         fn snapshot(&self, snapshot: &gdk::Snapshot, width: f64, height: f64) {
             let stream = self.obj();
             stream.fit_render(width, height);
-            let Some(frame) = self.frame.borrow().clone() else { return };
             let snapshot = snapshot.downcast_ref::<gtk::Snapshot>().expect("a GTK snapshot");
+            if let Some(transition) = *self.transition.borrow() {
+                let Some(frame) = self.frame.borrow().clone() else { return };
+                draw_transition(snapshot, width, height, &frame, transition);
+                return;
+            }
+            let Some(frame) = self.frame.borrow().clone() else { return };
             // The frame is the picture alone, as big as fits. The blurred, dimmed pieces of it, if there is a backdrop, fill the
             // bare strips round it, and otherwise they are black.
             if self.framing.get().backdrop.is_none() {
@@ -446,6 +500,7 @@ impl MpvStream {
         for timer in [self.imp().crop_timer.take(), self.imp().position_timer.take(), self.imp().resize_timer.take()].into_iter().flatten() {
             timer.remove();
         }
+        self.imp().transition.take();
         let Some(player) = self.imp().player.take() else { return };
         let _ = player.command(&["stop"]);
         // The player now plays for no stream, unless a later stream has already taken it over.
@@ -513,6 +568,30 @@ impl MpvStream {
     /// The video's own size, once it has loaded.
     pub fn source_size(&self) -> Option<(i32, i32)> {
         self.imp().player.borrow().as_ref()?.source_size()
+    }
+
+    /// Keeps the cropped frame on screen at the place its crop occupied in the full picture, while the player removes
+    /// the crop. Cleared when the player draws a new frame.
+    pub fn begin_uncrop_preview(&self) {
+        let imp = self.imp();
+        if imp.frame.borrow().is_none() || imp.frame_fills.get() {
+            return;
+        }
+        let (Some(source), Some(crop)) = (self.source_size(), imp.crop.get()) else { return };
+        imp.transition.replace(Some(Transition { kind: TransitionKind::Uncrop, source, crop }));
+        self.invalidate_contents();
+    }
+
+    /// Keeps the full frame on screen, cropped to `crop`, while the player puts the crop in place. Cleared when the
+    /// player draws a new frame.
+    pub fn begin_crop_preview(&self, crop: CropRect) {
+        let imp = self.imp();
+        if imp.frame.borrow().is_none() || imp.frame_fills.get() {
+            return;
+        }
+        let Some(source) = self.source_size() else { return };
+        imp.transition.replace(Some(Transition { kind: TransitionKind::Crop, source, crop }));
+        self.invalidate_contents();
     }
 
     /// Whether the crop in use is held rather than looked for again.
@@ -1105,6 +1184,7 @@ impl MpvStream {
             self.update_backdrop();
         }
         let first = imp.frame.replace(Some(texture)).is_none();
+        imp.transition.take();
         self.invalidate_contents();
         if first {
             self.emit_by_name::<()>("first-frame", &[]);
