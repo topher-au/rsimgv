@@ -493,6 +493,10 @@ mod imp {
         pub(super) audio_base: Cell<Option<(f64, bool)>>,
         /// The video shown, if the item is one. The viewer owns it, and the controls drive it.
         pub(super) media: RefCell<Option<gtk::MediaStream>>,
+        /// Whether the viewer is hidden with its item still loaded, rather than closed.
+        pub(super) suspended: Cell<bool>,
+        /// Whether the video was playing when the viewer was suspended, so it plays again when it comes back.
+        pub(super) resume_playing: Cell<bool>,
         /// Whether a video starts again when it ends, and whether the next item plays when it ends instead.
         pub(super) repeat: Cell<bool>,
         pub(super) auto_advance: Cell<bool>,
@@ -840,9 +844,12 @@ impl MediaViewer {
 
     /// Shows the item at `index` of `paths`, the folder's pictures and videos in display order.
     pub fn show(&self, paths: Vec<PathBuf>, index: usize) {
-        self.imp().thumbnail_bar.set_paths(&paths);
-        self.imp().paths.replace(paths);
-        self.imp().prefetched.borrow_mut().clear();
+        let imp = self.imp();
+        imp.suspended.set(false);
+        imp.resume_playing.set(false);
+        imp.thumbnail_bar.set_paths(&paths);
+        imp.paths.replace(paths);
+        imp.prefetched.borrow_mut().clear();
         self.load(index);
     }
 
@@ -1041,6 +1048,8 @@ impl MediaViewer {
 
     /// Stops any video and drops the items, so the viewer holds nothing once it is hidden.
     pub fn close(&self) {
+        self.imp().suspended.set(false);
+        self.imp().resume_playing.set(false);
         self.release();
         self.imp().shown_any.set(false);
         self.imp().paths.take();
@@ -1541,6 +1550,36 @@ impl MediaViewer {
     /// Pauses the video shown, if there is one.
     pub fn pause(&self) {
         self.imp().controls.pause();
+    }
+
+    /// Hides the viewer's item without unloading it: pauses a video and stops counting watch time, keeping everything
+    /// loaded for `resume`.
+    pub fn suspend(&self) {
+        let imp = self.imp();
+        imp.suspended.set(true);
+        let media = imp.media.borrow().clone();
+        imp.resume_playing.set(media.as_ref().is_some_and(|media| media.is_playing()));
+        if let Some(media) = media {
+            media.pause();
+        }
+        self.finish_watch_session();
+    }
+
+    /// Shows the item kept by `suspend` again, playing the video if it was playing when it was hidden.
+    pub fn resume(&self) {
+        let imp = self.imp();
+        imp.suspended.set(false);
+        if imp.resume_playing.take() {
+            if let Some(media) = imp.media.borrow().clone() {
+                media.play();
+            }
+        }
+        self.begin_watch_session();
+    }
+
+    /// The path of the item held, even while the viewer is suspended.
+    pub fn resident_path(&self) -> Option<PathBuf> {
+        self.shown_path()
     }
 
     /// Plays or pauses the video shown, if there is one.
@@ -2301,6 +2340,9 @@ impl MediaViewer {
     /// slower adds the time actually spent watching it, not the part of it that went by.
     fn begin_watch_session(&self) {
         let imp = self.imp();
+        if imp.suspended.get() {
+            return;
+        }
         let settings = imp.history.get();
         let video = imp.media.borrow().is_some();
         let wanted = settings.enabled && (if video { settings.videos } else { settings.images });
@@ -2756,6 +2798,7 @@ impl MediaViewer {
             // Playing is requested once the stream is ready, since a request made before then is dropped. It starts
             // where it was left.
             let position = settings.as_ref().filter(|_| imp.remember.get().position).and_then(|settings| settings.get_f64("position"));
+            let weak = self.downgrade();
             media.connect_prepared_notify(move |media| {
                 if !media.is_prepared() {
                     return;
@@ -2766,7 +2809,13 @@ impl MediaViewer {
                         media.seek((position * 1_000_000.0) as i64);
                     }
                 }
-                media.play();
+                // A video prepared while the viewer is hidden waits for it to come back rather than playing unseen.
+                let Some(viewer) = weak.upgrade() else { return };
+                if viewer.imp().suspended.get() {
+                    viewer.imp().resume_playing.set(true);
+                } else {
+                    media.play();
+                }
             });
             imp.media.replace(Some(media));
             self.begin_watch_session();

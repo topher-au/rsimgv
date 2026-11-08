@@ -860,6 +860,12 @@ impl Window {
         }
         self.apply_folder_end();
         imp.viewer.show(paths, index);
+        self.show_viewer_page();
+    }
+
+    /// Shows the viewer page, which holds the item loaded in the viewer, without loading it again.
+    fn show_viewer_page(&self) {
+        let imp = self.imp();
         imp.viewer_open.set(true);
         self.cover_browsers(true);
         self.place_playlist();
@@ -872,6 +878,24 @@ impl Window {
             self.fullscreen();
             imp.viewer_fullscreened.set(true);
         }
+        self.update_title();
+    }
+
+    /// Shows the browse page, leaving whatever the viewer holds loaded for when it comes back.
+    fn hide_viewer_page(&self) {
+        let imp = self.imp();
+        imp.viewer_open.set(false);
+        self.cover_browsers(false);
+        self.place_playlist();
+        imp.playlist_playing.set(false);
+        self.apply_folder_end();
+        self.refresh_message_host();
+        self.refresh_keybinds_overlay();
+        imp.pages.set_visible_child(&*imp.split);
+        if imp.viewer_fullscreened.take() {
+            self.unfullscreen();
+        }
+        self.update_context_highlights();
         self.update_title();
     }
 
@@ -897,43 +921,51 @@ impl Window {
     fn close_viewer(&self) {
         let imp = self.imp();
         imp.viewer.close();
-        imp.viewer_open.set(false);
         imp.resume_playlist_on_toggle.set(false);
-        self.cover_browsers(false);
-        self.place_playlist();
-        imp.playlist_playing.set(false);
-        self.apply_folder_end();
-        self.refresh_message_host();
-        self.refresh_keybinds_overlay();
-        imp.pages.set_visible_child(&*imp.split);
-        if imp.viewer_fullscreened.take() {
-            self.unfullscreen();
-        }
-        self.update_context_highlights();
-        self.update_title();
+        self.hide_viewer_page();
     }
 
     /// Shows the item selected in the browse view in the viewer, or returns from the viewer to the browse view. The
-    /// viewer and the browse view keep the same item, so the toggle does not change which picture or video is active.
+    /// viewer stays loaded while it is hidden, so the same picture or video is still there when the toggle comes back.
     /// A viewer that was showing the playlist goes back to it, where it was left.
     fn toggle_viewer(&self) {
         let imp = self.imp();
         if imp.viewer_open.get() {
             let playlist = imp.playlist_playing.get();
-            self.close_viewer();
-            // `close_viewer` clears this, so it is set after closing to bring the playlist back next time.
+            // Hide rather than close: the item stays loaded, a video pauses, and coming back does not reload it.
+            imp.viewer.suspend();
+            self.hide_viewer_page();
             imp.resume_playlist_on_toggle.set(playlist);
             return;
         }
-        if imp.resume_playlist_on_toggle.take() {
-            self.play_playlist();
+        if imp.resume_playlist_on_toggle.get() {
+            imp.resume_playlist_on_toggle.set(false);
+            let (order, current) = playlist::with(|list| (list.order().to_vec(), list.current_path().map(Path::to_path_buf)));
+            if current.is_some_and(|current| imp.viewer.resident_path().as_deref() == Some(current.as_path())) {
+                imp.playlist_playing.set(true);
+                self.apply_folder_end();
+                imp.viewer.update_paths(order);
+                self.show_viewer_page();
+                imp.viewer.resume();
+            } else {
+                // The playlist moved on while the viewer was hidden, so the new item has to be loaded.
+                self.play_playlist();
+            }
             return;
         }
         let Some(browse) = self.active_browse() else { return };
         let Some(name) = browse.selected_name() else { return };
         let Some(folder) = self.current_path() else { return };
         let path = folder.join(name);
-        if browse.media_paths().iter().any(|listed| *listed == path) {
+        if !browse.media_paths().iter().any(|listed| *listed == path) {
+            return;
+        }
+        if imp.viewer.resident_path().as_deref() == Some(path.as_path()) {
+            imp.viewer.update_paths(browse.media_paths());
+            self.show_viewer_page();
+            imp.viewer.resume();
+        } else {
+            // Browsing selected another item while the viewer was hidden, so that one is loaded.
             self.open_viewer(&browse, &path);
         }
     }
@@ -4101,6 +4133,11 @@ pub(crate) mod tests {
         let browse = window.active_browse().unwrap();
         let viewer = window.imp().viewer.clone();
         let shows = |path: &Path| viewer.shown_item().is_some_and(|item| item.path == path);
+        let loads = Rc::new(Cell::new(0));
+        viewer.connect_item_changed({
+            let loads = loads.clone();
+            move |_, _| loads.set(loads.get() + 1)
+        });
         wait_for("the folder to list", || browse.media_paths().len() == 2);
 
         browse.select_named("one.png");
@@ -4111,12 +4148,15 @@ pub(crate) mod tests {
         // The viewer moves, and the browse view follows it. Toggling back and forth keeps the same item.
         viewer.step(true);
         wait_for("the next item", || shows(&alpha.join("two.png")) && browse.selected_name().as_deref() == Some("two.png"));
+        let loaded = loads.get();
         window.toggle_viewer();
         assert!(!window.viewer_is_open(), "the toggle returns to browsing");
         assert_eq!(browse.selected_name().as_deref(), Some("two.png"), "the item stays selected");
+        assert!(shows(&alpha.join("two.png")), "the item stays loaded while the viewer is hidden");
         window.toggle_viewer();
         wait_for("the same item when the viewer comes back", || shows(&alpha.join("two.png")));
         assert!(window.viewer_is_open(), "the toggle opens the viewer again");
+        assert_eq!(loads.get(), loaded, "coming back does not load the item again");
 
         window.destroy();
         let _ = fs::remove_dir_all(&root);
@@ -4183,6 +4223,15 @@ pub(crate) mod tests {
         assert_eq!(window.current_path().as_ref(), Some(&alpha), "the folder stays");
         assert_eq!(browse.selected_name().as_deref(), Some("two.png"), "the selection stays");
         assert_eq!(current(), Some(1));
+
+        // The toggle leaves the playlist item loaded and brings back the same one.
+        window.toggle_viewer();
+        assert!(!window.viewer_is_open(), "the toggle returns to browsing");
+        assert!(shows(&gamma.join("one.png")), "the playlist item stays loaded");
+        window.toggle_viewer();
+        wait_for("the playlist item when the viewer comes back", || shows(&gamma.join("one.png")));
+        assert!(window.viewer_is_open() && window.imp().playlist_playing.get(), "the toggle brings the playlist back");
+        assert_eq!(current(), Some(1), "the playlist stays on its item");
 
         // The viewer's own steps follow the playlist, stop at its end and leave the current item right.
         viewer.step(true);
