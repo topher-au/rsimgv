@@ -1,7 +1,7 @@
 //! A draggable rectangle over the picture for setting a video's crop. The video is shown uncropped behind it; the area
 //! outside the rectangle is dimmed, and its edges and corners can be dragged. Apply or Cancel is shown over it.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use gtk::prelude::*;
@@ -79,6 +79,127 @@ pub struct CropEditor {
     pub root: gtk::Overlay,
 }
 
+/// The four edge values shown round the crop, as pixels of the video.
+#[derive(Clone)]
+struct Entries {
+    left: gtk::SpinButton,
+    top: gtk::SpinButton,
+    right: gtk::SpinButton,
+    bottom: gtk::SpinButton,
+    syncing: Rc<Cell<bool>>,
+}
+
+#[derive(Clone, Copy)]
+enum Edge {
+    Left,
+    Top,
+    Right,
+    Bottom,
+}
+
+impl Entries {
+    fn new(source: (i32, i32), rect: CropFraction) -> Self {
+        let (width, height) = (source.0.max(2), source.1.max(2));
+        let left = edge_value("Left edge, in pixels", 0, width - 2);
+        let top = edge_value("Top edge, in pixels", 0, height - 2);
+        let right = edge_value("Right edge, in pixels", 2, width);
+        let bottom = edge_value("Bottom edge, in pixels", 2, height);
+        let entries = Self { left, top, right, bottom, syncing: Rc::new(Cell::new(false)) };
+        sync_entries(&entries, rect, source);
+        entries
+    }
+
+    fn all(&self) -> [&gtk::SpinButton; 4] {
+        [&self.left, &self.top, &self.right, &self.bottom]
+    }
+}
+
+fn edge_value(tooltip: &str, lower: i32, upper: i32) -> gtk::SpinButton {
+    let spin = gtk::SpinButton::with_range(f64::from(lower), f64::from(upper), 2.0);
+    spin.set_numeric(true);
+    spin.set_digits(0);
+    spin.set_width_chars(4);
+    spin.set_tooltip_text(Some(tooltip));
+    spin
+}
+
+fn sync_entries(entries: &Entries, rect: CropFraction, source: (i32, i32)) {
+    let pixels = rect.to_rect(source);
+    entries.syncing.set(true);
+    entries.left.set_value(f64::from(pixels.left));
+    entries.top.set_value(f64::from(pixels.top));
+    entries.right.set_value(f64::from(pixels.left + pixels.width));
+    entries.bottom.set_value(f64::from(pixels.top + pixels.height));
+    entries.syncing.set(false);
+}
+
+/// Puts each edge's value box at the middle of that edge of the crop.
+fn position_entries(fixed: &gtk::Fixed, entries: &Entries, state: &State, width: i32, height: i32) {
+    let picture = framing::fitted(f64::from(width), f64::from(height), f64::from(state.source.0.max(1)), f64::from(state.source.1.max(1)));
+    let (left, top, crop_width, crop_height) = crop_pixels(state.rect, picture);
+    let (right, bottom) = (left + crop_width, top + crop_height);
+    let (box_width, box_height) = (
+        f64::from(entries.left.measure(gtk::Orientation::Horizontal, -1).1),
+        f64::from(entries.left.measure(gtk::Orientation::Vertical, -1).1),
+    );
+    let most_x = (f64::from(width) - box_width).max(0.0);
+    let most_y = (f64::from(height) - box_height).max(0.0);
+    let place = |spin: &gtk::SpinButton, x: f64, y: f64| {
+        fixed.move_(spin, x.clamp(0.0, most_x).round(), y.clamp(0.0, most_y).round());
+    };
+    place(&entries.left, left - box_width / 2.0, top + crop_height / 2.0 - box_height / 2.0);
+    place(&entries.right, right - box_width / 2.0, top + crop_height / 2.0 - box_height / 2.0);
+    place(&entries.top, left + crop_width / 2.0 - box_width / 2.0, top - box_height / 2.0);
+    place(&entries.bottom, left + crop_width / 2.0 - box_width / 2.0, bottom - box_height / 2.0);
+}
+
+fn adjust_edge(pixels: &mut CropRect, edge: Edge, value: i32, source: (i32, i32)) {
+    match edge {
+        Edge::Left => {
+            let right = pixels.left + pixels.width;
+            pixels.left = value.clamp(0, right - 2);
+            pixels.width = right - pixels.left;
+        }
+        Edge::Top => {
+            let bottom = pixels.top + pixels.height;
+            pixels.top = value.clamp(0, bottom - 2);
+            pixels.height = bottom - pixels.top;
+        }
+        Edge::Right => {
+            let right = value.clamp(pixels.left + 2, source.0);
+            pixels.width = right - pixels.left;
+        }
+        Edge::Bottom => {
+            let bottom = value.clamp(pixels.top + 2, source.1);
+            pixels.height = bottom - pixels.top;
+        }
+    }
+}
+
+fn connect_edge(entry: &gtk::SpinButton, edge: Edge, state: &Rc<RefCell<State>>, entries: &Entries, area: &gtk::DrawingArea) {
+    entry.connect_value_changed({
+        let state = state.clone();
+        let entries = entries.clone();
+        let area = area.clone();
+        move |spin| {
+            if entries.syncing.get() {
+                return;
+            }
+            let (source, mut pixels) = {
+                let state = state.borrow();
+                (state.source, state.rect.to_rect(state.source))
+            };
+            adjust_edge(&mut pixels, edge, (spin.value().round() as i32) & !1, source);
+            {
+                let mut state = state.borrow_mut();
+                state.rect = CropFraction::from_rect(pixels, source);
+            }
+            sync_entries(&entries, state.borrow().rect, source);
+            area.queue_draw();
+        }
+    });
+}
+
 impl CropEditor {
     pub fn new(
         source: (i32, i32),
@@ -90,9 +211,29 @@ impl CropEditor {
         let area = gtk::DrawingArea::new();
         area.set_hexpand(true);
         area.set_vexpand(true);
+
+        let entries = Entries::new(source, rect);
+        let fixed = gtk::Fixed::new();
+        fixed.set_hexpand(true);
+        fixed.set_vexpand(true);
+        fixed.set_can_target(false);
+        for entry in entries.all() {
+            fixed.put(entry, 0.0, 0.0);
+        }
+        connect_edge(&entries.left, Edge::Left, &state, &entries, &area);
+        connect_edge(&entries.top, Edge::Top, &state, &entries, &area);
+        connect_edge(&entries.right, Edge::Right, &state, &entries, &area);
+        connect_edge(&entries.bottom, Edge::Bottom, &state, &entries, &area);
+
         area.set_draw_func({
             let state = state.clone();
-            move |area, snapshot, width, height| draw(&state.borrow(), area, snapshot, width, height)
+            let entries = entries.clone();
+            let fixed = fixed.clone();
+            move |area, cr, width, height| {
+                let state = state.borrow();
+                position_entries(&fixed, &entries, &state, width, height);
+                draw(&state, area, cr, width, height);
+            }
         });
 
         let drag = gtk::GestureDrag::new();
@@ -109,6 +250,7 @@ impl CropEditor {
         });
         drag.connect_drag_update({
             let state = state.clone();
+            let entries = entries.clone();
             let area = area.clone();
             move |_, dx, dy| {
                 let mut state = state.borrow_mut();
@@ -118,6 +260,7 @@ impl CropEditor {
                     return;
                 }
                 state.rect = drag_rect(grab, state.start_rect, dx / picture.2, dy / picture.3);
+                sync_entries(&entries, state.rect, state.source);
                 area.queue_draw();
             }
         });
@@ -147,7 +290,7 @@ impl CropEditor {
         bar.set_halign(gtk::Align::Center);
         bar.set_valign(gtk::Align::End);
         bar.set_margin_bottom(24);
-        bar.append(&gtk::Label::new(Some("Drag the crop")));
+        bar.append(&gtk::Label::new(Some("Drag the crop or type its edges")));
         bar.append(&cancel);
         bar.append(&apply);
 
@@ -166,8 +309,10 @@ impl CropEditor {
         let root = gtk::Overlay::new();
         root.set_focusable(true);
         root.set_child(Some(&area));
+        root.add_overlay(&fixed);
         root.add_overlay(&bar);
         let keys = gtk::EventControllerKey::new();
+        keys.set_propagation_phase(gtk::PropagationPhase::Capture);
         keys.connect_key_pressed({
             let on_cancel = on_cancel.clone();
             move |_, key, _, _| {
@@ -320,5 +465,18 @@ mod tests {
         assert_eq!(moved, CropFraction { left: 0.5, top: 0.0, width: 0.5, height: 0.5 });
         let resized = drag_rect(Grab::Left, start, -0.1, 0.0);
         assert_eq!(resized, CropFraction { left: 0.15, top: 0.25, width: 0.6, height: 0.5 });
+    }
+
+    #[test]
+    fn edge_values_adjust_one_side_and_stay_inside_the_video() {
+        let mut pixels = CropRect { width: 400, height: 300, left: 100, top: 50 };
+        adjust_edge(&mut pixels, Edge::Left, 160, (800, 600));
+        assert_eq!(pixels, CropRect { width: 340, height: 300, left: 160, top: 50 });
+        adjust_edge(&mut pixels, Edge::Right, 900, (800, 600));
+        assert_eq!(pixels.left + pixels.width, 800, "the right edge stops at the video");
+        adjust_edge(&mut pixels, Edge::Top, 0, (800, 600));
+        assert_eq!(pixels.top, 0);
+        adjust_edge(&mut pixels, Edge::Bottom, 100, (800, 600));
+        assert_eq!(pixels.height, 100, "the bottom cannot pass the top");
     }
 }
