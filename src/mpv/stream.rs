@@ -788,6 +788,7 @@ impl MpvStream {
                 }
                 self.apply_rotation();
                 self.update_frame_size();
+                self.apply_framing_filters();
                 if !self.is_prepared() {
                     self.stream_prepared(has_audio, true, true, duration);
                 }
