@@ -588,6 +588,59 @@ impl Thumbnails {
         self.request(key(path, mtime, self.capped(size, Media::Video), Job::Frames), None, wanted, on_ready);
     }
 
+    /// Sets the frame `frame` as the video's thumbnail, removes the thumbnails already made for it, and makes one at
+    /// `pixels` across. `on_ready` is called on the main loop once it is made.
+    pub fn set_frame(&self, path: &Path, mtime: i64, frame: i64, pixels: i32, on_ready: impl FnOnce() + 'static) {
+        match ThumbnailFrames::shared() {
+            Some(frames) => {
+                if let Err(err) = frames.set(path, Some(frame)) {
+                    eprintln!("rsimgv: could not keep the thumbnail frame: {err}");
+                    return;
+                }
+            }
+            None => {
+                eprintln!("rsimgv: could not keep the thumbnail frame: the database is unavailable");
+                return;
+            }
+        }
+        self.remove_stills(path);
+        let size = Size::for_pixels(pixels);
+        self.request_still(path, mtime, Media::Video, size, || true, move |_| on_ready());
+    }
+
+    /// Removes the still thumbnails of `path` from memory and the cache, in every size, so the next one is made again.
+    fn remove_stills(&self, path: &Path) {
+        let keys: Vec<Key> = self
+            .inner
+            .textures
+            .borrow()
+            .keys()
+            .filter(|key| key.path == path && matches!(key.job, Job::Still(_)))
+            .cloned()
+            .collect();
+        for key in &keys {
+            self.forget(key);
+            self.inner.failed.borrow_mut().remove(key);
+        }
+        let failed: Vec<Key> =
+            self.inner.failed.borrow().iter().filter(|key| key.path == path && matches!(key.job, Job::Still(_))).cloned().collect();
+        for key in failed {
+            self.inner.failed.borrow_mut().remove(&key);
+        }
+        let still = |key: &Key| key.path == path && matches!(key.job, Job::Still(_));
+        self.inner.queued.borrow_mut().retain(|key, _| !still(key));
+        self.inner.waiters.borrow_mut().retain(|key, _| !still(key));
+        if self.inner.disk_cache.get() {
+            if let Ok(uri) = glib::filename_to_uri(path, None) {
+                let digest = string_hash(uri.as_str());
+                for size in SIZES {
+                    let file = filed(&self.inner.root.join(size.to_string()), &format!("{digest}.png"));
+                    let _ = std::fs::remove_file(file);
+                }
+            }
+        }
+    }
+
     fn request(&self, key: Key, rank: Option<Rc<dyn Fn() -> f64>>, wanted: impl Fn() -> bool + 'static, on_ready: impl FnOnce(&[gdk::Texture]) + 'static) {
         let wanted: Wanted = Rc::new(wanted);
         let cached = self.inner.textures.borrow().get(&key).cloned();
@@ -909,6 +962,44 @@ impl Pixels {
         let format = if self.alpha { gdk::MemoryFormat::R8g8b8a8 } else { gdk::MemoryFormat::R8g8b8 };
         gdk::MemoryTexture::new(self.width, self.height, format, &self.bytes, self.stride).upcast()
     }
+
+    /// The pixels as a pixbuf, for scaling and writing.
+    fn pixbuf(&self) -> Option<gdk_pixbuf::Pixbuf> {
+        Some(gdk_pixbuf::Pixbuf::from_bytes(
+            &self.bytes,
+            gdk_pixbuf::Colorspace::Rgb,
+            self.alpha,
+            8,
+            self.width,
+            self.height,
+            self.stride as i32,
+        ))
+    }
+
+    /// The pixels scaled to fit a square `size` pixels wide and high, keeping their shape.
+    fn scaled(&self, size: i32) -> Option<Self> {
+        let longest = self.width.max(self.height).max(1);
+        let scale = f64::from(size.max(1)) / f64::from(longest);
+        let width = (f64::from(self.width) * scale).round().max(1.0) as i32;
+        let height = (f64::from(self.height) * scale).round().max(1.0) as i32;
+        let scaled = self.pixbuf()?.scale_simple(width, height, gdk_pixbuf::InterpType::Bilinear)?;
+        Some(Self::from_pixbuf(&scaled))
+    }
+
+    /// The pixels as PNG, with the metadata a cached thumbnail carries.
+    fn png(&self, uri: &str, mtime: i64, frame: Option<i64>) -> Option<Vec<u8>> {
+        let mtime = mtime.to_string();
+        self.pixbuf()?
+            .save_to_bufferv(
+                "png",
+                &[
+                    ("tEXt::Thumb::URI", uri),
+                    ("tEXt::rsimgv::MTime", mtime.as_str()),
+                    ("tEXt::rsimgv::Frame", &frame_tag(frame)),
+                ],
+            )
+            .ok()
+    }
 }
 
 /// Makes one job on a worker thread, then shows it on the main loop. `cancel` stops it: a program it runs is killed, and
@@ -988,8 +1079,22 @@ fn make(root: Option<&Path>, key: &Key) -> Option<Vec<Pixels>> {
     let digest = string_hash(uri.as_str());
     match key.job {
         Job::Still(media) => {
-            let file = root.map(|root| filed(&root.join(key.size.dir_name()), &format!("{digest}.png")));
             let frame = (media == Media::Video).then_some(key.frame).flatten();
+            let file = root.map(|root| filed(&root.join(key.size.dir_name()), &format!("{digest}.png")));
+            if let Some(file) = file.as_deref() {
+                // A thumbnail already made is used as it is.
+                if let Some(pixels) = cached_pixels(file, key.mtime, frame) {
+                    return Some(vec![pixels]);
+                }
+                // Otherwise the next size up is scaled down, so the source is not read again.
+                if let Some(bigger) = next_cached_still(root?, &digest, key.mtime, frame, key.size) {
+                    let scaled = bigger.scaled(key.size.pixels())?;
+                    if let Some(data) = scaled.png(&uri, key.mtime, frame) {
+                        let _ = write_atomically(file, &data);
+                    }
+                    return Some(vec![scaled]);
+                }
+            }
             let still = cached_or_made(file.as_deref(), &uri, key.mtime, frame, || still_pixbuf(&key.path, key.size, media, frame))?;
             Some(vec![still])
         }
@@ -1008,6 +1113,23 @@ fn make(root: Option<&Path>, key: &Key) -> Option<Vec<Pixels>> {
             (!frames.is_empty()).then_some(frames)
         }
     }
+}
+
+/// The next size up from `size` whose cached still is current for `mtime` and `frame`, if there is one.
+fn next_cached_still(root: &Path, digest: &str, mtime: i64, frame: Option<i64>, size: Size) -> Option<Pixels> {
+    let position = SIZES.iter().position(|candidate| *candidate == size.pixels())?;
+    SIZES.iter().skip(position + 1).find_map(|&pixels| {
+        cached_pixels(&filed(&root.join(pixels.to_string()), &format!("{digest}.png")), mtime, frame)
+    })
+}
+
+/// The pixels of the cached thumbnail at `file`, if it was made from the file at `mtime` and frame choice `frame`.
+fn cached_pixels(file: &Path, mtime: i64, frame: Option<i64>) -> Option<Pixels> {
+    let data = std::fs::read(file).ok()?;
+    (png_text(&data, "rsimgv::MTime")?.parse::<i64>().ok()? == mtime
+        && png_text(&data, "rsimgv::Frame").unwrap_or("auto") == frame_tag(frame))
+    .then(|| Pixels::from_png(&data))
+    .flatten()
 }
 
 /// The still thumbnail's picture: the picture scaled down, or a frame a tenth of the way into a video, or the frame
@@ -1162,28 +1284,18 @@ fn frame_tag(frame: Option<i64>) -> String {
 /// `produce`, saved as a thumbnail with its metadata, and cached at `file`. With no `file`, just the pixbuf from `produce`.
 fn cached_or_made(file: Option<&Path>, uri: &str, mtime: i64, frame: Option<i64>, produce: impl FnOnce() -> Option<gdk_pixbuf::Pixbuf>) -> Option<Pixels> {
     let Some(file) = file else { return produce().map(|picture| Pixels::from_pixbuf(&picture)) };
-    let frame = frame_tag(frame);
-    // A cached thumbnail is current only if the file has not changed since it was made, and it is of the frame that is
-    // wanted. Its time is read from the PNG's text chunks, so the picture is decoded once, when it is shown.
-    if let Ok(data) = std::fs::read(file) {
-        if png_text(&data, "rsimgv::MTime").and_then(|value| value.parse::<i64>().ok()) == Some(mtime)
-            && png_text(&data, "rsimgv::Frame").unwrap_or("auto") == frame.as_str()
-        {
-            if let Some(pixels) = Pixels::from_png(&data) {
-                return Some(pixels);
-            }
-        }
+    if let Some(pixels) = cached_pixels(file, mtime, frame) {
+        return Some(pixels);
     }
 
     let picture = produce()?;
-    let mtime_text = mtime.to_string();
     let data = picture
         .save_to_bufferv(
             "png",
             &[
                 ("tEXt::Thumb::URI", uri),
-                ("tEXt::rsimgv::MTime", mtime_text.as_str()),
-                ("tEXt::rsimgv::Frame", frame.as_str()),
+                ("tEXt::rsimgv::MTime", &mtime.to_string()),
+                ("tEXt::rsimgv::Frame", &frame_tag(frame)),
                 ("tEXt::Thumb::Software", "rsimgv"),
             ],
         )
@@ -1541,6 +1653,25 @@ mod tests {
         let path = dir.join("text.png");
         std::fs::write(&path, b"not an image").unwrap();
         assert!(make(Some(&root), &key(&path, 1, Size::for_pixels(128), Job::Still(Media::Picture))).is_none());
+    }
+
+    #[test]
+    fn a_bigger_cached_still_is_used_for_a_smaller_size() {
+        let root = std::env::temp_dir().join(format!("rsimgv-next-thumb-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let dir = root.join("256");
+        let file = filed(&dir, "abc.png");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        let pixbuf = gdk_pixbuf::Pixbuf::new(gdk_pixbuf::Colorspace::Rgb, false, 8, 256, 128).unwrap();
+        pixbuf.fill(0x80808080);
+        let pixels = Pixels::from_pixbuf(&pixbuf);
+        let data = pixels.png("file:///clip.mp4", 100, Some(7)).unwrap();
+        write_atomically(&file, &data).unwrap();
+        assert!(next_cached_still(&root, "abc", 100, Some(7), Size::for_pixels(128)).is_some(), "the larger still is found");
+        assert!(next_cached_still(&root, "abc", 100, Some(7), Size::for_pixels(512)).is_none(), "nothing is larger");
+        assert!(next_cached_still(&root, "abc", 101, Some(7), Size::for_pixels(128)).is_none(), "another time is out of date");
+        assert!(next_cached_still(&root, "abc", 100, None, Size::for_pixels(128)).is_none(), "another frame is not used");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

@@ -28,7 +28,6 @@ const TIME_POS: u64 = 2;
 const EOF_REACHED: u64 = 3;
 const SPEED: u64 = 4;
 const ESTIMATED_FPS: u64 = 5;
-const ESTIMATED_FRAME_NUMBER: u64 = 6;
 
 /// The widest a frame is rendered, in pixels; wider sizes are scaled down to keep software rendering quick.
 const MAX_FRAME_WIDTH: i32 = 2560;
@@ -243,8 +242,6 @@ mod imp {
         pub(super) speed: Cell<Option<f64>>,
         pub(super) container_fps: Cell<Option<f64>>,
         pub(super) estimated_fps: Cell<Option<f64>>,
-        /// The frame the player is showing, as mpv estimates it from the position and frame rate.
-        pub(super) frame_number: Cell<Option<f64>>,
         /// Whether a seek is under way, to report when it lands.
         pub(super) seeking: Cell<bool>,
         /// The latest position mpv gave, in microseconds; when GTK was last given one; and the timer that gives it the latest
@@ -485,7 +482,6 @@ fn shared_player(options: &str) -> Option<Rc<Player>> {
     player.observe_flag(EOF_REACHED, "eof-reached");
     player.observe_double(SPEED, "speed");
     player.observe_double(ESTIMATED_FPS, "estimated-vf-fps");
-    player.observe_double(ESTIMATED_FRAME_NUMBER, "estimated-frame-number");
     let player = Rc::new(player);
     SHARED.with(|shared| shared.replace(Some((options.to_owned(), opengl, generation, player.clone()))));
     Some(player)
@@ -861,13 +857,28 @@ impl MpvStream {
         self.imp().container_fps.get().or(self.imp().estimated_fps.get())
     }
 
-    /// The number of the frame the player is showing, if it is known.
+    /// The number of the frame the player is showing, if it is known. mpv's estimate is used when it agrees with the
+    /// position and frame rate; otherwise the position is used, as the estimate can stay at zero.
     pub fn frame_number(&self) -> Option<i64> {
         let imp = self.imp();
-        imp.frame_number.get().map(|frame| frame.round() as i64).or_else(|| {
-            let seconds = imp.position.get() as f64 / 1_000_000.0;
-            self.fps().map(|fps| (seconds * fps).round() as i64)
-        })
+        let player = imp.player.borrow();
+        let player = player.as_ref();
+        let observed = player.and_then(|player| player.get_double("estimated-frame-number")).map(|frame| frame.round() as i64);
+        let seconds = player
+            .and_then(|player| player.get_double("time-pos"))
+            .unwrap_or(imp.position.get() as f64 / MICROS);
+        let fps = player
+            .and_then(|player| player.get_double("container-fps"))
+            .or(imp.container_fps.get())
+            .or(imp.estimated_fps.get())
+            .filter(|fps| *fps > 0.0);
+        let by_time = fps.map(|fps| (seconds * fps).round().max(0.0) as i64);
+        match (observed.filter(|frame| *frame >= 0), by_time) {
+            (Some(observed), Some(by_time)) if (observed - by_time).abs() <= 2 => Some(observed),
+            (_, Some(by_time)) => Some(by_time),
+            (Some(observed), None) => Some(observed),
+            (None, None) => None,
+        }
     }
 
     /// Steps `frames` frames forward, or back when it is negative, and pauses as a frame step does. Returns whether
@@ -949,7 +960,6 @@ impl MpvStream {
                 }
             }
             Event::Double(ESTIMATED_FPS, fps) => imp.estimated_fps.set(fps),
-            Event::Double(ESTIMATED_FRAME_NUMBER, frame) => imp.frame_number.set(frame),
             Event::Double(DURATION, Some(seconds)) => imp.duration.set((seconds * MICROS) as i64),
             Event::Double(TIME_POS, Some(seconds)) => {
                 imp.position.set((seconds * MICROS) as i64);

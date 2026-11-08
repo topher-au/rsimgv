@@ -507,6 +507,16 @@ impl ThumbnailBar {
         });
     }
 
+    /// The pixel size of the thumbnails in the bar.
+    pub fn thumbnail_size(&self) -> i32 {
+        self.imp().size.get()
+    }
+
+    /// Asks again for the thumbnails shown, at the size they are now.
+    pub fn refresh(&self) {
+        self.refresh_thumbnails();
+    }
+
     /// Asks again for the thumbnails shown, at the size they are now.
     fn refresh_thumbnails(&self) {
         let imp = self.imp();

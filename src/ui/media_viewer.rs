@@ -17,7 +17,6 @@ use gtk::{gdk, gio, glib};
 use super::drag;
 use super::image_canvas::{Fit, ImageCanvas, OriginalFocus, Placement, Scaling};
 use crate::storage::file_settings::FileSettings;
-use crate::storage::thumbnail_frames::ThumbnailFrames;
 use crate::storage::watch_history::{format_duration, WatchHistory};
 use crate::fs::thumbnail::Thumbnails;
 use crate::media::orientation::Orientation;
@@ -1236,8 +1235,8 @@ impl MediaViewer {
         imp.file_settings.replace(settings);
     }
 
-    /// Makes the frame the video shows now the one its thumbnail is made from. The frame number is kept in the
-    /// metadata database and read when the thumbnail is next made.
+    /// Sets the frame the video shows now as its thumbnail, removes the old thumbnails, and makes a new one at the
+    /// thumbnail bar's current size. The frame number is kept with the video's metadata for later sizes.
     pub fn set_thumbnail_frame(&self) {
         let imp = self.imp();
         let stream = imp.media.borrow().as_ref().and_then(|media| media.downcast_ref::<crate::mpv::MpvStream>()).cloned();
@@ -1250,19 +1249,14 @@ impl MediaViewer {
             return;
         };
         let Some(path) = self.shown_path() else { return };
-        match ThumbnailFrames::shared() {
-            Some(frames) => {
-                if let Err(err) = frames.set(&path, Some(frame)) {
-                    eprintln!("rsimgv: could not keep the thumbnail frame: {err}");
-                    self.announce("Could not keep the thumbnail frame", true);
-                    return;
-                }
+        let mtime = crate::fs::thumbnail::stamp(&path);
+        let pixels = imp.thumbnail_bar.thumbnail_size() * imp.thumbnail_bar.scale_factor();
+        let weak = self.downgrade();
+        Thumbnails::shared().set_frame(&path, mtime, frame, pixels, move || {
+            if let Some(viewer) = weak.upgrade() {
+                viewer.imp().thumbnail_bar.refresh();
             }
-            None => {
-                self.announce("Could not keep the thumbnail frame", true);
-                return;
-            }
-        }
+        });
         self.announce(&format!("Thumbnail frame set to {frame}"), false);
     }
 
