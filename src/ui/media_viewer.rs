@@ -17,6 +17,7 @@ use gtk::{gdk, gio, glib};
 use super::drag;
 use super::image_canvas::{Fit, ImageCanvas, OriginalFocus, Placement, Scaling};
 use crate::storage::file_settings::FileSettings;
+use crate::storage::video_crops::VideoCrops;
 use crate::storage::watch_history::{format_duration, WatchHistory};
 use crate::fs::thumbnail::Thumbnails;
 use crate::media::orientation::Orientation;
@@ -1233,6 +1234,13 @@ impl MediaViewer {
             eprintln!("rsimgv: could not save the locked crop: {err}");
         }
         imp.file_settings.replace(settings);
+        if let Some(path) = self.shown_path() {
+            if let Some(crops) = VideoCrops::shared() {
+                if let Err(err) = crops.set(&path, crop.filter(|_| locked)) {
+                    eprintln!("rsimgv: could not keep the locked crop for thumbnails: {err}");
+                }
+            }
+        }
     }
 
     /// Sets the frame the video shows now as its thumbnail, removes the old thumbnails, and makes a new one at the
@@ -2670,6 +2678,9 @@ impl MediaViewer {
                     stream.set_speed(speed);
                     stream.set_framing(imp.framing.get());
                     if let Some(crop) = settings.as_ref().and_then(saved_crop) {
+                        if let Some(crops) = VideoCrops::shared() {
+                            let _ = crops.set(&path, crop);
+                        }
                         stream.lock_crop(crop);
                     }
                     // Once its frames are up the stream fills the view itself, with the picture over its backdrop or black, so the

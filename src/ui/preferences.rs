@@ -101,6 +101,8 @@ mod imp {
         #[template_child]
         pub thumbnail_crop_row: TemplateChild<adw::SwitchRow>,
         #[template_child]
+        pub thumbnail_crop_video_row: TemplateChild<adw::SwitchRow>,
+        #[template_child]
         pub video_frame_previews_row: TemplateChild<adw::SwitchRow>,
         #[template_child]
         pub directory_previews_row: TemplateChild<adw::SwitchRow>,
@@ -734,6 +736,7 @@ fn bind_switches(settings: &Settings, imp: &imp::PreferencesDialog) {
         ("viewer.thumbnail-bar.shown", &imp.thumbnail_bar_shown_row),
         ("viewer.thumbnail-bar.overlay", &imp.thumbnail_bar_overlay_row),
         ("viewer.thumbnail-bar.pinned", &imp.thumbnail_bar_pinned_row),
+        ("thumbnails.crop-video", &imp.thumbnail_crop_video_row),
         ("video.scaled-times", &imp.video_scaled_times_row),
         ("history.enabled", &imp.history_enabled_row),
         ("history.images", &imp.history_images_row),
@@ -969,6 +972,10 @@ pub(crate) mod tests {
         imp.video_scaled_times_row.set_active(false);
         assert!(!settings.boolean("video.scaled-times"));
         settings.reset("video.scaled-times");
+        assert!(!imp.thumbnail_crop_video_row.is_active(), "video thumbnails are not cropped by default");
+        imp.thumbnail_crop_video_row.set_active(true);
+        assert!(settings.boolean("thumbnails.crop-video"));
+        settings.reset("thumbnails.crop-video");
         imp.history_image_seconds_row.set_value(4.0);
         assert_eq!(settings.int("history.image-seconds"), 4);
         imp.history_video_percent_row.set_value(75.0);

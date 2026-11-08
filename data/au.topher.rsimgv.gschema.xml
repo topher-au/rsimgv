@@ -164,6 +164,10 @@
       <default>false</default>
       <summary>Crop thumbnails to a square that fills the item's visual part</summary>
     </key>
+    <key name="crop-video" type="b">
+      <default>false</default>
+      <summary>Make video thumbnails from the video's locked crop, so bars and backdrops left by the locked crop are not shown</summary>
+    </key>
   </schema>
   <schema id="au.topher.rsimgv.window" path="/au/topher/rsimgv/window/">
     <child name="sidebar" schema="au.topher.rsimgv.window.sidebar"/>

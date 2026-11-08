@@ -4,4 +4,5 @@ pub mod file_settings;
 pub mod media_index;
 pub mod metadata_store;
 pub mod thumbnail_frames;
+pub mod video_crops;
 pub mod watch_history;

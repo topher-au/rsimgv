@@ -21,6 +21,7 @@ use serde_json::Value;
 
 use super::metadata_store::{MetadataStore, Stored};
 use crate::fs::metadata::MediaMetadata;
+use crate::mpv::framing::CropRect;
 use crate::search::query::{matches_all, Facts, Token};
 
 /// The version of the database's layout, kept in `PRAGMA user_version`.
@@ -116,6 +117,13 @@ const WATCH_SCHEMA: &str = "
     CREATE TABLE IF NOT EXISTS thumbnail_frame (
         path BLOB PRIMARY KEY,
         frame INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS video_crop (
+        path BLOB PRIMARY KEY,
+        width INTEGER NOT NULL,
+        height INTEGER NOT NULL,
+        left INTEGER NOT NULL,
+        top INTEGER NOT NULL
     );
 ";
 
@@ -441,6 +449,39 @@ impl MediaIndex {
             }
             None => {
                 self.connection.execute("DELETE FROM thumbnail_frame WHERE path = ?1", params![key])?;
+            }
+        }
+        Ok(())
+    }
+
+    /// The crop locked for the video at `path`, if one is.
+    pub fn video_crop(&self, path: &Path) -> rusqlite::Result<Option<CropRect>> {
+        self.connection
+            .query_row(
+                "SELECT width, height, left, top FROM video_crop WHERE path = ?1",
+                params![path.as_os_str().as_bytes()],
+                |row| {
+                    let (width, height, left, top) = (row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?);
+                    Ok(CropRect { width, height, left, top })
+                },
+            )
+            .optional()
+    }
+
+    /// Keeps the crop locked for the video at `path`, or clears it for `None`.
+    pub fn set_video_crop(&self, path: &Path, crop: Option<CropRect>) -> rusqlite::Result<()> {
+        let key = path.as_os_str().as_bytes();
+        match crop {
+            Some(crop) => {
+                self.connection.execute(
+                    "INSERT INTO video_crop (path, width, height, left, top) VALUES (?1, ?2, ?3, ?4, ?5)
+                     ON CONFLICT (path) DO UPDATE SET width = excluded.width, height = excluded.height,
+                         left = excluded.left, top = excluded.top",
+                    params![key, crop.width, crop.height, crop.left, crop.top],
+                )?;
+            }
+            None => {
+                self.connection.execute("DELETE FROM video_crop WHERE path = ?1", params![key])?;
             }
         }
         Ok(())

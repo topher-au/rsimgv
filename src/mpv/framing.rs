@@ -7,7 +7,7 @@
 //! (`Static`), which strips a backdrop that does not move.
 
 /// The area of a frame to keep, in pixels, with even offsets and sizes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct CropRect {
     pub width: i32,
     pub height: i32,
