@@ -1,6 +1,7 @@
 #![recursion_limit = "256"]
 mod fs;
 mod hash;
+mod logging;
 mod overlay;
 mod playlist;
 mod media;
@@ -120,6 +121,14 @@ fn main() -> glib::ExitCode {
         None,
     );
     app.add_main_option(
+        "verbose",
+        glib::Char::from(b'v'),
+        glib::OptionFlags::NONE,
+        glib::OptionArg::None,
+        "Print debug output",
+        None,
+    );
+    app.add_main_option(
         "new-window",
         glib::Char(0),
         glib::OptionFlags::NONE,
@@ -145,6 +154,9 @@ fn main() -> glib::ExitCode {
     );
     app.set_option_context_parameter_string(Some("[FILE_OR_FOLDER...]"));
     app.connect_handle_local_options(|_, options| {
+        if options.contains("verbose") {
+            logging::set_verbose(true);
+        }
         if options.contains("version") {
             println!("rsimgv {}", env!("CARGO_PKG_VERSION"));
             return ControlFlow::Break(glib::ExitCode::SUCCESS);
@@ -216,6 +228,9 @@ fn main() -> glib::ExitCode {
     let command_line_settings = settings.clone();
     app.connect_command_line(move |app, command_line| {
         let options = command_line.options_dict();
+        if options.contains("verbose") {
+            logging::set_verbose(true);
+        }
         let new_window = options.contains("new-window");
         let new_tab = options.contains("new-tab");
         let select_item = options.contains("select-item");

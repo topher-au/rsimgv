@@ -1510,7 +1510,7 @@ impl Window {
         let moved = gio::SimpleAction::new("playlist-move", Some(&<(u32, u32)>::static_variant_type()));
         moved.connect_activate(move |_, parameter| {
             let (Some(window), Some((from, to))) = (weak.upgrade(), parameter.and_then(|p| p.get::<(u32, u32)>())) else { return };
-            eprintln!("playlist-debug: move {from} -> {to}");
+            crate::debug_log!("playlist-debug: move {from} -> {to}");
             if playlist::with(|list| list.move_item(from as usize, to as usize)) {
                 window.playlist_changed();
             }
@@ -1565,7 +1565,7 @@ impl Window {
             return;
         }
         let added = playlist::with(|list| list.add(files.iter().cloned()));
-        eprintln!("playlist-debug: window add_to_playlist files={} added={added}", files.len());
+        crate::debug_log!("playlist-debug: window add_to_playlist files={} added={added}", files.len());
         if added == 0 {
             self.announce_playlist("Already in the playlist");
             return;
@@ -1577,7 +1577,7 @@ impl Window {
     /// Removes `paths` from the playlist, and whatever is under those that are folders.
     fn remove_from_playlist(&self, paths: &[PathBuf]) {
         let removed = playlist::with(|list| list.remove_under(paths));
-        eprintln!("playlist-debug: window remove_from_playlist paths={} removed={removed}", paths.len());
+        crate::debug_log!("playlist-debug: window remove_from_playlist paths={} removed={removed}", paths.len());
         if removed == 0 {
             self.announce_playlist("Not in the playlist");
             return;
@@ -1588,7 +1588,7 @@ impl Window {
 
     /// Saves the playlist and has every window show it as it is now.
     fn playlist_changed(&self) {
-        eprintln!("playlist-debug: window playlist_changed len={}", playlist::with(|list| list.len()));
+        crate::debug_log!("playlist-debug: window playlist_changed len={}", playlist::with(|list| list.len()));
         self.save_playlist();
         for window in self.app_windows() {
             window.show_playlist_change();
@@ -1597,7 +1597,7 @@ impl Window {
 
     /// Saves the playlist with the item it is on, and has every window mark that item.
     fn playlist_position_changed(&self) {
-        eprintln!("playlist-debug: window playlist_position_changed current={:?}", playlist::with(|list| list.current()));
+        crate::debug_log!("playlist-debug: window playlist_position_changed current={:?}", playlist::with(|list| list.current()));
         self.save_playlist();
         for window in self.app_windows() {
             if let Some(panel) = window.imp().playlist_panel.get() {
@@ -1623,7 +1623,7 @@ impl Window {
     /// playlist. The viewer goes back to browsing if nothing is left to show.
     fn show_playlist_change(&self) {
         let imp = self.imp();
-        eprintln!("playlist-debug: window show_playlist_change playing={}", imp.playlist_playing.get());
+        crate::debug_log!("playlist-debug: window show_playlist_change playing={}", imp.playlist_playing.get());
         self.set_action_state("playlist-shuffle", playlist::with(|list| list.is_shuffled()).to_variant());
         if let Some(panel) = imp.playlist_panel.get() {
             panel.refresh();
@@ -1662,7 +1662,7 @@ impl Window {
             return;
         }
         let (target, current, len) = playlist::with(|list| (list.step_index(forward), list.current(), list.len()));
-        eprintln!("playlist-debug: window step_playlist forward={forward} current={current:?} target={target:?} len={len}");
+        crate::debug_log!("playlist-debug: window step_playlist forward={forward} current={current:?} target={target:?} len={len}");
         // With repeat off, going past either end stops there instead of going round.
         let at_end = current.is_some_and(|current| if forward { current + 1 == len } else { current == 0 });
         if at_end && !crate::settings::app_settings().boolean("playlist.repeat") {
@@ -1692,7 +1692,7 @@ impl Window {
     fn play_playlist_at(&self, index: usize) {
         let imp = self.imp();
         imp.last_playback.set(PlaybackSource::Playlist);
-        eprintln!("playlist-debug: window play_playlist_at index={index} playing={}", imp.playlist_playing.get());
+        crate::debug_log!("playlist-debug: window play_playlist_at index={index} playing={}", imp.playlist_playing.get());
         let items = if imp.playlist_playing.get() { None } else { Some(playlist::with(|list| list.order().to_vec())) };
         if index >= playlist::with(|list| list.len()) {
             return;

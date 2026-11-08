@@ -219,20 +219,20 @@ impl Playlist {
     }
 
     pub fn clear(&mut self) {
-        eprintln!("playlist-debug: model clear len={}", self.len());
+        crate::debug_log!("playlist-debug: model clear len={}", self.len());
         *self = Self::default();
     }
 
     /// Removes `paths`, and everything under those that are folders. Returns how many items went.
     pub fn remove_under(&mut self, paths: &[PathBuf]) -> usize {
-        eprintln!("playlist-debug: model remove_under paths={} len={}", paths.len(), self.len());
+        crate::debug_log!("playlist-debug: model remove_under paths={} len={}", paths.len(), self.len());
         let paths: HashSet<&Path> = paths.iter().map(PathBuf::as_path).collect();
         self.retain(|item| !item.ancestors().any(|ancestor| paths.contains(ancestor)))
     }
 
     /// Removes the item at `index` in `order`, if there is one. Returns whether there was.
     pub fn remove_at(&mut self, index: usize) -> bool {
-        eprintln!("playlist-debug: model remove_at index={index} len={}", self.len());
+        crate::debug_log!("playlist-debug: model remove_at index={index} len={}", self.len());
         let Some(path) = self.order().get(index).cloned() else { return false };
         self.retain(|item| item != path) == 1
     }
@@ -256,7 +256,7 @@ impl Playlist {
 
     /// Makes the item at `index` the current one, if there is one.
     pub fn set_current(&mut self, index: usize) {
-        eprintln!("playlist-debug: model set_current index={index} len={}", self.len());
+        crate::debug_log!("playlist-debug: model set_current index={index} len={}", self.len());
         if index < self.len() {
             self.current = Some(index);
         }
@@ -275,7 +275,7 @@ impl Playlist {
     /// Moves the item at `from` to the place of the one at `to`, in the order shown. The other order is left as it
     /// was. Returns whether it moved.
     pub fn move_item(&mut self, from: usize, to: usize) -> bool {
-        eprintln!("playlist-debug: model move_item from={from} to={to} len={} current={:?}", self.len(), self.current);
+        crate::debug_log!("playlist-debug: model move_item from={from} to={to} len={} current={:?}", self.len(), self.current);
         if from == to || from >= self.len() || to >= self.len() {
             return false;
         }

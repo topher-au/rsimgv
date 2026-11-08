@@ -193,7 +193,7 @@ impl MediaInfo {
             return Some(metadata);
         }
         let key: Key = (path.to_path_buf(), mtime, size);
-        eprintln!("playlist-debug: metadata request {} queued={} running={}", anonymous(path), self.inner.queue.borrow().len(), self.inner.running.get());
+        crate::debug_log!("playlist-debug: metadata request {} queued={} running={}", anonymous(path), self.inner.queue.borrow().len(), self.inner.running.get());
         let waiter = Waiter {
             wanted: Rc::new(wanted),
             on_ready: Box::new(on_ready),
@@ -261,7 +261,7 @@ impl MediaInfo {
     fn finish(&self, key: Key, stored: Stored, persist: bool) {
         self.inner.running.set(self.inner.running.get() - 1);
         let (path, mtime, size) = key.clone();
-        eprintln!("playlist-debug: metadata finish {}", anonymous(&path));
+        crate::debug_log!("playlist-debug: metadata finish {}", anonymous(&path));
         if persist {
             if let Err(err) = self.store().record(&path, mtime, size, &stored) {
                 eprintln!("rsimgv: could not save the metadata of {}: {err}", anonymous(&path));

@@ -346,7 +346,7 @@ fn insert_node(transaction: &Transaction, file: &str, file_id: i64, slot: Slot, 
     let id = transaction.last_insert_rowid();
     let label = slot.key.map_or_else(|| slot.position.map(|index| index.to_string()).unwrap_or_default(), str::to_owned);
     if let Some(text) = &shown {
-        eprintln!("index-update: {file} {label}={text},{}=[{label}={{{label}={text}}}]", slot.parent_label);
+        crate::debug_log!("index-update: {file} {label}={text},{}=[{label}={{{label}={text}}}]", slot.parent_label);
     }
     match value {
         Value::Object(map) => {
@@ -554,7 +554,7 @@ impl MetadataStore for MediaIndex {
         let transaction = self.connection.unchecked_transaction().map_err(io::Error::other)?;
         // Replacing the file's row removes its probe nodes with it.
         if transaction.execute("DELETE FROM file WHERE path = ?1", params![key]).map_err(io::Error::other)? > 0 {
-            eprintln!("index-update: {name} removed");
+            crate::debug_log!("index-update: {name} removed");
         }
         transaction
             .execute(
@@ -591,7 +591,7 @@ impl MetadataStore for MediaIndex {
             .execute("DELETE FROM file WHERE path = ?1", params![path.as_os_str().as_bytes()])
             .map_err(io::Error::other)?;
         if removed > 0 {
-            eprintln!("index-update: {} removed", file_name(path));
+            crate::debug_log!("index-update: {} removed", file_name(path));
         }
         Ok(())
     }

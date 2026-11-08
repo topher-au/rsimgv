@@ -109,7 +109,8 @@ rsimgv [FILE_OR_FOLDER...]
 
 Each argument opens in a new tab of the open window, or of a new window if none is open. A folder opens
 in its tab. A file opens in a tab on its folder with the file selected, and a picture or video also opens
-in the viewer. A running rsimgv takes the arguments of a second launch. `rsimgv --version` prints the version.
+in the viewer. A running rsimgv takes the arguments of a second launch. `rsimgv --version` prints the version,
+and `rsimgv --verbose` prints the debug output.
 
 ## Playlist
 
