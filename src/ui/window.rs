@@ -1062,8 +1062,9 @@ impl Window {
         self.imp().viewer.set_folder_end(end);
     }
 
-    /// Titles the window with the file name and size of the picture or video the viewer shows, when the
-    /// setting that asks for it is on. Otherwise, and when the viewer is not open, it is titled by the app.
+    /// Titles the window with the file name of the picture or video the viewer shows, followed by the app's
+    /// name, when the setting that asks for it is on. Otherwise, and when the viewer is not open, it is
+    /// titled by the app.
     fn update_title(&self) {
         let imp = self.imp();
         let info = imp.settings.get().is_some_and(|settings| settings.boolean("viewer.image-info-in-title"));
@@ -1071,11 +1072,7 @@ impl Window {
         let title = match item {
             Some(item) => {
                 let name = item.path.file_name().map_or_else(String::new, |name| name.to_string_lossy().into_owned());
-                if item.width > 0 && item.height > 0 {
-                    format!("{name} · {} × {}", item.width, item.height)
-                } else {
-                    name
-                }
+                format!("{name} - rsimgv")
             }
             None => "rsimgv".to_owned(),
         };

@@ -664,7 +664,7 @@
                                 <child>
                                   <object class="AdwSwitchRow" id="image_info_in_title_row">
                                     <property name="title">Image info in window title</property>
-                                    <property name="subtitle">Shows the file name and size of the item the viewer shows</property>
+                                    <property name="subtitle">Shows the file name of the item the viewer shows, followed by the app's name</property>
                                   </object>
                                 </child>
                                 <child>

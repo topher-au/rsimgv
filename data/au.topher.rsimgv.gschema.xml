@@ -320,7 +320,7 @@
     </key>
     <key name="image-info-in-title" type="b">
       <default>false</default>
-      <summary>Show the image's file name and details in the window title</summary>
+      <summary>Show the image's file name in the window title</summary>
     </key>
     <key name="blurred-background" type="b">
       <default>false</default>
