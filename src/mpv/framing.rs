@@ -430,6 +430,13 @@ pub fn measure(method: CropMethod, gray: &[u8], later: Option<&[u8]>, width: usi
     }
 }
 
+/// The most a solid edge may be trimmed, as a share of the picture, so a mostly solid frame is not eaten away.
+const SOLID_EDGE_SHARE: f64 = 0.25;
+/// How much the pixels of one line may differ and still count as one solid shade.
+const SOLID_TOLERANCE: u8 = 2;
+/// How much the shade of a solid line may differ between frames and still be the same edge.
+const SOLID_CONSISTENCY: u8 = 4;
+
 /// The picture rectangle found across several frames: each frame's edges, with the median edge kept so one frame with
 /// content in the bar, or one dark frame, does not move the crop. Frames of another size are ignored.
 pub fn find_picture_across(frames: &[Vec<u8>], width: usize, height: usize, threshold: f64, soft_max: usize) -> Option<CropRect> {
@@ -451,6 +458,78 @@ pub fn find_picture_across(frames: &[Vec<u8>], width: usize, height: usize, thre
     let bottom = median(&mut rects.iter().map(|rect| rect.top + rect.height).collect());
     let (width, height) = ((right - left) & !1, (bottom - top) & !1);
     (width > 0 && height > 0).then_some(CropRect { width, height, left: left + left % 2, top: top + top % 2 })
+}
+
+/// Whether the pixels at `indices` are one solid shade in every frame, and that shade is the same across the frames.
+fn solid_line(frames: &[&[u8]], indices: &[usize]) -> bool {
+    if indices.is_empty() || frames.is_empty() {
+        return false;
+    }
+    let mut shades = Vec::with_capacity(frames.len());
+    for frame in frames {
+        let mut min = u8::MAX;
+        let mut max = u8::MIN;
+        for &index in indices {
+            let Some(&value) = frame.get(index) else { return false };
+            min = min.min(value);
+            max = max.max(value);
+        }
+        if max - min > SOLID_TOLERANCE {
+            return false;
+        }
+        shades.push((u16::from(min) + u16::from(max)) / 2);
+    }
+    let min = shades.iter().min().copied().unwrap_or_default();
+    let max = shades.iter().max().copied().unwrap_or_default();
+    max - min <= u16::from(SOLID_CONSISTENCY)
+}
+
+/// `rect`, with the lines along each edge that are a solid shade in every frame trimmed away. At most a quarter of the
+/// picture is taken from either side, so a frame that is mostly one colour keeps a picture.
+pub fn trim_solid_edges(rect: CropRect, frames: &[Vec<u8>], width: usize, height: usize) -> CropRect {
+    let frames: Vec<&[u8]> = frames.iter().filter(|frame| frame.len() == width * height).map(Vec::as_slice).collect();
+    if frames.is_empty() || width == 0 || height == 0 {
+        return rect;
+    }
+    let mut left = rect.left.max(0) as usize;
+    let mut top = rect.top.max(0) as usize;
+    let mut right = (left + rect.width.max(0) as usize).min(width);
+    let mut bottom = (top + rect.height.max(0) as usize).min(height);
+    if right <= left || bottom <= top {
+        return rect;
+    }
+    let most_x = ((right - left) as f64 * SOLID_EDGE_SHARE) as usize;
+    let most_y = ((bottom - top) as f64 * SOLID_EDGE_SHARE) as usize;
+    let column = |x: usize, top: usize, bottom: usize| -> Vec<usize> { (top..bottom).map(|y| y * width + x).collect() };
+    let row = |y: usize, left: usize, right: usize| -> Vec<usize> { (left..right).map(|x| y * width + x).collect() };
+    let mut trimmed = 0;
+    while trimmed < most_x && solid_line(&frames, &column(left + trimmed, top, bottom)) {
+        trimmed += 1;
+    }
+    left += trimmed;
+    trimmed = 0;
+    while trimmed < most_x && solid_line(&frames, &column(right - 1 - trimmed, top, bottom)) {
+        trimmed += 1;
+    }
+    right -= trimmed;
+    trimmed = 0;
+    while trimmed < most_y && solid_line(&frames, &row(top + trimmed, left, right)) {
+        trimmed += 1;
+    }
+    top += trimmed;
+    trimmed = 0;
+    while trimmed < most_y && solid_line(&frames, &row(bottom - 1 - trimmed, left, right)) {
+        trimmed += 1;
+    }
+    bottom -= trimmed;
+    left += left % 2;
+    top += top % 2;
+    let width = (right.saturating_sub(left)) & !1;
+    let height = (bottom.saturating_sub(top)) & !1;
+    if width == 0 || height == 0 {
+        return rect;
+    }
+    CropRect { width: width as i32, height: height as i32, left: left as i32, top: top as i32 }
 }
 
 /// `rect` with `pixels` removed from each side that was cut out of the `source`, so only a backdrop or a pillarbox is trimmed.
@@ -516,6 +595,17 @@ mod tests {
         assert_eq!(with_aspect(full, Some((9, 16))), rect(404, 720, 438, 0));
         assert_eq!(with_aspect(full, Some((21, 9))), rect(1280, 548, 0, 86));
         assert_eq!(with_aspect(full, None), full, "auto keeps the detected shape");
+    }
+
+    #[test]
+    fn a_solid_edge_is_trimmed_when_it_is_the_same_in_every_frame() {
+        let make = |bump: usize| -> Vec<u8> {
+            (0..H).flat_map(|y| (0..W).map(move |x| if x < 10 { 120 } else { ((x * 7 + y * 13 + bump) % 200 + 30) as u8 })).collect()
+        };
+        let found = trim_solid_edges(rect(W as i32, H as i32, 0, 0), &[make(0), make(1)], W, H);
+        assert_eq!(found.left, 10);
+        assert_eq!(found.width, (W as i32 - 10) & !1);
+        assert_eq!(found.top, 0, "the other edges are not solid");
     }
 
     #[test]

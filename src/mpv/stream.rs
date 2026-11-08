@@ -117,11 +117,18 @@ const ACROSS_GAP: f64 = 2.0;
 fn measure_frames(method: CropMethod, path: &Path, position: f64, width: i32, height: i32) -> Option<CropRect> {
     let (small_width, small_height) = framing::measure_size(width, height);
     let soft_max = framing::soft_pixels(small_width, width);
-    if method == CropMethod::Across {
+    if matches!(method, CropMethod::Edges | CropMethod::Across) {
         let frames: Vec<Vec<u8>> = (0..ACROSS_FRAMES)
             .filter_map(|index| grab_gray(path, position + index as f64 * ACROSS_GAP, small_width, small_height))
             .collect();
-        let found = framing::find_picture_across(&frames, small_width as usize, small_height as usize, framing::EDGE_THRESHOLD, soft_max)?;
+        let found = if method == CropMethod::Across {
+            framing::find_picture_across(&frames, small_width as usize, small_height as usize, framing::EDGE_THRESHOLD, soft_max)
+        } else {
+            frames.first().and_then(|first| {
+                framing::measure(method, first, None, small_width as usize, small_height as usize, soft_max)
+            })
+        }?;
+        let found = framing::trim_solid_edges(found, &frames, small_width as usize, small_height as usize);
         return Some(framing::scaled_up(found, (small_width, small_height), (width, height)));
     }
     let first = grab_gray(path, position, small_width, small_height)?;
