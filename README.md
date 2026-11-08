@@ -32,6 +32,7 @@ library of pictures and videos without leaving the window.
 - [Building and running](#building-and-running)
 - [Command line](#command-line)
 - [Settings](#settings)
+- [Plugins](#plugins)
 - [Project layout](#project-layout)
 - [Application ID](#application-id)
 - [License](#license)
@@ -63,6 +64,7 @@ library of pictures and videos without leaving the window.
 - **Viewing history**: how many times each picture or video has been viewed, and how long it has been watched, measured by an in-app timer so faster or slower playback counts the time actually spent. The viewer's status bar and overlays show the totals, the Viewing History item in the main menu lists recent files, and the History preferences choose what counts as a view (five seconds for a picture, and for a video either twenty seconds of it or a tenth of its length, by default). The counts can also be shown in the browse view's item info.
 - **Playlist**: one list of pictures and videos from anywhere, in your own order, kept between runs and shared by the windows. Playing it leaves the folder you are browsing, and the item selected there, as they were. See [Playlist](#playlist).
 - **Scripts** are commands listed on the Scripts tab of the Integration page, with `%file%` standing for the item they run on. The Run Script action in the keybinding editor binds a key to one: it runs on the item under the cursor, or on the one the viewer shows. A script that waits to finish has the folder listed again when it ends.
+- **Plugins** extend the app with Python actions, keybindings, menus, events and sidebar panels. They are discovered from the XDG data directories, reload when their files change, and have their settings on the Plugins page. The bundled **LLM Screenshot** plugin sends the viewer's current picture or video frame to an OpenAI-compatible vision model and shows the description in an overlay notification. See [Plugins](#plugins).
 - **Messages** appear over the window: notifications that go away by themselves, and persistent messages that stay until dismissed. A script that fails reports it this way, and other programs can show their own through the remote control server (`messages.show`). F1 shows a list of the keybindings in force where you are, and hides it again. Skipping through a video shows a progress bar and the time over it, which the Overlay tab of the Viewer page sets up. With SVP on, skipping leaves it out until a moment after the last skip, and a new video starts without it, so neither waits for SVP to load; the SVP tab of the Videos page sets how long that is, or turns it off. V turns SVP on or off while watching. That tab also takes the folder of SVP's own plugin libraries, which replace the bundled open-svpflow ones. The Show Notification action in the keybinding editor binds a key to a notification: each binding sets its message, level and how many seconds it stays.
 
 ## Requirements
@@ -168,6 +170,23 @@ restarted, so it is never overwritten. The schema is `data/au.topher.rsimgv.gsch
 Each group is a child schema in the schema file, such as `au.topher.rsimgv.window.sidebar` at
 `/au/topher/rsimgv/window/sidebar/`. GSettings key names cannot contain `.`, so code names a setting by its dotted path
 through `settings::Settings`, as in `settings.int("window.sidebar.width")`, and that picks the child schema to use.
+
+## Plugins
+
+Python plugins can add actions, keybindings, menus, events and sidebar panels. They live in
+`~/.local/share/rsimgv/plugins` or any `$XDG_DATA_DIRS/rsimgv/plugins`; `RSIMGV_PLUGINS` overrides the
+search path while developing. The Plugins page under Integration lists them, exposes the settings each
+plugin declares, and reloads them. Python files and manifests are watched and reloaded when they change.
+See [docs/PLUGINS.md](docs/PLUGINS.md) for the manifest, the Python API and the IPC behavior.
+
+The bundled **LLM Screenshot** plugin sends the viewer's current picture or video frame to an
+OpenAI-compatible vision model. Open a picture or video and press `Ctrl+Alt+L`, or choose **Analyze with
+LLM** from the main menu. The description is shown in an overlay notification and in the sidebar panel.
+Set the endpoint, model and prompt on the Plugins page; the API key is read from the environment variable
+named there (by default `OPENAI_API_KEY`).
+
+Python plugin support is built by default when `python3-embed` and `pygobject-3.0` are available. Configure
+with `-Dpython=auto`, `-Dpython=enabled` or `-Dpython=disabled`.
 
 ## Project layout
 

@@ -1,0 +1,57 @@
+api: 1
+id: com.example.llm-screenshot
+name: LLM Screenshot
+version: 0.1.0
+description: Send the current picture or video frame to a vision model.
+runtime: python
+entry: plugin.py
+startup: on-demand
+
+contributes:
+  actions:
+    - id: analyze
+      label: Analyze with LLM
+      description: Send the current picture or video frame to a vision model.
+      scope: view
+      default_keys: [ctrl+alt+l]
+  menus:
+    - menu: main
+      label: Analyze with LLM
+      action: analyze
+  panels:
+    - id: response
+      slot: sidebar.bottom
+      title: LLM Response
+  settings:
+    - key: base_url
+      label: API base URL
+      description: An OpenAI-compatible endpoint.
+      kind: string
+      default: https://api.openai.com/v1
+    - key: model
+      label: Model
+      description: A vision-capable chat completions model.
+      kind: string
+      default: gpt-4o-mini
+    - key: prompt
+      label: Prompt
+      description: What to ask the model about the image.
+      kind: text
+      default: Describe this image and identify anything notable about it.
+    - key: max_tokens
+      label: Maximum response tokens
+      kind: int
+      default: 500
+      min: 1
+      max: 8192
+    - key: timeout_seconds
+      label: Timeout (seconds)
+      kind: int
+      default: 60
+      min: 5
+      max: 300
+    - key: api_key_env
+      label: API key environment variable
+      description: The variable the plugin reads the key from.
+      kind: string
+      default: OPENAI_API_KEY

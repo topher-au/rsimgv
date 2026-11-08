@@ -1,0 +1,8 @@
+{
+  "base_url": "https://api.openai.com/v1",
+  "model": "gpt-4o-mini",
+  "prompt": "Describe this image and identify anything notable about it.",
+  "max_tokens": 500,
+  "timeout_seconds": 60,
+  "api_key_env": "OPENAI_API_KEY"
+}
