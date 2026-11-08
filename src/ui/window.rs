@@ -114,6 +114,9 @@ mod imp {
         pub(super) playlist_shown: Cell<bool>,
         /// Whether the viewer made the window fullscreen when it opened, so closing it leaves fullscreen again.
         pub(super) viewer_fullscreened: Cell<bool>,
+        /// The sidebar whose context the bottom gradient marks. It is kept when the focus moves into the content, so
+        /// the gradient stays put rather than blinking with the focus.
+        pub(super) active_sidebar: Cell<Option<Scope>>,
         /// The keybinding handler, detached when the window closes.
         pub(super) key_handler: std::cell::OnceCell<ActionKeyHandler>,
         pub(super) settings: std::cell::OnceCell<Settings>,
@@ -1196,12 +1199,20 @@ impl Window {
     /// Marks the sidebar that holds the focus as the active context.
     fn update_context_highlights(&self) {
         let imp = self.imp();
-        let scopes = self.active_scopes();
-        let tree = scopes.contains(&Scope::Tree);
-        let playlist = scopes.contains(&Scope::Playlist);
+        // A sidebar keeps the gradient when the focus moves into the content; another sidebar taking the focus moves it.
+        if self.focus_is_within(&*imp.tree) {
+            imp.active_sidebar.set(Some(Scope::Tree));
+        } else if imp.playlist_panel.get().is_some_and(PlaylistPanel::has_focus) {
+            imp.active_sidebar.set(Some(Scope::Playlist));
+        }
+        // The media player frame is its own context, so no sidebar is marked while it is open.
+        let active = if self.viewer_is_open() { None } else { imp.active_sidebar.get() };
+        let tree = active == Some(Scope::Tree) && imp.split.show_sidebar();
+        let playlist = active == Some(Scope::Playlist)
+            && (imp.playlist_window.borrow().is_some() || self.active_playlist_split().show_sidebar());
         imp.split.set_sidebar_active(tree);
         imp.playlist_split.set_sidebar_active(playlist);
-        imp.viewer.playlist_split().set_sidebar_active(playlist);
+        imp.viewer.playlist_split().set_sidebar_active(false);
     }
 
     /// Where the keyboard focus is: in the folder tree, in the playlist, or else in the content, the browse view or the
@@ -1226,7 +1237,8 @@ impl Window {
     fn pane_shown(&self, pane: FocusPane) -> bool {
         let imp = self.imp();
         match pane {
-            FocusPane::Tree => imp.split.show_sidebar(),
+            // The folder tree lives in the split the viewer covers, so it is not a visible context then.
+            FocusPane::Tree => !self.viewer_is_open() && imp.split.show_sidebar(),
             FocusPane::Content => true,
             FocusPane::Playlist => imp.playlist_window.borrow().is_some() || self.active_playlist_split().show_sidebar(),
         }
