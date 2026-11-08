@@ -1,14 +1,18 @@
-//! The search index: a SQLite database of the pictures and videos that have been read. Each file has a row in `file`,
-//! with its path, modification time and size, the metadata derived from its probe, and its content hash and file type.
-//! Its `ffprobe` output is a tree, kept in `probe_node`: a row for each dict, list and value, linked to the row above it,
-//! so any key at any depth can be searched for. Each key's name and each string value is kept once, in `probe_word`,
-//! and the nodes refer to it by its id. It is the only store that can search across files.
+//! The index: a SQLite database of the pictures and videos that have been read, and of how they have been watched. Each
+//! file has a row in `file`, with its path, modification time and size, the metadata derived from its probe, and its
+//! content hash and file type. Its `ffprobe` output is a tree, kept in `probe_node`: a row for each dict, list and value,
+//! linked to the row above it, so any key at any depth can be searched for. Each key's name and each string value is kept
+//! once, in `probe_word`, and the nodes refer to it by its id. It is the only store that can search across files, and it
+//! is where metadata is always kept.
+//!
+//! The viewing history is a table of its own, `watch`, keyed by content hash so it survives a file being moved or
+//! renamed. It is not a cache: rebuilding the metadata leaves it as it is.
 
 use std::ffi::OsString;
 use std::io;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
 use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, ToSql, ToSqlOutput, Value as SqlValue, ValueRef};
@@ -20,7 +24,7 @@ use crate::fs::metadata::MediaMetadata;
 use crate::search::query::{matches_all, Facts, Token};
 
 /// The version of the database's layout, kept in `PRAGMA user_version`.
-const VERSION: i64 = 13;
+const VERSION: i64 = 14;
 
 const SCHEMA: &str = "
     CREATE TABLE file (
@@ -94,11 +98,50 @@ const SCHEMA: &str = "
         WHERE name.kind NOT IN (0, 1);
 ";
 
+/// The viewing history, which outlives the metadata: a file's history is not dropped when its row is replaced or when
+/// the layout changes. It is keyed by content hash, so it follows a file that is moved or renamed, and indexed by path so
+/// the browse view can look a file up without reading it to find its hash.
+const WATCH_SCHEMA: &str = "
+    CREATE TABLE IF NOT EXISTS watch (
+        hash TEXT PRIMARY KEY,
+        path BLOB NOT NULL,
+        views INTEGER NOT NULL DEFAULT 0,
+        watched_seconds REAL NOT NULL DEFAULT 0,
+        first_viewed INTEGER NOT NULL,
+        last_viewed INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS watch_last_viewed ON watch (last_viewed DESC);
+    CREATE INDEX IF NOT EXISTS watch_path ON watch (path);
+";
+
+/// How a file has been watched: its views, the time spent watching it, and when it was first and last viewed.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct WatchEntry {
+    pub hash: String,
+    pub path: PathBuf,
+    pub views: u64,
+    /// The total time the file has been watched, in seconds, as measured while it was playing or shown.
+    pub watched_seconds: f64,
+    /// Unix seconds.
+    pub first_viewed: i64,
+    /// Unix seconds.
+    pub last_viewed: i64,
+}
+
 pub struct MediaIndex {
     connection: Connection,
 }
 
 impl MediaIndex {
+    /// Where the index is: `media-index.sqlite3` in the user's data directory, or in `RSIMGV_DATA` when it is set. The
+    /// viewing history is kept in it too.
+    pub fn file() -> PathBuf {
+        let root = std::env::var_os("RSIMGV_DATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| glib::user_data_dir().join("rsimgv"));
+        root.join("media-index.sqlite3")
+    }
+
     /// Opens the index in `file`, creating it if it does not exist. Several windows, or processes, may share it.
     pub fn open(file: &Path) -> anyhow::Result<Self> {
         if let Some(dir) = file.parent() {
@@ -113,8 +156,8 @@ impl MediaIndex {
         connection.pragma_update(None, "foreign_keys", "ON")?;
         let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
         if version < VERSION {
-            // The index is a cache of what is read from the files, so an older layout is dropped. The files are read
-            // again as they are needed, and recorded in the new layout.
+            // The metadata is a cache of what is read from the files, so an older layout is dropped. The files are read
+            // again as they are needed, and recorded in the new layout. The viewing history is not metadata: it is kept.
             connection.execute_batch(
                 "DROP VIEW IF EXISTS probe_property; DROP VIEW IF EXISTS probe_text; DROP TABLE IF EXISTS probe_node; DROP TABLE IF EXISTS probe_word; \
                  DROP TABLE IF EXISTS probe_key; \
@@ -127,6 +170,8 @@ impl MediaIndex {
             connection.execute_batch(SCHEMA)?;
             connection.pragma_update(None, "user_version", VERSION)?;
         }
+        // The history table is made whatever the version, so it is there even when the metadata needs no rebuilding.
+        connection.execute_batch(WATCH_SCHEMA)?;
         connection.execute_batch("PRAGMA incremental_vacuum")?;
         Ok(Self { connection })
     }
@@ -306,6 +351,88 @@ fn insert_node(transaction: &Transaction, file: &str, file_id: i64, slot: Slot, 
         _ => {}
     }
     Ok(())
+}
+
+/// Records that the file with content hash `hash` was watched at `path`: one more view if `viewed`, and `seconds` more time.
+impl MediaIndex {
+    pub fn record_watch(&self, hash: &str, path: &Path, viewed: bool, seconds: f64) -> rusqlite::Result<()> {
+        let seconds = seconds.max(0.0);
+        if seconds < 0.5 && !viewed {
+            return Ok(());
+        }
+        let viewed = i64::from(viewed);
+        let key = path.as_os_str().as_bytes();
+        let now = now_secs();
+        self.connection.execute(
+            "INSERT INTO watch (hash, path, views, watched_seconds, first_viewed, last_viewed)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?5)
+             ON CONFLICT (hash) DO UPDATE SET
+                 path = excluded.path,
+                 views = watch.views + excluded.views,
+                 watched_seconds = watch.watched_seconds + excluded.watched_seconds,
+                 last_viewed = excluded.last_viewed",
+            params![hash, key, viewed, seconds, now],
+        )?;
+        Ok(())
+    }
+
+    /// The history of the file with content hash `hash`, if it has been watched.
+    pub fn watch_entry(&self, hash: &str) -> rusqlite::Result<Option<WatchEntry>> {
+        self.connection
+            .query_row(
+                "SELECT hash, path, views, watched_seconds, first_viewed, last_viewed FROM watch WHERE hash = ?1",
+                params![hash],
+                watch_entry_row,
+            )
+            .optional()
+    }
+
+    /// The views and watched time of the file last seen at `path`, added up over every record that names it. This is
+    /// for looking a file up in the browse view, where reading the file to find its content hash would be too slow.
+    pub fn watch_totals_at(&self, path: &Path) -> rusqlite::Result<Option<(u64, f64)>> {
+        let key = path.as_os_str().as_bytes();
+        let (views, seconds): (i64, f64) = self.connection.query_row(
+            "SELECT COALESCE(SUM(views), 0), COALESCE(SUM(watched_seconds), 0) FROM watch WHERE path = ?1",
+            params![key],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        let views = views as u64;
+        if views > 0 || seconds >= 0.5 { Ok(Some((views, seconds))) } else { Ok(None) }
+    }
+
+    /// The most recently watched files, newest first, at most `limit`.
+    pub fn recent_watch(&self, limit: usize) -> rusqlite::Result<Vec<WatchEntry>> {
+        let mut statement = self.connection.prepare(
+            "SELECT hash, path, views, watched_seconds, first_viewed, last_viewed
+             FROM watch ORDER BY last_viewed DESC, hash LIMIT ?1",
+        )?;
+        let entries = statement.query_map(params![limit as i64], watch_entry_row)?.collect();
+        entries
+    }
+
+    /// Removes the whole viewing history.
+    pub fn clear_watch(&self) -> rusqlite::Result<()> {
+        self.connection.execute("DELETE FROM watch", [])?;
+        Ok(())
+    }
+}
+
+/// One row of `watch`, as a `WatchEntry`.
+fn watch_entry_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<WatchEntry> {
+    let path: Vec<u8> = row.get(1)?;
+    Ok(WatchEntry {
+        hash: row.get(0)?,
+        path: PathBuf::from(OsString::from_vec(path)),
+        views: row.get::<_, i64>(2)? as u64,
+        watched_seconds: row.get(3)?,
+        first_viewed: row.get(4)?,
+        last_viewed: row.get(5)?,
+    })
+}
+
+/// The current time in Unix seconds.
+pub fn now_secs() -> i64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |time| time.as_secs() as i64)
 }
 
 impl MetadataStore for MediaIndex {
@@ -524,6 +651,23 @@ mod tests {
         let stored = Stored { probe: Some(probe.clone()), ..Stored::default() };
         index.record(&path, 100, 4096, &stored).unwrap();
         assert_eq!(index.probe_of(&path).unwrap(), Some(probe));
+    }
+
+    #[test]
+    fn the_watch_history_survives_a_metadata_rebuild() {
+        let dir = std::env::temp_dir().join(format!("rsimgv-index-watch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let file = dir.join("index.sqlite3");
+        let path = dir.join("clip.mp4");
+        let index = MediaIndex::open(&file).unwrap();
+        index.record_watch("abc", &path, true, 12.0).unwrap();
+        drop(index);
+        // An older layout makes the metadata be dropped and read again; the history is not metadata.
+        rusqlite::Connection::open(&file).unwrap().pragma_update(None, "user_version", 0).unwrap();
+        let index = MediaIndex::open(&file).unwrap();
+        assert_eq!(index.watch_entry("abc").unwrap().unwrap().views, 1);
+        assert_eq!(index.watch_entry("abc").unwrap().unwrap().watched_seconds, 12.0);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
