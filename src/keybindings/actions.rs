@@ -576,6 +576,18 @@ pub const ACTIONS: &[ActionInfo] = &[
         name: "video.toggle-svp", description: "Turn SVP frame interpolation on or off.", icon: "video-display-symbolic", label: "Toggle SVP", defaults: &["v"],
     },
     ActionInfo {
+        name: "video.toggle-backdrop", description: "Fill the space round the video with a blurred, zoomed copy of it, or stop doing so.", icon: "view-reveal-symbolic", label: "Toggle Backdrop", defaults: &[],
+    },
+    ActionInfo {
+        name: "video.toggle-crop", description: "Crop the video to its picture, or stop detecting where to crop it.", icon: "edit-crop-symbolic", label: "Toggle Crop Detection", defaults: &[],
+    },
+    ActionInfo {
+        name: "video.lock-crop", description: "Hold the crop the video has now so it stops being detected, or let it be found again.", icon: "changes-prevent-symbolic", label: "Lock Crop", defaults: &[],
+    },
+    ActionInfo {
+        name: "video.set-thumbnail-frame", description: "Make the frame the video shows now the one its thumbnail is made from.", icon: "view-grid-symbolic", label: "Set Thumbnail Frame", defaults: &[],
+    },
+    ActionInfo {
         name: "video.repeat", description: "Play the video again from the start when it ends, or stop repeating it.", icon: "media-playlist-repeat-symbolic", label: "Toggle Repeat", defaults: &["r"],
     },
     ActionInfo {

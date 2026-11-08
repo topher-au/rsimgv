@@ -32,6 +32,7 @@ use gtk::prelude::PaintableExt;
 use gtk::{gdk, gdk_pixbuf, gio, glib};
 
 use crate::hash::string_hash;
+use crate::storage::thumbnail_frames::ThumbnailFrames;
 
 /// Thumbnails made at the same time, unless the settings say otherwise.
 const DEFAULT_THREADS: usize = 4;
@@ -149,6 +150,8 @@ struct Key {
     mtime: i64,
     size: Size,
     job: Job,
+    /// The frame a video's still is made from, when one was chosen for it.
+    frame: Option<i64>,
 }
 
 /// Receives the textures of a finished job.
@@ -496,11 +499,12 @@ impl Thumbnails {
     /// The largest still thumbnail of the file at `path`, modified at `mtime`, that has already been made: in memory, or in the
     /// cache on the disk. Nothing is made for it, so there is none for a file that has not been thumbnailed.
     pub async fn best_existing(&self, path: &Path, mtime: i64) -> Option<gdk::Texture> {
+        let frame = chosen_frame(path);
         let in_memory = {
             let textures = self.inner.textures.borrow();
             textures
                 .iter()
-                .filter(|(key, _)| key.path == path && key.mtime == mtime && matches!(key.job, Job::Still(_)))
+                .filter(|(key, _)| key.path == path && key.mtime == mtime && key.frame == frame && matches!(key.job, Job::Still(_)))
                 .max_by_key(|(key, _)| key.size.pixels())
                 .and_then(|(key, textures)| textures.first().map(|texture| (key.size.pixels(), texture.clone())))
         };
@@ -508,7 +512,7 @@ impl Thumbnails {
         if self.inner.disk_cache.get() {
             let (root, file) = (self.inner.root.clone(), path.to_path_buf());
             // Only a size larger than the one in memory is worth reading.
-            let found = gio::spawn_blocking(move || largest_on_disk(&root, &file, mtime, above)).await.ok().flatten();
+            let found = gio::spawn_blocking(move || largest_on_disk(&root, &file, mtime, above, frame)).await.ok().flatten();
             if let Some(pixels) = found {
                 return Some(pixels.texture());
             }
@@ -545,7 +549,8 @@ impl Thumbnails {
         wanted: impl Fn() -> bool + 'static,
         on_done: impl FnOnce(Option<&gdk::Texture>) + 'static,
     ) {
-        let key = key(path, mtime, self.capped(size, media), Job::Still(media));
+        let frame = (media == Media::Video).then(|| chosen_frame(path)).flatten();
+        let key = key_with_frame(path, mtime, self.capped(size, media), Job::Still(media), frame);
         self.request(key, None, wanted, move |textures| on_done(textures.first()));
     }
 
@@ -562,7 +567,9 @@ impl Thumbnails {
         wanted: impl Fn() -> bool + 'static,
         on_ready: impl FnOnce(&gdk::Texture) + 'static,
     ) {
-        self.request(key(path, mtime, self.capped(size, media), Job::Still(media)), Some(Rc::new(rank)), wanted, move |textures| {
+        let frame = (media == Media::Video).then(|| chosen_frame(path)).flatten();
+        let key = key_with_frame(path, mtime, self.capped(size, media), Job::Still(media), frame);
+        self.request(key, Some(Rc::new(rank)), wanted, move |textures| {
             if let Some(texture) = textures.first() {
                 on_ready(texture);
             }
@@ -847,12 +854,23 @@ fn bytes_of(textures: &[gdk::Texture]) -> usize {
 }
 
 fn key(path: &Path, mtime: i64, size: Size, job: Job) -> Key {
+    key_with_frame(path, mtime, size, job, None)
+}
+
+/// The key of a job, with the frame a video's still is to be made from.
+fn key_with_frame(path: &Path, mtime: i64, size: Size, job: Job, frame: Option<i64>) -> Key {
     Key {
         path: path.to_path_buf(),
         mtime,
         size,
         job,
+        frame,
     }
+}
+
+/// The frame chosen for the video at `path`'s thumbnail, if one is.
+fn chosen_frame(path: &Path) -> Option<i64> {
+    ThumbnailFrames::shared()?.get(path).ok().flatten()
 }
 
 /// The decoded pixels of one thumbnail. Decoding happens on a worker thread; only the cheap wrap into a texture
@@ -929,12 +947,16 @@ fn make_cancellable(root: Option<&Path>, key: &Key, cancel: Arc<AtomicBool>) -> 
 
 /// The pixels of the largest still thumbnail in the cache under `root` for the file at `path` modified at `mtime`, if there
 /// is one larger than `above` pixels. A thumbnail made for another time is not current and is passed over.
-fn largest_on_disk(root: &Path, path: &Path, mtime: i64, above: i32) -> Option<Pixels> {
+fn largest_on_disk(root: &Path, path: &Path, mtime: i64, above: i32, frame: Option<i64>) -> Option<Pixels> {
     let uri = glib::filename_to_uri(path, None).ok()?;
     let digest = string_hash(uri.as_str());
+    let frame = frame_tag(frame);
     SIZES.iter().rev().filter(|size| **size > above).find_map(|size| {
         let data = std::fs::read(filed(&root.join(size.to_string()), &format!("{digest}.png"))).ok()?;
-        (png_text(&data, "rsimgv::MTime")?.parse::<i64>().ok()? == mtime).then(|| Pixels::from_png(&data)).flatten()
+        (png_text(&data, "rsimgv::MTime")?.parse::<i64>().ok()? == mtime
+            && png_text(&data, "rsimgv::Frame").unwrap_or("auto") == frame.as_str())
+        .then(|| Pixels::from_png(&data))
+        .flatten()
     })
 }
 
@@ -945,12 +967,15 @@ pub fn cached_still_png(path: &Path, max_size: i32) -> Option<(i32, Vec<u8>)> {
     let uri = glib::filename_to_uri(path, None).ok()?;
     let digest = string_hash(uri.as_str());
     let stamp = stamp(path).to_string();
+    let frame = frame_tag(chosen_frame(path));
     let root = glib::user_cache_dir().join("rsimgv");
     let found: Vec<(i32, Vec<u8>)> = SIZES
         .iter()
         .filter_map(|&pixels| {
             let data = std::fs::read(filed(&root.join(pixels.to_string()), &format!("{digest}.png"))).ok()?;
-            (png_text(&data, "rsimgv::MTime") == Some(stamp.as_str())).then_some((pixels, data))
+            (png_text(&data, "rsimgv::MTime") == Some(stamp.as_str())
+                && png_text(&data, "rsimgv::Frame").unwrap_or("auto") == frame.as_str())
+            .then_some((pixels, data))
         })
         .collect();
     found.into_iter().rev().find(|(pixels, _)| *pixels <= max_size)
@@ -964,7 +989,8 @@ fn make(root: Option<&Path>, key: &Key) -> Option<Vec<Pixels>> {
     match key.job {
         Job::Still(media) => {
             let file = root.map(|root| filed(&root.join(key.size.dir_name()), &format!("{digest}.png")));
-            let still = cached_or_made(file.as_deref(), &uri, key.mtime, || still_pixbuf(&key.path, key.size, media))?;
+            let frame = (media == Media::Video).then_some(key.frame).flatten();
+            let still = cached_or_made(file.as_deref(), &uri, key.mtime, frame, || still_pixbuf(&key.path, key.size, media, frame))?;
             Some(vec![still])
         }
         Job::Frames => {
@@ -976,7 +1002,7 @@ fn make(root: Option<&Path>, key: &Key) -> Option<Vec<Pixels>> {
                 .filter_map(|index| {
                     let file = root.map(|root| filed(&root.join("frames").join(key.size.dir_name()), &format!("{digest}-{index}.png")));
                     let at = duration * (index as f64 + 0.5) / count as f64;
-                    cached_or_made(file.as_deref(), &uri, key.mtime, || frame_pixbuf(&key.path, at, key.size))
+                    cached_or_made(file.as_deref(), &uri, key.mtime, None, || frame_pixbuf(&key.path, at, key.size))
                 })
                 .collect();
             (!frames.is_empty()).then_some(frames)
@@ -984,18 +1010,40 @@ fn make(root: Option<&Path>, key: &Key) -> Option<Vec<Pixels>> {
     }
 }
 
-/// The still thumbnail's picture: the picture scaled down, or a frame a tenth of the way into a video.
-fn still_pixbuf(path: &Path, size: Size, media: Media) -> Option<gdk_pixbuf::Pixbuf> {
+/// The still thumbnail's picture: the picture scaled down, or a frame a tenth of the way into a video, or the frame
+/// chosen for it.
+fn still_pixbuf(path: &Path, size: Size, media: Media, frame: Option<i64>) -> Option<gdk_pixbuf::Pixbuf> {
     match media {
         Media::Picture => {
             let pixels = size.pixels();
             gdk_pixbuf::Pixbuf::from_file_at_scale(path, pixels, pixels, true).ok()
         }
-        Media::Video => {
-            let at = video_duration(path).map_or(0.0, |duration| duration * 0.1);
-            frame_pixbuf(path, at, size)
-        }
+        Media::Video => match frame {
+            Some(frame) => chosen_frame_pixbuf(path, frame, size),
+            None => {
+                let at = video_duration(path).map_or(0.0, |duration| duration * 0.1);
+                frame_pixbuf(path, at, size)
+            }
+        },
     }
+}
+
+/// The frame numbered `frame` of the video at `path`, scaled to fit the size class. The frame is selected by the
+/// decoder's own count, so the same number always gives the same frame whatever the frame rate is.
+fn chosen_frame_pixbuf(path: &Path, frame: i64, size: Size) -> Option<gdk_pixbuf::Pixbuf> {
+    let pixels = size.pixels();
+    let filter = format!("select=eq(n\\,{}),scale={pixels}:{pixels}:force_original_aspect_ratio=decrease", frame.max(0));
+    let png = run_tool(
+        Command::new("ffmpeg")
+            .args(["-v", "error", "-i"])
+            .arg(path)
+            .args(["-vf", &filter, "-frames:v", "1", "-f", "image2pipe", "-c:v", "png", "-"]),
+    )?;
+    if png.is_empty() {
+        return None;
+    }
+    let stream = gio::MemoryInputStream::from_bytes(&glib::Bytes::from_owned(png));
+    gdk_pixbuf::Pixbuf::from_stream(&stream, None::<&gio::Cancellable>).ok()
 }
 
 /// The frame of the video at `path` at `seconds`, scaled to fit the size class.
@@ -1105,14 +1153,22 @@ pub fn stamp(path: &Path) -> i64 {
         .map_or(0, |duration| duration.as_nanos() as i64)
 }
 
-/// The pixels at `file` if they were made from the file at `mtime`. Otherwise the pixbuf from `produce`, saved
-/// as a thumbnail with its metadata, and cached at `file`. With no `file`, just the pixbuf from `produce`.
-fn cached_or_made(file: Option<&Path>, uri: &str, mtime: i64, produce: impl FnOnce() -> Option<gdk_pixbuf::Pixbuf>) -> Option<Pixels> {
+/// The tag a thumbnail's PNG holds for the frame it was made from: the frame number, or `auto` for the default frame.
+fn frame_tag(frame: Option<i64>) -> String {
+    frame.map_or_else(|| "auto".to_owned(), |frame| frame.to_string())
+}
+
+/// The pixels at `file` if they were made from the file at `mtime` and frame choice `frame`. Otherwise the pixbuf from
+/// `produce`, saved as a thumbnail with its metadata, and cached at `file`. With no `file`, just the pixbuf from `produce`.
+fn cached_or_made(file: Option<&Path>, uri: &str, mtime: i64, frame: Option<i64>, produce: impl FnOnce() -> Option<gdk_pixbuf::Pixbuf>) -> Option<Pixels> {
     let Some(file) = file else { return produce().map(|picture| Pixels::from_pixbuf(&picture)) };
-    // A cached thumbnail is current only if the file has not changed since it was made. Its time is read from
-    // the PNG's text chunks, so the picture is decoded once, when it is shown.
+    let frame = frame_tag(frame);
+    // A cached thumbnail is current only if the file has not changed since it was made, and it is of the frame that is
+    // wanted. Its time is read from the PNG's text chunks, so the picture is decoded once, when it is shown.
     if let Ok(data) = std::fs::read(file) {
-        if png_text(&data, "rsimgv::MTime").and_then(|value| value.parse::<i64>().ok()) == Some(mtime) {
+        if png_text(&data, "rsimgv::MTime").and_then(|value| value.parse::<i64>().ok()) == Some(mtime)
+            && png_text(&data, "rsimgv::Frame").unwrap_or("auto") == frame.as_str()
+        {
             if let Some(pixels) = Pixels::from_png(&data) {
                 return Some(pixels);
             }
@@ -1127,6 +1183,7 @@ fn cached_or_made(file: Option<&Path>, uri: &str, mtime: i64, produce: impl FnOn
             &[
                 ("tEXt::Thumb::URI", uri),
                 ("tEXt::rsimgv::MTime", mtime_text.as_str()),
+                ("tEXt::rsimgv::Frame", frame.as_str()),
                 ("tEXt::Thumb::Software", "rsimgv"),
             ],
         )

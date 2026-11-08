@@ -28,6 +28,7 @@ const TIME_POS: u64 = 2;
 const EOF_REACHED: u64 = 3;
 const SPEED: u64 = 4;
 const ESTIMATED_FPS: u64 = 5;
+const ESTIMATED_FRAME_NUMBER: u64 = 6;
 
 /// The widest a frame is rendered, in pixels; wider sizes are scaled down to keep software rendering quick.
 const MAX_FRAME_WIDTH: i32 = 2560;
@@ -175,6 +176,8 @@ mod imp {
         pub(super) speed: Cell<Option<f64>>,
         pub(super) container_fps: Cell<Option<f64>>,
         pub(super) estimated_fps: Cell<Option<f64>>,
+        /// The frame the player is showing, as mpv estimates it from the position and frame rate.
+        pub(super) frame_number: Cell<Option<f64>>,
         /// Whether a seek is under way, to report when it lands.
         pub(super) seeking: Cell<bool>,
         /// The latest position mpv gave, in microseconds; when GTK was last given one; and the timer that gives it the latest
@@ -188,6 +191,8 @@ mod imp {
         pub(super) framing: Cell<Framing>,
         pub(super) crop: Cell<Option<CropRect>>,
         pub(super) crop_candidate: Cell<Option<CropRect>>,
+        /// Whether the crop in use is held, so it is not looked for again.
+        pub(super) crop_locked: Cell<bool>,
         pub(super) crop_timer: RefCell<Option<glib::SourceId>>,
         pub(super) crop_busy: Cell<bool>,
         /// How many looks in a row found the crop as it was, which lengthens the wait for the next, and the position the last
@@ -408,6 +413,7 @@ fn shared_player(options: &str) -> Option<Rc<Player>> {
     player.observe_flag(EOF_REACHED, "eof-reached");
     player.observe_double(SPEED, "speed");
     player.observe_double(ESTIMATED_FPS, "estimated-vf-fps");
+    player.observe_double(ESTIMATED_FRAME_NUMBER, "estimated-frame-number");
     let player = Rc::new(player);
     SHARED.with(|shared| shared.replace(Some((options.to_owned(), opengl, generation, player.clone()))));
     Some(player)
@@ -467,9 +473,45 @@ impl MpvStream {
             self.update_backdrop();
         }
         self.invalidate_contents();
-        imp.crop.set(None);
+        // A held crop stays as it is; otherwise the crop is let go and looked for again.
+        if !imp.crop_locked.get() {
+            imp.crop.set(None);
+            imp.crop_candidate.set(None);
+            imp.crop_settled.set(0);
+            imp.crop_looked_at.set(None);
+        }
+        self.apply_framing_filters();
+        self.schedule_crop_check();
+    }
+
+    /// The crop in use, if the picture is cropped.
+    pub fn crop(&self) -> Option<CropRect> {
+        self.imp().crop.get()
+    }
+
+    /// Whether the crop in use is held rather than looked for again.
+    pub fn crop_locked(&self) -> bool {
+        self.imp().crop_locked.get()
+    }
+
+    /// Holds the crop in use, or `rect` if one is given, so it is not looked for again. `None` holds the whole frame.
+    pub fn lock_crop(&self, rect: Option<CropRect>) {
+        let imp = self.imp();
+        if let Some(timer) = imp.crop_timer.take() {
+            timer.remove();
+        }
+        imp.crop_locked.set(true);
+        imp.crop.set(rect);
         imp.crop_candidate.set(None);
         self.apply_framing_filters();
+        self.invalidate_contents();
+    }
+
+    /// Lets the crop be looked for again, starting now.
+    pub fn unlock_crop(&self) {
+        let imp = self.imp();
+        imp.crop_locked.set(false);
+        imp.crop_candidate.set(None);
         imp.crop_settled.set(0);
         imp.crop_looked_at.set(None);
         self.schedule_crop_check();
@@ -482,7 +524,7 @@ impl MpvStream {
         if let Some(timer) = imp.crop_timer.take() {
             timer.remove();
         }
-        if imp.framing.get().crop.is_none() {
+        if imp.crop_locked.get() || imp.framing.get().crop.is_none() {
             return;
         }
         let weak = self.downgrade();
@@ -500,8 +542,8 @@ impl MpvStream {
         let imp = self.imp();
         let Some(player) = imp.player.borrow().clone() else { return };
         let framing = imp.framing.get();
-        let crop = imp.crop.get().map(|rect| framing::trimmed(rect, framing.trim_pixels, player.source_size()));
-        let detector = framing.crop == Some(CropMethod::CropDetect);
+        let crop = framing.crop.and_then(|_| imp.crop.get()).map(|rect| framing::trimmed(rect, framing.trim_pixels, player.source_size()));
+        let detector = !imp.crop_locked.get() && framing.crop == Some(CropMethod::CropDetect);
         player.set_framing_filters(detector, crop);
     }
 
@@ -509,6 +551,9 @@ impl MpvStream {
     /// this one is done. A paused video is the same frame, so it is looked at only when it has moved since the last look.
     fn look_for_crop(&self) {
         let imp = self.imp();
+        if imp.crop_locked.get() {
+            return;
+        }
         let Some(player) = imp.player.borrow().clone() else { return };
         let Some(method) = imp.framing.get().crop else { return };
         let position = imp.position.get();
@@ -544,6 +589,9 @@ impl MpvStream {
     /// frame that is dark for a moment does not crop the video.
     fn crop_measured(&self, rect: Option<CropRect>) {
         let imp = self.imp();
+        if imp.crop_locked.get() {
+            return;
+        }
         if let Some(rect) = rect {
             let before = imp.crop_candidate.replace(Some(rect));
             if before.is_some_and(|before| framing::agree(before, rect)) {
@@ -559,7 +607,7 @@ impl MpvStream {
     /// Takes what the cropdetect filter found, if it had found anything, and sets the next look.
     fn crop_detected(&self, rect: Option<CropRect>) {
         let imp = self.imp();
-        if imp.framing.get().crop != Some(CropMethod::CropDetect) {
+        if imp.crop_locked.get() || imp.framing.get().crop != Some(CropMethod::CropDetect) {
             return;
         }
         // Until the file has loaded, what the filter found is about the file before.
@@ -697,6 +745,15 @@ impl MpvStream {
         self.imp().container_fps.get().or(self.imp().estimated_fps.get())
     }
 
+    /// The number of the frame the player is showing, if it is known.
+    pub fn frame_number(&self) -> Option<i64> {
+        let imp = self.imp();
+        imp.frame_number.get().map(|frame| frame.round() as i64).or_else(|| {
+            let seconds = imp.position.get() as f64 / 1_000_000.0;
+            self.fps().map(|fps| (seconds * fps).round() as i64)
+        })
+    }
+
     /// Handles the events waiting from libmpv.
     fn handle_events(&self) {
         loop {
@@ -759,6 +816,7 @@ impl MpvStream {
                 }
             }
             Event::Double(ESTIMATED_FPS, fps) => imp.estimated_fps.set(fps),
+            Event::Double(ESTIMATED_FRAME_NUMBER, frame) => imp.frame_number.set(frame),
             Event::Double(DURATION, Some(seconds)) => imp.duration.set((seconds * MICROS) as i64),
             Event::Double(TIME_POS, Some(seconds)) => {
                 imp.position.set((seconds * MICROS) as i64);

@@ -1143,6 +1143,10 @@ impl Window {
         bound_action(&video, &weak, "volume-down", |window| window.imp().viewer.adjust_volume(-VOLUME_STEP));
         bound_action(&video, &weak, "mute", |window| window.imp().viewer.toggle_mute());
         bound_action(&video, &weak, "toggle-svp", |window| window.toggle_setting("video.svp.enabled"));
+        bound_action(&video, &weak, "toggle-backdrop", |window| window.toggle_setting("video.backdrop.enabled"));
+        bound_action(&video, &weak, "toggle-crop", |window| window.toggle_setting("video.crop.enabled"));
+        bound_action(&video, &weak, "lock-crop", |window| window.imp().viewer.toggle_crop_lock());
+        bound_action(&video, &weak, "set-thumbnail-frame", |window| window.imp().viewer.set_thumbnail_frame());
         bound_action(&video, &weak, "repeat", |window| window.imp().viewer.toggle_repeat());
         bound_action(&video, &weak, "auto-advance", |window| window.imp().viewer.toggle_auto_advance());
         self.insert_action_group("video", Some(&video));

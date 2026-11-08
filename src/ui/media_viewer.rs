@@ -17,6 +17,7 @@ use gtk::{gdk, gio, glib};
 use super::drag;
 use super::image_canvas::{Fit, ImageCanvas, OriginalFocus, Placement, Scaling};
 use crate::storage::file_settings::FileSettings;
+use crate::storage::thumbnail_frames::ThumbnailFrames;
 use crate::storage::watch_history::{format_duration, WatchHistory};
 use crate::fs::thumbnail::Thumbnails;
 use crate::media::orientation::Orientation;
@@ -293,6 +294,25 @@ fn video_settings(media: &gtk::MediaStream) -> Vec<(&'static str, Option<serde_y
         changes.push(("speed", ((speed - 1.0).abs() > 1e-6).then(|| speed.into())));
     }
     changes
+}
+
+/// The file settings that hold a locked crop: whether it is locked, then its rectangle.
+const CROP_KEYS: [&str; 4] = ["crop-width", "crop-height", "crop-left", "crop-top"];
+
+/// The crop saved for a file that has one locked. `Some(None)` is a locked whole frame.
+fn saved_crop(settings: &FileSettings) -> Option<Option<crate::mpv::framing::CropRect>> {
+    if !settings.get_bool("crop-locked").unwrap_or(false) {
+        return None;
+    }
+    let rect = (|| {
+        Some(crate::mpv::framing::CropRect {
+            width: settings.get_i64(CROP_KEYS[0])? as i32,
+            height: settings.get_i64(CROP_KEYS[1])? as i32,
+            left: settings.get_i64(CROP_KEYS[2])? as i32,
+            top: settings.get_i64(CROP_KEYS[3])? as i32,
+        })
+    })();
+    Some(rect)
 }
 
 /// The edge of a `width` by `height` area nearest the point `x`, `y`, measured as a share of the area,
@@ -1051,6 +1071,91 @@ impl MediaViewer {
         if len > 0 {
             self.load(if last { len - 1 } else { 0 });
         }
+    }
+
+    /// Holds the crop the video shown has now, or lets it be detected again. The lock and its rectangle are kept with
+    /// the file's settings, so they are there next time it is shown.
+    pub fn toggle_crop_lock(&self) {
+        let imp = self.imp();
+        let stream = imp.media.borrow().as_ref().and_then(|media| media.downcast_ref::<crate::mpv::MpvStream>()).cloned();
+        let Some(stream) = stream else {
+            self.announce("Crop locking needs a video played by mpv", true);
+            return;
+        };
+        if stream.crop_locked() {
+            stream.unlock_crop();
+            self.save_crop_lock(None, false);
+            self.announce("Crop unlocked", false);
+            return;
+        }
+        let crop = stream.crop();
+        stream.lock_crop(crop);
+        self.save_crop_lock(crop, true);
+        match crop {
+            Some(rect) => self.announce(&format!("Crop locked: {} × {}", rect.width, rect.height), false),
+            None => self.announce("Crop locked: the whole frame", false),
+        }
+    }
+
+    /// Saves whether the crop is locked for the file shown, and its rectangle when there is one. `None` as the crop
+    /// removes the rectangle, so a locked whole frame is not mistaken for one.
+    fn save_crop_lock(&self, crop: Option<crate::mpv::framing::CropRect>, locked: bool) {
+        let imp = self.imp();
+        let mut settings = imp.file_settings.borrow_mut().take();
+        if settings.is_none() {
+            settings = self.shown_path().and_then(|path| FileSettings::for_path(&path).ok());
+        }
+        let Some(current) = settings.as_mut() else {
+            eprintln!("rsimgv: could not keep the locked crop: the file's settings cannot be read");
+            return;
+        };
+        let mut changes: Vec<(&str, Option<serde_yaml_ng::Value>)> = vec![("crop-locked", Some(locked.into()))];
+        match crop.filter(|_| locked) {
+            Some(rect) => {
+                changes.extend([
+                    (CROP_KEYS[0], Some(i64::from(rect.width).into())),
+                    (CROP_KEYS[1], Some(i64::from(rect.height).into())),
+                    (CROP_KEYS[2], Some(i64::from(rect.left).into())),
+                    (CROP_KEYS[3], Some(i64::from(rect.top).into())),
+                ]);
+            }
+            None if locked => changes.extend(CROP_KEYS.map(|key| (key, None))),
+            None => {}
+        }
+        if let Err(err) = current.apply(changes) {
+            eprintln!("rsimgv: could not save the locked crop: {err}");
+        }
+        imp.file_settings.replace(settings);
+    }
+
+    /// Makes the frame the video shows now the one its thumbnail is made from. The frame number is kept in the
+    /// metadata database and read when the thumbnail is next made.
+    pub fn set_thumbnail_frame(&self) {
+        let imp = self.imp();
+        let stream = imp.media.borrow().as_ref().and_then(|media| media.downcast_ref::<crate::mpv::MpvStream>()).cloned();
+        let Some(stream) = stream else {
+            self.announce("Choosing a thumbnail frame needs a video played by mpv", true);
+            return;
+        };
+        let Some(frame) = stream.frame_number() else {
+            self.announce("The video's frame number is not known yet", true);
+            return;
+        };
+        let Some(path) = self.shown_path() else { return };
+        match ThumbnailFrames::shared() {
+            Some(frames) => {
+                if let Err(err) = frames.set(&path, Some(frame)) {
+                    eprintln!("rsimgv: could not keep the thumbnail frame: {err}");
+                    self.announce("Could not keep the thumbnail frame", true);
+                    return;
+                }
+            }
+            None => {
+                self.announce("Could not keep the thumbnail frame", true);
+                return;
+            }
+        }
+        self.announce(&format!("Thumbnail frame set to {frame}"), false);
     }
 
     /// Repeats the video shown, or stops repeating it. The setting applies to later videos too.
@@ -2429,6 +2534,9 @@ impl MediaViewer {
                     let speed = settings.as_ref().filter(|_| imp.remember.get().speed).and_then(|settings| settings.get_f64("speed")).unwrap_or(1.0);
                     stream.set_speed(speed);
                     stream.set_framing(imp.framing.get());
+                    if let Some(crop) = settings.as_ref().and_then(saved_crop) {
+                        stream.lock_crop(crop);
+                    }
                     // Once its frames are up the stream fills the view itself, with the picture over its backdrop or black, so the
                     // thumbnail behind it is not drawn under every frame. GTK's own player leaves bars, which the thumbnail fills.
                     stream.connect_first_frame({

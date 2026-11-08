@@ -98,9 +98,10 @@ const SCHEMA: &str = "
         WHERE name.kind NOT IN (0, 1);
 ";
 
-/// The viewing history, which outlives the metadata: a file's history is not dropped when its row is replaced or when
-/// the layout changes. It is keyed by content hash, so it follows a file that is moved or renamed, and indexed by path so
-/// the browse view can look a file up without reading it to find its hash.
+/// The viewing history and the still frame chosen for each file, which outlive the metadata. A file's history is not
+/// dropped when its row is replaced or the layout changes. The history is keyed by content hash, so it follows a file
+/// that is moved or renamed, and indexed by path so the browse view can look a file up without reading it to find its
+/// hash. The thumbnail frame is keyed by path, which is what the thumbnail maker has.
 const WATCH_SCHEMA: &str = "
     CREATE TABLE IF NOT EXISTS watch (
         hash TEXT PRIMARY KEY,
@@ -112,6 +113,10 @@ const WATCH_SCHEMA: &str = "
     );
     CREATE INDEX IF NOT EXISTS watch_last_viewed ON watch (last_viewed DESC);
     CREATE INDEX IF NOT EXISTS watch_path ON watch (path);
+    CREATE TABLE IF NOT EXISTS thumbnail_frame (
+        path BLOB PRIMARY KEY,
+        frame INTEGER NOT NULL
+    );
 ";
 
 /// How a file has been watched: its views, the time spent watching it, and when it was first and last viewed.
@@ -413,6 +418,31 @@ impl MediaIndex {
     /// Removes the whole viewing history.
     pub fn clear_watch(&self) -> rusqlite::Result<()> {
         self.connection.execute("DELETE FROM watch", [])?;
+        Ok(())
+    }
+
+    /// The frame set as the video's thumbnail, if one is set.
+    pub fn thumbnail_frame(&self, path: &Path) -> rusqlite::Result<Option<i64>> {
+        self.connection
+            .query_row("SELECT frame FROM thumbnail_frame WHERE path = ?1", params![path.as_os_str().as_bytes()], |row| row.get(0))
+            .optional()
+    }
+
+    /// Sets the frame to make the video's thumbnail from, or takes the choice back for `None`.
+    pub fn set_thumbnail_frame(&self, path: &Path, frame: Option<i64>) -> rusqlite::Result<()> {
+        let key = path.as_os_str().as_bytes();
+        match frame {
+            Some(frame) => {
+                self.connection.execute(
+                    "INSERT INTO thumbnail_frame (path, frame) VALUES (?1, ?2)
+                     ON CONFLICT (path) DO UPDATE SET frame = excluded.frame",
+                    params![key, frame],
+                )?;
+            }
+            None => {
+                self.connection.execute("DELETE FROM thumbnail_frame WHERE path = ?1", params![key])?;
+            }
+        }
         Ok(())
     }
 }

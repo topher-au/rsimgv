@@ -176,6 +176,10 @@ impl FileSettings {
         self.get(key).and_then(Value::as_f64)
     }
 
+    pub fn get_i64(&self, key: &str) -> Option<i64> {
+        self.get(key).and_then(Value::as_i64)
+    }
+
     pub fn get_bool(&self, key: &str) -> Option<bool> {
         self.get(key).and_then(Value::as_bool)
     }
