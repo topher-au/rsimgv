@@ -61,6 +61,14 @@ impl SortColumn {
     }
 }
 
+/// What the list shows that a rebuild of its model would otherwise lose: the selected items, by path, and how far the
+/// list is scrolled down.
+#[derive(Default)]
+struct ViewState {
+    selected: HashSet<String>,
+    scroll: f64,
+}
+
 pub struct PlaylistPanel {
     content: gtk::Box,
     view: gtk::ColumnView,
@@ -86,6 +94,9 @@ pub struct PlaylistPanel {
     actions: gio::SimpleActionGroup,
     search: gtk::SearchBar,
     entry: gtk::SearchEntry,
+    /// The number of the latest request to put the scroll position back, so an older request stops when a newer one
+    /// starts.
+    scroll_revision: Rc<Cell<u64>>,
 }
 
 impl PlaylistPanel {
@@ -246,6 +257,7 @@ impl PlaylistPanel {
             actions,
             search,
             entry,
+            scroll_revision: Rc::new(Cell::new(0)),
         };
         panel.refresh();
         panel
@@ -261,7 +273,7 @@ impl PlaylistPanel {
     /// lengths may have changed. The selected items stay selected at their new places.
     pub fn refresh(&self) {
         crate::debug_log!("playlist-debug: refresh start shown={}", self.shown.borrow().len());
-        let selected = selected_paths(&self.selection);
+        let state = self.view_state();
         let (items, searchable) = playlist::with(|list| {
             let items: Vec<String> = list.order().iter().map(|path| path.to_string_lossy().into_owned()).collect();
             let searchable: HashMap<String, String> = list
@@ -288,11 +300,49 @@ impl PlaylistPanel {
         *shown = items;
         crate::debug_log!("playlist-debug: refresh done items={} rows={} lengths={}", self.paths.n_items(), self.rows.borrow().len(), self.lengths.borrow().len());
         drop(shown);
-        // A change to the model drops the selection, so the items are selected again by their paths, wherever they
-        // moved to. This keeps the moved items selected when the list is rearranged, whether from a key, a button or a
-        // drop.
-        reselect(&self.selection, &selected);
-        self.refresh_current();
+        // A change to the model drops the selection and the place the list was scrolled to, so they are put back as
+        // they were. The items are selected by their paths, wherever they moved to, so they stay selected when the list
+        // is rearranged, whether from a key, a button or a drop.
+        self.restore_selection(&state);
+        // The current item takes the list to its row, so the scroll is only put back when it does not move.
+        if !self.refresh_current() {
+            self.restore_scroll(&state);
+        }
+    }
+
+    /// The list's selection and scroll position, which `refresh` keeps across the rebuild of its model.
+    fn view_state(&self) -> ViewState {
+        let scroll = self.view.vadjustment().map_or(0.0, |adjustment| adjustment.value());
+        ViewState { selected: selected_paths(&self.selection), scroll }
+    }
+
+    /// Selects the rows showing the items in `state` again, as a rebuild makes new row objects.
+    fn restore_selection(&self, state: &ViewState) {
+        reselect(&self.selection, &state.selected);
+    }
+
+    /// Scrolls the list back to `state`'s place. The view can go back to the top once it lays its rows out again after a
+    /// rebuild, so the place is put back over the next few frames, as far as the list's length allows.
+    fn restore_scroll(&self, state: &ViewState) {
+        const FRAMES: u32 = 8;
+        let target = state.scroll;
+        let frames = Cell::new(0u32);
+        let revision = self.scroll_revision.clone();
+        let this = revision.get() + 1;
+        revision.set(this);
+        let view = self.view.downgrade();
+        self.view.add_tick_callback(move |_, _| {
+            if revision.get() != this {
+                return glib::ControlFlow::Break;
+            }
+            frames.set(frames.get() + 1);
+            let Some(view) = view.upgrade() else { return glib::ControlFlow::Break };
+            if let Some(adjustment) = view.vadjustment() {
+                let bottom = (adjustment.upper() - adjustment.page_size()).max(adjustment.lower());
+                adjustment.set_value(target.clamp(adjustment.lower(), bottom));
+            }
+            if frames.get() < FRAMES { glib::ControlFlow::Continue } else { glib::ControlFlow::Break }
+        });
     }
 
     /// Whether the keyboard focus is in the panel.
@@ -365,8 +415,8 @@ impl PlaylistPanel {
         self.entry.grab_focus();
     }
 
-    /// Marks the playlist's current item, and brings it into view.
-    pub fn refresh_current(&self) {
+    /// Marks the playlist's current item, and brings it into view. Returns whether it scrolled the list to it.
+    pub fn refresh_current(&self) -> bool {
         let current = playlist::with(|list| list.current()).map(|index| index as u32);
         self.current.set(current);
         let path = current.and_then(|current| playlist::with(|list| list.order().get(current as usize).map(|path| path.to_string_lossy().into_owned())));
@@ -380,9 +430,9 @@ impl PlaylistPanel {
                 set_label_if_changed(&number, &number_text(position));
             }
         }
-        if let Some(row) = current.filter(|_| moved).and_then(|current| self.view_position(current)) {
-            self.view.scroll_to(row, None::<&gtk::ColumnViewColumn>, gtk::ListScrollFlags::NONE, None);
-        }
+        let Some(row) = current.filter(|_| moved).and_then(|current| self.view_position(current)) else { return false };
+        self.view.scroll_to(row, None::<&gtk::ColumnViewColumn>, gtk::ListScrollFlags::NONE, None);
+        true
     }
 
     /// Where the item at playlist position `index` is in the view, or nothing if the search leaves it out.
