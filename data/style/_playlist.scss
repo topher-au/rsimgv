@@ -51,6 +51,11 @@ headerbar.playlist-header-compact {
     padding-right: 14px;
   }
 
+  label.played-item {
+    font-style: italic;
+    opacity: 0.6;
+  }
+
   row {
     padding: 4px 0;
 

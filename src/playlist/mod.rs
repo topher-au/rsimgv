@@ -33,13 +33,15 @@ pub struct Playlist {
     current: Option<usize>,
     /// The titles given to items, where they differ from the item's file name. An item without one is shown by that.
     titles: HashMap<PathBuf, String>,
+    /// The items shown from the playlist in this run of the application, so the panel can mark them as played.
+    played: HashSet<PathBuf>,
     /// The file the playlist was last loaded from or saved to, which saving it again writes to.
     source: Option<PathBuf>,
 }
 
 /// Two playlists are the same when their items, orders, current item and titles are. The file a playlist was loaded
-/// from or saved to is where it goes next, not part of what it holds, so a saved playlist and the one read back from
-/// its own file are equal even though that file does not record its own name.
+/// from or saved to is where it goes next, and what this run has played is panel state, not part of what the playlist
+/// holds, so neither is compared.
 impl PartialEq for Playlist {
     fn eq(&self, other: &Self) -> bool {
         self.items == other.items
@@ -169,6 +171,16 @@ impl Playlist {
         self.current
     }
 
+    /// Marks the item `path` as played, if it is in the playlist. Returns whether that was the first time this run.
+    pub fn mark_played(&mut self, path: &Path) -> bool {
+        self.members.contains(path) && self.played.insert(path.to_path_buf())
+    }
+
+    /// Whether the item `path` has been played this run.
+    pub fn is_played(&self, path: &Path) -> bool {
+        self.played.contains(path)
+    }
+
     /// Adds the paths not already there to the end of each order. Returns how many were added.
     pub fn add(&mut self, paths: impl IntoIterator<Item = PathBuf>) -> usize {
         let before = self.items.len();
@@ -235,6 +247,8 @@ impl Playlist {
             shuffled.retain(|item| keep(item));
         }
         self.members = self.items.iter().cloned().collect();
+        let members = &self.members;
+        self.played.retain(|item| members.contains(item));
         let last = self.len().checked_sub(1);
         self.current = self.current.zip(last).map(|(current, last)| (current - gone_before_current).min(last));
         total - self.len()
@@ -497,6 +511,20 @@ mod tests {
         assert_eq!(list.add(paths(&["c", "a", "c", "d"])), 2);
         assert_eq!(list.items(), paths(&["b", "a", "c", "d"]));
         assert!(list.contains(Path::new("/c")) && !list.contains(Path::new("/z")));
+    }
+
+    #[test]
+    fn played_items_are_marked_until_they_leave_the_playlist() {
+        let mut list = playlist(&["a", "b"]);
+        assert!(!list.is_played(Path::new("/a")));
+        assert!(list.mark_played(Path::new("/a")), "the first time marks it");
+        assert!(!list.mark_played(Path::new("/a")), "marking it again changes nothing");
+        assert!(list.is_played(Path::new("/a")) && !list.is_played(Path::new("/b")));
+        assert!(!list.mark_played(Path::new("/outside")), "only playlist items are marked");
+        list.remove_at(0);
+        assert!(!list.is_played(Path::new("/a")), "a removed item is forgotten");
+        assert_eq!(list.add(paths(&["a"])), 1);
+        assert!(!list.is_played(Path::new("/a")), "and comes back unplayed");
     }
 
     #[test]

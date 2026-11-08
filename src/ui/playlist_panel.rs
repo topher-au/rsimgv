@@ -596,6 +596,12 @@ fn cell_factory(
             1 => {
                 set_label_if_changed(&label, &playlist::with(|list| list.title(path)));
                 label.set_tooltip_text(Some(path.to_string_lossy().as_ref()));
+                // An item played from the playlist is marked as such, so the list shows where it has been.
+                if playlist::with(|list| list.is_played(path)) {
+                    label.add_css_class("played-item");
+                } else {
+                    label.remove_css_class("played-item");
+                }
             }
             2 => {
                 let mut bound = bound_lengths.borrow_mut();

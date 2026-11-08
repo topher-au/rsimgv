@@ -28,6 +28,16 @@ use super::playlist_panel::{stamp, PlaylistPanel, SortColumn};
 use crate::media::orientation::Orientation;
 use crate::fs::metadata::MediaInfo;
 
+/// Where the viewer last played from, which the toggle viewer action returns to.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum PlaybackSource {
+    /// The item selected in the browse view.
+    #[default]
+    Selection,
+    /// The playlist.
+    Playlist,
+}
+
 mod imp {
     use super::*;
 
@@ -109,9 +119,8 @@ mod imp {
         /// Whether the viewer is showing the playlist, rather than the folder's items. The viewer then has nothing to
         /// do with the folder the window shows, which stays as it was.
         pub(super) playlist_playing: Cell<bool>,
-        /// Whether the viewer was showing the playlist when the toggle key left it, so the key brings the playlist
-        /// back where it was rather than showing the folder's selection.
-        pub(super) resume_playlist_on_toggle: Cell<bool>,
+        /// Where the viewer last played from, so the toggle key brings that back even after the viewer was closed.
+        pub(super) last_playback: Cell<PlaybackSource>,
         /// Whether the playlist's sidebar is open. It is kept as the sidebar opens and closes, and the sidebar is then
         /// put beside whichever page is shown.
         pub(super) playlist_shown: Cell<bool>,
@@ -855,6 +864,7 @@ impl Window {
     fn show_in_viewer(&self, paths: Vec<PathBuf>, index: usize, playlist: bool) {
         let imp = self.imp();
         imp.playlist_playing.set(playlist);
+        imp.last_playback.set(if playlist { PlaybackSource::Playlist } else { PlaybackSource::Selection });
         if let (true, Some(path)) = (playlist, paths.get(index)) {
             self.read_length_when_played(path);
         }
@@ -921,38 +931,38 @@ impl Window {
     fn close_viewer(&self) {
         let imp = self.imp();
         imp.viewer.close();
-        imp.resume_playlist_on_toggle.set(false);
         self.hide_viewer_page();
     }
 
     /// Shows the item selected in the browse view in the viewer, or returns from the viewer to the browse view. The
     /// viewer stays loaded while it is hidden, so the same picture or video is still there when the toggle comes back.
-    /// A viewer that was showing the playlist goes back to it, where it was left.
+    /// The viewer goes back to where it last played from, so a playlist comes back even after the viewer was closed.
     fn toggle_viewer(&self) {
         let imp = self.imp();
         if imp.viewer_open.get() {
-            let playlist = imp.playlist_playing.get();
             // Hide rather than close: the item stays loaded, a video pauses, and coming back does not reload it.
             imp.viewer.suspend();
             self.hide_viewer_page();
-            imp.resume_playlist_on_toggle.set(playlist);
             return;
         }
-        if imp.resume_playlist_on_toggle.get() {
-            imp.resume_playlist_on_toggle.set(false);
+        if imp.last_playback.get() == PlaybackSource::Playlist {
             let (order, current) = playlist::with(|list| (list.order().to_vec(), list.current_path().map(Path::to_path_buf)));
-            if current.is_some_and(|current| imp.viewer.resident_path().as_deref() == Some(current.as_path())) {
-                imp.playlist_playing.set(true);
-                self.apply_folder_end();
-                imp.viewer.update_paths(order);
-                self.show_viewer_page();
-                imp.viewer.resume();
-            } else {
-                // The playlist moved on while the viewer was hidden, so the new item has to be loaded.
-                self.play_playlist();
+            if !order.is_empty() {
+                if current.is_some_and(|current| imp.viewer.resident_path().as_deref() == Some(current.as_path())) {
+                    imp.playlist_playing.set(true);
+                    self.apply_folder_end();
+                    imp.viewer.update_paths(order);
+                    self.show_viewer_page();
+                    imp.viewer.resume();
+                } else {
+                    // The playlist moved on while the viewer was hidden, so the new item has to be loaded.
+                    self.play_playlist();
+                }
+                return;
             }
-            return;
+            // An emptied playlist has nothing to come back to, so the selected item is shown instead.
         }
+        imp.last_playback.set(PlaybackSource::Selection);
         let Some(browse) = self.active_browse() else { return };
         let Some(name) = browse.selected_name() else { return };
         let Some(folder) = self.current_path() else { return };
@@ -1684,6 +1694,7 @@ impl Window {
     /// Shows the playlist's item at `index` in the viewer, if there is one.
     fn play_playlist_at(&self, index: usize) {
         let imp = self.imp();
+        imp.last_playback.set(PlaybackSource::Playlist);
         eprintln!("playlist-debug: window play_playlist_at index={index} playing={}", imp.playlist_playing.get());
         let items = if imp.playlist_playing.get() { None } else { Some(playlist::with(|list| list.order().to_vec())) };
         if index >= playlist::with(|list| list.len()) {
@@ -1701,11 +1712,20 @@ impl Window {
         self.playlist_position_changed();
     }
 
-    /// Notes that the viewer shows the playlist's item `path`, by any way it got there, and says so if it is not there.
-    /// The file is looked for on a worker thread, as it may be on a slow disk.
+    /// Notes that the viewer shows the playlist's item `path`, by any way it got there, marks it as played, and says
+    /// so if it is not there. The file is looked for on a worker thread, as it may be on a slow disk.
     fn playlist_item_shown(&self, path: &Path) {
+        let played = playlist::with(|list| list.mark_played(path));
         if playlist::with(|list| list.set_current_path(path)) {
             self.playlist_position_changed();
+        }
+        // Every window's panel marks the item, as the playlist is shared between them.
+        if played {
+            for window in self.app_windows() {
+                if let Some(panel) = window.imp().playlist_panel.get() {
+                    panel.refresh();
+                }
+            }
         }
         let path = path.to_path_buf();
         let weak = self.downgrade();
@@ -4245,9 +4265,11 @@ pub(crate) mod tests {
 
         // Playing shows the playlist, and the browse view stays as it was.
         browse.select_named("two.png");
+        assert!(!playlist::with(|list| list.is_played(&alpha.join("one.png"))), "nothing played yet");
         window.play_playlist();
         assert!(window.viewer_is_open() && window.imp().playlist_playing.get());
         wait_for("the first item", || shows(&alpha.join("one.png")));
+        assert!(playlist::with(|list| list.is_played(&alpha.join("one.png"))), "the item shown is marked played");
         assert_eq!(browse.selected_name().as_deref(), Some("two.png"), "the selection stays");
 
         window.step_playlist(true);
@@ -4294,6 +4316,11 @@ pub(crate) mod tests {
         assert!(!window.imp().playlist_playing.get());
         assert_eq!(window.imp().viewer_open.get(), false);
         assert_eq!(browse.selected_name().as_deref(), Some("two.png"));
+        // The toggle still goes back to the playlist, where it was left, rather than to the folder's selection.
+        window.toggle_viewer();
+        wait_for("the playlist after closing", || shows(&gamma.join("two.png")));
+        assert!(window.viewer_is_open() && window.imp().playlist_playing.get());
+        window.close_viewer();
         window.open_viewer(&browse, &alpha.join("two.png"));
         assert!(!window.imp().playlist_playing.get());
         wait_for("the folder's item", || shows(&alpha.join("two.png")));
