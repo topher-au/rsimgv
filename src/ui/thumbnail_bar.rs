@@ -546,8 +546,9 @@ impl ThumbnailBar {
         imp.header.set_valign(gtk::Align::Fill);
         imp.list.set_orientation(orientation);
         let (h, v) = match orientation {
-            gtk::Orientation::Horizontal => (gtk::PolicyType::Automatic, gtk::PolicyType::Never),
-            _ => (gtk::PolicyType::Never, gtk::PolicyType::Automatic),
+            // The scrollbar is always there, so the bar keeps the space it takes even before the thumbnails fill it.
+            gtk::Orientation::Horizontal => (gtk::PolicyType::Always, gtk::PolicyType::Never),
+            _ => (gtk::PolicyType::Never, gtk::PolicyType::Always),
         };
         imp.scroller.set_policy(h, v);
         imp.scroller.set_propagate_natural_height(orientation == gtk::Orientation::Horizontal);
