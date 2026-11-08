@@ -258,9 +258,10 @@ impl PlaylistPanel {
 
     /// Shows the playlist's items as they are now, in the order they are shown, with their titles and lengths. Only the
     /// items that changed are added and removed, so the list keeps its place. Every row is bound again, as titles and
-    /// lengths may have changed.
+    /// lengths may have changed. The selected items stay selected at their new places.
     pub fn refresh(&self) {
         crate::debug_log!("playlist-debug: refresh start shown={}", self.shown.borrow().len());
+        let selected = selected_paths(&self.selection);
         let (items, searchable) = playlist::with(|list| {
             let items: Vec<String> = list.order().iter().map(|path| path.to_string_lossy().into_owned()).collect();
             let searchable: HashMap<String, String> = list
@@ -287,6 +288,10 @@ impl PlaylistPanel {
         *shown = items;
         crate::debug_log!("playlist-debug: refresh done items={} rows={} lengths={}", self.paths.n_items(), self.rows.borrow().len(), self.lengths.borrow().len());
         drop(shown);
+        // A change to the model drops the selection, so the items are selected again by their paths, wherever they
+        // moved to. This keeps the moved items selected when the list is rearranged, whether from a key, a button or a
+        // drop.
+        reselect(&self.selection, &selected);
         self.refresh_current();
     }
 
@@ -841,12 +846,11 @@ fn selection_actions(selection: &gtk::MultiSelection, view: &gtk::ColumnView) ->
             move |_, _| {
                 let positions = selected_positions(&selection);
                 crate::debug_log!("playlist-debug: action {name} selected={positions:?} len={}", playlist_len());
-                let before = selected_paths(&selection);
                 runs(&view, &positions, playlist_len());
-                // The list is rebuilt by a change, which clears the selection, so it is made again.
-                let rows = reselect(&selection, &before);
+                // A change to the playlist keeps the selected items selected at their new places, so they are scrolled
+                // into sight from where they are now.
                 if name.starts_with("move-") {
-                    reveal_rows(&view, &rows);
+                    reveal_rows(&view, &selected_rows(&selection));
                 }
             }
         });
