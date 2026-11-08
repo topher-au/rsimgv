@@ -1203,6 +1203,8 @@ fn reference() -> adw::ExpanderRow {
         ("${name:text}", "text while the property has no value"),
         ("${?name:text}", "text only while the property has a value"),
         ("${!name:text}", "text only while the property has no value"),
+        ("${?name==value:text}", "text only while the property equals value"),
+        ("${?name!=value:text}", "text only while the property is not value"),
         ("$$", "a dollar sign"),
     ];
     for (code, about) in syntax {
