@@ -2072,6 +2072,7 @@ impl MediaViewer {
             fraction(landing.map_or_else(|| media.timestamp(), |(target, _)| target), media.duration())
         });
         let lookup = |name: &str| values.get(name).cloned();
+        let remember = imp.remember.get();
         overlay.update(&Frame {
             values: &lookup,
             fraction: position_fraction,
@@ -2079,6 +2080,8 @@ impl MediaViewer {
             playing: media.as_ref().is_some_and(|media| media.is_playing()),
             fullscreen: imp.fullscreen.get(),
             volume_fraction: if imp.controls.audio().1 { 0.0 } else { imp.controls.audio().0 },
+            app_volume_fraction: imp.app_volume.get(),
+            video_volume_tracked: remember.enabled && remember.volume,
             has_audio: media.as_ref().is_none_or(|media| media.has_audio()),
             since_change: imp.changed_at.get().map(|when| when.map(|when| when.elapsed())),
         });

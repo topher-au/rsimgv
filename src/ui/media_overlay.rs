@@ -299,6 +299,10 @@ const FADED: f64 = 0.2;
 /// How faint a volume display is for a video with no sound.
 const DIMMED_OPACITY: f64 = 0.4;
 
+/// The icons that say which of a volume display's bars is the video's and which the application's.
+const VIDEO_VOLUME_ICON: &str = "video-x-generic-symbolic";
+const APP_VOLUME_ICON: &str = "applications-system-symbolic";
+
 /// What the overlay is drawn from.
 #[derive(Clone, Copy)]
 pub struct Frame<'a> {
@@ -309,8 +313,12 @@ pub struct Frame<'a> {
     pub is_video: bool,
     pub playing: bool,
     pub fullscreen: bool,
-    /// The volume level the volume bar shows, from 0 to 2, where 1 is full volume and the rest is boost.
+    /// The volume level the video's volume bar shows, from 0 to 2, where 1 is full volume and the rest is boost.
     pub volume_fraction: f64,
+    /// The application volume, shown as a second bar while each video's volume is tracked.
+    pub app_volume_fraction: f64,
+    /// Whether each video's volume is tracked, which shows the application volume beside the video's own.
+    pub video_volume_tracked: bool,
     /// Whether the video has sound; the volume display is dimmed when it has none.
     pub has_audio: bool,
     /// How long ago each change an element can wait for last happened, if it has since the item was shown.
@@ -347,7 +355,14 @@ struct Placed {
     bar: Option<gtk::ProgressBar>,
     /// A volume bar's darker bar under `bar`, which shows the boost above full volume.
     boost_bar: Option<gtk::ProgressBar>,
-    /// What goes in the card for the bar: the bar itself, or the two bars of a volume display stacked.
+    /// The application volume's bar, and the darker bar under it, while each video's volume is tracked.
+    app_bar: Option<gtk::ProgressBar>,
+    app_boost_bar: Option<gtk::ProgressBar>,
+    /// The application volume's bar and its icon, which are shown only while each video's volume is tracked.
+    app_volume: Option<gtk::Widget>,
+    /// The video volume's icon, which is shown only while the application's bar is, so one bar needs no label.
+    video_volume_icon: Option<gtk::Widget>,
+    /// What goes in the card for the bar: the bar itself, or the two bars of a volume display side by side.
     bar_widget: Option<gtk::Widget>,
     /// A media status's state icon, and the filename under its text.
     icon: Option<gtk::Label>,
@@ -432,7 +447,13 @@ impl MediaOverlay {
         }
         if let Some((_, item)) = self.previewed.borrow().as_ref() {
             let sampled = |name: &str| (frame.values)(name).or_else(|| sample(name));
-            let shown = Frame { values: &sampled, fraction: frame.fraction.max(0.28), volume_fraction: frame.volume_fraction.max(0.8), ..*frame };
+            let shown = Frame {
+                values: &sampled,
+                fraction: frame.fraction.max(0.28),
+                volume_fraction: frame.volume_fraction.max(0.8),
+                app_volume_fraction: frame.app_volume_fraction.max(0.6),
+                ..*frame
+            };
             fill(item, &shown);
             if !item.revealer.reveals_child() {
                 item.revealer.set_reveal_child(true);
@@ -512,6 +533,20 @@ fn fill(item: &Placed, frame: &Frame) -> bool {
             if let Some(boost) = &item.boost_bar {
                 boost.set_fraction(level / MAX_VOLUME);
             }
+            if let Some(app) = &item.app_bar {
+                // The application volume follows the same scale as the video's, boost and all.
+                let level = frame.app_volume_fraction.clamp(0.0, MAX_VOLUME);
+                app.set_fraction(level.min(1.0) / MAX_VOLUME);
+                if let Some(boost) = &item.app_boost_bar {
+                    boost.set_fraction(level / MAX_VOLUME);
+                }
+            }
+            if let Some(app) = &item.app_volume {
+                app.set_visible(frame.video_volume_tracked);
+            }
+            if let Some(icon) = &item.video_volume_icon {
+                icon.set_visible(frame.video_volume_tracked);
+            }
             if let Some(widget) = &item.bar_widget {
                 widget.set_opacity(if frame.has_audio { 1.0 } else { DIMMED_OPACITY });
             }
@@ -553,6 +588,43 @@ fn filename_css(selector: &str, element: &Element) -> String {
     css
 }
 
+/// The video's bar and the application's beside it, each with an icon on the side away from the text. The application's
+/// cell and the video's icon start hidden, as they are shown only while each video's volume is tracked.
+fn volume_bars(element: &Element, video: gtk::Widget, application: gtk::Widget) -> (gtk::Widget, gtk::Widget, gtk::Widget) {
+    // The bars run across the text: side by side beside text above or below, and one above the other beside text at a
+    // side. Their icons are on the side away from the text, each against its own bar.
+    let beside = element.text_position.is_beside();
+    let icon_first = !element.text_position.is_first();
+    let icon_size = element.style.font_size.clamp(8.0, 48.0).round() as i32;
+    let icon = |name| {
+        let icon = gtk::Image::from_icon_name(name);
+        icon.set_pixel_size(icon_size);
+        icon.set_halign(gtk::Align::Center);
+        icon.set_valign(gtk::Align::Center);
+        icon
+    };
+    let cell = |bar: gtk::Widget, icon: gtk::Image| {
+        let cell = gtk::Box::new(if beside { gtk::Orientation::Horizontal } else { gtk::Orientation::Vertical }, element.spacing);
+        if icon_first {
+            cell.append(&icon);
+            cell.append(&bar);
+        } else {
+            cell.append(&bar);
+            cell.append(&icon);
+        }
+        cell
+    };
+    let video_icon = icon(VIDEO_VOLUME_ICON);
+    let video = cell(video, video_icon.clone());
+    let application = cell(application, icon(APP_VOLUME_ICON));
+    video_icon.set_visible(false);
+    application.set_visible(false);
+    let bars = gtk::Box::new(if beside { gtk::Orientation::Vertical } else { gtk::Orientation::Horizontal }, element.spacing);
+    bars.append(&video);
+    bars.append(&application);
+    (bars.upcast(), application.upcast(), video_icon.upcast())
+}
+
 fn build(index: usize, element: &Element) -> Placed {
     let class = unique_class("overlay-el");
     let align = element.justify.text_align(element.slot);
@@ -586,8 +658,18 @@ fn build(index: usize, element: &Element) -> Placed {
         boost.add_css_class("boost-bar");
         boost
     });
+    // The application volume has a bar of its own beside the video's, shown while each video's volume is tracked.
+    let app_bar = (element.kind == Kind::Volume && bar.is_some()).then(make_bar);
+    let app_boost_bar = (element.kind == Kind::Volume && bar.is_some()).then(|| {
+        let boost = make_bar();
+        boost.add_css_class("boost-bar");
+        boost
+    });
     if let (Some(bar), Some(_)) = (&bar, &boost_bar) {
         bar.add_css_class("volume-bar");
+    }
+    if let Some(app) = &app_bar {
+        app.add_css_class("volume-bar");
     }
     // Unless the element says otherwise, a bar is centred and the text lines up by the element's place; otherwise both
     // line up across the way they are stacked as it says.
@@ -598,7 +680,7 @@ fn build(index: usize, element: &Element) -> Placed {
         ChildAlign::End => Some(gtk::Align::End),
         ChildAlign::Fill => Some(gtk::Align::Fill),
     };
-    for bar in bar.iter().chain(&boost_bar) {
+    for bar in bar.iter().chain(&boost_bar).chain(&app_bar).chain(&app_boost_bar) {
         if let Some(across) = across {
             if beside {
                 bar.set_valign(across);
@@ -607,16 +689,26 @@ fn build(index: usize, element: &Element) -> Placed {
             }
         }
     }
-    let bar_widget: Option<gtk::Widget> = match (&bar, &boost_bar) {
-        (Some(bar), Some(boost)) => {
-            let stack = gtk::Overlay::new();
-            stack.set_child(Some(boost));
-            stack.add_overlay(bar);
-            Some(stack.upcast())
-        }
-        (Some(bar), None) => Some(bar.clone().upcast()),
-        _ => None,
-    };
+    let (bar_widget, app_volume, video_volume_icon): (Option<gtk::Widget>, Option<gtk::Widget>, Option<gtk::Widget>) =
+        match (&bar, &boost_bar) {
+            (Some(bar), Some(boost)) => {
+                let video = gtk::Overlay::new();
+                video.set_child(Some(boost));
+                video.add_overlay(bar);
+                match (&app_bar, &app_boost_bar) {
+                    (Some(app), Some(app_boost)) => {
+                        let application = gtk::Overlay::new();
+                        application.set_child(Some(app_boost));
+                        application.add_overlay(app);
+                        let (bars, app_cell, video_icon) = volume_bars(element, video.upcast(), application.upcast());
+                        (Some(bars), Some(app_cell), Some(video_icon))
+                    }
+                    _ => (Some(video.upcast()), None, None),
+                }
+            }
+            (Some(bar), None) => (Some(bar.clone().upcast()), None, None),
+            _ => (None, None, None),
+        };
     let label = TextLabel::new(element);
     label.widget().add_css_class("overlay-text");
     match &label {
@@ -696,6 +788,10 @@ fn build(index: usize, element: &Element) -> Placed {
         shown: RefCell::new(String::new()),
         bar,
         boost_bar,
+        app_bar,
+        app_boost_bar,
+        app_volume,
+        video_volume_icon,
         bar_widget,
         icon,
         filename,
@@ -711,7 +807,18 @@ mod tests {
     const SECOND: i64 = 1_000_000;
 
     fn frame<'a>(values: &'a dyn Fn(&str) -> Option<String>) -> Frame<'a> {
-        Frame { values, fraction: 0.0, volume_fraction: 0.0, has_audio: true, is_video: true, playing: true, fullscreen: false, since_change: [None; TRIGGERS] }
+        Frame {
+            values,
+            fraction: 0.0,
+            volume_fraction: 0.0,
+            app_volume_fraction: 0.0,
+            video_volume_tracked: false,
+            has_audio: true,
+            is_video: true,
+            playing: true,
+            fullscreen: false,
+            since_change: [None; TRIGGERS],
+        }
     }
 
     #[test]

@@ -646,7 +646,7 @@ impl Editor {
     fn volume_tab(self: &Rc<Self>, element: &Element) -> adw::PreferencesPage {
         let page = adw::PreferencesPage::new();
         let (preview, update) = self.preview_row();
-        page.add(&intro_group("The volume, shown for a moment after it changes.", &preview));
+        page.add(&intro_group("The volume, shown for a moment after it changes. While each video's volume is remembered, a bar beside the video's shows the application volume.", &preview));
         let (bar, text) = self.bar_groups(element, update);
         page.add(&bar);
         page.add(&text);
