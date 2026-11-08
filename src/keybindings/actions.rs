@@ -1,6 +1,9 @@
 //! The catalogue of bindable actions. Each action has a name the window activates, a label for the editor,
 //! the contexts it can be bound in, and its default chords.
 
+use std::cell::RefCell;
+use std::collections::HashMap;
+
 /// Where an action applies. A deeper scope takes a chord from a shallower one when both are active.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Scope {
@@ -126,8 +129,11 @@ impl ActionInfo {
     }
 
     /// The scope the action belongs to, which its name gives: `browse.`, `view.`, `image.`, `video.`, `playlist.` and `tree.` actions to
-    /// their own, and the rest, which act on the window, to Global.
+    /// their own, and the rest, which act on the window, to Global. A plugin action's scope comes from its manifest.
     fn home(&self) -> Scope {
+        if let Some(scope) = PLUGIN_SCOPES.with(|scopes| scopes.borrow().get(self.name).copied()) {
+            return scope;
+        }
         match self.name.split_once('.').map(|(group, _)| group) {
             Some("browse") => Scope::Browse,
             Some("view") => Scope::View,
@@ -312,7 +318,7 @@ pub fn value_info(name: &str) -> Option<ValueInfo> {
     }
 }
 
-/// Every bindable action, in the order the editor lists them. The names, labels, icons and default keys
+/// Every built-in bindable action, in the order the editor lists them. The names, labels, icons and default keys
 /// follow pyimgv-gtk's catalogue. Actions that need a feature rsimgv does not have yet are left out.
 pub const ACTIONS: &[ActionInfo] = &[
     ActionInfo {
@@ -695,9 +701,55 @@ pub const ACTIONS: &[ActionInfo] = &[
     },
 ];
 
+/// The built-in actions plus the actions plugins contributed this session. The registry starts with the
+/// built-ins; plugins register before the binding table is first used, so their defaults are part of it.
+pub fn all() -> Vec<&'static ActionInfo> {
+    REGISTRY.with(|registry| registry.borrow().clone())
+}
+
 /// The catalogue entry for `name`, if there is one.
 pub fn find(name: &str) -> Option<&'static ActionInfo> {
-    ACTIONS.iter().find(|action| action.name == name)
+    REGISTRY.with(|registry| registry.borrow().iter().copied().find(|action| action.name == name))
+}
+
+/// Adds an action contributed by a plugin. The strings are leaked for the process lifetime: actions are few,
+/// and every part of the keybinding and menu code treats catalogue entries as `'static`.
+pub fn register_plugin_action(
+    name: &str,
+    label: &str,
+    description: &str,
+    scope: Scope,
+    icon: &str,
+    defaults: &[String],
+) -> &'static ActionInfo {
+    fn leak(text: &str) -> &'static str {
+        Box::leak(text.to_owned().into_boxed_str())
+    }
+
+    let default_keys: &'static [&'static str] = Box::leak(
+        defaults
+            .iter()
+            .map(|chord| &*leak(chord))
+            .collect::<Vec<_>>()
+            .into_boxed_slice(),
+    );
+    let action: &'static ActionInfo = Box::leak(Box::new(ActionInfo {
+        name: leak(name),
+        description: leak(description),
+        label: leak(label),
+        icon: leak(icon),
+        defaults: default_keys,
+    }));
+    PLUGIN_SCOPES.with(|scopes| {
+        scopes.borrow_mut().insert(name.to_owned(), scope);
+    });
+    REGISTRY.with(|registry| registry.borrow_mut().push(action));
+    action
+}
+
+thread_local! {
+    static REGISTRY: RefCell<Vec<&'static ActionInfo>> = RefCell::new(ACTIONS.iter().collect());
+    static PLUGIN_SCOPES: RefCell<HashMap<String, Scope>> = RefCell::new(HashMap::new());
 }
 
 #[cfg(test)]

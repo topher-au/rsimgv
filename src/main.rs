@@ -9,6 +9,7 @@ mod services;
 mod storage;
 mod keybindings;
 mod mpv;
+mod plugins;
 mod search;
 mod settings;
 mod ui;
@@ -181,11 +182,13 @@ fn main() -> glib::ExitCode {
     app.connect_startup(move |app| {
         load_css();
         register_icons();
+        plugins::discover(&startup_settings);
         keybindings::load();
         bookmarks::load();
         playlist::load();
         ipc_server.borrow_mut().apply(&ipc_config(&startup_settings));
         apply_thumbnail_settings(&startup_settings);
+        plugins::start(app, &startup_settings);
 
         let quit = gio::SimpleAction::new("quit", None);
         let weak = app.downgrade();
@@ -291,7 +294,10 @@ fn main() -> glib::ExitCode {
         status
     });
     app.connect_activate(move |app| gtk::prelude::GtkWindowExt::present(&ui::Window::new(app, &settings)));
-    app.connect_shutdown(move |_| shutdown_server.borrow_mut().stop());
+    app.connect_shutdown(move |_| {
+        plugins::shutdown();
+        shutdown_server.borrow_mut().stop();
+    });
     mpv::remove_stale_sockets();
     app.run()
 }

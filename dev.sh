@@ -19,6 +19,7 @@ fi
 # even when it only checks the code.
 export RSIMGV_GRESOURCE="$PWD/builddir/rsimgv.gresource"
 export RSIMGV_SVP_PLUGINS="$PWD/builddir"
+export RSIMGV_PLUGINS="$PWD/data/plugins"
 
 # Pass a command through to Cargo, using the same target directory as the Meson build. Only the artifacts Cargo
 # compiles against are rebuilt, not the application binary.
@@ -35,6 +36,8 @@ meson compile -C builddir
 mkdir -p builddir/data
 glib-compile-schemas --targetdir="$PWD/builddir/data" data
 export GSETTINGS_SCHEMA_DIR="$PWD/builddir/data"
+# The plugins shipped with the source are discovered without installing them.
+export RSIMGV_PLUGINS="$PWD/data/plugins"
 
 if [ "${1:-}" = "test" ]; then
     shift

@@ -5,7 +5,7 @@
 use serde_yaml_ng::{Mapping, Value};
 
 use super::actions::{
-    target_info, ActionInfo, Scope, ACTIONS, DEFAULT_NOTIFICATION_SECONDS, MAX_NOTIFICATION_SECONDS, NOTIFICATION_LEVELS,
+    all, target_info, ActionInfo, Scope, DEFAULT_NOTIFICATION_SECONDS, MAX_NOTIFICATION_SECONDS, NOTIFICATION_LEVELS,
 };
 use super::chord::canonical;
 
@@ -66,7 +66,8 @@ pub struct BindingTable {
 impl BindingTable {
     /// The table with every action on its default chords, each in the action's own context.
     pub fn defaults() -> Self {
-        let chords = ACTIONS
+        let actions = all();
+        let chords = actions
             .iter()
             .map(|action| action.defaults.iter().map(|chord| Binding::new((*chord).to_owned(), action.default_context())).collect())
             .collect();
@@ -74,7 +75,7 @@ impl BindingTable {
     }
 
     fn index(name: &str) -> Option<usize> {
-        ACTIONS.iter().position(|action| action.name == name)
+        all().iter().position(|action| action.name == name)
     }
 
     /// The bindings of `name`, empty if there is no such action.
@@ -106,7 +107,9 @@ impl BindingTable {
     /// the chord is valid, and the chord is not already bound to the action. Returns whether it was added.
     pub fn insert(&mut self, name: &str, binding: Binding) -> bool {
         let (Some(index), Some(chord)) = (Self::index(name), canonical(&binding.chord)) else { return false };
-        if !ACTIONS[index].contexts().contains(&binding.context) || self.chords[index].iter().any(|bound| bound.chord == chord) {
+        let actions = all();
+        let Some(action) = actions.get(index) else { return false };
+        if !action.contexts().contains(&binding.context) || self.chords[index].iter().any(|bound| bound.chord == chord) {
             return false;
         }
         // A binding that names the default target is kept as if it named none.
@@ -140,8 +143,9 @@ impl BindingTable {
 
     /// The action `chord` runs, as `resolve` finds it, with the binding that runs it.
     pub fn resolve_binding(&self, chord: &str, active: &[Scope]) -> Option<(&'static ActionInfo, &Binding)> {
+        let actions = all();
         let mut best: Option<(&'static ActionInfo, &Binding)> = None;
-        for (action, bindings) in ACTIONS.iter().zip(&self.chords) {
+        for (action, bindings) in actions.iter().copied().zip(&self.chords) {
             for binding in bindings.iter().filter(|bound| bound.chord == chord) {
                 let context = binding.context;
                 if context != Scope::Global && !active.contains(&context) {
@@ -159,7 +163,8 @@ impl BindingTable {
     /// the active contexts, less any a deeper context takes the chord from.
     pub fn active_bindings(&self, active: &[Scope]) -> Vec<(&'static ActionInfo, &Binding)> {
         let mut found = Vec::new();
-        for (action, bindings) in ACTIONS.iter().zip(&self.chords) {
+        let actions = all();
+        for (action, bindings) in actions.iter().copied().zip(&self.chords) {
             for binding in bindings {
                 let in_force = self.resolve_binding(&binding.chord, active).is_some_and(|(_, winner)| std::ptr::eq(winner, binding));
                 if in_force {
@@ -173,8 +178,8 @@ impl BindingTable {
     /// The other actions with a binding to `chord` whose context overlaps `context`, each with the context of that
     /// binding: what binding it to `name` in `context` would clash with.
     pub fn conflicts(&self, name: &str, chord: &str, context: Scope) -> Vec<(&'static ActionInfo, Scope)> {
-        ACTIONS
-            .iter()
+        all()
+            .into_iter()
             .zip(&self.chords)
             .filter_map(|(action, bindings)| {
                 if action.name == name {
@@ -192,8 +197,9 @@ impl BindingTable {
     /// a context other than the action's own is a mapping of `key`, and `value`, `target`, `script` and `context` when
     /// it has them (a notification is `message`, `level` and `seconds`); any other is just its chord.
     pub fn to_yaml(&self) -> String {
-        let mut actions = Mapping::new();
-        for (action, bindings) in ACTIONS.iter().zip(&self.chords) {
+        let mut mapped = Mapping::new();
+        let catalogue = all();
+        for (action, bindings) in catalogue.iter().copied().zip(&self.chords) {
             let defaults = action.defaults.iter().map(|chord| Binding::new((*chord).to_owned(), action.default_context()));
             if bindings.iter().cloned().eq(defaults) {
                 continue;
@@ -227,11 +233,11 @@ impl BindingTable {
                     Value::Mapping(entry)
                 })
                 .collect();
-            actions.insert(Value::String(action.name.to_owned()), Value::Sequence(sequence));
+            mapped.insert(Value::String(action.name.to_owned()), Value::Sequence(sequence));
         }
         let mut root = Mapping::new();
         root.insert(Value::String("schema".to_owned()), Value::Number(1.into()));
-        root.insert(Value::String("actions".to_owned()), Value::Mapping(actions));
+        root.insert(Value::String("actions".to_owned()), Value::Mapping(mapped));
         serde_yaml_ng::to_string(&Value::Mapping(root)).unwrap_or_default()
     }
 
@@ -245,6 +251,7 @@ impl BindingTable {
             Err(err) => return vec![format!("the file could not be read: {err}")],
         };
         let Some(actions) = root.get("actions").and_then(Value::as_mapping) else { return Vec::new() };
+        let catalogue = all();
         let mut problems = Vec::new();
         for (key, value) in actions {
             let Some(name) = key.as_str() else { continue };
@@ -252,7 +259,7 @@ impl BindingTable {
                 problems.push(format!("unknown action {name}"));
                 continue;
             };
-            let action = &ACTIONS[index];
+            let action = catalogue[index];
             let mut bindings: Vec<Binding> = Vec::new();
             // Each entry is a chord, or a mapping of a chord (`key`), the value it passes (`value`), the target it
             // chooses (`target`) and the context it is active in (`context`), which is the action's own when it is

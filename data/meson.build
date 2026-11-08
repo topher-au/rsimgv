@@ -20,3 +20,7 @@ install_data(
 
 # Application icons, installed into the system icon theme.
 install_subdir('icons/hicolor', install_dir: get_option('datadir') / 'icons')
+
+# Plugins shipped with rsimgv. Discovery also reads $XDG_DATA_HOME/rsimgv/plugins and
+# $XDG_DATA_DIRS/rsimgv/plugins, so an installed package finds these without extra configuration.
+install_subdir('plugins', install_dir: get_option('datadir') / 'rsimgv')

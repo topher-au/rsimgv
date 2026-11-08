@@ -16,6 +16,18 @@ mpv_dep = dependency('mpv', version: '>= 2.0')
 # Pictures are resampled by OpenCV, which the opencv crate links against and generates its bindings for with clang.
 opencv_dep = dependency('opencv4', 'opencv5', version: '>= 4.5')
 
+# Python plugins embed CPython through PyO3 and build widgets through PyGObject. Both are optional; a build
+# without them still runs every non-plugin feature and reports Python plugins as unsupported.
+python_option = get_option('python')
+python = find_program('python3', required: false)
+python_dep = dependency('python3-embed', version: '>= 3.10', required: false)
+pygobject_dep = dependency('pygobject-3.0', version: '>= 3.50', required: false)
+python_enabled = python_option.enabled() or (python_option.auto() and python.found() and python_dep.found() and pygobject_dep.found())
+if python_option.enabled() and not (python.found() and python_dep.found() and pygobject_dep.found())
+  error('Python plugin support was enabled, but python3-embed or pygobject-3.0 was not found')
+endif
+cargo_features = python_enabled ? '--features=python' : '--no-default-features'
+
 if get_option('buildtype') == 'debug'
   cargo_profile = 'debug'
 else
@@ -79,6 +91,9 @@ rsimgv = custom_target('rsimgv',
     meson.current_build_dir(),
     '@OUTPUT@',
   ],
+  env: python_enabled
+    ? {'PYO3_PYTHON': python.full_path(), 'RSIMGV_CARGO_FEATURES': cargo_features}
+    : {'RSIMGV_CARGO_FEATURES': cargo_features},
   build_always_stale: true,
   install: true,
   install_dir: get_option('bindir'),

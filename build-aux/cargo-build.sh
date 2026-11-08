@@ -17,5 +17,5 @@ if [ "$profile" = release ]; then
 fi
 
 RSIMGV_GRESOURCE="$gresource" RSIMGV_SVP_PLUGINS="$svp_plugins" CARGO_TARGET_DIR="$target_dir" \
-  "$cargo" build --manifest-path "$manifest" $flags
+  "$cargo" build --manifest-path "$manifest" $flags ${RSIMGV_CARGO_FEATURES:-}
 cp "$target_dir/$profile/rsimgv" "$output"

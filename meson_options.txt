@@ -1,0 +1,4 @@
+option('python',
+  type: 'feature',
+  value: 'auto',
+  description: 'Build Python plugin support (PyO3 + PyGObject)')
