@@ -456,8 +456,8 @@ pub fn rotation_name(degrees: u16) -> &'static str {
     }
 }
 
-/// The template that writes a volume display's text: the level, that it is muted, or `---` for a video with no sound.
-const VOLUME_TEXT: &str = "${?no-audio:---}${!no-audio:${?mute:Muted}${!mute:${volume}%}}";
+/// The template that writes a volume display's text: the level, a mute icon, or `---` for a video with no sound.
+const VOLUME_TEXT: &str = "${?no-audio:---}${!no-audio:${?mute:\u{1f507}}${!mute:${volume}%}}";
 
 /// The parts a media status element can show, in the order it writes them. The state is an icon and the filename a line
 /// under the text, so neither is in the text. The percent and the speed are written together, as `(20% @ 0.2x)`, or
@@ -1365,6 +1365,17 @@ mod tests {
 
         let layout = Layout::from_legacy(&Legacy { seek_time: false, ..legacy() });
         assert_eq!(layout.elements[0].text_template(), "");
+    }
+
+    #[test]
+    fn a_muted_volume_display_shows_a_mute_icon_instead_of_text() {
+        let render = |names: &[(&str, &str)]| {
+            template::Template::parse(VOLUME_TEXT)
+                .render(&|name| names.iter().find(|(candidate, _)| *candidate == name).map(|(_, value)| (*value).to_owned()))
+        };
+        assert_eq!(render(&[("volume", "80")]), "80%");
+        assert_eq!(render(&[("volume", "80"), ("mute", "muted")]), "\u{1f507}");
+        assert_eq!(render(&[("no-audio", "yes")]), "---");
     }
 
     #[test]
