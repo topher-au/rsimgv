@@ -2,6 +2,7 @@ mod backdrop;
 mod binding_dialog;
 mod browse_search;
 mod browse_view;
+mod crop_editor;
 mod drag;
 mod floating_bar;
 mod film_strip;
@@ -20,6 +21,7 @@ mod media_overlay;
 mod overlay_editor;
 mod fs_tree;
 mod header_bar;
+mod history_dialog;
 mod overflow_box;
 mod overlay_split_view;
 mod path_bar;
@@ -62,10 +64,16 @@ mod tests {
             let (sender, receiver) = mpsc::channel::<Job>();
             let (ready, ready_for) = mpsc::channel::<()>();
             thread::spawn(move || {
-                // Settings go to a scratch file, not the user's configuration.
+                // Settings go to a scratch file, not the user's configuration, and the metadata database to a scratch
+                // data directory, not the user's.
                 let config = std::env::temp_dir().join(format!("rsimgv-test-{}.conf", std::process::id()));
                 let _ = std::fs::remove_file(&config);
                 std::env::set_var("RSIMGV_CONFIG", &config);
+                let data = std::env::temp_dir().join(format!("rsimgv-test-data-{}", std::process::id()));
+                let _ = std::fs::remove_dir_all(&data);
+                let _ = std::fs::create_dir_all(&data);
+                std::env::set_var("XDG_DATA_HOME", &data);
+                std::env::set_var("RSIMGV_DATA", &data);
                 crate::settings::open().expect("the settings open");
                 super::fs_tree::tests::init_gtk();
                 // The bundled icon theme resolves once registered.

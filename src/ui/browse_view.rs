@@ -17,6 +17,7 @@ use gtk::subclass::prelude::*;
 use gtk::{gio, glib};
 
 use crate::fs::thumbnail::{Media as ThumbnailMedia, Size as ThumbnailSize, Thumbnails};
+use crate::storage::watch_history::{format_duration, WatchHistory};
 use super::drag;
 use super::thumbnail_paint::{picture_paintable, ScatteredThumbnail, MAX_PHOTOS, PHOTO_SHARE};
 use crate::fs::metadata::{MediaInfo, MediaMetadata};
@@ -51,11 +52,13 @@ pub enum InfoField {
     Codec,
     Bitrate,
     Audio,
+    Views,
+    Watched,
 }
 
 impl InfoField {
     /// Every field, in the order the preferences list them.
-    pub const ALL: [InfoField; 9] = [
+    pub const ALL: [InfoField; 11] = [
         InfoField::Size,
         InfoField::Modified,
         InfoField::ContentType,
@@ -65,6 +68,8 @@ impl InfoField {
         InfoField::Codec,
         InfoField::Bitrate,
         InfoField::Audio,
+        InfoField::Views,
+        InfoField::Watched,
     ];
 
     /// Whether the field is read from a picture's or video's metadata, rather than the file's own information.
@@ -87,6 +92,8 @@ impl InfoField {
             InfoField::Codec => "Codec",
             InfoField::Bitrate => "Bit rate",
             InfoField::Audio => "Audio",
+            InfoField::Views => "Views",
+            InfoField::Watched => "Watched",
         }
     }
 
@@ -102,11 +109,18 @@ impl InfoField {
             InfoField::Codec => "codec",
             InfoField::Bitrate => "bit-rate",
             InfoField::Audio => "audio",
+            InfoField::Views => "views",
+            InfoField::Watched => "watched",
         }
     }
 
     pub fn from_key(key: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|field| field.key() == key)
+    }
+
+    /// Whether the field is one of the viewing-history fields, which inline layouts start on a new line.
+    fn is_watch(self) -> bool {
+        matches!(self, InfoField::Views | InfoField::Watched)
     }
 
     /// The field's text for `entry`, if it has one. The metadata fields need `metadata`, once it is read.
@@ -142,17 +156,42 @@ impl InfoField {
                 }
             }),
             InfoField::Audio => metadata?.audio_codec.clone(),
+            InfoField::Views => {
+                let (views, _) = watch_totals(entry.path())?;
+                (views > 0).then(|| format!("{views} view{}", if views == 1 { "" } else { "s" }))
+            }
+            InfoField::Watched => {
+                let (_, seconds) = watch_totals(entry.path())?;
+                (seconds >= 0.5).then(|| format!("{} watched", format_duration(seconds)))
+            }
         }
     }
 }
 
-/// The info for `entry`: its chosen fields that have a value, joined by `separator`.
-fn info_text(entry: &FileEntry, fields: &[InfoField], separator: &str, metadata: Option<&MediaMetadata>) -> String {
-    fields
-        .iter()
-        .filter_map(|field| field.text(entry, metadata))
-        .collect::<Vec<_>>()
-        .join(separator)
+/// The views and watched time recorded for the file at `path`, looked up by the path the browse view lists it at. The
+/// history is keyed by content hash, but reading each file in a folder to find its hash would be far too slow here.
+fn watch_totals(path: &Path) -> Option<(u64, f64)> {
+    WatchHistory::shared()?.totals_at(path).ok().flatten()
+}
+
+/// The info for `entry`: its chosen fields that have a value, joined by `separator`. In inline layouts,
+/// `break_before_watch` starts the viewing-history fields on a line of their own; stacked layouts already put each field
+/// on its own line, so the break is left to `separator`.
+fn info_text(entry: &FileEntry, fields: &[InfoField], separator: &str, break_before_watch: bool, metadata: Option<&MediaMetadata>) -> String {
+    let values: Vec<(InfoField, String)> = fields.iter().filter_map(|field| field.text(entry, metadata).map(|text| (*field, text))).collect();
+    let break_at = break_before_watch.then(|| values.iter().position(|(field, _)| field.is_watch())).flatten();
+    let mut text = String::new();
+    for (index, (_, value)) in values.iter().enumerate() {
+        if index > 0 {
+            if Some(index) == break_at {
+                text.push('\n');
+            } else {
+                text.push_str(separator);
+            }
+        }
+        text.push_str(value);
+    }
+    text
 }
 
 /// The tooltip for an item: its name, kind and path, then each of its details in a grid. The metadata details need
@@ -1550,12 +1589,13 @@ fn update_info(view: &BrowseView, cell: &gtk::Box, entry: &FileEntry, info: &gtk
         String::new()
     } else {
         let separator = if layout == "stacked" { "\n" } else { " · " };
+        let break_before_watch = layout != "stacked";
         let metadata = if fields.iter().any(|field| field.needs_metadata()) && thumbnail_media(entry).is_some() {
             request_metadata(view, cell, entry)
         } else {
             None
         };
-        info_text(entry, &fields, separator, metadata.as_ref())
+        info_text(entry, &fields, separator, break_before_watch, metadata.as_ref())
     };
     info.set_label(&text);
     info.set_visible(!text.is_empty());
@@ -2469,11 +2509,15 @@ impl BrowseView {
         // The visual is the item's square, as style_item sizes it.
         visual.set_size_request(self.item_size(), self.item_size());
         cell.set_size_request(self.item_size(), -1);
-        // Two lines of text are measured when names wrap and when info is stacked, so the rows fit them.
+        // Two lines of text are measured when names wrap, when info is stacked, and when inline info has both ordinary
+        // fields and viewing-history fields, which start on a line of their own.
         let name_lines = if self.filename_display() == "wrapped" { "Ag\nAg" } else { "Ag" };
         name.set_label(name_lines);
         name.set_visible(self.filename_display() != "off");
-        let info_lines = if self.info_layout() == "stacked" { "Ag\nAg" } else { "Ag" };
+        let fields = self.imp().info_fields.borrow();
+        let two_info_lines = self.info_layout() == "stacked"
+            || (fields.iter().any(|field| field.is_watch()) && fields.iter().any(|field| !field.is_watch()));
+        let info_lines = if two_info_lines { "Ag\nAg" } else { "Ag" };
         info.set_label(info_lines);
         info.set_visible(self.info_layout() != "disabled");
         cell.measure(gtk::Orientation::Vertical, self.item_size()).1

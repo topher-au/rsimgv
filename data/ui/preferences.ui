@@ -169,6 +169,66 @@
                             </child>
                             <child>
                               <object class="AdwPreferencesGroup">
+                                <property name="title">Viewing History</property>
+                                <property name="description">Time is counted as it is watched, so faster playback counts less and slower playback counts more.</property>
+                                <child>
+                                  <object class="AdwSwitchRow" id="history_enabled_row">
+                                    <property name="title">Track viewing history</property>
+                                    <property name="subtitle">Keeps how many times and how long each picture and video has been watched</property>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="AdwSwitchRow" id="history_images_row">
+                                    <property name="title">Count pictures</property>
+                                    <property name="subtitle">A picture counts as viewed once it has been on screen for the time below</property>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="AdwSpinRow" id="history_image_seconds_row">
+                                    <property name="title">Picture view time</property>
+                                    <property name="subtitle">Seconds a picture must stay on screen to count as viewed</property>
+                                    <property name="digits">0</property>
+                                    <property name="adjustment">
+                                      <object class="GtkAdjustment">
+                                        <property name="lower">0</property>
+                                        <property name="upper">60</property>
+                                        <property name="step-increment">1</property>
+                                        <property name="page-increment">5</property>
+                                      </object>
+                                    </property>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="AdwSwitchRow" id="history_videos_row">
+                                    <property name="title">Count videos</property>
+                                    <property name="subtitle">A video counts as viewed once the part below has played</property>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="AdwSpinRow" id="history_video_percent_row">
+                                    <property name="title">Video watch percentage</property>
+                                    <property name="subtitle">How much of a video has to play in the current playback to count as viewed</property>
+                                    <property name="digits">0</property>
+                                    <property name="adjustment">
+                                      <object class="GtkAdjustment">
+                                        <property name="lower">1</property>
+                                        <property name="upper">100</property>
+                                        <property name="step-increment">5</property>
+                                        <property name="page-increment">10</property>
+                                      </object>
+                                    </property>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="AdwSwitchRow" id="history_show_stats_row">
+                                    <property name="title">Show views and watch time</property>
+                                    <property name="subtitle">In the viewer's status bar and overlays</property>
+                                  </object>
+                                </child>
+                              </object>
+                            </child>
+                            <child>
+                              <object class="AdwPreferencesGroup">
                                 <property name="title">Animations</property>
                                 <child>
                                   <object class="AdwSwitchRow" id="sidebar_animations_row">
@@ -350,6 +410,12 @@
                                   </object>
                                 </child>
                                 <child>
+                                  <object class="AdwSwitchRow" id="thumbnail_crop_video_row">
+                                    <property name="title">Crop video thumbnails to the locked crop</property>
+                                    <property name="subtitle">When a video's crop is locked, make its thumbnails from the cropped picture</property>
+                                  </object>
+                                </child>
+                                <child>
                                   <object class="AdwSwitchRow" id="video_frame_previews_row">
                                     <property name="title">Video frame previews</property>
                                     <property name="subtitle">Plays a video's frames while the pointer is over it, or while it is the item last selected and the pointer is over none. The frames take time to make</property>
@@ -400,12 +466,6 @@
                                   <object class="AdwSwitchRow" id="media_only_row">
                                     <property name="title">Only show compatible media files</property>
                                     <property name="subtitle">Hides files that are neither pictures nor videos</property>
-                                  </object>
-                                </child>
-                                <child>
-                                  <object class="AdwSwitchRow" id="search_index_row">
-                                    <property name="title">Keep metadata in the search index</property>
-                                    <property name="subtitle">Keeps what is read from pictures and videos in a database instead of the metadata cache</property>
                                   </object>
                                 </child>
                               </object>
@@ -900,6 +960,12 @@
                                     </property>
                                   </object>
                                 </child>
+                                <child>
+                                  <object class="AdwSwitchRow" id="video_scaled_times_row">
+                                    <property name="title">Scale times by playback speed</property>
+                                    <property name="subtitle">A 10-minute video at 25% speed shows 40 minutes, the time it actually takes</property>
+                                  </object>
+                                </child>
                               </object>
                             </child>
                             <child>
@@ -968,13 +1034,34 @@
                                 <child>
                                   <object class="AdwComboRow" id="video_crop_method_row">
                                     <property name="title">Find the picture by</property>
-                                    <property name="subtitle">Brightness and motion are sampled from the file once a second</property>
+                                    <property name="subtitle">Brightness and motion are sampled from the file over several frames</property>
                                     <property name="model">
                                       <object class="GtkStringList">
                                         <items>
                                           <item>Near-black bars</item>
                                           <item>Brightness at the border, also a blurred backdrop</item>
                                           <item>The area that moves, also a still backdrop</item>
+                                          <item>Border brightness over several frames</item>
+                                        </items>
+                                      </object>
+                                    </property>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="AdwComboRow" id="video_crop_ratio_row">
+                                    <property name="title">Crop shape</property>
+                                    <property name="subtitle">Crop to a standard shape, or keep the shape that is found</property>
+                                    <property name="model">
+                                      <object class="GtkStringList">
+                                        <items>
+                                          <item>Auto</item>
+                                          <item>4:3</item>
+                                          <item>16:9</item>
+                                          <item>9:16</item>
+                                          <item>1:1</item>
+                                          <item>3:2</item>
+                                          <item>2:3</item>
+                                          <item>21:9</item>
                                         </items>
                                       </object>
                                     </property>

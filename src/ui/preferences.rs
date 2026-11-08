@@ -101,6 +101,8 @@ mod imp {
         #[template_child]
         pub thumbnail_crop_row: TemplateChild<adw::SwitchRow>,
         #[template_child]
+        pub thumbnail_crop_video_row: TemplateChild<adw::SwitchRow>,
+        #[template_child]
         pub video_frame_previews_row: TemplateChild<adw::SwitchRow>,
         #[template_child]
         pub directory_previews_row: TemplateChild<adw::SwitchRow>,
@@ -137,8 +139,6 @@ mod imp {
         #[template_child]
         pub show_videos_row: TemplateChild<adw::SwitchRow>,
         #[template_child]
-        pub search_index_row: TemplateChild<adw::SwitchRow>,
-        #[template_child]
         pub playlist_window_headerbar_row: TemplateChild<adw::ComboRow>,
         #[template_child]
         pub default_sort_by_row: TemplateChild<adw::ComboRow>,
@@ -171,6 +171,8 @@ mod imp {
         #[template_child]
         pub video_start_delay_row: TemplateChild<adw::SpinRow>,
         #[template_child]
+        pub video_scaled_times_row: TemplateChild<adw::SwitchRow>,
+        #[template_child]
         pub mpv_group: TemplateChild<adw::PreferencesGroup>,
         #[template_child]
         pub gstreamer_group: TemplateChild<adw::PreferencesGroup>,
@@ -186,6 +188,8 @@ mod imp {
         pub video_crop_row: TemplateChild<adw::SwitchRow>,
         #[template_child]
         pub video_crop_method_row: TemplateChild<adw::ComboRow>,
+        #[template_child]
+        pub video_crop_ratio_row: TemplateChild<adw::ComboRow>,
         #[template_child]
         pub video_crop_trim_row: TemplateChild<adw::SpinRow>,
         #[template_child]
@@ -214,6 +218,18 @@ mod imp {
         pub sidebar_animations_row: TemplateChild<adw::SwitchRow>,
         #[template_child]
         pub sidebar_animation_ms_row: TemplateChild<adw::SpinRow>,
+        #[template_child]
+        pub history_enabled_row: TemplateChild<adw::SwitchRow>,
+        #[template_child]
+        pub history_images_row: TemplateChild<adw::SwitchRow>,
+        #[template_child]
+        pub history_image_seconds_row: TemplateChild<adw::SpinRow>,
+        #[template_child]
+        pub history_videos_row: TemplateChild<adw::SwitchRow>,
+        #[template_child]
+        pub history_video_percent_row: TemplateChild<adw::SpinRow>,
+        #[template_child]
+        pub history_show_stats_row: TemplateChild<adw::SwitchRow>,
         #[template_child]
         pub controls_locked_row: TemplateChild<adw::SwitchRow>,
         #[template_child]
@@ -426,6 +442,31 @@ impl PreferencesDialog {
         settings.bind("viewer.status-bar.shown", &*imp.viewer_status_bar_row, "active").build();
         bind_port(settings, &imp.zoom_step_row, "image.zoom-step");
         bind_port(settings, &imp.sidebar_animation_ms_row, "window.sidebar.animation-ms");
+        bind_port(settings, &imp.history_image_seconds_row, "history.image-seconds");
+        bind_port(settings, &imp.history_video_percent_row, "history.video-percent");
+        // The history's options mean nothing while it is off, and each count's threshold means nothing while it is off.
+        {
+            let settings = settings.clone();
+            let watch_settings = settings.clone();
+            let (images, image_seconds) = (imp.history_images_row.clone(), imp.history_image_seconds_row.clone());
+            let (videos, video_percent) = (imp.history_videos_row.clone(), imp.history_video_percent_row.clone());
+            let show_stats = imp.history_show_stats_row.clone();
+            let update = move || {
+                let enabled = watch_settings.boolean("history.enabled");
+                images.set_sensitive(enabled);
+                videos.set_sensitive(enabled);
+                show_stats.set_sensitive(enabled);
+                image_seconds.set_sensitive(enabled && watch_settings.boolean("history.images"));
+                video_percent.set_sensitive(enabled && watch_settings.boolean("history.videos"));
+            };
+            update();
+            for key in ["history.enabled", "history.images", "history.videos"] {
+                settings.connect_changed(key, {
+                    let update = update.clone();
+                    move |_, _| update()
+                });
+            }
+        }
         bind_port(settings, &imp.video_crop_trim_row, "video.crop.trim");
         bind_port(settings, &imp.video_backdrop_blur_row, "video.backdrop.blur");
         for (row, key) in [
@@ -668,7 +709,6 @@ fn bind_switches(settings: &Settings, imp: &imp::PreferencesDialog) {
         ("browse.sort.remember-per-folder", &imp.remember_folder_sort_row),
         ("browse.show-images", &imp.show_images_row),
         ("browse.show-videos", &imp.show_videos_row),
-        ("browse.search-index", &imp.search_index_row),
         ("playlist.fetch-in-background", &imp.playlist_fetch_row),
         ("playlist.repeat", &imp.playlist_repeat_row),
         ("playlist.columns.position", &imp.playlist_column_position_row),
@@ -696,6 +736,12 @@ fn bind_switches(settings: &Settings, imp: &imp::PreferencesDialog) {
         ("viewer.thumbnail-bar.shown", &imp.thumbnail_bar_shown_row),
         ("viewer.thumbnail-bar.overlay", &imp.thumbnail_bar_overlay_row),
         ("viewer.thumbnail-bar.pinned", &imp.thumbnail_bar_pinned_row),
+        ("thumbnails.crop-video", &imp.thumbnail_crop_video_row),
+        ("video.scaled-times", &imp.video_scaled_times_row),
+        ("history.enabled", &imp.history_enabled_row),
+        ("history.images", &imp.history_images_row),
+        ("history.videos", &imp.history_videos_row),
+        ("history.show-stats", &imp.history_show_stats_row),
     ];
     for (key, row) in switches {
         settings.bind(key, &**row, "active").build();
@@ -704,9 +750,10 @@ fn bind_switches(settings: &Settings, imp: &imp::PreferencesDialog) {
 
 /// Binds each combo row to a string setting whose value is one of `choices`, by position in the row.
 fn bind_choices(settings: &Settings, imp: &imp::PreferencesDialog) {
-    let combos: [(&str, &glib::Object, &[&str]); 21] = [
+    let combos: [(&str, &glib::Object, &[&str]); 22] = [
         ("thumbnails.aggression", imp.thumbnail_aggression_row.upcast_ref(), &["low", "standard", "increased", "high", "extreme"]),
-        ("video.crop.method", imp.video_crop_method_row.upcast_ref(), &["cropdetect", "edges", "static"]),
+        ("video.crop.method", imp.video_crop_method_row.upcast_ref(), &["cropdetect", "edges", "static", "across"]),
+        ("video.crop.ratio", imp.video_crop_ratio_row.upcast_ref(), &["auto", "4:3", "16:9", "9:16", "1:1", "3:2", "2:3", "21:9"]),
         ("viewer.folder-end", imp.folder_end_row.upcast_ref(), &["stop", "loop", "next-folder"]),
         ("browse.sort.by", imp.default_sort_by_row.upcast_ref(), &["name", "modified", "size", "type"]),
         ("browse.sort.order", imp.default_sort_order_row.upcast_ref(), &["ascending", "descending"]),
@@ -907,6 +954,38 @@ pub(crate) mod tests {
         let bodies = group_bodies(imp.section_stack.upcast_ref());
         assert!(bodies.len() >= 8, "a body for each group: {}", bodies.len());
         assert!(bodies.iter().all(|body| body.layout_manager().is_some_and(|layout| layout.is::<TightLayout>())));
+
+        // The viewing history rows are bound to their settings, and its options go with its switch.
+        assert!(imp.history_enabled_row.is_active(), "the viewing history is on by default");
+        assert_eq!(settings.int("history.video-percent"), 10, "a tenth of a video counts as a view by default");
+        settings.set_boolean("history.enabled", false).unwrap();
+        assert!(!imp.history_enabled_row.is_active(), "the row follows history.enabled");
+        assert!(!imp.history_images_row.is_sensitive(), "the options are off with the history");
+        assert!(!imp.history_video_percent_row.is_sensitive());
+        settings.set_boolean("history.enabled", true).unwrap();
+        assert!(imp.history_images_row.is_sensitive());
+        assert!(imp.history_video_percent_row.is_sensitive());
+        imp.video_crop_ratio_row.set_selected(2);
+        assert_eq!(settings.string("video.crop.ratio"), "16:9");
+        settings.reset("video.crop.ratio");
+        assert!(imp.video_scaled_times_row.is_active(), "playback times are scaled by default");
+        imp.video_scaled_times_row.set_active(false);
+        assert!(!settings.boolean("video.scaled-times"));
+        settings.reset("video.scaled-times");
+        assert!(!imp.thumbnail_crop_video_row.is_active(), "video thumbnails are not cropped by default");
+        imp.thumbnail_crop_video_row.set_active(true);
+        assert!(settings.boolean("thumbnails.crop-video"));
+        settings.reset("thumbnails.crop-video");
+        imp.history_image_seconds_row.set_value(4.0);
+        assert_eq!(settings.int("history.image-seconds"), 4);
+        imp.history_video_percent_row.set_value(75.0);
+        assert_eq!(settings.int("history.video-percent"), 75);
+        settings.reset("history.image-seconds");
+        settings.reset("history.video-percent");
+        imp.history_show_stats_row.set_active(false);
+        assert!(!settings.boolean("history.show-stats"));
+        settings.reset("history.show-stats");
+        settings.reset("history.enabled");
 
         // The image rows are bound to their settings.
         imp.image_fit_row.set_selected(3);

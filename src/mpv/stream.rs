@@ -31,7 +31,6 @@ const ESTIMATED_FPS: u64 = 5;
 
 /// The widest a frame is rendered, in pixels; wider sizes are scaled down to keep software rendering quick.
 const MAX_FRAME_WIDTH: i32 = 2560;
-
 /// The widest a video can be and still be rendered at its own size, however much bigger it is shown: it is rendered by the CPU,
 /// which scales every pixel it is asked for, and GTK scales the frame up on the GPU for little cost. What mpv draws in the frame,
 /// such as subtitles and its OSD, is scaled up with it, so it is softer than if it were drawn at the size shown. Wider videos
@@ -39,6 +38,25 @@ const MAX_FRAME_WIDTH: i32 = 2560;
 const OWN_SIZE_MAX_WIDTH: i32 = 1280;
 
 const MICROS: f64 = 1_000_000.0;
+
+/// What a frame was before the framing changed, so it can be drawn where the new framing will put it while the player
+/// makes a new frame.
+#[derive(Clone, Copy)]
+pub(super) struct Transition {
+    kind: TransitionKind,
+    /// The video's own size before the change.
+    source: (i32, i32),
+    /// The crop the old frame was, or the crop the new frame will be.
+    crop: CropRect,
+}
+
+#[derive(Clone, Copy)]
+enum TransitionKind {
+    /// The old frame is cropped, and is drawn inside the crop in the full picture.
+    Uncrop,
+    /// The old frame is the full picture, and is drawn cropped to the new crop.
+    Crop,
+}
 
 /// How often the video is looked at for where to crop it, at first, and the longest wait between looks once what is found has
 /// stopped changing. The wait doubles for each look that finds the crop as it was.
@@ -106,14 +124,61 @@ fn grab_gray(path: &Path, seconds: f64, width: i32, height: i32) -> Option<Vec<u
     (frame.len() == (width.max(0) * height.max(0)) as usize).then_some(frame)
 }
 
+/// How many frames edge detection across frames looks at, and how far apart they are, in seconds.
+const ACROSS_FRAMES: usize = 4;
+const ACROSS_GAP: f64 = 2.0;
+
+/// Draws the old frame where the new framing will put it, until the player renders a frame with that framing.
+fn draw_transition(snapshot: &gtk::Snapshot, width: f64, height: f64, frame: &gdk::Texture, transition: Transition) {
+    let whole = gtk::graphene::Rect::new(0.0, 0.0, width as f32, height as f32);
+    snapshot.append_color(&gdk::RGBA::BLACK, &whole);
+    let (source_width, source_height) = (f64::from(transition.source.0.max(1)), f64::from(transition.source.1.max(1)));
+    let (crop_width, crop_height) = (f64::from(transition.crop.width.max(0)), f64::from(transition.crop.height.max(0)));
+    if crop_width <= 0.0 || crop_height <= 0.0 {
+        return;
+    }
+    match transition.kind {
+        TransitionKind::Uncrop => {
+            let (x, y, width, height) = framing::fitted(width, height, source_width, source_height);
+            let (crop_x, crop_y) = (x + width * f64::from(transition.crop.left) / source_width, y + height * f64::from(transition.crop.top) / source_height);
+            let (crop_width, crop_height) = (width * crop_width / source_width, height * crop_height / source_height);
+            snapshot.append_texture(frame, &gtk::graphene::Rect::new(crop_x as f32, crop_y as f32, crop_width as f32, crop_height as f32));
+        }
+        TransitionKind::Crop => {
+            let (crop_x, crop_y, crop_width, crop_height) = framing::fitted(width, height, crop_width, crop_height);
+            let full_width = crop_width * source_width / f64::from(transition.crop.width.max(1));
+            let full_height = crop_height * source_height / f64::from(transition.crop.height.max(1));
+            let x = crop_x - full_width * f64::from(transition.crop.left) / source_width;
+            let y = crop_y - full_height * f64::from(transition.crop.top) / source_height;
+            snapshot.push_clip(&whole);
+            snapshot.append_texture(frame, &gtk::graphene::Rect::new(x as f32, y as f32, full_width as f32, full_height as f32));
+            snapshot.pop();
+        }
+    }
+}
+
 /// Where to crop the video at `path`, which is `width` by `height`, at `position` seconds, found by `method` from frames decoded
 /// from the file. The frames are scaled down by ffmpeg, and the rectangle found in them is scaled back up. This reads the file,
 /// so it runs on a worker thread.
 fn measure_frames(method: CropMethod, path: &Path, position: f64, width: i32, height: i32) -> Option<CropRect> {
     let (small_width, small_height) = framing::measure_size(width, height);
+    let soft_max = framing::soft_pixels(small_width, width);
+    if matches!(method, CropMethod::Edges | CropMethod::Across) {
+        let frames: Vec<Vec<u8>> = (0..ACROSS_FRAMES)
+            .filter_map(|index| grab_gray(path, position + index as f64 * ACROSS_GAP, small_width, small_height))
+            .collect();
+        let found = if method == CropMethod::Across {
+            framing::find_picture_across(&frames, small_width as usize, small_height as usize, framing::EDGE_THRESHOLD, soft_max)
+        } else {
+            frames.first().and_then(|first| {
+                framing::measure(method, first, None, small_width as usize, small_height as usize, soft_max)
+            })
+        }?;
+        let found = framing::trim_solid_edges(found, &frames, small_width as usize, small_height as usize);
+        return Some(framing::scaled_up(found, (small_width, small_height), (width, height)));
+    }
     let first = grab_gray(path, position, small_width, small_height)?;
     let later = (method == CropMethod::Static).then(|| grab_gray(path, position + MOTION_GAP, small_width, small_height)).flatten();
-    let soft_max = framing::soft_pixels(small_width, width);
     let found = framing::measure(method, &first, later.as_deref(), small_width as usize, small_height as usize, soft_max)?;
     Some(framing::scaled_up(found, (small_width, small_height), (width, height)))
 }
@@ -142,6 +207,8 @@ mod imp {
         pub(super) level: Cell<Option<f64>>,
         /// The latest frame, and the video's size, which the frame's intrinsic size is.
         pub(super) frame: RefCell<Option<gdk::Texture>>,
+        /// A frame to keep drawing at a crop's place while the player changes its framing.
+        pub(super) transition: RefCell<Option<Transition>>,
         pub(super) frame_size: Cell<(i32, i32)>,
         /// The size frames are rendered at, in device pixels: the size shown, so mpv's OSD is drawn sharp.
         pub(super) render_size: Cell<(i32, i32)>,
@@ -188,6 +255,8 @@ mod imp {
         pub(super) framing: Cell<Framing>,
         pub(super) crop: Cell<Option<CropRect>>,
         pub(super) crop_candidate: Cell<Option<CropRect>>,
+        /// Whether the crop in use is held, so it is not looked for again.
+        pub(super) crop_locked: Cell<bool>,
         pub(super) crop_timer: RefCell<Option<glib::SourceId>>,
         pub(super) crop_busy: Cell<bool>,
         /// How many looks in a row found the crop as it was, which lengthens the wait for the next, and the position the last
@@ -272,8 +341,13 @@ mod imp {
         fn snapshot(&self, snapshot: &gdk::Snapshot, width: f64, height: f64) {
             let stream = self.obj();
             stream.fit_render(width, height);
-            let Some(frame) = self.frame.borrow().clone() else { return };
             let snapshot = snapshot.downcast_ref::<gtk::Snapshot>().expect("a GTK snapshot");
+            if let Some(transition) = *self.transition.borrow() {
+                let Some(frame) = self.frame.borrow().clone() else { return };
+                draw_transition(snapshot, width, height, &frame, transition);
+                return;
+            }
+            let Some(frame) = self.frame.borrow().clone() else { return };
             // The frame is the picture alone, as big as fits. The blurred, dimmed pieces of it, if there is a backdrop, fill the
             // bare strips round it, and otherwise they are black.
             if self.framing.get().backdrop.is_none() {
@@ -413,12 +487,16 @@ fn shared_player(options: &str) -> Option<Rc<Player>> {
     Some(player)
 }
 
+/// How many frames one `frame-seek` may step at a time, so a huge bound does not flood the player.
+const MAX_FRAME_STEPS: u64 = 1000;
+
 impl MpvStream {
     /// Stops the video and lets go of the player, which stays alive for the next video. Nothing plays after this.
     pub fn stop(&self) {
         for timer in [self.imp().crop_timer.take(), self.imp().position_timer.take(), self.imp().resize_timer.take()].into_iter().flatten() {
             timer.remove();
         }
+        self.imp().transition.take();
         let Some(player) = self.imp().player.take() else { return };
         let _ = player.command(&["stop"]);
         // The player now plays for no stream, unless a later stream has already taken it over.
@@ -467,9 +545,74 @@ impl MpvStream {
             self.update_backdrop();
         }
         self.invalidate_contents();
-        imp.crop.set(None);
+        // A held crop stays as it is; otherwise the crop is let go and looked for again.
+        if !imp.crop_locked.get() {
+            imp.crop.set(None);
+            imp.crop_candidate.set(None);
+            imp.crop_settled.set(0);
+            imp.crop_looked_at.set(None);
+        }
+        self.apply_framing_filters();
+        self.schedule_crop_check();
+    }
+
+    /// The crop in use, if the picture is cropped.
+    pub fn crop(&self) -> Option<CropRect> {
+        self.imp().crop.get()
+    }
+
+    /// The video's own size, once it has loaded.
+    pub fn source_size(&self) -> Option<(i32, i32)> {
+        self.imp().player.borrow().as_ref()?.source_size()
+    }
+
+    /// Keeps the cropped frame on screen at the place its crop occupied in the full picture, while the player removes
+    /// the crop. Cleared when the player draws a new frame.
+    pub fn begin_uncrop_preview(&self) {
+        let imp = self.imp();
+        if imp.frame.borrow().is_none() || imp.frame_fills.get() {
+            return;
+        }
+        let (Some(source), Some(crop)) = (self.source_size(), imp.crop.get()) else { return };
+        imp.transition.replace(Some(Transition { kind: TransitionKind::Uncrop, source, crop }));
+        self.invalidate_contents();
+    }
+
+    /// Keeps the full frame on screen, cropped to `crop`, while the player puts the crop in place. Cleared when the
+    /// player draws a new frame.
+    pub fn begin_crop_preview(&self, crop: CropRect) {
+        let imp = self.imp();
+        if imp.frame.borrow().is_none() || imp.frame_fills.get() {
+            return;
+        }
+        let Some(source) = self.source_size() else { return };
+        imp.transition.replace(Some(Transition { kind: TransitionKind::Crop, source, crop }));
+        self.invalidate_contents();
+    }
+
+    /// Whether the crop in use is held rather than looked for again.
+    pub fn crop_locked(&self) -> bool {
+        self.imp().crop_locked.get()
+    }
+
+    /// Holds the crop in use, or `rect` if one is given, so it is not looked for again. `None` holds the whole frame.
+    pub fn lock_crop(&self, rect: Option<CropRect>) {
+        let imp = self.imp();
+        if let Some(timer) = imp.crop_timer.take() {
+            timer.remove();
+        }
+        imp.crop_locked.set(true);
+        imp.crop.set(rect);
         imp.crop_candidate.set(None);
         self.apply_framing_filters();
+        self.invalidate_contents();
+    }
+
+    /// Lets the crop be looked for again, starting now.
+    pub fn unlock_crop(&self) {
+        let imp = self.imp();
+        imp.crop_locked.set(false);
+        imp.crop_candidate.set(None);
         imp.crop_settled.set(0);
         imp.crop_looked_at.set(None);
         self.schedule_crop_check();
@@ -482,7 +625,7 @@ impl MpvStream {
         if let Some(timer) = imp.crop_timer.take() {
             timer.remove();
         }
-        if imp.framing.get().crop.is_none() {
+        if imp.crop_locked.get() || imp.framing.get().crop.is_none() {
             return;
         }
         let weak = self.downgrade();
@@ -500,8 +643,19 @@ impl MpvStream {
         let imp = self.imp();
         let Some(player) = imp.player.borrow().clone() else { return };
         let framing = imp.framing.get();
-        let crop = imp.crop.get().map(|rect| framing::trimmed(rect, framing.trim_pixels, player.source_size()));
-        let detector = framing.crop == Some(CropMethod::CropDetect);
+        let source = player.source_size();
+        let full = || source.map(|(width, height)| CropRect { width: width & !1, height: height & !1, left: 0, top: 0 });
+        let base = if framing.crop.is_some() {
+            imp.crop.get().or_else(full)
+        } else if framing.aspect.is_some() {
+            full()
+        } else {
+            None
+        };
+        let crop = base
+            .map(|rect| framing::with_aspect(rect, framing.aspect))
+            .map(|rect| framing::trimmed(rect, framing.trim_pixels, source));
+        let detector = !imp.crop_locked.get() && framing.crop == Some(CropMethod::CropDetect);
         player.set_framing_filters(detector, crop);
     }
 
@@ -509,6 +663,9 @@ impl MpvStream {
     /// this one is done. A paused video is the same frame, so it is looked at only when it has moved since the last look.
     fn look_for_crop(&self) {
         let imp = self.imp();
+        if imp.crop_locked.get() {
+            return;
+        }
         let Some(player) = imp.player.borrow().clone() else { return };
         let Some(method) = imp.framing.get().crop else { return };
         let position = imp.position.get();
@@ -520,7 +677,7 @@ impl MpvStream {
         match method {
             // The answer comes back as an event.
             CropMethod::CropDetect => player.request_detected_crop(),
-            CropMethod::Edges | CropMethod::Static => {
+            CropMethod::Edges | CropMethod::Static | CropMethod::Across => {
                 let Some((width, height)) = player.source_size() else {
                     self.schedule_crop_check();
                     return;
@@ -544,6 +701,9 @@ impl MpvStream {
     /// frame that is dark for a moment does not crop the video.
     fn crop_measured(&self, rect: Option<CropRect>) {
         let imp = self.imp();
+        if imp.crop_locked.get() {
+            return;
+        }
         if let Some(rect) = rect {
             let before = imp.crop_candidate.replace(Some(rect));
             if before.is_some_and(|before| framing::agree(before, rect)) {
@@ -559,7 +719,7 @@ impl MpvStream {
     /// Takes what the cropdetect filter found, if it had found anything, and sets the next look.
     fn crop_detected(&self, rect: Option<CropRect>) {
         let imp = self.imp();
-        if imp.framing.get().crop != Some(CropMethod::CropDetect) {
+        if imp.crop_locked.get() || imp.framing.get().crop != Some(CropMethod::CropDetect) {
             return;
         }
         // Until the file has loaded, what the filter found is about the file before.
@@ -697,6 +857,46 @@ impl MpvStream {
         self.imp().container_fps.get().or(self.imp().estimated_fps.get())
     }
 
+    /// The number of the frame the player is showing, if it is known. mpv's estimate is used when it agrees with the
+    /// position and frame rate; otherwise the position is used, as the estimate can stay at zero.
+    pub fn frame_number(&self) -> Option<i64> {
+        let imp = self.imp();
+        let player = imp.player.borrow();
+        let player = player.as_ref();
+        let observed = player.and_then(|player| player.get_double("estimated-frame-number")).map(|frame| frame.round() as i64);
+        let seconds = player
+            .and_then(|player| player.get_double("time-pos"))
+            .unwrap_or(imp.position.get() as f64 / MICROS);
+        let fps = player
+            .and_then(|player| player.get_double("container-fps"))
+            .or(imp.container_fps.get())
+            .or(imp.estimated_fps.get())
+            .filter(|fps| *fps > 0.0);
+        let by_time = fps.map(|fps| (seconds * fps).round().max(0.0) as i64);
+        match (observed.filter(|frame| *frame >= 0), by_time) {
+            (Some(observed), Some(by_time)) if (observed - by_time).abs() <= 2 => Some(observed),
+            (_, Some(by_time)) => Some(by_time),
+            (Some(observed), None) => Some(observed),
+            (None, None) => None,
+        }
+    }
+
+    /// Steps `frames` frames forward, or back when it is negative, and pauses as a frame step does. Returns whether
+    /// the player took every step.
+    pub fn step_frames(&self, frames: i64) -> bool {
+        if frames == 0 {
+            return true;
+        }
+        let Some(player) = self.imp().player.borrow().clone() else { return false };
+        let command = if frames >= 0 { "frame-step" } else { "frame-back-step" };
+        for _ in 0..frames.unsigned_abs().min(MAX_FRAME_STEPS) {
+            if player.command(&[command]).is_err() {
+                return false;
+            }
+        }
+        true
+    }
+
     /// Handles the events waiting from libmpv.
     fn handle_events(&self) {
         loop {
@@ -731,6 +931,7 @@ impl MpvStream {
                 }
                 self.apply_rotation();
                 self.update_frame_size();
+                self.apply_framing_filters();
                 if !self.is_prepared() {
                     self.stream_prepared(has_audio, true, true, duration);
                 }
@@ -993,6 +1194,7 @@ impl MpvStream {
             self.update_backdrop();
         }
         let first = imp.frame.replace(Some(texture)).is_none();
+        imp.transition.take();
         self.invalidate_contents();
         if first {
             self.emit_by_name::<()>("first-frame", &[]);

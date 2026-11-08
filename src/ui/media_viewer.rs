@@ -17,12 +17,16 @@ use gtk::{gdk, gio, glib};
 use super::drag;
 use super::image_canvas::{Fit, ImageCanvas, OriginalFocus, Placement, Scaling};
 use crate::storage::file_settings::FileSettings;
+use crate::storage::video_crops::VideoCrops;
+use crate::storage::watch_history::{format_duration, WatchHistory};
 use crate::fs::thumbnail::Thumbnails;
 use crate::media::orientation::Orientation;
 use crate::fs::metadata::MediaInfo;
 use crate::fs::thumbnail::Pixels;
-use super::media_controls::MediaControls;
+use super::media_controls::{scaled_time, MediaControls};
+use super::crop_editor::{CropEditor, CropFraction};
 use super::overlay_split_view::OverlaySplitView;
+use crate::mpv::framing::{CropRect, Framing};
 use super::backdrop::Backdrop;
 use super::media_overlay::{clock, fraction, Frame, MediaOverlay};
 use crate::overlay::{Layout, Trigger, TRIGGERS};
@@ -218,6 +222,58 @@ impl Remember {
     }
 }
 
+/// The settings that decide what is counted in the viewing history, and whether its totals are shown.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HistorySettings {
+    /// Whether new views are counted.
+    pub enabled: bool,
+    /// Whether pictures are counted, and how long one must stay on screen to count.
+    pub images: bool,
+    pub image_seconds: i32,
+    /// Whether videos are counted, and how much of one must play to count.
+    pub videos: bool,
+    pub video_percent: i32,
+    /// Whether the views and time watched for the item shown are shown in the status bar and overlays.
+    pub show_stats: bool,
+}
+
+impl Default for HistorySettings {
+    fn default() -> Self {
+        Self { enabled: true, images: true, image_seconds: 2, videos: true, video_percent: 10, show_stats: true }
+    }
+}
+
+/// How often the in-app watch timer adds up the time the item has been watched.
+const WATCH_TICK: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// The longest a single tick can add, so a suspended application does not count its sleep as watching.
+const WATCH_TICK_MAX: f64 = 1.0;
+
+/// The largest jump in playback position one tick accepts as watched. A larger jump is a seek, not time spent watching.
+/// It is generous enough for the fastest playback speed.
+const WATCH_MEDIA_STEP_MAX: f64 = 5.0;
+
+/// How much of the shown item has been watched in this visit, and whether it has become a view.
+#[derive(Debug, Clone, Copy, Default)]
+struct WatchSession {
+    /// The time spent watching, in seconds, measured by the application rather than by the media backend.
+    seconds: f64,
+    /// The part of the video that has actually played in this visit, in seconds of its own length, ignoring seeks.
+    media_seconds: f64,
+    /// Where the video was when the timer last looked, to tell playing from a seek.
+    last_position: Option<f64>,
+    /// Whether the item has been watched long enough, or far enough, to count as a view.
+    counted: bool,
+}
+
+/// The framing a crop editor found when it opened, so it can be put back if the edit is cancelled.
+#[derive(Clone, Copy)]
+struct CropEdit {
+    framing: Framing,
+    locked: bool,
+    crop: Option<CropRect>,
+}
+
 /// The settings changes that save how `orientation` turns and mirrors what is shown.
 fn orientation_settings(orientation: Orientation) -> Vec<(&'static str, Option<serde_yaml_ng::Value>)> {
     vec![
@@ -248,6 +304,25 @@ fn video_settings(media: &gtk::MediaStream) -> Vec<(&'static str, Option<serde_y
         changes.push(("speed", ((speed - 1.0).abs() > 1e-6).then(|| speed.into())));
     }
     changes
+}
+
+/// The file settings that hold a locked crop: whether it is locked, then its rectangle.
+const CROP_KEYS: [&str; 4] = ["crop-width", "crop-height", "crop-left", "crop-top"];
+
+/// The crop saved for a file that has one locked. `Some(None)` is a locked whole frame.
+fn saved_crop(settings: &FileSettings) -> Option<Option<crate::mpv::framing::CropRect>> {
+    if !settings.get_bool("crop-locked").unwrap_or(false) {
+        return None;
+    }
+    let rect = (|| {
+        Some(crate::mpv::framing::CropRect {
+            width: settings.get_i64(CROP_KEYS[0])? as i32,
+            height: settings.get_i64(CROP_KEYS[1])? as i32,
+            left: settings.get_i64(CROP_KEYS[2])? as i32,
+            top: settings.get_i64(CROP_KEYS[3])? as i32,
+        })
+    })();
+    Some(rect)
 }
 
 /// The edge of a `width` by `height` area nearest the point `x`, `y`, measured as a share of the area,
@@ -372,10 +447,15 @@ mod imp {
         pub status_fps: TemplateChild<gtk::Label>,
         #[template_child]
         pub status_size: TemplateChild<gtk::Label>,
+        /// The views and time watched for the item shown, from the viewing history.
+        #[template_child]
+        pub status_views: TemplateChild<gtk::Label>,
         /// The thumbnails of the items, floating over an edge of the picture.
         pub(super) thumbnail_bar: ThumbnailBar,
         /// Slides the thumbnail bar in from its edge and out again.
         pub(super) bar_revealer: gtk::Revealer,
+        /// Slides the thumbnail bar in and out when it sits beside the picture, rather than floating over it.
+        pub(super) bar_dock: gtk::Revealer,
         /// The side of the picture the bar is on (bottom for `None`), and whether it is turned on.
         pub(super) bar_side: Cell<Option<gtk::PositionType>>,
         pub(super) bar_shown: Cell<bool>,
@@ -399,6 +479,10 @@ mod imp {
         /// The settings kept for the item shown: a picture's zoom and pan, a video's position and speed. They are
         /// saved when it is left.
         pub(super) file_settings: RefCell<Option<FileSettings>>,
+        /// The draggable crop editor, while one is up.
+        pub(super) crop_editor: RefCell<Option<CropEditor>>,
+        /// What the framing was before the crop editor changed it, to put it back.
+        pub(super) crop_edit: Cell<Option<CropEdit>>,
         /// Which of a file's settings are kept, and the volume and mute state the video started with, so a change to them
         /// can be told from the level a video merely inherited.
         pub(super) remember: Cell<Remember>,
@@ -440,6 +524,22 @@ mod imp {
         pub(super) cursor_hide: RefCell<Option<glib::SourceId>>,
         /// Whether the status bar under the item is shown.
         pub(super) status_shown: Cell<bool>,
+        /// Whether playback times are shown as the time they take at the playback speed.
+        pub(super) scale_times: Cell<bool>,
+        /// What is counted in the viewing history, and whether its totals are shown.
+        pub(super) history: Cell<HistorySettings>,
+        /// The viewing history of the item shown, if it has one.
+        pub(super) watch_hash: RefCell<Option<String>>,
+        /// The views and watched time already recorded for the item shown, before this visit.
+        pub(super) watch_stored: Cell<(u64, f64)>,
+        /// How much of the item shown has been watched in this visit.
+        pub(super) watch_session: Cell<WatchSession>,
+        /// When the in-app watch timer last added to the session.
+        pub(super) watch_last_tick: Cell<Option<std::time::Instant>>,
+        /// The in-app timer that counts the time the item shown is watched.
+        pub(super) watch_timer: RefCell<Option<glib::SourceId>>,
+        /// The views and whole seconds last written to the status bar, so it is not rewritten on every tick.
+        pub(super) watch_shown: Cell<(u64, u64, bool)>,
         /// Where the video controls sit, and the drag that is moving them, with the layout and width it started from.
         pub(super) controls_layout: Cell<ControlsLayout>,
         pub(super) controls_drag: Cell<Option<(ControlsDrag, ControlsLayout, f64)>>,
@@ -634,6 +734,7 @@ mod imp {
             // after, lie over them.
             obj.media_overlay();
             self.bar_revealer.set_transition_duration(BAR_SLIDE_MS);
+            self.bar_dock.set_transition_duration(BAR_SLIDE_MS);
             self.overlay.add_overlay(&self.bar_revealer);
             self.pin_button.connect_toggled({
                 let weak = weak.clone();
@@ -747,12 +848,15 @@ impl MediaViewer {
 
     /// Puts the thumbnail bar on the `side` of the picture, turned on or off. Floating (`overlay`), it lies over
     /// the picture and slides in only while the pointer is near that edge, unless `pinned`. A pinned bar never floats:
-    /// it sits beside the picture, so the overlay over the picture keeps to the picture's own area. Turning it on shows
-    /// it briefly.
+    /// it sits beside the picture, so the overlay over the picture keeps to the picture's own area. Turning it on or
+    /// off slides it, as the settings say.
     pub fn set_thumbnail_bar(&self, side: gtk::PositionType, shown: bool, overlay: bool, pinned: bool) {
         let imp = self.imp();
         let turned_on = shown && !imp.bar_shown.get();
         let floating = overlay && !pinned;
+        // A change of only whether the bar is shown, on the same side and in the same mode, slides the bar already in
+        // place rather than taking it out and putting it back, which would show it at once.
+        let in_place = imp.bar_side.get() == Some(side) && imp.bar_overlay.get() == floating;
         imp.bar_side.set(Some(side));
         imp.bar_shown.set(shown);
         imp.bar_overlay.set(floating);
@@ -760,27 +864,57 @@ impl MediaViewer {
         self.place_status_bar();
         let bar = &imp.thumbnail_bar;
         let revealer = &imp.bar_revealer;
+        let dock = &imp.bar_dock;
         bar.set_side(side);
         bar.set_toggles(pinned, overlay);
+
+        if in_place && bar.parent().is_some() {
+            if floating {
+                if turned_on && !pinned {
+                    self.peek_thumbnail_bar();
+                } else {
+                    self.reveal_near(imp.pointer.get());
+                }
+            } else {
+                dock.set_reveal_child(shown);
+            }
+            return;
+        }
 
         // Take the bar out of wherever it is, then put it where it now goes.
         let body = &*imp.body;
         if bar.parent().as_ref() == Some(body.upcast_ref::<gtk::Widget>()) {
             body.remove(bar);
-        } else if revealer.child().is_some() {
+        }
+        if dock.parent().as_ref() == Some(body.upcast_ref::<gtk::Widget>()) {
+            body.remove(dock);
+        }
+        if dock.child().is_some() {
+            dock.set_child(None::<&gtk::Widget>);
+        }
+        if revealer.child().is_some() {
             revealer.set_child(None::<&gtk::Widget>);
         }
-        revealer.set_visible(shown && floating);
-        bar.set_visible(shown);
+        revealer.set_visible(false);
+        bar.set_visible(true);
 
         if !floating {
             // The viewer box runs across the bar: a column with the bar above or below, a row beside.
             let horizontal = matches!(side, gtk::PositionType::Top | gtk::PositionType::Bottom);
             body.set_orientation(if horizontal { gtk::Orientation::Vertical } else { gtk::Orientation::Horizontal });
+            dock.set_transition_type(match side {
+                gtk::PositionType::Top => gtk::RevealerTransitionType::SlideDown,
+                gtk::PositionType::Bottom => gtk::RevealerTransitionType::SlideUp,
+                gtk::PositionType::Left => gtk::RevealerTransitionType::SlideRight,
+                _ => gtk::RevealerTransitionType::SlideLeft,
+            });
+            dock.set_child(Some(bar));
+            dock.set_visible(true);
+            dock.set_reveal_child(shown);
             if matches!(side, gtk::PositionType::Top | gtk::PositionType::Left) {
-                body.prepend(bar);
+                body.prepend(dock);
             } else {
-                body.append(bar);
+                body.append(dock);
             }
             return;
         }
@@ -795,6 +929,7 @@ impl MediaViewer {
         revealer.set_valign(valign);
         revealer.set_transition_type(transition);
         revealer.set_child(Some(bar));
+        revealer.set_visible(true);
         if turned_on && !pinned {
             self.peek_thumbnail_bar();
         } else {
@@ -954,6 +1089,185 @@ impl MediaViewer {
         }
     }
 
+    /// Opens a draggable crop over the video, or closes the one that is open. The video is shown uncropped while it is
+    /// being edited, and the crop is applied and kept with the file when Apply is pressed.
+    pub fn toggle_manual_crop(&self) {
+        if self.imp().crop_editor.borrow().is_some() {
+            self.finish_crop_edit(None);
+            return;
+        }
+        let imp = self.imp();
+        let stream = imp.media.borrow().as_ref().and_then(|media| media.downcast_ref::<crate::mpv::MpvStream>()).cloned();
+        let Some(stream) = stream else {
+            self.announce("Manual cropping needs a video played by mpv", true);
+            return;
+        };
+        let Some(source) = stream.source_size() else {
+            self.announce("The video's size is not known yet", true);
+            return;
+        };
+        let initial = stream.crop().map(|rect| CropFraction::from_rect(rect, source)).unwrap_or_else(CropFraction::full);
+        imp.crop_edit.set(Some(CropEdit { framing: imp.framing.get(), locked: stream.crop_locked(), crop: stream.crop() }));
+        self.pause();
+        stream.begin_uncrop_preview();
+        stream.unlock_crop();
+        stream.set_framing(Framing { crop: None, trim_pixels: 0, aspect: None, backdrop: None });
+        stream.lock_crop(None);
+
+        let weak = self.downgrade();
+        let apply_weak = weak.clone();
+        let cancel_weak = weak.clone();
+        let editor = CropEditor::new(
+            source,
+            initial,
+            move |crop| {
+                if let Some(viewer) = apply_weak.upgrade() {
+                    let weak = viewer.downgrade();
+                    glib::idle_add_local_once(move || {
+                        if let Some(viewer) = weak.upgrade() {
+                            viewer.finish_crop_edit(Some(crop));
+                        }
+                    });
+                }
+            },
+            move || {
+                if let Some(viewer) = cancel_weak.upgrade() {
+                    let weak = viewer.downgrade();
+                    glib::idle_add_local_once(move || {
+                        if let Some(viewer) = weak.upgrade() {
+                            viewer.finish_crop_edit(None);
+                        }
+                    });
+                }
+            },
+        );
+        imp.overlay.add_overlay(&editor.root);
+        editor.root.grab_focus();
+        imp.crop_editor.replace(Some(editor));
+        self.announce("Drag the crop, then Apply", false);
+    }
+
+    /// Puts the framing back after a crop edit, applying and keeping `crop` when one is given, or the crop that was
+    /// there before when it is not.
+    fn finish_crop_edit(&self, crop: Option<CropFraction>) {
+        let imp = self.imp();
+        let Some(editor) = imp.crop_editor.take() else { return };
+        imp.overlay.remove_overlay(&editor.root);
+        let Some(state) = imp.crop_edit.take() else { return };
+        let stream = imp.media.borrow().as_ref().and_then(|media| media.downcast_ref::<crate::mpv::MpvStream>()).cloned();
+        let Some(stream) = stream else { return };
+        stream.unlock_crop();
+        stream.set_framing(state.framing);
+        match crop {
+            Some(crop) => {
+                let Some(source) = stream.source_size() else { return };
+                let rect = crop.to_rect(source);
+                stream.begin_crop_preview(rect);
+                stream.lock_crop(Some(rect));
+                // A dragged crop is exact, so the standard shape is let go.
+                let _ = crate::settings::app_settings().set_string("video.crop.ratio", "auto");
+                self.save_crop_lock(Some(rect), true);
+                self.announce("Crop set", false);
+            }
+            None => {
+                if state.locked {
+                    if let Some(crop) = state.crop {
+                        stream.begin_crop_preview(crop);
+                    }
+                    stream.lock_crop(state.crop);
+                }
+                self.announce("Crop editing cancelled", false);
+            }
+        }
+    }
+
+    /// Holds the crop the video shown has now, or lets it be detected again. The lock and its rectangle are kept with
+    /// the file's settings, so they are there next time it is shown.
+    pub fn toggle_crop_lock(&self) {
+        let imp = self.imp();
+        let stream = imp.media.borrow().as_ref().and_then(|media| media.downcast_ref::<crate::mpv::MpvStream>()).cloned();
+        let Some(stream) = stream else {
+            self.announce("Crop locking needs a video played by mpv", true);
+            return;
+        };
+        if stream.crop_locked() {
+            stream.unlock_crop();
+            self.save_crop_lock(None, false);
+            self.announce("Crop unlocked", false);
+            return;
+        }
+        let crop = stream.crop();
+        stream.lock_crop(crop);
+        self.save_crop_lock(crop, true);
+        match crop {
+            Some(rect) => self.announce(&format!("Crop locked: {} × {}", rect.width, rect.height), false),
+            None => self.announce("Crop locked: the whole frame", false),
+        }
+    }
+
+    /// Saves whether the crop is locked for the file shown, and its rectangle when there is one. `None` as the crop
+    /// removes the rectangle, so a locked whole frame is not mistaken for one.
+    fn save_crop_lock(&self, crop: Option<crate::mpv::framing::CropRect>, locked: bool) {
+        let imp = self.imp();
+        let mut settings = imp.file_settings.borrow_mut().take();
+        if settings.is_none() {
+            settings = self.shown_path().and_then(|path| FileSettings::for_path(&path).ok());
+        }
+        let Some(current) = settings.as_mut() else {
+            eprintln!("rsimgv: could not keep the locked crop: the file's settings cannot be read");
+            return;
+        };
+        let mut changes: Vec<(&str, Option<serde_yaml_ng::Value>)> = vec![("crop-locked", Some(locked.into()))];
+        match crop.filter(|_| locked) {
+            Some(rect) => {
+                changes.extend([
+                    (CROP_KEYS[0], Some(i64::from(rect.width).into())),
+                    (CROP_KEYS[1], Some(i64::from(rect.height).into())),
+                    (CROP_KEYS[2], Some(i64::from(rect.left).into())),
+                    (CROP_KEYS[3], Some(i64::from(rect.top).into())),
+                ]);
+            }
+            None if locked => changes.extend(CROP_KEYS.map(|key| (key, None))),
+            None => {}
+        }
+        if let Err(err) = current.apply(changes) {
+            eprintln!("rsimgv: could not save the locked crop: {err}");
+        }
+        imp.file_settings.replace(settings);
+        if let Some(path) = self.shown_path() {
+            if let Some(crops) = VideoCrops::shared() {
+                if let Err(err) = crops.set(&path, crop.filter(|_| locked)) {
+                    eprintln!("rsimgv: could not keep the locked crop for thumbnails: {err}");
+                }
+            }
+        }
+    }
+
+    /// Sets the frame the video shows now as its thumbnail, removes the old thumbnails, and makes a new one at the
+    /// thumbnail bar's current size. The frame number is kept with the video's metadata for later sizes.
+    pub fn set_thumbnail_frame(&self) {
+        let imp = self.imp();
+        let stream = imp.media.borrow().as_ref().and_then(|media| media.downcast_ref::<crate::mpv::MpvStream>()).cloned();
+        let Some(stream) = stream else {
+            self.announce("Choosing a thumbnail frame needs a video played by mpv", true);
+            return;
+        };
+        let Some(frame) = stream.frame_number() else {
+            self.announce("The video's frame number is not known yet", true);
+            return;
+        };
+        let Some(path) = self.shown_path() else { return };
+        let mtime = crate::fs::thumbnail::stamp(&path);
+        let pixels = imp.thumbnail_bar.thumbnail_size() * imp.thumbnail_bar.scale_factor();
+        let weak = self.downgrade();
+        Thumbnails::shared().set_frame(&path, mtime, frame, pixels, move || {
+            if let Some(viewer) = weak.upgrade() {
+                viewer.imp().thumbnail_bar.refresh();
+            }
+        });
+        self.announce(&format!("Thumbnail frame set to {frame}"), false);
+    }
+
     /// Repeats the video shown, or stops repeating it. The setting applies to later videos too.
     pub fn toggle_repeat(&self) {
         let imp = self.imp();
@@ -1088,7 +1402,9 @@ impl MediaViewer {
 
     /// Sets whether the thumbnail bar slides in and out, and how long that takes, in milliseconds.
     pub fn set_bar_animation(&self, enabled: bool, millis: u32) {
-        self.imp().bar_revealer.set_transition_duration(if enabled { millis } else { 0 });
+        let duration = if enabled { millis } else { 0 };
+        self.imp().bar_revealer.set_transition_duration(duration);
+        self.imp().bar_dock.set_transition_duration(duration);
     }
 
     /// Plays later videos with libmpv, or with GTK's own media backend.
@@ -1262,6 +1578,9 @@ impl MediaViewer {
             // SVP's target rate follows the speed, so its filter is rebuilt for it.
             self.apply_svp(&stream, speed, true);
         }
+        // The times are shown as the time they now take.
+        imp.controls.set_time_scaling(imp.scale_times.get());
+        self.refresh_overlay();
     }
 
     /// Sets the SVP settings, and applies them to the video shown.
@@ -1489,6 +1808,26 @@ impl MediaViewer {
         }
     }
 
+    /// Steps the video by `frames` frames, back when it is negative. Frame seeking needs mpv.
+    pub fn frame_seek(&self, frames: i64) {
+        if frames == 0 {
+            return;
+        }
+        let media = self.imp().media.borrow().clone();
+        let Some(media) = media else { return };
+        let Some(stream) = media.downcast_ref::<crate::mpv::MpvStream>() else {
+            self.announce("Frame seeking needs a video played by mpv", true);
+            return;
+        };
+        if !stream.step_frames(frames) {
+            self.announce("Could not step the video", true);
+            return;
+        }
+        self.imp().seek_forward.set(frames > 0);
+        self.note_change(Trigger::Seek);
+        self.refresh_overlay();
+    }
+
     /// Sets the layout of the overlay over the item.
     pub fn set_overlay_layout(&self, layout: Layout) {
         let overlay = self.media_overlay();
@@ -1559,6 +1898,9 @@ impl MediaViewer {
         ] {
             values.insert(name, label.label().to_string());
         }
+        let (views, watched) = self.watch_totals();
+        values.insert("views", views.to_string());
+        values.insert("watch-time", format_duration(watched));
         // How the item is turned, and for a picture how far it is zoomed.
         let media = imp.media.borrow().clone();
         let orientation = match media.as_ref().map(|media| media.downcast_ref::<crate::mpv::MpvStream>().map(crate::mpv::MpvStream::orientation)) {
@@ -1597,16 +1939,19 @@ impl MediaViewer {
             values.insert("loading", "Loading...".to_owned());
             return values;
         }
-        values.insert("time-pos", clock(position));
-        if duration > 0 {
-            values.insert("duration", clock(duration));
-            values.insert("time-remaining", clock(duration - position.clamp(0, duration)));
-            values.insert("percent-pos", format!("{:.0}", fraction(position, duration) * 100.0));
-        }
         let speed = match media.downcast_ref::<crate::mpv::MpvStream>() {
             Some(stream) => stream.speed(),
             None => Some(1.0),
         };
+        let scaled = imp.scale_times.get();
+        let factor_speed = speed.unwrap_or(1.0);
+        values.insert("time-pos", clock(scaled_time(position, factor_speed, scaled)));
+        if duration > 0 {
+            values.insert("duration", clock(scaled_time(duration, factor_speed, scaled)));
+            let remaining = duration - position.clamp(0, duration);
+            values.insert("time-remaining", clock(scaled_time(remaining, factor_speed, scaled)));
+            values.insert("percent-pos", format!("{:.0}", fraction(position, duration) * 100.0));
+        }
         if let Some(speed) = speed {
             let speed_text = format!("{speed:.2}").trim_end_matches('0').trim_end_matches('.').to_owned();
             if (speed - 1.0).abs() > 1e-6 {
@@ -1929,12 +2274,197 @@ impl MediaViewer {
         self.emit_by_name::<()>("back-requested", &[]);
     }
 
-    /// Shows or hides the status bar under the item: its position, name, resolution, frame rate and file size.
+    /// Sets what is counted in the viewing history, and whether its totals are shown.
+    pub fn set_history(&self, history: HistorySettings) {
+        self.imp().history.set(history);
+        self.refresh_watch_stats();
+    }
+
+    /// Reads what the history already holds for the item that is about to be shown, whose settings are `settings`. The
+    /// content hash in those settings is the file's key in the history.
+    fn prepare_watch(&self, settings: Option<&FileSettings>) {
+        let imp = self.imp();
+        let hash = settings.and_then(FileSettings::hash).map(str::to_owned);
+        let stored = hash
+            .as_deref()
+            .and_then(|hash| WatchHistory::shared()?.entry(hash).ok().flatten())
+            .map_or((0, 0.0), |entry| (entry.views, entry.watched_seconds));
+        imp.watch_hash.replace(hash);
+        imp.watch_stored.set(stored);
+        imp.watch_session.set(WatchSession::default());
+        imp.watch_shown.set((u64::MAX, u64::MAX, false));
+        self.refresh_watch_stats();
+    }
+
+    /// Starts the in-app timer that counts how long the item shown is watched. It counts a picture while it is on
+    /// screen, and a video only while it is playing. The time is the application's own, so a video played faster or
+    /// slower adds the time actually spent watching it, not the part of it that went by.
+    fn begin_watch_session(&self) {
+        let imp = self.imp();
+        let settings = imp.history.get();
+        let video = imp.media.borrow().is_some();
+        let wanted = settings.enabled && (if video { settings.videos } else { settings.images });
+        if !wanted || imp.watch_hash.borrow().is_none() || imp.watch_timer.borrow().is_some() {
+            return;
+        }
+        // A video starts from the place it is at, so the part before the first tick is not mistaken for a seek.
+        if let Some(media) = imp.media.borrow().as_ref() {
+            let mut session = imp.watch_session.get();
+            session.last_position = Some(media.timestamp() as f64 / MICROS);
+            imp.watch_session.set(session);
+        }
+        imp.watch_last_tick.set(Some(std::time::Instant::now()));
+        let weak = self.downgrade();
+        let source = glib::timeout_add_local(WATCH_TICK, move || {
+            let Some(viewer) = weak.upgrade() else { return glib::ControlFlow::Break };
+            if viewer.imp().watch_hash.borrow().is_none() {
+                viewer.imp().watch_timer.take();
+                return glib::ControlFlow::Break;
+            }
+            viewer.tick_watch();
+            glib::ControlFlow::Continue
+        });
+        imp.watch_timer.replace(Some(source));
+    }
+
+    /// Adds the time since the last tick to the item's watch session, if it was being watched, and marks it as viewed
+    /// once it has been watched long enough or far enough.
+    fn tick_watch(&self) {
+        let imp = self.imp();
+        let now = std::time::Instant::now();
+        let Some(last) = imp.watch_last_tick.replace(Some(now)) else { return };
+        let delta = now.saturating_duration_since(last).as_secs_f64().min(WATCH_TICK_MAX);
+        let settings = imp.history.get();
+        if !settings.enabled {
+            return;
+        }
+        let mut session = imp.watch_session.get();
+        let media = imp.media.borrow().clone();
+        match &media {
+            Some(media) => {
+                if !settings.videos {
+                    return;
+                }
+                let position = media.timestamp() as f64 / MICROS;
+                if media.is_playing() {
+                    session.seconds += delta;
+                    // Only the part that played counts, not a jump made by seeking.
+                    if let Some(last) = session.last_position {
+                        let step = position - last;
+                        if step > 0.0 && step <= WATCH_MEDIA_STEP_MAX {
+                            session.media_seconds += step;
+                        }
+                    }
+                    let duration = media.duration() as f64 / MICROS;
+                    if !session.counted && duration > 0.0 {
+                        let percent = f64::from(settings.video_percent.clamp(1, 100));
+                        if session.media_seconds >= duration * percent / 100.0 {
+                            session.counted = true;
+                        }
+                    }
+                }
+                // A seek made while paused is not watched either, so it becomes the new starting place.
+                session.last_position = Some(position);
+            }
+            None => {
+                if !settings.images {
+                    return;
+                }
+                session.seconds += delta;
+                if !session.counted && session.seconds >= f64::from(settings.image_seconds.max(0)) {
+                    session.counted = true;
+                }
+            }
+        }
+        imp.watch_session.set(session);
+        self.refresh_watch_stats();
+    }
+
+    /// Marks the item shown as viewed, as a video that has reached its end is, whatever part of it was watched.
+    fn count_watch_view(&self) {
+        let imp = self.imp();
+        let settings = imp.history.get();
+        if !settings.enabled || !settings.videos {
+            return;
+        }
+        let mut session = imp.watch_session.get();
+        session.counted = true;
+        imp.watch_session.set(session);
+    }
+
+    /// Saves this visit to the history: one more view if it counted, and the time spent watching. Called when the item
+    /// is left, and when a video ends.
+    fn finish_watch_session(&self) {
+        if let Some(source) = self.imp().watch_timer.take() {
+            source.remove();
+        }
+        let imp = self.imp();
+        let session = imp.watch_session.replace(WatchSession::default());
+        imp.watch_last_tick.set(None);
+        if session.seconds < 0.5 && !session.counted {
+            return;
+        }
+        let Some(hash) = imp.watch_hash.borrow().clone() else { return };
+        let Some(path) = self.shown_path() else { return };
+        let Some(history) = WatchHistory::shared() else { return };
+        if let Err(err) = history.record(&hash, &path, session.counted, session.seconds) {
+            eprintln!("rsimgv: could not save the viewing history: {err}");
+            return;
+        }
+        if let Ok(Some(entry)) = history.entry(&hash) {
+            imp.watch_stored.set((entry.views, entry.watched_seconds));
+        }
+        self.refresh_watch_stats();
+    }
+
+    /// The views and watched time for the item shown: what the history holds, plus this visit.
+    fn watch_totals(&self) -> (u64, f64) {
+        let imp = self.imp();
+        let (stored_views, stored_seconds) = imp.watch_stored.get();
+        let session = imp.watch_session.get();
+        (stored_views + u64::from(session.counted), stored_seconds + session.seconds)
+    }
+
+    /// Shows the views and time watched for the item shown, from the history plus this visit, when the settings ask for
+    /// them.
+    fn refresh_watch_stats(&self) {
+        let imp = self.imp();
+        let (views, seconds) = self.watch_totals();
+        let show = imp.history.get().show_stats;
+        let signature = (views, seconds.floor() as u64, show);
+        if imp.watch_shown.get() == signature {
+            return;
+        }
+        imp.watch_shown.set(signature);
+        let text = if show {
+            let mut parts = Vec::new();
+            if views > 0 {
+                parts.push(format!("{views} view{}", if views == 1 { "" } else { "s" }));
+            }
+            if seconds >= 0.5 {
+                parts.push(format!("{} watched", format_duration(seconds)));
+            }
+            parts.join(" · ")
+        } else {
+            String::new()
+        };
+        imp.status_views.set_label(&text);
+        imp.status_views.set_visible(!text.is_empty());
+    }
+
+    /// Sets whether the status bar under the item is shown.
     pub fn set_status_bar(&self, shown: bool) {
         let imp = self.imp();
         imp.status_shown.set(shown);
         imp.status_bar.set_visible(shown);
         self.refresh_status();
+    }
+
+    /// Sets whether playback times are shown as the time they take at the playback speed.
+    pub fn set_time_scaling(&self, scaled: bool) {
+        self.imp().scale_times.set(scaled);
+        self.imp().controls.set_time_scaling(scaled);
+        self.refresh_overlay();
     }
 
     /// Puts the status bar under the item. In fullscreen it is left out, as the overlay's status element is there
@@ -2096,8 +2626,9 @@ impl MediaViewer {
         self.update_navigation(index, len);
 
         // The file's settings are read on a worker thread: the content hash reads the file, and the settings file is parsed.
-        // With none kept, the file is not read.
-        let keep = imp.remember.get().enabled;
+        // With none kept, the file is not read. The viewing history is keyed by the same hash, so it is read too when
+        // the history is on.
+        let keep = imp.remember.get().enabled || imp.history.get().enabled;
         let weak = self.downgrade();
         glib::spawn_future_local(async move {
             let settings = gio::spawn_blocking({
@@ -2121,6 +2652,7 @@ impl MediaViewer {
             return;
         }
         let video = is_video(&path);
+        self.prepare_watch(settings.as_ref());
         // A video stepped to from another item starts after a short wait, which the next step cancels.
         if video && imp.delay_video.replace(false) {
             let weak = self.downgrade();
@@ -2145,6 +2677,12 @@ impl MediaViewer {
                     let speed = settings.as_ref().filter(|_| imp.remember.get().speed).and_then(|settings| settings.get_f64("speed")).unwrap_or(1.0);
                     stream.set_speed(speed);
                     stream.set_framing(imp.framing.get());
+                    if let Some(crop) = settings.as_ref().and_then(saved_crop) {
+                        if let Some(crops) = VideoCrops::shared() {
+                            let _ = crops.set(&path, crop);
+                        }
+                        stream.lock_crop(crop);
+                    }
                     // Once its frames are up the stream fills the view itself, with the picture over its backdrop or black, so the
                     // thumbnail behind it is not drawn under every frame. GTK's own player leaves bars, which the thumbnail fills.
                     stream.connect_first_frame({
@@ -2172,6 +2710,11 @@ impl MediaViewer {
                 let weak = self.downgrade();
                 move |media| {
                     let Some(viewer) = weak.upgrade() else { return };
+                    if media.is_ended() {
+                        // Reaching the end is a view, whatever part of it was watched, and the visit is saved now.
+                        viewer.count_watch_view();
+                        viewer.finish_watch_session();
+                    }
                     if !media.is_ended() || viewer.imp().repeat.get() || !viewer.imp().auto_advance.get() {
                         return;
                     }
@@ -2226,6 +2769,7 @@ impl MediaViewer {
                 media.play();
             });
             imp.media.replace(Some(media));
+            self.begin_watch_session();
             self.refresh_overlay();
         } else {
             imp.pages.set_visible_child(&*imp.canvas);
@@ -2283,6 +2827,7 @@ impl MediaViewer {
             imp.canvas.restore(placement);
         }
         self.update_zoom_indicator();
+        self.begin_watch_session();
     }
 
     /// Decodes the pictures either side of the item at `index`, so that stepping to them shows them at once.
@@ -2325,6 +2870,13 @@ impl MediaViewer {
         if let Some(source) = imp.video_start.take() {
             source.remove();
         }
+        self.finish_watch_session();
+        imp.watch_hash.take();
+        imp.watch_stored.set((0, 0.0));
+        imp.watch_session.set(WatchSession::default());
+        imp.watch_last_tick.set(None);
+        imp.watch_shown.set((u64::MAX, u64::MAX, false));
+        imp.status_views.set_visible(false);
         self.hide_overlay();
         self.cancel_svp_timer();
         imp.svp_held.set(false);

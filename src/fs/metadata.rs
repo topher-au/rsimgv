@@ -1,5 +1,5 @@
 //! Metadata of pictures and videos: their size, duration, frame rate, codecs and bit rate. `ffprobe` reads each file
-//! once on a worker thread, and its answer is kept in the app's cache (`~/.cache/rsimgv/metadata`) for as long as the
+//! once on a worker thread, and its answer is kept in a SQLite database in the user's data directory for as long as the
 //! file is unchanged. A picture's size still comes from its header when `ffprobe` is not there.
 
 use std::cell::{Cell, OnceCell, RefCell};
@@ -11,10 +11,9 @@ use std::process::Command;
 use std::rc::Rc;
 
 use gtk::{gdk_pixbuf, gio, glib};
-use serde_json::{json, Value};
+use serde_json::Value;
 
-use super::thumbnail::{run_program, write_atomically};
-use crate::hash::string_hash;
+use super::thumbnail::run_program;
 use crate::storage::file_settings::content_hash;
 use crate::storage::media_index::MediaIndex;
 use crate::storage::metadata_store::{MetadataStore, Stored};
@@ -104,10 +103,9 @@ struct Waiter {
 }
 
 struct Inner {
-    /// Where metadata is kept while the search index is off.
-    files: Rc<dyn MetadataStore>,
-    /// The search index, opened the first time it is on. `None` if it could not be opened.
-    index: OnceCell<Option<Rc<dyn MetadataStore>>>,
+    /// The database, opened the first time metadata is needed. `None` if it could not be opened, so metadata is read but
+    /// not kept between runs.
+    store: OnceCell<Option<Rc<dyn MetadataStore>>>,
     known: RefCell<HashMap<PathBuf, Known>>,
     waiters: RefCell<HashMap<Key, Vec<Waiter>>>,
     queue: RefCell<VecDeque<Key>>,
@@ -115,7 +113,7 @@ struct Inner {
 }
 
 thread_local! {
-    static SHARED: MediaInfo = MediaInfo::with_root(glib::user_cache_dir().join("rsimgv").join("metadata"));
+    static SHARED: MediaInfo = MediaInfo::new();
 }
 
 /// The metadata of the files of the app: one per process, like the thumbnails.
@@ -125,17 +123,15 @@ pub struct MediaInfo {
 }
 
 impl MediaInfo {
-    /// The metadata of this app, in the user's cache.
+    /// The metadata of this app, in one database in the user's data directory.
     pub fn shared() -> Self {
         SHARED.with(Self::clone)
     }
 
-    fn with_root(root: PathBuf) -> Self {
-        purge_old_names(root.clone());
+    fn new() -> Self {
         Self {
             inner: Rc::new(Inner {
-                files: Rc::new(FileMetadataStore { root }),
-                index: OnceCell::new(),
+                store: OnceCell::new(),
                 known: RefCell::default(),
                 waiters: RefCell::default(),
                 queue: RefCell::default(),
@@ -144,21 +140,20 @@ impl MediaInfo {
         }
     }
 
-    /// The store metadata is kept in now: the search index while its setting is on, otherwise the files.
+    /// The database metadata is kept in. A database that cannot be opened is reported once, and metadata is then read
+    /// without being kept.
     fn store(&self) -> Rc<dyn MetadataStore> {
-        if crate::settings::app_settings().boolean("browse.search-index") {
-            let index = self.inner.index.get_or_init(|| match MediaIndex::open(&index_file()) {
+        self.inner
+            .store
+            .get_or_init(|| match MediaIndex::open(&MediaIndex::file()) {
                 Ok(index) => Some(Rc::new(index) as Rc<dyn MetadataStore>),
                 Err(err) => {
-                    eprintln!("rsimgv: could not open the search index, so the metadata cache is used: {err:#}");
+                    eprintln!("rsimgv: the metadata database cannot be opened, so metadata is not kept: {err:#}");
                     None
                 }
-            });
-            if let Some(index) = index {
-                return index.clone();
-            }
-        }
-        self.inner.files.clone()
+            })
+            .clone()
+            .unwrap_or_else(|| Rc::new(NoStore))
     }
 
     /// The metadata of the file at `path`, if it is known for this modification time and size: from memory, or else from
@@ -283,26 +278,6 @@ impl MediaInfo {
     }
 }
 
-/// Removes, in the background, the metadata cache files from before the XXH3 names: entries whose name is not a
-/// 16-digit hex digest are never read again. Temporary files that writes left behind go too.
-fn purge_old_names(root: PathBuf) {
-    std::thread::spawn(move || {
-        let Ok(read) = std::fs::read_dir(&root) else { return };
-        for entry in read.flatten() {
-            let path = entry.path();
-            let old = path.extension().is_some_and(|extension| extension == "json")
-                && path.file_stem().is_some_and(|stem| {
-                    let stem = stem.to_string_lossy();
-                    stem.len() != 16 || !stem.bytes().all(|byte| byte.is_ascii_hexdigit())
-                });
-            let temporary = path.extension().is_some_and(|extension| extension == "tmp");
-            if old || temporary {
-                let _ = std::fs::remove_file(&path);
-            }
-        }
-    });
-}
-
 /// A stand-in for a file's name in logs: a hash of the path, with the extension kept.
 pub fn anonymous(path: &Path) -> String {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -363,67 +338,25 @@ fn size_from_header(metadata: &mut MediaMetadata, path: &Path) {
     }
 }
 
-/// The search index's database, in the user's data directory.
-fn index_file() -> PathBuf {
-    glib::user_data_dir().join("rsimgv").join("media-index.sqlite3")
-}
+/// A store for when the database cannot be opened: it keeps nothing, so metadata is read again when it is needed.
+struct NoStore;
 
-/// The metadata of each file, kept in the cache: a JSON file per media file, named by its URI's digest. It holds the
-/// file's modification time and size, and the raw `ffprobe` output under `probe`.
-pub struct FileMetadataStore {
-    root: PathBuf,
-}
-
-impl MetadataStore for FileMetadataStore {
-    fn lookup(&self, path: &Path, mtime: i64, size: u64) -> Option<Stored> {
-        let file = cache_file(&self.root, path);
-        let value: Value = serde_json::from_slice(&std::fs::read(&file).ok()?).ok()?;
-        if value["mtime"].as_i64()? != mtime || value["size"].as_u64()? != size {
-            // Out of date, so the file goes, and the metadata is read and recorded again.
-            self.forget_or_log(path);
-            return None;
-        }
-        // An entry from before the MIME type was kept has none, so it is read again, and written with one.
-        let file_type = value["file_type"].as_str()?.to_owned();
-        let probe = value.get("probe")?.clone();
-        let mut metadata = MediaMetadata::from_probe(&probe);
-        size_from_header(&mut metadata, path);
-        Some(Stored { metadata, file_type: Some(file_type), probe: Some(probe), ..Stored::default() })
+impl MetadataStore for NoStore {
+    fn lookup(&self, _path: &Path, _mtime: i64, _size: u64) -> Option<Stored> {
+        None
     }
 
-    fn record(&self, path: &Path, mtime: i64, size: u64, stored: &Stored) -> std::io::Result<()> {
-        let probe = stored.probe.clone().unwrap_or(Value::Null);
-        let file_type = stored.file_type.clone().unwrap_or_default();
-        let data = json!({ "mtime": mtime, "size": size, "file_type": file_type, "probe": probe }).to_string();
-        write_atomically(&cache_file(&self.root, path), data.as_bytes())
+    fn record(&self, _path: &Path, _mtime: i64, _size: u64, _stored: &Stored) -> std::io::Result<()> {
+        Ok(())
     }
 
-    fn forget(&self, path: &Path) -> std::io::Result<()> {
-        match std::fs::remove_file(cache_file(&self.root, path)) {
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            result => result,
-        }
+    fn forget(&self, _path: &Path) -> std::io::Result<()> {
+        Ok(())
     }
 
     fn keeps_hash(&self) -> bool {
         false
     }
-}
-
-impl FileMetadataStore {
-    /// Forgets `path`, logging a failure, since a lookup has no way to report one.
-    fn forget_or_log(&self, path: &Path) {
-        if let Err(err) = self.forget(path) {
-            eprintln!("rsimgv: could not remove an out-of-date metadata cache file: {err}");
-        }
-    }
-}
-
-/// The cache file of the metadata of `path`, named by its URI's digest.
-fn cache_file(root: &Path, path: &Path) -> PathBuf {
-    let uri = glib::filename_to_uri(path, None).map(|uri| uri.to_string()).unwrap_or_default();
-    let digest = string_hash(&uri);
-    root.join(format!("{digest}.json"))
 }
 
 /// The tags `ffprobe` is asked for, on each stream: where a video was taken and when it was made. Tag names are matched
@@ -451,6 +384,7 @@ fn run_ffprobe(path: &Path) -> std::io::Result<Option<Value>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn a_video_s_probe_gives_its_size_length_rate_and_audio() {
@@ -512,44 +446,5 @@ mod tests {
     #[test]
     fn no_probe_gives_nothing() {
         assert_eq!(MediaMetadata::from_probe(&Value::Null), MediaMetadata::default());
-    }
-
-    #[test]
-    fn a_record_of_another_size_is_out_of_date() {
-        let root = std::env::temp_dir().join(format!("rsimgv-metadata-size-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).unwrap();
-        let store = FileMetadataStore { root: root.clone() };
-        let path = PathBuf::from("/videos/clip.mp4");
-        let stored = Stored { file_type: Some("video/mp4".into()), probe: Some(Value::Null), ..Stored::default() };
-        store.record(&path, 100, 4096, &stored).unwrap();
-        assert_eq!(store.lookup(&path, 100, 4096), Some(stored), "the record is current");
-        assert_eq!(store.lookup(&path, 100, 8192), None, "the size changed but the modification time did not");
-        assert_eq!(store.lookup(&path, 100, 8192), None, "the out-of-date record was removed");
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn cache_files_under_the_old_names_are_purged() {
-        let root = std::env::temp_dir().join(format!("rsimgv-metadata-purge-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).unwrap();
-        // An MD5 name from before the XXH3 names, a temporary file a write left behind, and a current entry.
-        let (old, temporary, current) = (
-            root.join("d41d8cd98f00b204e9800998ecf8427e.json"),
-            root.join("0123456789abcdef.json.1.2.tmp"),
-            root.join("0123456789abcdef.json"),
-        );
-        for file in [&old, &temporary, &current] {
-            std::fs::write(file, "{}").unwrap();
-        }
-        purge_old_names(root.clone());
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while old.exists() || temporary.exists() {
-            assert!(std::time::Instant::now() < deadline, "the old files are removed");
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-        assert!(current.exists(), "the current entry is kept");
-        let _ = std::fs::remove_dir_all(&root);
     }
 }

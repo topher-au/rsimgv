@@ -10,6 +10,7 @@
     <child name="image" schema="au.topher.rsimgv.image"/>
     <child name="video" schema="au.topher.rsimgv.video"/>
     <child name="remember" schema="au.topher.rsimgv.remember"/>
+    <child name="history" schema="au.topher.rsimgv.history"/>
     <child name="mouse" schema="au.topher.rsimgv.mouse"/>
     <child name="remote" schema="au.topher.rsimgv.remote"/>
     <child name="scripts" schema="au.topher.rsimgv.scripts"/>
@@ -33,10 +34,6 @@
     <key name="show-videos" type="b">
       <default>true</default>
       <summary>Show videos in the browse view</summary>
-    </key>
-    <key name="search-index" type="b">
-      <default>false</default>
-      <summary>Keep the metadata of pictures and videos in a database, for searching</summary>
     </key>
     <key name="show-directories" type="s">
       <choices>
@@ -166,6 +163,10 @@
     <key name="crop" type="b">
       <default>false</default>
       <summary>Crop thumbnails to a square that fills the item's visual part</summary>
+    </key>
+    <key name="crop-video" type="b">
+      <default>false</default>
+      <summary>Make video thumbnails from the video's locked crop, so bars and backdrops left by the locked crop are not shown</summary>
     </key>
   </schema>
   <schema id="au.topher.rsimgv.window" path="/au/topher/rsimgv/window/">
@@ -473,6 +474,10 @@
       <range min="0" max="2000"/>
       <summary>How long, in milliseconds, a video waits to start after stepping to it with next or previous; 0 starts it at once</summary>
     </key>
+    <key name="scaled-times" type="b">
+      <default>true</default>
+      <summary>Show playback times and lengths as the time they take at the playback speed, so a 10-minute video at 25% speed shows 40 minutes</summary>
+    </key>
   </schema>
   <schema id="au.topher.rsimgv.video.mpv" path="/au/topher/rsimgv/video/mpv/">
     <key name="args" type="s">
@@ -591,9 +596,24 @@
         <choice value="cropdetect"/>
         <choice value="edges"/>
         <choice value="static"/>
+        <choice value="across"/>
       </choices>
       <default>'cropdetect'</default>
-      <summary>How the picture to crop to is found: mpv's near-black border detector, the brightness steps at the picture's border, or the area that moves</summary>
+      <summary>How the picture to crop to is found: mpv's near-black border detector, the brightness steps at the picture's border, the area that moves, or the border steps combined over several frames</summary>
+    </key>
+    <key name="ratio" type="s">
+      <choices>
+        <choice value="auto"/>
+        <choice value="4:3"/>
+        <choice value="16:9"/>
+        <choice value="9:16"/>
+        <choice value="1:1"/>
+        <choice value="3:2"/>
+        <choice value="2:3"/>
+        <choice value="21:9"/>
+      </choices>
+      <default>'auto'</default>
+      <summary>The shape the picture is cropped to, or auto to keep the detected shape: 4:3, 16:9, 9:16, 1:1, 3:2, 2:3 or 21:9</summary>
     </key>
     <key name="trim" type="i">
       <range min="0" max="32"/>
@@ -671,6 +691,34 @@
     <key name="pan" type="b">
       <default>true</default>
       <summary>Keep where a zoomed picture was panned to</summary>
+    </key>
+  </schema>
+  <schema id="au.topher.rsimgv.history" path="/au/topher/rsimgv/history/">
+    <key name="enabled" type="b">
+      <default>true</default>
+      <summary>Keep a history of the pictures and videos that are viewed, with how many times and how long each has been watched</summary>
+    </key>
+    <key name="images" type="b">
+      <default>true</default>
+      <summary>Count pictures in the viewing history</summary>
+    </key>
+    <key name="image-seconds" type="i">
+      <range min="0" max="60"/>
+      <default>2</default>
+      <summary>How long a picture stays on screen before it counts as viewed, in seconds; 0 counts it at once</summary>
+    </key>
+    <key name="videos" type="b">
+      <default>true</default>
+      <summary>Count videos in the viewing history</summary>
+    </key>
+    <key name="video-percent" type="i">
+      <range min="1" max="100"/>
+      <default>10</default>
+      <summary>How much of a video has to play, in the current playback, before it counts as viewed, as a percentage of its length</summary>
+    </key>
+    <key name="show-stats" type="b">
+      <default>true</default>
+      <summary>Show the views and time watched for the item shown in the viewer's status bar and overlays</summary>
     </key>
   </schema>
   <schema id="au.topher.rsimgv.mouse" path="/au/topher/rsimgv/mouse/">

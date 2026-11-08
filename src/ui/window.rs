@@ -114,6 +114,9 @@ mod imp {
         pub(super) playlist_shown: Cell<bool>,
         /// Whether the viewer made the window fullscreen when it opened, so closing it leaves fullscreen again.
         pub(super) viewer_fullscreened: Cell<bool>,
+        /// The sidebar whose context the bottom gradient marks. It is kept when the focus moves into the content, so
+        /// the gradient stays put rather than blinking with the focus.
+        pub(super) active_sidebar: Cell<Option<Scope>>,
         /// The keybinding handler, detached when the window closes.
         pub(super) key_handler: std::cell::OnceCell<ActionKeyHandler>,
         pub(super) settings: std::cell::OnceCell<Settings>,
@@ -861,6 +864,7 @@ impl Window {
         self.refresh_keybinds_overlay();
         imp.pages.set_visible_child(&*imp.viewer);
         imp.viewer.grab_focus();
+        self.update_context_highlights();
         if imp.settings.get().is_some_and(|settings| settings.boolean("viewer.open-fullscreen")) && !self.is_fullscreen() {
             self.fullscreen();
             imp.viewer_fullscreened.set(true);
@@ -901,6 +905,7 @@ impl Window {
         if imp.viewer_fullscreened.take() {
             self.unfullscreen();
         }
+        self.update_context_highlights();
         self.update_title();
     }
 
@@ -921,6 +926,7 @@ impl Window {
         viewer.set_auto_hide_cursor(settings.boolean("viewer.auto-hide-cursor"));
         viewer.set_blurred_background(settings.boolean("viewer.blurred-background"));
         viewer.set_status_bar(settings.boolean("viewer.status-bar.shown"));
+        viewer.set_time_scaling(settings.boolean("video.scaled-times"));
         viewer.set_svp(crate::mpv::svp::Config::from_settings(settings));
         self.apply_folder_end();
         viewer.set_remember(super::media_viewer::Remember {
@@ -932,10 +938,19 @@ impl Window {
             zoom: settings.boolean("remember.zoom"),
             pan: settings.boolean("remember.pan"),
         });
+        viewer.set_history(super::media_viewer::HistorySettings {
+            enabled: settings.boolean("history.enabled"),
+            images: settings.boolean("history.images"),
+            image_seconds: settings.int("history.image-seconds"),
+            videos: settings.boolean("history.videos"),
+            video_percent: settings.int("history.video-percent"),
+            show_stats: settings.boolean("history.show-stats"),
+        });
         let crop_method = crate::mpv::framing::CropMethod::from_name(&settings.string("video.crop.method"));
         viewer.set_framing(crate::mpv::Framing {
             crop: settings.boolean("video.crop.enabled").then_some(crop_method),
             trim_pixels: settings.int("video.crop.trim"),
+            aspect: crate::mpv::framing::aspect_from_name(&settings.string("video.crop.ratio")),
             backdrop: settings.boolean("video.backdrop.enabled").then(|| crate::mpv::framing::Backdrop {
                 zoom: settings.double("video.backdrop.zoom"),
                 blur: settings.int("video.backdrop.blur"),
@@ -1012,6 +1027,7 @@ impl Window {
         self.add_action(&notify);
         bound_action(self, &weak, "toggle-keybinds", Window::toggle_keybinds_overlay);
         bound_action(self, &weak, "settings", Window::show_preferences);
+        bound_action(self, &weak, "viewing-history", Window::show_viewing_history);
         bound_action(self, &weak, "settings-keybindings", |window| window.present_preferences(Some("keybindings")));
         bound_action(self, &weak, "open-folder", Window::open_folder);
         bound_action(self, &weak, "bookmark-folder", Window::bookmark_current_folder);
@@ -1127,6 +1143,7 @@ impl Window {
         bound_action(&video, &weak, "seek-forward", |window| window.imp().viewer.seek(SEEK_STEP));
         bound_action(&video, &weak, "seek-backward", |window| window.imp().viewer.seek(-SEEK_STEP));
         valued_action(&video, &weak, "video.seek", |window, seconds| window.imp().viewer.seek((seconds * 1_000_000.0) as i64));
+        valued_action(&video, &weak, "video.frame-seek", |window, frames| window.imp().viewer.frame_seek(frames.round() as i64));
         valued_action(&video, &weak, "video.volume", |window, percent| window.imp().viewer.adjust_volume(percent / 100.0));
         valued_action(&video, &weak, "video.set-speed", |window, speed| window.imp().viewer.set_speed(speed));
         valued_action(&video, &weak, "video.adjust-speed", |window, percent| window.imp().viewer.adjust_speed(percent / 100.0));
@@ -1134,6 +1151,12 @@ impl Window {
         bound_action(&video, &weak, "volume-down", |window| window.imp().viewer.adjust_volume(-VOLUME_STEP));
         bound_action(&video, &weak, "mute", |window| window.imp().viewer.toggle_mute());
         bound_action(&video, &weak, "toggle-svp", |window| window.toggle_setting("video.svp.enabled"));
+        bound_action(&video, &weak, "toggle-backdrop", |window| window.toggle_setting("video.backdrop.enabled"));
+        bound_action(&video, &weak, "toggle-crop", Window::toggle_crop);
+        bound_action(&video, &weak, "cycle-crop-ratio", Window::cycle_crop_ratio);
+        bound_action(&video, &weak, "edit-crop", |window| window.imp().viewer.toggle_manual_crop());
+        bound_action(&video, &weak, "lock-crop", |window| window.imp().viewer.toggle_crop_lock());
+        bound_action(&video, &weak, "set-thumbnail-frame", |window| window.imp().viewer.set_thumbnail_frame());
         bound_action(&video, &weak, "repeat", |window| window.imp().viewer.toggle_repeat());
         bound_action(&video, &weak, "auto-advance", |window| window.imp().viewer.toggle_auto_advance());
         self.insert_action_group("video", Some(&video));
@@ -1183,12 +1206,20 @@ impl Window {
     /// Marks the sidebar that holds the focus as the active context.
     fn update_context_highlights(&self) {
         let imp = self.imp();
-        let scopes = self.active_scopes();
-        let tree = scopes.contains(&Scope::Tree);
-        let playlist = scopes.contains(&Scope::Playlist);
+        // A sidebar keeps the gradient when the focus moves into the content; another sidebar taking the focus moves it.
+        if self.focus_is_within(&*imp.tree) {
+            imp.active_sidebar.set(Some(Scope::Tree));
+        } else if imp.playlist_panel.get().is_some_and(PlaylistPanel::has_focus) {
+            imp.active_sidebar.set(Some(Scope::Playlist));
+        }
+        // The media player frame is its own context, so no sidebar is marked while it is open.
+        let active = if self.viewer_is_open() { None } else { imp.active_sidebar.get() };
+        let tree = active == Some(Scope::Tree) && imp.split.show_sidebar();
+        let playlist = active == Some(Scope::Playlist)
+            && (imp.playlist_window.borrow().is_some() || self.active_playlist_split().show_sidebar());
         imp.split.set_sidebar_active(tree);
         imp.playlist_split.set_sidebar_active(playlist);
-        imp.viewer.playlist_split().set_sidebar_active(playlist);
+        imp.viewer.playlist_split().set_sidebar_active(false);
     }
 
     /// Where the keyboard focus is: in the folder tree, in the playlist, or else in the content, the browse view or the
@@ -1213,7 +1244,8 @@ impl Window {
     fn pane_shown(&self, pane: FocusPane) -> bool {
         let imp = self.imp();
         match pane {
-            FocusPane::Tree => imp.split.show_sidebar(),
+            // The folder tree lives in the split the viewer covers, so it is not a visible context then.
+            FocusPane::Tree => !self.viewer_is_open() && imp.split.show_sidebar(),
             FocusPane::Content => true,
             FocusPane::Playlist => imp.playlist_window.borrow().is_some() || self.active_playlist_split().show_sidebar(),
         }
@@ -1630,6 +1662,7 @@ impl Window {
         }
         let split = self.active_playlist_split();
         split.set_show_sidebar(!split.show_sidebar());
+        self.update_context_highlights();
     }
 
     /// The split view the playlist is beside now: the viewer's while it is shown, else the browse view's.
@@ -2551,6 +2584,25 @@ impl Window {
         }
     }
 
+    /// Turns crop detection on or off, and says so over the window.
+    fn toggle_crop(&self) {
+        let Some(settings) = self.imp().settings.get() else { return };
+        let on = !settings.boolean("video.crop.enabled");
+        let _ = settings.set_boolean("video.crop.enabled", on);
+        self.notify(if on { "Crop on" } else { "Crop off" });
+    }
+
+    /// Cycles the shape the video is cropped to through auto and the standard aspect ratios.
+    fn cycle_crop_ratio(&self) {
+        const RATIOS: [&str; 8] = ["auto", "4:3", "16:9", "9:16", "1:1", "3:2", "2:3", "21:9"];
+        let Some(settings) = self.imp().settings.get() else { return };
+        let current = settings.string("video.crop.ratio");
+        let index = RATIOS.iter().position(|ratio| *ratio == current.as_str()).unwrap_or(0);
+        let next = RATIOS[(index + 1) % RATIOS.len()];
+        let _ = settings.set_string("video.crop.ratio", next);
+        self.notify(&format!("Crop shape: {next}"));
+    }
+
     /// Shows the browse items' filenames, or hides them.
     fn toggle_filename(&self) {
         if let Some(settings) = self.imp().settings.get() {
@@ -2947,6 +2999,7 @@ impl Window {
 
     pub fn set_show_sidebar(&self, shown: bool) {
         self.imp().split.set_show_sidebar(shown);
+        self.update_context_highlights();
     }
 
     /// Goes one step back, or forward, in the folders shown. Returns whether there was a step to take.
@@ -3549,6 +3602,14 @@ impl Window {
         self.present_preferences(None);
     }
 
+    /// Shows the pictures and videos that have been viewed, and how long each has been watched.
+    fn show_viewing_history(&self) {
+        match crate::storage::watch_history::WatchHistory::shared() {
+            Some(history) => super::history_dialog::present(self, history),
+            None => self.notify("The viewing history is not available"),
+        }
+    }
+
     /// Opens the preferences dialog on the page named `page`, or on the first page.
     fn present_preferences(&self, page: Option<&str>) {
         if let Some(settings) = self.imp().settings.get() {
@@ -3567,10 +3628,11 @@ const WHEEL_VOLUME_STEP: f64 = 5.0;
 const WHEEL_SEEK_STEP: f64 = 5.0;
 
 /// The settings the viewer and the window title are set from, applied again whenever one changes.
-const VIEWER_SETTINGS: [&str; 55] = [
+const VIEWER_SETTINGS: [&str; 63] = [
     "video.crop.enabled",
     "video.crop.method",
     "video.crop.trim",
+    "video.crop.ratio",
     "video.backdrop.enabled",
     "video.backdrop.zoom",
     "video.backdrop.blur",
@@ -3582,6 +3644,12 @@ const VIEWER_SETTINGS: [&str; 55] = [
     "remember.rotation",
     "remember.zoom",
     "remember.pan",
+    "history.enabled",
+    "history.images",
+    "history.image-seconds",
+    "history.videos",
+    "history.video-percent",
+    "history.show-stats",
     "window.sidebar.animations",
     "window.sidebar.animation-ms",
     "video.controls.locked",
@@ -3602,6 +3670,7 @@ const VIEWER_SETTINGS: [&str; 55] = [
     "image.unlock-minimum-zoom",
     "image.zoom-step",
     "video.start-delay",
+    "video.scaled-times",
     "image.expand-up-to-factor",
     "image.keep-fit",
     "image.fit",

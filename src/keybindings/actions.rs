@@ -177,6 +177,8 @@ pub enum Unit {
     Times,
     /// An angle, shown as `n°`.
     Degrees,
+    /// A number of frames, shown as `+n` or `-n`.
+    Frames,
 }
 
 /// The value a binding passes to an action that takes one: what it is called and counts, the range it is kept
@@ -206,6 +208,7 @@ impl ValueInfo {
             Unit::Percent => format!("{signed}%"),
             Unit::Times => format!("{number}\u{d7}"),
             Unit::Degrees => format!("{number}\u{b0}"),
+            Unit::Frames => signed,
         }
     }
 }
@@ -214,6 +217,7 @@ impl ValueInfo {
 pub fn value_info(name: &str) -> Option<ValueInfo> {
     match name {
         "video.seek" => Some(ValueInfo { label: "Seconds", unit: Unit::Seconds, min: -3600.0, max: 3600.0, step: 1.0, digits: 1, default: 10.0 }),
+        "video.frame-seek" => Some(ValueInfo { label: "Frames", unit: Unit::Frames, min: -1000.0, max: 1000.0, step: 1.0, digits: 0, default: 1.0 }),
         "video.volume" => Some(ValueInfo { label: "Change", unit: Unit::Percent, min: -100.0, max: 100.0, step: 1.0, digits: 0, default: 5.0 }),
         "video.set-speed" => Some(ValueInfo { label: "Speed", unit: Unit::Times, min: MIN_SPEED, max: MAX_SPEED, step: 0.25, digits: 2, default: 1.0 }),
         "view.set-rotation" => Some(ValueInfo { label: "Degrees", unit: Unit::Degrees, min: 0.0, max: 270.0, step: 90.0, digits: 0, default: 0.0 }),
@@ -555,6 +559,9 @@ pub const ACTIONS: &[ActionInfo] = &[
         name: "video.seek", description: "Move the playback position by the number of seconds bound; a negative number goes back.", icon: "media-seek-forward-symbolic", label: "Seek", defaults: &[],
     },
     ActionInfo {
+        name: "video.frame-seek", description: "Step by the number of frames bound, forwards or back with a negative number.", icon: "media-skip-forward-symbolic", label: "Seek by Frames", defaults: &[],
+    },
+    ActionInfo {
         name: "video.set-speed", description: "Play at the speed bound, such as 2 for double speed or 0.5 for half; 1 is normal.", icon: "power-profile-performance-symbolic", label: "Set Speed", defaults: &[],
     },
     ActionInfo {
@@ -574,6 +581,24 @@ pub const ACTIONS: &[ActionInfo] = &[
     },
     ActionInfo {
         name: "video.toggle-svp", description: "Turn SVP frame interpolation on or off.", icon: "video-display-symbolic", label: "Toggle SVP", defaults: &["v"],
+    },
+    ActionInfo {
+        name: "video.toggle-backdrop", description: "Fill the space round the video with a blurred, zoomed copy of it, or stop doing so.", icon: "view-reveal-symbolic", label: "Toggle Backdrop", defaults: &[],
+    },
+    ActionInfo {
+        name: "video.toggle-crop", description: "Crop the video to its picture, or stop detecting where to crop it.", icon: "edit-crop-symbolic", label: "Toggle Crop Detection", defaults: &[],
+    },
+    ActionInfo {
+        name: "video.cycle-crop-ratio", description: "Cycle the shape the video is cropped to through auto and the standard aspect ratios.", icon: "object-select-symbolic", label: "Cycle Crop Shape", defaults: &[],
+    },
+    ActionInfo {
+        name: "video.edit-crop", description: "Drag the crop over the video, then apply it or cancel.", icon: "edit-crop-symbolic", label: "Edit Crop", defaults: &[],
+    },
+    ActionInfo {
+        name: "video.lock-crop", description: "Hold the crop the video has now so it stops being detected, or let it be found again.", icon: "changes-prevent-symbolic", label: "Lock Crop", defaults: &[],
+    },
+    ActionInfo {
+        name: "video.set-thumbnail-frame", description: "Make the frame the video shows now the one its thumbnail is made from.", icon: "view-grid-symbolic", label: "Set Thumbnail Frame", defaults: &[],
     },
     ActionInfo {
         name: "video.repeat", description: "Play the video again from the start when it ends, or stop repeating it.", icon: "media-playlist-repeat-symbolic", label: "Toggle Repeat", defaults: &["r"],

@@ -1,6 +1,7 @@
 //! Where the metadata of pictures and videos is kept between runs. Each record is keyed by the file's path and is out
 //! of date once the file's modification time changes. Every store can look up, record and forget a file's record. Only
-//! a store that can search across files, the database, also implements `search`.
+//! a store that can search across files, the database, also implements `search`. The database is the app's only
+//! metadata store; a store that keeps nothing stands in when it cannot be opened.
 
 use std::io;
 use std::path::{Path, PathBuf};
