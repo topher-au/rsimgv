@@ -213,6 +213,75 @@ impl ValueInfo {
     }
 }
 
+/// A choice a binding makes for an action, such as which volume a volume action changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TargetInfo {
+    /// What the choice is called in the editor.
+    pub label: &'static str,
+    /// The target a binding gets when it names none.
+    pub default: &'static str,
+    /// The targets the action takes, each with the name the bindings file uses and the label the editor shows.
+    pub choices: &'static [(&'static str, &'static str)],
+}
+
+impl TargetInfo {
+    /// The name of `value`, or of the default when it names no target the action takes.
+    pub fn name(&self, value: Option<&str>) -> &'static str {
+        value
+            .and_then(|value| self.choices.iter().find(|(name, _)| *name == value).map(|(name, _)| *name))
+            .unwrap_or(self.default)
+    }
+
+    /// What `value` is called, or the default when it names no target the action takes.
+    pub fn title(&self, value: Option<&str>) -> &'static str {
+        let name = self.name(value);
+        self.choices.iter().find(|(choice, _)| *choice == name).map_or(self.default, |(_, title)| *title)
+    }
+
+    /// Whether `value` names a target the action takes.
+    pub fn has(&self, value: &str) -> bool {
+        self.choices.iter().any(|(name, _)| *name == value)
+    }
+}
+
+/// The volume a volume action adjusts.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum VolumeTarget {
+    /// The video shown, or the next one.
+    #[default]
+    Video,
+    /// The application's own volume, which videos without one of their own start at.
+    Application,
+}
+
+impl VolumeTarget {
+    /// The name of the target in a bindings file.
+    pub const fn name(self) -> &'static str {
+        match self {
+            VolumeTarget::Video => "video",
+            VolumeTarget::Application => "application",
+        }
+    }
+
+    /// The target `name` calls for, if it is one.
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "video" => Some(VolumeTarget::Video),
+            "application" => Some(VolumeTarget::Application),
+            _ => None,
+        }
+    }
+}
+
+/// The targets a binding of a volume action can choose between.
+pub const VOLUME_TARGETS: &[(&str, &str)] = &[(VolumeTarget::Video.name(), "Current Video"), (VolumeTarget::Application.name(), "Application")];
+
+/// The target the action `name` takes from its bindings, if it takes one.
+pub fn target_info(name: &str) -> Option<TargetInfo> {
+    matches!(name, "video.volume" | "video.volume-up" | "video.volume-down")
+        .then_some(TargetInfo { label: "Volume", default: VolumeTarget::Video.name(), choices: VOLUME_TARGETS })
+}
+
 /// The value the action `name` takes from its bindings, if it takes one.
 pub fn value_info(name: &str) -> Option<ValueInfo> {
     match name {
@@ -571,13 +640,13 @@ pub const ACTIONS: &[ActionInfo] = &[
         name: "video.adjust-speed", description: "Change the playback speed by the amount bound, such as 0.25 faster; a negative amount slows it.", icon: "power-profile-balanced-symbolic", label: "Adjust Speed", defaults: &[],
     },
     ActionInfo {
-        name: "video.volume-up", description: "Raise the volume.", icon: "audio-volume-high-symbolic", label: "Volume Up", defaults: &["up"],
+        name: "video.volume-up", description: "Raise the volume of the video shown, or of the application.", icon: "audio-volume-high-symbolic", label: "Volume Up", defaults: &["up"],
     },
     ActionInfo {
-        name: "video.volume-down", description: "Lower the volume.", icon: "audio-volume-low-symbolic", label: "Volume Down", defaults: &["down"],
+        name: "video.volume-down", description: "Lower the volume of the video shown, or of the application.", icon: "audio-volume-low-symbolic", label: "Volume Down", defaults: &["down"],
     },
     ActionInfo {
-        name: "video.volume", description: "Change the volume by the percentage bound; a negative number turns it down.", icon: "audio-volume-high-symbolic", label: "Adjust Volume", defaults: &[],
+        name: "video.volume", description: "Change the volume of the video shown, or of the application, by the percentage bound; a negative number turns it down.", icon: "audio-volume-high-symbolic", label: "Adjust Volume", defaults: &[],
     },
     ActionInfo {
         name: "video.mute", description: "Mute the sound, or unmute it.", icon: "audio-volume-muted-symbolic", label: "Mute", defaults: &["m"],
@@ -664,6 +733,18 @@ mod tests {
             assert_eq!(find(name).unwrap().default_context(), Scope::Tree, "{name}");
         }
         assert_eq!(contexts("win.focus-cycle"), Scope::ALL);
+    }
+
+    #[test]
+    fn the_volume_actions_choose_the_video_or_the_application() {
+        for name in ["video.volume", "video.volume-up", "video.volume-down"] {
+            let info = target_info(name).unwrap_or_else(|| panic!("{name} takes a target"));
+            assert_eq!(info.default, "video");
+            assert!(info.has("application") && info.has("video") && !info.has("elsewhere"));
+            assert_eq!(info.title(Some("application")), "Application");
+            assert_eq!(info.title(None), "Current Video");
+        }
+        assert!(target_info("video.mute").is_none());
     }
 
     #[test]

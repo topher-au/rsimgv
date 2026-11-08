@@ -10,7 +10,7 @@ use adw::prelude::*;
 use gtk::glib;
 
 use crate::keybindings::actions::{
-    value_info, ActionInfo, Scope, DEFAULT_NOTIFICATION_SECONDS, MAX_NOTIFICATION_SECONDS, NOTIFICATION_LEVELS,
+    target_info, value_info, ActionInfo, Scope, DEFAULT_NOTIFICATION_SECONDS, MAX_NOTIFICATION_SECONDS, NOTIFICATION_LEVELS,
 };
 use crate::services::scripts::read_scripts;
 use crate::keybindings::{self, chord::Chord, Binding, Notification};
@@ -29,6 +29,7 @@ pub fn show(
 ) {
     let existing_value = existing.as_ref().and_then(|binding| binding.value);
     let existing_context = existing.as_ref().map(|binding| binding.context);
+    let existing_target = existing.as_ref().and_then(|binding| binding.target.clone());
     let existing_script = existing.as_ref().and_then(|binding| binding.script.clone());
     let existing_notification = existing.as_ref().and_then(|binding| binding.notification.clone());
     let existing = existing.map(|binding| binding.chord);
@@ -150,6 +151,19 @@ pub fn show(
     context_row.append(&gtk::Label::new(Some("Active in")));
     context_row.append(&contexts);
     content.append(&context_row);
+    // The target, for an action that chooses one, starting at the binding's own or the action's default.
+    let target = target_info(action.name).map(|info| {
+        let titles: Vec<&str> = info.choices.iter().map(|(_, title)| *title).collect();
+        let picker = gtk::DropDown::from_strings(&titles);
+        let current = info.name(existing_target.as_deref());
+        picker.set_selected(info.choices.iter().position(|(name, _)| *name == current).unwrap_or(0) as u32);
+        picker.set_hexpand(true);
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+        row.append(&gtk::Label::new(Some(info.label)));
+        row.append(&picker);
+        content.append(&row);
+        (info, picker)
+    });
     if let (Some(picker), Some(names)) = (&script_picker, &scripts) {
         let row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
         row.append(&gtk::Label::new(Some("Script")));
@@ -235,10 +249,15 @@ pub fn show(
             level: NOTIFICATION_LEVELS.get(level.selected() as usize).copied().unwrap_or("info").to_owned(),
             seconds: seconds.value(),
         });
+        let target = target.as_ref().and_then(|(info, picker)| {
+            let (name, _) = info.choices.get(picker.selected() as usize)?;
+            (*name != info.default).then(|| (*name).to_owned())
+        });
         on_save(Binding {
             chord: text,
             context: selected_context(action, &contexts),
             value: value.as_ref().map(gtk::SpinButton::value),
+            target,
             script,
             notification,
         });

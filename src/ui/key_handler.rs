@@ -62,10 +62,10 @@ fn handle(window: &Window, key: gdk::Key, state: gdk::ModifierType) -> glib::Pro
         return glib::Propagation::Proceed;
     }
     let scopes = window.active_scopes();
-    let Some((action, value, script, notification)) = keybindings::with_table(|table| {
+    let Some((action, value, target, script, notification)) = keybindings::with_table(|table| {
         table
             .resolve_binding(&chord.format(), &scopes)
-            .map(|(action, binding)| (action, binding.value, binding.script.clone(), binding.notification.clone()))
+            .map(|(action, binding)| (action, binding.value, binding.target.clone(), binding.script.clone(), binding.notification.clone()))
     }) else {
         return glib::Propagation::Stop;
     };
@@ -85,7 +85,7 @@ fn handle(window: &Window, key: gdk::Key, state: gdk::ModifierType) -> glib::Pro
         }
         return glib::Propagation::Stop;
     }
-    if window.run_action(action.name, value) {
+    if window.run_action_with(action.name, value, target.as_deref()) {
         glib::Propagation::Stop
     } else {
         glib::Propagation::Proceed

@@ -8,7 +8,9 @@ use gtk::prelude::*;
 use gtk::subclass::prelude::*;
 use gtk::{gio, glib};
 
-use crate::keybindings::{self, actions::value_info, actions::ActionInfo, actions::Scope, actions::ACTIONS, Binding, BindingTable};
+use crate::keybindings::{
+    self, actions::target_info, actions::value_info, actions::ActionInfo, actions::Scope, actions::ACTIONS, Binding, BindingTable,
+};
 use super::binding_dialog;
 use super::key_handler::chord_from_event;
 use super::keybind_label::KeybindLabel;
@@ -826,6 +828,8 @@ impl KeybindingList {
         content.set_margin_bottom(2);
         content.set_margin_start(12);
 
+        // The target the binding chooses, for an action that takes one, as it is called.
+        let target = target_info(action.name).map(|info| info.title(binding.target.as_deref()));
         // The value the binding passes, for an action that takes one, as its unit shows it.
         let value = value_info(action.name).map(|info| (info, info.format(binding.value.unwrap_or(info.default))));
         // The script the binding runs, for the action that runs one, or the message of the notification it shows.
@@ -839,11 +843,17 @@ impl KeybindingList {
         content.append(&icon);
         let label = gtk::Label::new(None);
         let title = glib::markup_escape_text(action.label);
+        // The target, value or script follows the title in brackets, dimmed.
+        let mut details: Vec<String> = target.map(str::to_owned).into_iter().collect();
         match (&value, &script) {
-            // The value or the script follows the title in brackets, dimmed.
-            (Some((_, shown)), _) => label.set_markup(&format!("{title} <span alpha=\"55%\">({})</span>", glib::markup_escape_text(shown))),
-            (None, Some(script)) => label.set_markup(&format!("{title} <span alpha=\"55%\">({})</span>", glib::markup_escape_text(script))),
-            (None, None) => label.set_markup(&title),
+            (Some((_, shown)), _) => details.push(shown.clone()),
+            (None, Some(script)) => details.push(script.clone()),
+            (None, None) => {}
+        }
+        if details.is_empty() {
+            label.set_markup(&title);
+        } else {
+            label.set_markup(&format!("{title} <span alpha=\"55%\">({})</span>", glib::markup_escape_text(&details.join(", "))));
         }
         label.set_xalign(0.0);
         label.set_hexpand(true);

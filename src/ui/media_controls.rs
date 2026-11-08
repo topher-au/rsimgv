@@ -263,6 +263,7 @@ mod imp {
                     Signal::builder("previous-requested").build(),
                     Signal::builder("next-requested").build(),
                     Signal::builder("auto-advance-requested").build(),
+                    Signal::builder("audio-adjusted").build(),
                 ]
             });
             SIGNALS.as_ref()
@@ -302,6 +303,15 @@ impl MediaControls {
     /// Calls `callback` when the auto-advance button is pressed.
     pub fn connect_auto_advance_requested<F: Fn(&Self) + 'static>(&self, callback: F) -> glib::SignalHandlerId {
         self.connect_local("auto-advance-requested", false, move |values| {
+            let controls = values[0].get::<MediaControls>().expect("controls argument");
+            callback(&controls);
+            None
+        })
+    }
+
+    /// Calls `callback` when the user changes the volume or mute state, rather than the viewer setting it.
+    pub fn connect_audio_adjusted<F: Fn(&Self) + 'static>(&self, callback: F) -> glib::SignalHandlerId {
+        self.connect_local("audio-adjusted", false, move |values| {
             let controls = values[0].get::<MediaControls>().expect("controls argument");
             callback(&controls);
             None
@@ -415,6 +425,7 @@ impl MediaControls {
         let imp = self.imp();
         imp.muted.set(!imp.muted.get());
         self.apply_audio();
+        self.emit_by_name::<()>("audio-adjusted", &[]);
     }
 
     /// Sets the volume, as the slider or a key does. Unmutes.
@@ -423,6 +434,7 @@ impl MediaControls {
         imp.volume.set(volume);
         imp.muted.set(false);
         self.apply_audio();
+        self.emit_by_name::<()>("audio-adjusted", &[]);
     }
 
     /// Pushes the volume and mute state to the video.

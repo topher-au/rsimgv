@@ -4,7 +4,9 @@
 
 use serde_yaml_ng::{Mapping, Value};
 
-use super::actions::{ActionInfo, Scope, ACTIONS, DEFAULT_NOTIFICATION_SECONDS, MAX_NOTIFICATION_SECONDS, NOTIFICATION_LEVELS};
+use super::actions::{
+    target_info, ActionInfo, Scope, ACTIONS, DEFAULT_NOTIFICATION_SECONDS, MAX_NOTIFICATION_SECONDS, NOTIFICATION_LEVELS,
+};
 use super::chord::canonical;
 
 /// A notification to show over the window: its message, its level (one of `NOTIFICATION_LEVELS`) and how many seconds it
@@ -17,20 +19,22 @@ pub struct Notification {
 }
 
 /// A chord bound to an action, the context it is active in, the value it passes, for an action that takes one
-/// (`None` uses the action's default), the script it runs, for the action that runs one, and the notification it shows,
-/// for the action that shows one.
+/// (`None` uses the action's default), the target it chooses, for an action that takes one (`None` uses the action's
+/// default), the script it runs, for the action that runs one, and the notification it shows, for the action that
+/// shows one.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Binding {
     pub chord: String,
     pub context: Scope,
     pub value: Option<f64>,
+    pub target: Option<String>,
     pub script: Option<String>,
     pub notification: Option<Notification>,
 }
 
 impl Binding {
     fn new(chord: String, context: Scope) -> Self {
-        Self { chord, context, value: None, script: None, notification: None }
+        Self { chord, context, value: None, target: None, script: None, notification: None }
     }
 }
 
@@ -104,6 +108,13 @@ impl BindingTable {
         let (Some(index), Some(chord)) = (Self::index(name), canonical(&binding.chord)) else { return false };
         if !ACTIONS[index].contexts().contains(&binding.context) || self.chords[index].iter().any(|bound| bound.chord == chord) {
             return false;
+        }
+        // A binding that names the default target is kept as if it named none.
+        let mut binding = binding;
+        if let Some(info) = target_info(name) {
+            if binding.target.as_deref() == Some(info.default) {
+                binding.target = None;
+            }
         }
         self.chords[index].push(Binding { chord, ..binding });
         true
@@ -191,13 +202,16 @@ impl BindingTable {
                 .iter()
                 .map(|binding| {
                     let own_context = binding.context == action.default_context();
-                    if binding.value.is_none() && binding.script.is_none() && binding.notification.is_none() && own_context {
+                    if binding.value.is_none() && binding.target.is_none() && binding.script.is_none() && binding.notification.is_none() && own_context {
                         return Value::String(binding.chord.clone());
                     }
                     let mut entry = Mapping::new();
                     entry.insert(Value::String("key".to_owned()), Value::String(binding.chord.clone()));
                     if let Some(value) = binding.value {
                         entry.insert(Value::String("value".to_owned()), Value::Number(value.into()));
+                    }
+                    if let Some(target) = &binding.target {
+                        entry.insert(Value::String("target".to_owned()), Value::String(target.clone()));
                     }
                     if let Some(script) = &binding.script {
                         entry.insert(Value::String("script".to_owned()), Value::String(script.clone()));
@@ -240,11 +254,12 @@ impl BindingTable {
             };
             let action = &ACTIONS[index];
             let mut bindings: Vec<Binding> = Vec::new();
-            // Each entry is a chord, or a mapping of a chord (`key`), the value it passes (`value`) and the context
-            // it is active in (`context`), which is the action's own when it is left out.
+            // Each entry is a chord, or a mapping of a chord (`key`), the value it passes (`value`), the target it
+            // chooses (`target`) and the context it is active in (`context`), which is the action's own when it is
+            // left out.
             for entry in value.as_sequence().into_iter().flatten() {
-                let (chord, context, passed, script) = match entry {
-                    Value::String(chord) => (chord.as_str(), action.default_context(), None, None),
+                let (chord, context, passed, target, script) = match entry {
+                    Value::String(chord) => (chord.as_str(), action.default_context(), None, None, None),
                     Value::Mapping(_) => {
                         let Some(chord) = entry.get("key").and_then(Value::as_str) else { continue };
                         let context = match entry.get("context") {
@@ -257,8 +272,9 @@ impl BindingTable {
                                 }
                             },
                         };
+                        let target = entry.get("target").and_then(Value::as_str).map(str::to_owned);
                         let script = entry.get("script").and_then(Value::as_str).map(str::to_owned);
-                        (chord, context, entry.get("value").and_then(Value::as_f64), script)
+                        (chord, context, entry.get("value").and_then(Value::as_f64), target, script)
                     }
                     _ => continue,
                 };
@@ -274,6 +290,20 @@ impl BindingTable {
                     problems.push(format!("{name}: {chord} names no script"));
                     continue;
                 }
+                let target = match target {
+                    None => None,
+                    Some(target) => match target_info(name) {
+                        Some(info) if info.has(&target) => (target != info.default).then_some(target),
+                        Some(info) => {
+                            problems.push(format!("{name}: {chord} has an unknown target {target}, not {}", info.default));
+                            continue;
+                        }
+                        None => {
+                            problems.push(format!("{name}: {chord} does not take a target"));
+                            continue;
+                        }
+                    },
+                };
                 let notification = if action.takes_notification() {
                     match notification_of(entry) {
                         Ok(notification) => Some(notification),
@@ -288,7 +318,7 @@ impl BindingTable {
                 if bindings.iter().any(|bound| bound.chord == chord) {
                     continue;
                 }
-                bindings.push(Binding { chord, context, value: passed, script: script.filter(|_| action.takes_script()), notification });
+                bindings.push(Binding { chord, context, value: passed, target, script: script.filter(|_| action.takes_script()), notification });
             }
             self.chords[index] = bindings;
         }
@@ -371,9 +401,37 @@ mod tests {
         assert!(loaded.apply_yaml(&text).is_empty());
         assert_eq!(
             loaded.bindings("video.seek"),
-            [Binding { chord: "ctrl+right".to_owned(), context: Scope::Video, value: Some(30.0), script: None, notification: None }]
+            [Binding { chord: "ctrl+right".to_owned(), context: Scope::Video, value: Some(30.0), target: None, script: None, notification: None }]
         );
         assert_eq!(loaded.resolve("ctrl+right", &[Scope::View, Scope::Video]).map(|(a, value)| (a.name, value)), Some(("video.seek", Some(30.0))));
+    }
+
+    #[test]
+    fn targets_round_trip_through_the_yaml_file() {
+        let mut table = BindingTable::defaults();
+        assert!(table.insert(
+            "video.volume-up",
+            Binding { target: Some("application".to_owned()), ..Binding::new("ctrl+up".to_owned(), Scope::Video) }
+        ));
+        // A binding of the default target is written as if it named none.
+        assert!(table.insert(
+            "video.volume-down",
+            Binding { target: Some("video".to_owned()), ..Binding::new("ctrl+down".to_owned(), Scope::Video) }
+        ));
+        let text = table.to_yaml();
+        assert!(text.contains("target: application"));
+        assert!(!text.contains("target: video"));
+        let mut loaded = BindingTable::defaults();
+        assert!(loaded.apply_yaml(&text).is_empty());
+        assert_eq!(loaded.bindings("video.volume-up"), table.bindings("video.volume-up"));
+        assert_eq!(loaded.bindings("video.volume-down"), table.bindings("video.volume-down"));
+        let (action, binding) = loaded.resolve_binding("ctrl+up", &[Scope::View, Scope::Video]).unwrap();
+        assert_eq!((action.name, binding.target.as_deref()), ("video.volume-up", Some("application")));
+
+        // A target an action does not take is reported, and its entry skipped.
+        let problems = loaded.apply_yaml("schema: 1\nactions:\n  video.volume-up:\n    - key: ctrl+u\n      target: elsewhere\n  view.next:\n    - key: ctrl+t\n      target: application\n");
+        assert_eq!(problems.len(), 2, "{problems:?}");
+        assert!(loaded.chords("video.volume-up").is_empty() && loaded.chords("view.next").is_empty());
     }
 
     #[test]
@@ -384,7 +442,7 @@ mod tests {
         assert!(text.contains("context: global"));
         let mut loaded = BindingTable::defaults();
         assert!(loaded.apply_yaml(&text).is_empty());
-        assert_eq!(loaded.bindings("view.next").last(), Some(&Binding { chord: "ctrl+n".to_owned(), context: Scope::Global, value: None, script: None, notification: None }));
+        assert_eq!(loaded.bindings("view.next").last(), Some(&Binding { chord: "ctrl+n".to_owned(), context: Scope::Global, value: None, target: None, script: None, notification: None }));
     }
 
     #[test]

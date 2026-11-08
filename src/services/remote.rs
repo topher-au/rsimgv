@@ -1,7 +1,7 @@
 //! The IPC methods, run on the GTK thread against the window. Each takes JSON parameters and returns JSON.
 //!
 //!   actions.list    {}                       -> {"actions": [{"name", "label", "description", "scope", "contexts", "icon", "defaults"}, ...]}
-//!   actions.run     {"name", "value"?}       -> {}   value is passed to an action that takes one
+//!   actions.run     {"name", "value"?, "target"?} -> {}   value and target are passed to an action that takes them
 //!                   win.notify takes {"message", "level"?, "seconds"?} instead: it shows the message over the window
 //!                   (level is info, success, warning, error or plain; seconds is 4 by default).
 //!   window.info     {}                       -> {"current_path", "selected_file", "show_sidebar"}
@@ -74,7 +74,7 @@ use crate::fs::metadata::{MediaInfo, MediaMetadata};
 use crate::fs::thumbnail;
 use crate::storage::bookmarks;
 use crate::services::ipc::Error;
-use crate::keybindings::actions::{find, ACTIONS, DEFAULT_NOTIFICATION_SECONDS, NOTIFICATION_LEVELS};
+use crate::keybindings::actions::{find, target_info, ACTIONS, DEFAULT_NOTIFICATION_SECONDS, NOTIFICATION_LEVELS};
 use crate::ui::{Level, Message, Window};
 use crate::ui::message_overlay::Position;
 
@@ -119,7 +119,14 @@ pub fn handle(window: &Window, method: &str, params: &Value) -> Result<Value, Er
                 return Ok(json!({}));
             }
             let value = params.get("value").and_then(Value::as_f64);
-            if window.run_action(name, value) {
+            let target = optional_text(params, "target")?;
+            if let Some(target) = target {
+                let takes_target = target_info(name).is_some_and(|info| info.has(target));
+                if !takes_target {
+                    return Err(Error::new("invalid_params", format!("{name} does not take the target {target}")));
+                }
+            }
+            if window.run_action_with(name, value, target) {
                 Ok(json!({}))
             } else {
                 Err(Error::new("not_run", format!("the window did not run {name}")))

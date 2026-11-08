@@ -489,8 +489,11 @@ mod imp {
         /// How videos played by mpv are framed.
         pub(super) framing: Cell<crate::mpv::Framing>,
         pub(super) audio_at_load: Cell<(f64, bool)>,
-        /// The volume and mute state the user had before any video's own was applied, which the videos without their own start at.
-        pub(super) audio_base: Cell<Option<(f64, bool)>>,
+        /// Whether the video shown has a volume and mute state of its own, rather than starting at the application
+        /// volume, so a change to the application volume leaves it alone and it is kept for the video.
+        pub(super) audio_own: Cell<bool>,
+        /// The application volume, from 0 to 2 where 1 is full, that videos without a volume of their own start at.
+        pub(super) app_volume: Cell<f64>,
         /// The video shown, if the item is one. The viewer owns it, and the controls drive it.
         pub(super) media: RefCell<Option<gtk::MediaStream>>,
         /// Whether the viewer is hidden with its item still loaded, rather than closed.
@@ -605,6 +608,7 @@ mod imp {
             let obj = self.obj();
             let weak = obj.downgrade();
             self.video_start_delay.set(DEFAULT_VIDEO_START_DELAY);
+            self.app_volume.set(1.0);
             // A video is shown over a blurred copy of its thumbnail, which fills the view until its frames are up.
             let video_page = gtk::Overlay::new();
             video_page.set_hexpand(true);
@@ -685,6 +689,15 @@ mod imp {
                 move |_| {
                     if let Some(viewer) = weak.upgrade() {
                         viewer.request_back();
+                    }
+                }
+            });
+            self.controls.connect_audio_adjusted({
+                let weak = weak.clone();
+                move |_| {
+                    if let Some(viewer) = weak.upgrade() {
+                        // The video now has a level of its own, which a change to the application volume leaves be.
+                        viewer.imp().audio_own.set(true);
                     }
                 }
             });
@@ -1441,6 +1454,36 @@ impl MediaViewer {
     /// Sets which of a file's settings are kept for it.
     pub fn set_remember(&self, remember: Remember) {
         self.imp().remember.set(remember);
+    }
+
+    /// Sets the application volume, which a video without a volume of its own follows.
+    pub fn set_app_volume(&self, volume: f64) {
+        let imp = self.imp();
+        let volume = volume.clamp(0.0, MAX_VOLUME);
+        if (imp.app_volume.get() - volume).abs() < 1e-9 {
+            return;
+        }
+        imp.app_volume.set(volume);
+        // The video shown follows the application volume only while it has none of its own.
+        if !imp.audio_own.get() && imp.media.borrow().is_some() {
+            let muted = imp.controls.audio().1;
+            imp.controls.set_audio(volume, muted);
+        }
+    }
+
+    /// Changes the application volume by `delta`, and keeps it for the videos that start at it.
+    pub fn adjust_app_volume(&self, delta: f64) {
+        let imp = self.imp();
+        let volume = (imp.app_volume.get() + delta).clamp(0.0, MAX_VOLUME);
+        if let Err(err) = crate::settings::app_settings().set_double("video.app-volume", volume) {
+            eprintln!("rsimgv: could not save the application volume: {err}");
+        }
+        self.set_app_volume(volume);
+        // The volume display comes up only when the video shown takes the new level, as it does at either end of the
+        // scale.
+        if !imp.audio_own.get() && imp.media.borrow().is_some() {
+            self.note_change(Trigger::Volume);
+        }
     }
 
     /// Changes the volume of the video shown by `delta`.
@@ -2779,20 +2822,17 @@ impl MediaViewer {
             let fit = if media.is::<crate::mpv::MpvStream>() { gtk::ContentFit::Fill } else { gtk::ContentFit::Contain };
             imp.picture.set_content_fit(fit);
             imp.picture.set_paintable(Some(&media));
-            // A video with a volume of its own starts at it. The others start at the level the user had before any video's
-            // own, so one video's volume does not carry over to the next.
+            // A video with a volume of its own starts at it. Every other starts at the application volume, whether it
+            // has no stored volume or volumes are not remembered, so one video's volume does not carry over to the next.
             let remember = imp.remember.get();
-            if remember.enabled && remember.volume {
-                let base = imp.audio_base.get().unwrap_or_else(|| imp.controls.audio());
-                imp.audio_base.set(Some(base));
-                let saved = settings.as_ref().and_then(|settings| settings.get_f64("volume"));
-                match saved {
-                    Some(volume) => imp.controls.set_audio(volume, settings.as_ref().and_then(|settings| settings.get_bool("muted")).unwrap_or(false)),
-                    None => imp.controls.set_audio(base.0, base.1),
-                }
-            } else {
-                imp.audio_base.set(None);
+            let saved = (remember.enabled && remember.volume)
+                .then(|| settings.as_ref().and_then(|settings| settings.get_f64("volume")))
+                .flatten();
+            match saved {
+                Some(volume) => imp.controls.set_audio(volume, settings.as_ref().and_then(|settings| settings.get_bool("muted")).unwrap_or(false)),
+                None => imp.controls.set_audio(imp.app_volume.get(), false),
             }
+            imp.audio_own.set(saved.is_some());
             imp.audio_at_load.set(imp.controls.audio());
             imp.controls.set_media(Some(&media));
             // Playing is requested once the stream is ready, since a request made before then is dropped. It starts
@@ -2939,9 +2979,10 @@ impl MediaViewer {
                 if let Some(stream) = media.downcast_ref::<crate::mpv::MpvStream>() {
                     changes.extend(orientation_settings(stream.orientation()));
                 }
-                // The volume is kept only if it was changed while the video was up; it is otherwise the one it inherited.
+                // The volume is kept only if the video has one of its own and it changed while the video was up; a
+                // level it merely took from the application volume is not the video's to keep.
                 let audio = imp.controls.audio();
-                if audio != imp.audio_at_load.get() {
+                if imp.audio_own.get() && audio != imp.audio_at_load.get() {
                     changes.push(("volume", Some(audio.0.into())));
                     changes.push(("muted", audio.1.then(|| true.into())));
                 }
@@ -2974,6 +3015,7 @@ impl MediaViewer {
             }
         }
         imp.controls.set_media(None);
+        imp.audio_own.set(false);
         imp.picture.set_paintable(None::<&gdk::Paintable>);
         imp.backdrop.set_texture(None);
         imp.canvas.set_texture(None);

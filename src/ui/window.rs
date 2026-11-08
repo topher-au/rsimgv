@@ -10,7 +10,7 @@ use gtk::{gdk, gio, glib};
 
 use crate::settings::Settings;
 use crate::settings::GuardHandle;
-use crate::keybindings::actions::{Scope, DEFAULT_NOTIFICATION_SECONDS, MAX_NOTIFICATION_SECONDS};
+use crate::keybindings::actions::{target_info, Scope, VolumeTarget, DEFAULT_NOTIFICATION_SECONDS, MAX_NOTIFICATION_SECONDS};
 use super::browse_view::{InfoField, ListedFile};
 use crate::storage::bookmarks::{self, Bookmark};
 use crate::playlist::{self, format::{self, Format}};
@@ -988,6 +988,7 @@ impl Window {
         viewer.set_blurred_background(settings.boolean("viewer.blurred-background"));
         viewer.set_status_bar(settings.boolean("viewer.status-bar.shown"));
         viewer.set_time_scaling(settings.boolean("video.scaled-times"));
+        viewer.set_app_volume(settings.double("video.app-volume"));
         viewer.set_svp(crate::mpv::svp::Config::from_settings(settings));
         self.apply_folder_end();
         viewer.set_remember(super::media_viewer::Remember {
@@ -1206,11 +1207,11 @@ impl Window {
         bound_action(&video, &weak, "seek-backward", |window| window.imp().viewer.seek(-SEEK_STEP));
         valued_action(&video, &weak, "video.seek", |window, seconds| window.imp().viewer.seek((seconds * 1_000_000.0) as i64));
         valued_action(&video, &weak, "video.frame-seek", |window, frames| window.imp().viewer.frame_seek(frames.round() as i64));
-        valued_action(&video, &weak, "video.volume", |window, percent| window.imp().viewer.adjust_volume(percent / 100.0));
+        volume_action(&video, &weak, "video.volume", |window, percent, target| window.adjust_volume(percent / 100.0, target));
         valued_action(&video, &weak, "video.set-speed", |window, speed| window.imp().viewer.set_speed(speed));
         valued_action(&video, &weak, "video.adjust-speed", |window, percent| window.imp().viewer.adjust_speed(percent / 100.0));
-        bound_action(&video, &weak, "volume-up", |window| window.imp().viewer.adjust_volume(VOLUME_STEP));
-        bound_action(&video, &weak, "volume-down", |window| window.imp().viewer.adjust_volume(-VOLUME_STEP));
+        volume_action(&video, &weak, "video.volume-up", |window, _, target| window.adjust_volume(VOLUME_STEP, target));
+        volume_action(&video, &weak, "video.volume-down", |window, _, target| window.adjust_volume(-VOLUME_STEP, target));
         bound_action(&video, &weak, "mute", |window| window.imp().viewer.toggle_mute());
         bound_action(&video, &weak, "toggle-svp", |window| window.toggle_setting("video.svp.enabled"));
         bound_action(&video, &weak, "toggle-backdrop", |window| window.toggle_setting("video.backdrop.enabled"));
@@ -2376,7 +2377,21 @@ impl Window {
     /// Runs the action `name` on this window, as a key binding would, passing `value` if the action takes one.
     /// Returns whether it ran.
     pub fn run_action(&self, name: &str, value: Option<f64>) -> bool {
-        WidgetExt::activate_action(self, name, action_parameter(name, value).as_ref()).is_ok()
+        self.run_action_with(name, value, None)
+    }
+
+    /// Runs the action `name` on this window, as a key binding would, passing `value` if the action takes one and
+    /// choosing `target` if it takes one. Returns whether it ran.
+    pub fn run_action_with(&self, name: &str, value: Option<f64>, target: Option<&str>) -> bool {
+        WidgetExt::activate_action(self, name, action_parameter(name, value, target).as_ref()).is_ok()
+    }
+
+    /// Changes the volume of the video shown, or of the application, by `delta`.
+    fn adjust_volume(&self, delta: f64, target: VolumeTarget) {
+        match target {
+            VolumeTarget::Video => self.imp().viewer.adjust_volume(delta),
+            VolumeTarget::Application => self.imp().viewer.adjust_app_volume(delta),
+        }
     }
 
     /// Asks for a name for the folder shown, then bookmarks it.
@@ -3691,7 +3706,7 @@ const WHEEL_VOLUME_STEP: f64 = 5.0;
 const WHEEL_SEEK_STEP: f64 = 5.0;
 
 /// The settings the viewer and the window title are set from, applied again whenever one changes.
-const VIEWER_SETTINGS: [&str; 63] = [
+const VIEWER_SETTINGS: [&str; 64] = [
     "video.crop.enabled",
     "video.crop.method",
     "video.crop.trim",
@@ -3734,6 +3749,7 @@ const VIEWER_SETTINGS: [&str; 63] = [
     "image.zoom-step",
     "video.start-delay",
     "video.scaled-times",
+    "video.app-volume",
     "image.expand-up-to-factor",
     "image.keep-fit",
     "image.fit",
@@ -4513,10 +4529,54 @@ pub(crate) mod tests {
     }
 }
 
-/// The parameter to activate the action `name` with: `value` for an action that takes one, as a maybe-double,
-/// and nothing otherwise.
-pub fn action_parameter(name: &str, value: Option<f64>) -> Option<glib::Variant> {
-    crate::keybindings::actions::value_info(name).map(|_| value.to_variant())
+/// The parameter to activate the action `name` with: `value` for an action that takes one, as a maybe-double, the
+/// target it chooses for one that takes a target, and nothing otherwise.
+pub fn action_parameter(name: &str, value: Option<f64>, target: Option<&str>) -> Option<glib::Variant> {
+    let target = target_info(name).map(|info| info.name(target).to_owned());
+    match (crate::keybindings::actions::value_info(name), target) {
+        (Some(info), Some(target)) => Some((value.unwrap_or(info.default), target).to_variant()),
+        (Some(_), None) => Some(value.to_variant()),
+        (None, Some(target)) => Some(target.to_variant()),
+        (None, None) => None,
+    }
+}
+
+/// Adds the volume action `full_name` (with its group, such as `video.volume`) to `map`, which is that group,
+/// running `run` on the window with its value and target. An action that takes a value carries it with the target;
+/// one that takes only a target carries that.
+fn volume_action(
+    map: &impl IsA<gio::ActionMap>,
+    window: &glib::WeakRef<Window>,
+    full_name: &'static str,
+    run: fn(&Window, f64, VolumeTarget),
+) {
+    let name = full_name.split_once('.').map_or(full_name, |(_, name)| name);
+    let info = crate::keybindings::actions::value_info(full_name);
+    let default = info.map_or(0.0, |info| info.default);
+    let default_target = target_info(full_name)
+        .and_then(|info| VolumeTarget::from_name(info.default))
+        .unwrap_or_default();
+    let signature = if info.is_some() { "(ds)" } else { "s" };
+    let action = gio::SimpleAction::new(name, Some(glib::VariantTy::new(signature).expect("a valid type")));
+    let window = window.clone();
+    action.connect_activate(move |_, parameter| {
+        let Some(window) = window.upgrade() else { return };
+        let (value, target) = if info.is_some() {
+            parameter
+                .and_then(|parameter| parameter.get::<(f64, String)>())
+                .map_or((default, default_target), |(value, target)| {
+                    (value, VolumeTarget::from_name(&target).unwrap_or(default_target))
+                })
+        } else {
+            let target = parameter
+                .and_then(|parameter| parameter.get::<String>())
+                .and_then(|target| VolumeTarget::from_name(&target))
+                .unwrap_or(default_target);
+            (default, target)
+        };
+        run(&window, value, target);
+    });
+    map.add_action(&action);
 }
 
 /// Adds the action `full_name` (with its group, such as `video.seek`) to `map`, which is that group, running `run`

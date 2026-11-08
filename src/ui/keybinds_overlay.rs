@@ -9,7 +9,7 @@ use std::rc::Rc;
 use gtk::prelude::*;
 
 use super::keybind_label::KeybindLabel;
-use crate::keybindings::actions::{value_info, ActionInfo, Scope};
+use crate::keybindings::actions::{target_info, value_info, ActionInfo, Scope};
 use crate::keybindings::{self, Binding};
 
 /// The space between the list and the edges of the window, in pixels.
@@ -220,18 +220,22 @@ fn section(scope: Scope, rows: &[&(&'static ActionInfo, Binding)]) -> gtk::Box {
     section
 }
 
-/// An action's name for the list, with what its binding passes after it: a value, a script or a message.
+/// An action's name for the list, with what its binding chooses or passes after it: a target, a value, a script or a
+/// message.
 fn row_label(action: &ActionInfo, binding: &Binding) -> String {
+    let mut details: Vec<String> = target_info(action.name).map(|info| info.title(binding.target.as_deref()).to_owned()).into_iter().collect();
     if let Some(info) = value_info(action.name) {
-        return format!("{} ({})", action.label, info.format(binding.value.unwrap_or(info.default)));
+        details.push(info.format(binding.value.unwrap_or(info.default)));
+    } else if let Some(script) = &binding.script {
+        details.push(script.clone());
+    } else if let Some(notification) = &binding.notification {
+        details.push(notification.message.clone());
     }
-    if let Some(script) = &binding.script {
-        return format!("{} ({script})", action.label);
+    if details.is_empty() {
+        action.label.to_owned()
+    } else {
+        format!("{} ({})", action.label, details.join(", "))
     }
-    if let Some(notification) = &binding.notification {
-        return format!("{} ({})", action.label, notification.message);
-    }
-    action.label.to_owned()
 }
 
 #[cfg(test)]

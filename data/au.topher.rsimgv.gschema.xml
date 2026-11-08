@@ -483,6 +483,11 @@
       <default>true</default>
       <summary>Show playback times and lengths as the time they take at the playback speed, so a 10-minute video at 25% speed shows 40 minutes</summary>
     </key>
+    <key name="app-volume" type="d">
+      <range min="0.0" max="2.0"/>
+      <default>1.0</default>
+      <summary>The application volume, from 0 to 2 where 1 is full, that videos without a stored volume start at, and that every video starts at when volumes are not remembered</summary>
+    </key>
   </schema>
   <schema id="au.topher.rsimgv.video.mpv" path="/au/topher/rsimgv/video/mpv/">
     <key name="args" type="s">
