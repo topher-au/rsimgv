@@ -510,6 +510,10 @@
       <default>true</default>
       <summary>Use NVIDIA optical flow for SVP's motion analysis, rather than the CPU</summary>
     </key>
+    <key name="plugin-directory" type="s">
+      <default>''</default>
+      <summary>The directory of SVP's own VapourSynth plugin libraries, which replace the bundled open-svpflow ones; empty uses the bundled ones</summary>
+    </key>
   </schema>
   <schema id="au.topher.rsimgv.video.svp.fps" path="/au/topher/rsimgv/video/svp/fps/">
     <key name="mode" type="s">

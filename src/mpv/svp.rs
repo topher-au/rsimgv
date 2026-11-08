@@ -9,13 +9,14 @@
 use crate::settings::Settings;
 
 use std::collections::hash_map::DefaultHasher;
+use std::collections::HashSet;
 use std::ffi::{c_char, c_int, c_void, CString};
 use std::fs::{DirBuilder, Permissions};
 use std::hash::{Hash, Hasher};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use gtk::glib;
@@ -78,9 +79,14 @@ pub fn target_fps(rate: &Rate, source: f64, speed: f64, display: Option<f64>) ->
 }
 
 /// The plugin libraries of open-svpflow, which are built beside rsimgv and embedded in it, so the plugins used are always
-/// these and never ones installed elsewhere on the system.
+/// these and never ones installed elsewhere on the system, unless the settings name a directory of SVP's own libraries.
 static SVPFLOW1: &[u8] = include_bytes!(concat!(env!("RSIMGV_SVP_PLUGINS"), "/libsvpflow1_vs.so"));
 static SVPFLOW2: &[u8] = include_bytes!(concat!(env!("RSIMGV_SVP_PLUGINS"), "/libsvpflow2_vs.so"));
+
+/// The file names SVP's plugin libraries have, in the order they are looked for: the 64-bit builds first, then the plain
+/// names, and then the name open-svpflow builds.
+const SVP1_NAMES: [&str; 3] = ["libsvpflow1_vs64.so", "libsvpflow1.so", "libsvpflow1_vs.so"];
+const SVP2_NAMES: [&str; 3] = ["libsvpflow2_vs64.so", "libsvpflow2.so", "libsvpflow2_vs.so"];
 
 const RTLD_NOW: c_int = 2;
 const RTLD_NODELETE: c_int = 0x1000;
@@ -89,11 +95,25 @@ unsafe extern "C" {
     fn dlopen(file: *const c_char, flags: c_int) -> *mut c_void;
 }
 
-/// The paths of the plugin libraries, which are in the script directory.
-#[derive(Debug, PartialEq)]
+/// The paths of the plugin libraries, which are in the script directory, or in SVP's own.
+#[derive(Clone, Debug, PartialEq)]
 pub struct Plugins {
     pub svp1: PathBuf,
     pub svp2: PathBuf,
+}
+
+impl Plugins {
+    /// The plugin libraries in `directory`, under the names SVP installs them with.
+    pub fn find(directory: &Path) -> Result<Self, String> {
+        let find = |names: &[&str]| {
+            names
+                .iter()
+                .map(|name| directory.join(name))
+                .find(|path| path.is_file())
+                .ok_or_else(|| format!("no {} in {}", names.join(", "), directory.display()))
+        };
+        Ok(Self { svp1: find(&SVP1_NAMES)?, svp2: find(&SVP2_NAMES)? })
+    }
 }
 
 /// Keeps the plugin at `path` loaded for the rest of the process. VapourSynth unloads a plugin with its core, which goes
@@ -107,9 +127,32 @@ fn keep_loaded(path: &Path) {
     }
 }
 
-/// The plugins, written out to the script directory the first time they are needed. Each is written under a name of its
-/// own and renamed into place, so a plugin that mpv has already loaded is not changed under it.
-pub fn plugins() -> Result<&'static Plugins, &'static str> {
+/// Keeps each plugin loaded only once, so a plugin already loaded for an earlier script is not loaded again.
+fn keep_loaded_once(path: &Path) {
+    static KEPT: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
+    let kept = KEPT.get_or_init(|| Mutex::new(HashSet::new()));
+    let Ok(mut kept) = kept.lock() else { return };
+    if kept.insert(path.to_path_buf()) {
+        keep_loaded(path);
+    }
+}
+
+/// The plugins: those in `directory` when it is not empty, so SVP's own libraries can replace the bundled ones, and the
+/// embedded open-svpflow plugins otherwise. The embedded ones are written out to the script directory the first time they
+/// are needed. Each is written under a name of its own and renamed into place, so a plugin that mpv has already loaded is
+/// not changed under it.
+pub fn plugins(directory: &Path) -> Result<Plugins, String> {
+    if !directory.as_os_str().is_empty() {
+        let plugins = Plugins::find(directory)?;
+        keep_loaded_once(&plugins.svp1);
+        keep_loaded_once(&plugins.svp2);
+        return Ok(plugins);
+    }
+    embedded_plugins().cloned()
+}
+
+/// The open-svpflow plugins, written out to the script directory the first time they are needed.
+fn embedded_plugins() -> Result<&'static Plugins, String> {
     static PLUGINS: OnceLock<Result<Plugins, String>> = OnceLock::new();
     PLUGINS
         .get_or_init(|| {
@@ -129,7 +172,7 @@ pub fn plugins() -> Result<&'static Plugins, &'static str> {
             })
         })
         .as_ref()
-        .map_err(String::as_str)
+        .map_err(Clone::clone)
 }
 
 /// SVP's parameter string: compact JSON, with no quotes or spaces, as SVP reads it.
@@ -247,6 +290,8 @@ pub fn create_private_directory(directory: &Path) -> std::io::Result<()> {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Config {
     pub enabled: bool,
+    /// A directory of SVP's own plugin libraries, which replace the bundled ones, or empty to use the bundled ones.
+    pub plugin_directory: PathBuf,
     pub rate: Rate,
     pub nvof: bool,
     /// How long after a seek the filter stays out, or `None` to keep it in through seeks.
@@ -257,6 +302,7 @@ impl Config {
     pub fn from_settings(settings: &Settings) -> Self {
         Self {
             enabled: settings.boolean("video.svp.enabled"),
+            plugin_directory: PathBuf::from(settings.string("video.svp.plugin-directory").as_str()),
             rate: Rate {
                 mode: Mode::from_name(&settings.string("video.svp.fps.mode")),
                 target: settings.double("video.svp.fps.target"),
@@ -337,6 +383,24 @@ mod tests {
         std::fs::set_permissions(&directory, Permissions::from_mode(0o755)).unwrap();
         create_private_directory(&directory).unwrap();
         assert_eq!(mode(&directory), 0o700);
+
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn external_plugins_are_found_under_the_names_svp_uses() {
+        let root = std::env::temp_dir().join(format!("rsimgv-svp-plugins-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("libsvpflow1_vs64.so"), b"").unwrap();
+        std::fs::write(root.join("libsvpflow2.so"), b"").unwrap();
+
+        let plugins = Plugins::find(&root).unwrap();
+        assert_eq!(plugins.svp1, root.join("libsvpflow1_vs64.so"));
+        assert_eq!(plugins.svp2, root.join("libsvpflow2.so"));
+
+        // Both plugins are needed, so a directory with only one is not used.
+        std::fs::remove_file(root.join("libsvpflow2.so")).unwrap();
+        assert!(Plugins::find(&root).is_err());
 
         std::fs::remove_dir_all(&root).unwrap();
     }

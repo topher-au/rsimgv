@@ -1829,11 +1829,11 @@ impl MediaViewer {
             imp.svp_filter.take();
             return;
         }
-        let plugins = match crate::mpv::svp::plugins() {
+        let plugins = match crate::mpv::svp::plugins(&config.plugin_directory) {
             Ok(plugins) => plugins,
             Err(err) => {
-                eprintln!("rsimgv: SVP plugins could not be written: {err}");
-                self.announce("SVP plugins could not be written", true);
+                eprintln!("rsimgv: SVP plugins could not be loaded: {err}");
+                self.announce("SVP plugins could not be loaded", true);
                 return;
             }
         };

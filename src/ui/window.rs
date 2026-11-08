@@ -3797,7 +3797,7 @@ const VIEWER_SETTINGS: [&str; 66] = [
     "viewer.status-bar.shown",
     "viewer.status-bar.overlay-position",
     "video.svp.enabled",
-    "svp-plugin-directory",
+    "video.svp.plugin-directory",
     "video.svp.fps.mode",
     "video.svp.fps.target",
     "video.svp.fps.minimum",

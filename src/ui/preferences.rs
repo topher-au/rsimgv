@@ -57,6 +57,12 @@ mod imp {
         #[template_child]
         pub svp_nvof_row: TemplateChild<adw::SwitchRow>,
         #[template_child]
+        pub svp_plugin_directory_row: TemplateChild<adw::ActionRow>,
+        #[template_child]
+        pub svp_plugin_directory_button: TemplateChild<gtk::Button>,
+        #[template_child]
+        pub svp_plugin_clear_button: TemplateChild<gtk::Button>,
+        #[template_child]
         pub svp_seek_bypass_row: TemplateChild<adw::SwitchRow>,
         #[template_child]
         pub svp_seek_bypass_delay_row: TemplateChild<adw::SpinRow>,
@@ -514,6 +520,7 @@ impl PreferencesDialog {
         dialog.bind_file_settings(settings);
         imp.overlay_page.append(&super::overlay_editor::build(settings));
         dialog.bind_start_directory(settings);
+        dialog.bind_svp_plugins(settings);
         bind_info_fields(settings, &dialog);
         // The scale steps through no limit, shown as "-", then 1x to 4x, with a mark at each.
         let scale = &*imp.expand_up_to_scale;
@@ -945,6 +952,18 @@ pub(crate) mod tests {
         assert!(!imp.svp_banner.is_revealed());
         settings.reset("video.backend");
         assert!(imp.mpv_group.get_visible() && imp.svp_group.is_sensitive());
+
+        // The bundled SVP plugins are used until a folder of SVP's own is chosen.
+        assert_eq!(
+            imp.svp_plugin_directory_row.subtitle().as_deref(),
+            Some("Bundled open-svpflow libraries")
+        );
+        assert!(!imp.svp_plugin_clear_button.get_visible(), "there is nothing to clear");
+        settings.set_string("video.svp.plugin-directory", "/opt/svp/plugins").unwrap();
+        assert_eq!(imp.svp_plugin_directory_row.subtitle().as_deref(), Some("/opt/svp/plugins"));
+        assert!(imp.svp_plugin_clear_button.get_visible(), "the folder can be cleared");
+        imp.svp_plugin_clear_button.emit_clicked();
+        assert_eq!(settings.string("video.svp.plugin-directory"), "", "clicking clear uses the bundled plugins");
 
         // Every section is a stack of tabs under the name the sidebar gives it, and each tab has a title.
         for (name, _, _) in SECTIONS {
@@ -1534,6 +1553,49 @@ impl PreferencesDialog {
                 move |_, _| update()
             });
         }
+    }
+
+    /// Shows the folder of SVP's own plugin libraries as the row's subtitle, or the bundled ones when none is chosen, and
+    /// lets its buttons pick a folder or go back to the bundled libraries.
+    fn bind_svp_plugins(&self, settings: &Settings) {
+        let imp = self.imp();
+        settings
+            .bind("video.svp.plugin-directory", &*imp.svp_plugin_directory_row, "subtitle")
+            .mapping(|variant, _| {
+                let path = variant.str()?;
+                Some(if path.is_empty() { "Bundled open-svpflow libraries".to_value() } else { path.to_value() })
+            })
+            .get_only()
+            .build();
+        settings
+            .bind("video.svp.plugin-directory", &*imp.svp_plugin_clear_button, "visible")
+            .mapping(|variant, _| Some((!variant.str()?.is_empty()).to_value()))
+            .get_only()
+            .build();
+
+        let chooser_settings = settings.clone();
+        let weak = self.downgrade();
+        imp.svp_plugin_directory_button.connect_clicked(move |_| {
+            let Some(dialog) = weak.upgrade() else { return };
+            let root = dialog.root().and_downcast::<gtk::Window>();
+            let chooser = gtk::FileDialog::builder().title("SVP Plugin Directory").build();
+            let current = chooser_settings.string("video.svp.plugin-directory");
+            if !current.is_empty() {
+                chooser.set_initial_folder(Some(&gio::File::for_path(current.as_str())));
+            }
+            let settings = chooser_settings.clone();
+            chooser.select_folder(root.as_ref(), None::<&gio::Cancellable>, move |result| {
+                if let Some(path) = result.ok().and_then(|folder| folder.path()) {
+                    let _ = settings.set_string("video.svp.plugin-directory", &path.to_string_lossy());
+                }
+            });
+        });
+        imp.svp_plugin_clear_button.connect_clicked({
+            let settings = settings.clone();
+            move |_| {
+                let _ = settings.reset("video.svp.plugin-directory");
+            }
+        });
     }
 
     /// Shows the start directory row only for a specific start location, with the chosen folder as

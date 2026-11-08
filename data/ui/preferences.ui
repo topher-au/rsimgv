@@ -1198,6 +1198,32 @@
                                     <property name="subtitle">Motion analysis on the GPU, rather than the CPU</property>
                                   </object>
                                 </child>
+                                <child>
+                                  <object class="AdwActionRow" id="svp_plugin_directory_row">
+                                    <property name="title">Plugin libraries</property>
+                                    <property name="subtitle">Bundled open-svpflow libraries</property>
+                                    <child type="suffix">
+                                      <object class="GtkButton" id="svp_plugin_clear_button">
+                                        <property name="icon-name">edit-clear-symbolic</property>
+                                        <property name="tooltip-text">Use the bundled libraries</property>
+                                        <property name="valign">center</property>
+                                        <style>
+                                          <class name="flat"/>
+                                        </style>
+                                      </object>
+                                    </child>
+                                    <child type="suffix">
+                                      <object class="GtkButton" id="svp_plugin_directory_button">
+                                        <property name="icon-name">folder-open-symbolic</property>
+                                        <property name="tooltip-text">Choose Folder</property>
+                                        <property name="valign">center</property>
+                                        <style>
+                                          <class name="flat"/>
+                                        </style>
+                                      </object>
+                                    </child>
+                                  </object>
+                                </child>
                               </object>
                             </child>
                             <child>
