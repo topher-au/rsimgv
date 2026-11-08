@@ -185,6 +185,8 @@ mod imp {
         #[template_child]
         pub video_crop_method_row: TemplateChild<adw::ComboRow>,
         #[template_child]
+        pub video_crop_ratio_row: TemplateChild<adw::ComboRow>,
+        #[template_child]
         pub video_crop_trim_row: TemplateChild<adw::SpinRow>,
         #[template_child]
         pub video_backdrop_row: TemplateChild<adw::SwitchRow>,
@@ -742,9 +744,10 @@ fn bind_switches(settings: &Settings, imp: &imp::PreferencesDialog) {
 
 /// Binds each combo row to a string setting whose value is one of `choices`, by position in the row.
 fn bind_choices(settings: &Settings, imp: &imp::PreferencesDialog) {
-    let combos: [(&str, &glib::Object, &[&str]); 21] = [
+    let combos: [(&str, &glib::Object, &[&str]); 22] = [
         ("thumbnails.aggression", imp.thumbnail_aggression_row.upcast_ref(), &["low", "standard", "increased", "high", "extreme"]),
-        ("video.crop.method", imp.video_crop_method_row.upcast_ref(), &["cropdetect", "edges", "static"]),
+        ("video.crop.method", imp.video_crop_method_row.upcast_ref(), &["cropdetect", "edges", "static", "across"]),
+        ("video.crop.ratio", imp.video_crop_ratio_row.upcast_ref(), &["auto", "4:3", "16:9", "9:16", "1:1", "3:2", "2:3", "21:9"]),
         ("viewer.folder-end", imp.folder_end_row.upcast_ref(), &["stop", "loop", "next-folder"]),
         ("browse.sort.by", imp.default_sort_by_row.upcast_ref(), &["name", "modified", "size", "type"]),
         ("browse.sort.order", imp.default_sort_order_row.upcast_ref(), &["ascending", "descending"]),
@@ -956,6 +959,9 @@ pub(crate) mod tests {
         settings.set_boolean("history.enabled", true).unwrap();
         assert!(imp.history_images_row.is_sensitive());
         assert!(imp.history_video_percent_row.is_sensitive());
+        imp.video_crop_ratio_row.set_selected(2);
+        assert_eq!(settings.string("video.crop.ratio"), "16:9");
+        settings.reset("video.crop.ratio");
         imp.history_image_seconds_row.set_value(4.0);
         assert_eq!(settings.int("history.image-seconds"), 4);
         imp.history_video_percent_row.set_value(75.0);

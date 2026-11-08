@@ -589,6 +589,12 @@ pub const ACTIONS: &[ActionInfo] = &[
         name: "video.toggle-crop", description: "Crop the video to its picture, or stop detecting where to crop it.", icon: "edit-crop-symbolic", label: "Toggle Crop Detection", defaults: &[],
     },
     ActionInfo {
+        name: "video.cycle-crop-ratio", description: "Cycle the shape the video is cropped to through auto and the standard aspect ratios.", icon: "object-select-symbolic", label: "Cycle Crop Shape", defaults: &[],
+    },
+    ActionInfo {
+        name: "video.edit-crop", description: "Drag the crop over the video, then apply it or cancel.", icon: "edit-crop-symbolic", label: "Edit Crop", defaults: &[],
+    },
+    ActionInfo {
         name: "video.lock-crop", description: "Hold the crop the video has now so it stops being detected, or let it be found again.", icon: "changes-prevent-symbolic", label: "Lock Crop", defaults: &[],
     },
     ActionInfo {

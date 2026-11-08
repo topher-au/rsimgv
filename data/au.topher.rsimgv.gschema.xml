@@ -588,9 +588,24 @@
         <choice value="cropdetect"/>
         <choice value="edges"/>
         <choice value="static"/>
+        <choice value="across"/>
       </choices>
       <default>'cropdetect'</default>
-      <summary>How the picture to crop to is found: mpv's near-black border detector, the brightness steps at the picture's border, or the area that moves</summary>
+      <summary>How the picture to crop to is found: mpv's near-black border detector, the brightness steps at the picture's border, the area that moves, or the border steps combined over several frames</summary>
+    </key>
+    <key name="ratio" type="s">
+      <choices>
+        <choice value="auto"/>
+        <choice value="4:3"/>
+        <choice value="16:9"/>
+        <choice value="9:16"/>
+        <choice value="1:1"/>
+        <choice value="3:2"/>
+        <choice value="2:3"/>
+        <choice value="21:9"/>
+      </choices>
+      <default>'auto'</default>
+      <summary>The shape the picture is cropped to, or auto to keep the detected shape: 4:3, 16:9, 9:16, 1:1, 3:2, 2:3 or 21:9</summary>
     </key>
     <key name="trim" type="i">
       <range min="0" max="32"/>

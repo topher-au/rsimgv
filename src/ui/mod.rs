@@ -2,6 +2,7 @@ mod backdrop;
 mod binding_dialog;
 mod browse_search;
 mod browse_view;
+mod crop_editor;
 mod drag;
 mod floating_bar;
 mod film_strip;

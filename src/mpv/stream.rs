@@ -107,14 +107,25 @@ fn grab_gray(path: &Path, seconds: f64, width: i32, height: i32) -> Option<Vec<u
     (frame.len() == (width.max(0) * height.max(0)) as usize).then_some(frame)
 }
 
+/// How many frames edge detection across frames looks at, and how far apart they are, in seconds.
+const ACROSS_FRAMES: usize = 4;
+const ACROSS_GAP: f64 = 2.0;
+
 /// Where to crop the video at `path`, which is `width` by `height`, at `position` seconds, found by `method` from frames decoded
 /// from the file. The frames are scaled down by ffmpeg, and the rectangle found in them is scaled back up. This reads the file,
 /// so it runs on a worker thread.
 fn measure_frames(method: CropMethod, path: &Path, position: f64, width: i32, height: i32) -> Option<CropRect> {
     let (small_width, small_height) = framing::measure_size(width, height);
+    let soft_max = framing::soft_pixels(small_width, width);
+    if method == CropMethod::Across {
+        let frames: Vec<Vec<u8>> = (0..ACROSS_FRAMES)
+            .filter_map(|index| grab_gray(path, position + index as f64 * ACROSS_GAP, small_width, small_height))
+            .collect();
+        let found = framing::find_picture_across(&frames, small_width as usize, small_height as usize, framing::EDGE_THRESHOLD, soft_max)?;
+        return Some(framing::scaled_up(found, (small_width, small_height), (width, height)));
+    }
     let first = grab_gray(path, position, small_width, small_height)?;
     let later = (method == CropMethod::Static).then(|| grab_gray(path, position + MOTION_GAP, small_width, small_height)).flatten();
-    let soft_max = framing::soft_pixels(small_width, width);
     let found = framing::measure(method, &first, later.as_deref(), small_width as usize, small_height as usize, soft_max)?;
     Some(framing::scaled_up(found, (small_width, small_height), (width, height)))
 }
@@ -492,6 +503,11 @@ impl MpvStream {
         self.imp().crop.get()
     }
 
+    /// The video's own size, once it has loaded.
+    pub fn source_size(&self) -> Option<(i32, i32)> {
+        self.imp().player.borrow().as_ref()?.source_size()
+    }
+
     /// Whether the crop in use is held rather than looked for again.
     pub fn crop_locked(&self) -> bool {
         self.imp().crop_locked.get()
@@ -545,7 +561,18 @@ impl MpvStream {
         let imp = self.imp();
         let Some(player) = imp.player.borrow().clone() else { return };
         let framing = imp.framing.get();
-        let crop = framing.crop.and_then(|_| imp.crop.get()).map(|rect| framing::trimmed(rect, framing.trim_pixels, player.source_size()));
+        let source = player.source_size();
+        let full = || source.map(|(width, height)| CropRect { width: width & !1, height: height & !1, left: 0, top: 0 });
+        let base = if framing.crop.is_some() {
+            imp.crop.get().or_else(full)
+        } else if framing.aspect.is_some() {
+            full()
+        } else {
+            None
+        };
+        let crop = base
+            .map(|rect| framing::with_aspect(rect, framing.aspect))
+            .map(|rect| framing::trimmed(rect, framing.trim_pixels, source));
         let detector = !imp.crop_locked.get() && framing.crop == Some(CropMethod::CropDetect);
         player.set_framing_filters(detector, crop);
     }
@@ -568,7 +595,7 @@ impl MpvStream {
         match method {
             // The answer comes back as an event.
             CropMethod::CropDetect => player.request_detected_crop(),
-            CropMethod::Edges | CropMethod::Static => {
+            CropMethod::Edges | CropMethod::Static | CropMethod::Across => {
                 let Some((width, height)) = player.source_size() else {
                     self.schedule_crop_check();
                     return;

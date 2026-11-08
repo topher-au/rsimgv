@@ -24,7 +24,9 @@ use crate::media::orientation::Orientation;
 use crate::fs::metadata::MediaInfo;
 use crate::fs::thumbnail::Pixels;
 use super::media_controls::MediaControls;
+use super::crop_editor::{CropEditor, CropFraction};
 use super::overlay_split_view::OverlaySplitView;
+use crate::mpv::framing::{CropRect, Framing};
 use super::backdrop::Backdrop;
 use super::media_overlay::{clock, fraction, Frame, MediaOverlay};
 use crate::overlay::{Layout, Trigger, TRIGGERS};
@@ -264,6 +266,14 @@ struct WatchSession {
     counted: bool,
 }
 
+/// The framing a crop editor found when it opened, so it can be put back if the edit is cancelled.
+#[derive(Clone, Copy)]
+struct CropEdit {
+    framing: Framing,
+    locked: bool,
+    crop: Option<CropRect>,
+}
+
 /// The settings changes that save how `orientation` turns and mirrors what is shown.
 fn orientation_settings(orientation: Orientation) -> Vec<(&'static str, Option<serde_yaml_ng::Value>)> {
     vec![
@@ -469,6 +479,10 @@ mod imp {
         /// The settings kept for the item shown: a picture's zoom and pan, a video's position and speed. They are
         /// saved when it is left.
         pub(super) file_settings: RefCell<Option<FileSettings>>,
+        /// The draggable crop editor, while one is up.
+        pub(super) crop_editor: RefCell<Option<CropEditor>>,
+        /// What the framing was before the crop editor changed it, to put it back.
+        pub(super) crop_edit: Cell<Option<CropEdit>>,
         /// Which of a file's settings are kept, and the volume and mute state the video started with, so a change to them
         /// can be told from the level a video merely inherited.
         pub(super) remember: Cell<Remember>,
@@ -1070,6 +1084,93 @@ impl MediaViewer {
         let len = imp.paths.borrow().len();
         if len > 0 {
             self.load(if last { len - 1 } else { 0 });
+        }
+    }
+
+    /// Opens a draggable crop over the video, or closes the one that is open. The video is shown uncropped while it is
+    /// being edited, and the crop is applied and kept with the file when Apply is pressed.
+    pub fn toggle_manual_crop(&self) {
+        if self.imp().crop_editor.borrow().is_some() {
+            self.finish_crop_edit(None);
+            return;
+        }
+        let imp = self.imp();
+        let stream = imp.media.borrow().as_ref().and_then(|media| media.downcast_ref::<crate::mpv::MpvStream>()).cloned();
+        let Some(stream) = stream else {
+            self.announce("Manual cropping needs a video played by mpv", true);
+            return;
+        };
+        let Some(source) = stream.source_size() else {
+            self.announce("The video's size is not known yet", true);
+            return;
+        };
+        let initial = stream.crop().map(|rect| CropFraction::from_rect(rect, source)).unwrap_or_else(CropFraction::full);
+        imp.crop_edit.set(Some(CropEdit { framing: imp.framing.get(), locked: stream.crop_locked(), crop: stream.crop() }));
+        self.pause();
+        stream.unlock_crop();
+        stream.set_framing(Framing { crop: None, trim_pixels: 0, aspect: None, backdrop: None });
+        stream.lock_crop(None);
+
+        let weak = self.downgrade();
+        let apply_weak = weak.clone();
+        let cancel_weak = weak.clone();
+        let editor = CropEditor::new(
+            source,
+            initial,
+            move |crop| {
+                if let Some(viewer) = apply_weak.upgrade() {
+                    let weak = viewer.downgrade();
+                    glib::idle_add_local_once(move || {
+                        if let Some(viewer) = weak.upgrade() {
+                            viewer.finish_crop_edit(Some(crop));
+                        }
+                    });
+                }
+            },
+            move || {
+                if let Some(viewer) = cancel_weak.upgrade() {
+                    let weak = viewer.downgrade();
+                    glib::idle_add_local_once(move || {
+                        if let Some(viewer) = weak.upgrade() {
+                            viewer.finish_crop_edit(None);
+                        }
+                    });
+                }
+            },
+        );
+        imp.overlay.add_overlay(&editor.root);
+        editor.root.grab_focus();
+        imp.crop_editor.replace(Some(editor));
+        self.announce("Drag the crop, then Apply", false);
+    }
+
+    /// Puts the framing back after a crop edit, applying and keeping `crop` when one is given, or the crop that was
+    /// there before when it is not.
+    fn finish_crop_edit(&self, crop: Option<CropFraction>) {
+        let imp = self.imp();
+        let Some(editor) = imp.crop_editor.take() else { return };
+        imp.overlay.remove_overlay(&editor.root);
+        let Some(state) = imp.crop_edit.take() else { return };
+        let stream = imp.media.borrow().as_ref().and_then(|media| media.downcast_ref::<crate::mpv::MpvStream>()).cloned();
+        let Some(stream) = stream else { return };
+        stream.unlock_crop();
+        stream.set_framing(state.framing);
+        match crop {
+            Some(crop) => {
+                let Some(source) = stream.source_size() else { return };
+                let rect = crop.to_rect(source);
+                stream.lock_crop(Some(rect));
+                // A dragged crop is exact, so the standard shape is let go.
+                let _ = crate::settings::app_settings().set_string("video.crop.ratio", "auto");
+                self.save_crop_lock(Some(rect), true);
+                self.announce("Crop set", false);
+            }
+            None => {
+                if state.locked {
+                    stream.lock_crop(state.crop);
+                }
+                self.announce("Crop editing cancelled", false);
+            }
         }
     }
 

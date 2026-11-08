@@ -949,6 +949,7 @@ impl Window {
         viewer.set_framing(crate::mpv::Framing {
             crop: settings.boolean("video.crop.enabled").then_some(crop_method),
             trim_pixels: settings.int("video.crop.trim"),
+            aspect: crate::mpv::framing::aspect_from_name(&settings.string("video.crop.ratio")),
             backdrop: settings.boolean("video.backdrop.enabled").then(|| crate::mpv::framing::Backdrop {
                 zoom: settings.double("video.backdrop.zoom"),
                 blur: settings.int("video.backdrop.blur"),
@@ -1151,6 +1152,8 @@ impl Window {
         bound_action(&video, &weak, "toggle-svp", |window| window.toggle_setting("video.svp.enabled"));
         bound_action(&video, &weak, "toggle-backdrop", |window| window.toggle_setting("video.backdrop.enabled"));
         bound_action(&video, &weak, "toggle-crop", |window| window.toggle_setting("video.crop.enabled"));
+        bound_action(&video, &weak, "cycle-crop-ratio", Window::cycle_crop_ratio);
+        bound_action(&video, &weak, "edit-crop", |window| window.imp().viewer.toggle_manual_crop());
         bound_action(&video, &weak, "lock-crop", |window| window.imp().viewer.toggle_crop_lock());
         bound_action(&video, &weak, "set-thumbnail-frame", |window| window.imp().viewer.set_thumbnail_frame());
         bound_action(&video, &weak, "repeat", |window| window.imp().viewer.toggle_repeat());
@@ -2580,6 +2583,17 @@ impl Window {
         }
     }
 
+    /// Cycles the shape the video is cropped to through auto and the standard aspect ratios.
+    fn cycle_crop_ratio(&self) {
+        const RATIOS: [&str; 8] = ["auto", "4:3", "16:9", "9:16", "1:1", "3:2", "2:3", "21:9"];
+        let Some(settings) = self.imp().settings.get() else { return };
+        let current = settings.string("video.crop.ratio");
+        let index = RATIOS.iter().position(|ratio| *ratio == current.as_str()).unwrap_or(0);
+        let next = RATIOS[(index + 1) % RATIOS.len()];
+        let _ = settings.set_string("video.crop.ratio", next);
+        self.notify(&format!("Crop shape: {next}"));
+    }
+
     /// Shows the browse items' filenames, or hides them.
     fn toggle_filename(&self) {
         if let Some(settings) = self.imp().settings.get() {
@@ -3605,10 +3619,11 @@ const WHEEL_VOLUME_STEP: f64 = 5.0;
 const WHEEL_SEEK_STEP: f64 = 5.0;
 
 /// The settings the viewer and the window title are set from, applied again whenever one changes.
-const VIEWER_SETTINGS: [&str; 61] = [
+const VIEWER_SETTINGS: [&str; 62] = [
     "video.crop.enabled",
     "video.crop.method",
     "video.crop.trim",
+    "video.crop.ratio",
     "video.backdrop.enabled",
     "video.backdrop.zoom",
     "video.backdrop.blur",

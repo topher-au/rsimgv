@@ -25,16 +25,19 @@ pub enum CropMethod {
     Edges,
     /// The area that changes between frames, which strips a backdrop that does not move.
     Static,
+    /// The brightness steps at the border, combined over several frames so variable content is less likely to fool them.
+    Across,
 }
 
 impl CropMethod {
-    pub const ALL: [CropMethod; 3] = [CropMethod::CropDetect, CropMethod::Edges, CropMethod::Static];
+    pub const ALL: [CropMethod; 4] = [CropMethod::CropDetect, CropMethod::Edges, CropMethod::Static, CropMethod::Across];
 
     pub fn name(self) -> &'static str {
         match self {
             CropMethod::CropDetect => "cropdetect",
             CropMethod::Edges => "edges",
             CropMethod::Static => "static",
+            CropMethod::Across => "across",
         }
     }
 
@@ -60,7 +63,48 @@ pub struct Framing {
     pub crop: Option<CropMethod>,
     /// Pixels trimmed from each side that was cut out, so a soft edge is not left in.
     pub trim_pixels: i32,
+    /// The shape the picture is cropped to, as width and height parts, or its detected shape for `None`.
+    pub aspect: Option<(i32, i32)>,
     pub backdrop: Option<Backdrop>,
+}
+
+/// The aspect ratio a setting value names, or `None` for auto or an unknown one.
+pub fn aspect_from_name(name: &str) -> Option<(i32, i32)> {
+    match name {
+        "4:3" => Some((4, 3)),
+        "16:9" => Some((16, 9)),
+        "9:16" => Some((9, 16)),
+        "1:1" => Some((1, 1)),
+        "3:2" => Some((3, 2)),
+        "2:3" => Some((2, 3)),
+        "21:9" => Some((21, 9)),
+        _ => None,
+    }
+}
+
+/// The crop `rect` narrowed to `aspect`, from the middle of the rectangle. Sizes and offsets stay even.
+pub fn with_aspect(rect: CropRect, aspect: Option<(i32, i32)>) -> CropRect {
+    let Some((aspect_width, aspect_height)) = aspect.filter(|(width, height)| *width > 0 && *height > 0) else { return rect };
+    let target = f64::from(aspect_width) / f64::from(aspect_height);
+    let current = f64::from(rect.width) / f64::from(rect.height.max(1));
+    if (current - target).abs() < 1e-6 {
+        return rect;
+    }
+    if current > target {
+        let width = ((f64::from(rect.height) * target).floor() as i32) & !1;
+        if width <= 1 {
+            return rect;
+        }
+        let left = rect.left + (((rect.width - width) / 2) & !1);
+        CropRect { width, height: rect.height & !1, left, top: rect.top & !1 }
+    } else {
+        let height = ((f64::from(rect.width) / target).floor() as i32) & !1;
+        if height <= 1 {
+            return rect;
+        }
+        let top = rect.top + (((rect.height - height) / 2) & !1);
+        CropRect { width: rect.width & !1, height, left: rect.left & !1, top }
+    }
 }
 
 /// The label of the filter that finds the picture, and the one that crops to it.
@@ -69,7 +113,7 @@ pub const CROP_LABEL: &str = "rsimgv-crop";
 
 /// The brightness step, in levels of mean luma, that marks a picture's border, and the mean change per column or row that
 /// counts as motion.
-const EDGE_THRESHOLD: f64 = 12.0;
+pub(crate) const EDGE_THRESHOLD: f64 = 12.0;
 const MOTION_THRESHOLD: f64 = 3.0;
 /// The most soft, blurred lines trimmed from each side of the picture the steps found. A line is soft when it is darker
 /// than this share of the picture's brightness.
@@ -380,10 +424,33 @@ pub fn measure(method: CropMethod, gray: &[u8], later: Option<&[u8]>, width: usi
         return None;
     }
     match method {
-        CropMethod::Edges => Some(find_picture(gray, width, height, EDGE_THRESHOLD, soft_max)),
+        CropMethod::Edges | CropMethod::Across => Some(find_picture(gray, width, height, EDGE_THRESHOLD, soft_max)),
         CropMethod::Static => later.filter(|later| later.len() == gray.len()).and_then(|later| find_moving_picture(gray, later, width, height, MOTION_THRESHOLD)),
         CropMethod::CropDetect => None,
     }
+}
+
+/// The picture rectangle found across several frames: each frame's edges, with the median edge kept so one frame with
+/// content in the bar, or one dark frame, does not move the crop. Frames of another size are ignored.
+pub fn find_picture_across(frames: &[Vec<u8>], width: usize, height: usize, threshold: f64, soft_max: usize) -> Option<CropRect> {
+    let rects: Vec<CropRect> = frames
+        .iter()
+        .filter(|frame| frame.len() == width * height)
+        .map(|frame| find_picture(frame, width, height, threshold, soft_max))
+        .collect();
+    if rects.is_empty() {
+        return None;
+    }
+    let median = |values: &mut Vec<i32>| {
+        values.sort_unstable();
+        values[values.len() / 2]
+    };
+    let left = median(&mut rects.iter().map(|rect| rect.left).collect());
+    let right = median(&mut rects.iter().map(|rect| rect.left + rect.width).collect());
+    let top = median(&mut rects.iter().map(|rect| rect.top).collect());
+    let bottom = median(&mut rects.iter().map(|rect| rect.top + rect.height).collect());
+    let (width, height) = ((right - left) & !1, (bottom - top) & !1);
+    (width > 0 && height > 0).then_some(CropRect { width, height, left: left + left % 2, top: top + top % 2 })
 }
 
 /// `rect` with `pixels` removed from each side that was cut out of the `source`, so only a backdrop or a pillarbox is trimmed.
@@ -432,6 +499,23 @@ mod tests {
         let profile: Vec<f64> = [vec![40.0; 10], vec![200.0; 10], vec![40.0; 10]].concat();
         assert_eq!(picture_span(&profile, 12.0), (10, 20));
         assert_eq!(picture_span(&[50.0; 30], 12.0), (0, 30), "no steps keeps the whole axis");
+    }
+
+    #[test]
+    fn across_frames_keeps_the_crop_that_most_frames_agree_on() {
+        let pillarbox = || frame(|x, _| if (438..842).contains(&x) { 200 } else { 40 });
+        let full = || frame(|_, _| 200);
+        let frames = [pillarbox(), full(), pillarbox()];
+        assert_eq!(find_picture_across(&frames, W, H, EDGE_THRESHOLD, 0), Some(rect(404, 720, 438, 0)));
+    }
+
+    #[test]
+    fn an_aspect_ratio_narrows_the_picture_from_the_middle() {
+        let full = rect(1280, 720, 0, 0);
+        assert_eq!(with_aspect(full, Some((4, 3))), rect(960, 720, 160, 0));
+        assert_eq!(with_aspect(full, Some((9, 16))), rect(404, 720, 438, 0));
+        assert_eq!(with_aspect(full, Some((21, 9))), rect(1280, 548, 0, 86));
+        assert_eq!(with_aspect(full, None), full, "auto keeps the detected shape");
     }
 
     #[test]

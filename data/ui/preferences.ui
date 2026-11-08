@@ -1022,13 +1022,34 @@
                                 <child>
                                   <object class="AdwComboRow" id="video_crop_method_row">
                                     <property name="title">Find the picture by</property>
-                                    <property name="subtitle">Brightness and motion are sampled from the file once a second</property>
+                                    <property name="subtitle">Brightness and motion are sampled from the file over several frames</property>
                                     <property name="model">
                                       <object class="GtkStringList">
                                         <items>
                                           <item>Near-black bars</item>
                                           <item>Brightness at the border, also a blurred backdrop</item>
                                           <item>The area that moves, also a still backdrop</item>
+                                          <item>Border brightness over several frames</item>
+                                        </items>
+                                      </object>
+                                    </property>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="AdwComboRow" id="video_crop_ratio_row">
+                                    <property name="title">Crop shape</property>
+                                    <property name="subtitle">Crop to a standard shape, or keep the shape that is found</property>
+                                    <property name="model">
+                                      <object class="GtkStringList">
+                                        <items>
+                                          <item>Auto</item>
+                                          <item>4:3</item>
+                                          <item>16:9</item>
+                                          <item>9:16</item>
+                                          <item>1:1</item>
+                                          <item>3:2</item>
+                                          <item>2:3</item>
+                                          <item>21:9</item>
                                         </items>
                                       </object>
                                     </property>
