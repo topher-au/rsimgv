@@ -331,6 +331,9 @@ pub const ACTIONS: &[ActionInfo] = &[
         name: "win.focus-viewer", description: "Move the keyboard focus to the viewer while it is open, or else to the browse view.", icon: "view-reveal-symbolic", label: "Focus Browser / Viewer", defaults: &[],
     },
     ActionInfo {
+        name: "win.toggle-viewer", description: "Show the selected picture or video in the viewer, or return to the browse view, without changing the item shown or selected.", icon: "view-reveal-symbolic", label: "Toggle Viewer", defaults: &["b"],
+    },
+    ActionInfo {
         name: "win.focus-cycle", description: "Move the keyboard focus to the next of the folder tree, the browse view or viewer, and the playlist, skipping any that is hidden.", icon: "media-playlist-repeat-symbolic", label: "Cycle Focus", defaults: &["f6"],
     },
     ActionInfo {

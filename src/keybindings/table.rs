@@ -311,6 +311,9 @@ mod tests {
         assert_eq!(table.resolve("escape", &[Scope::Global, Scope::View, Scope::Image]).map(|(a, _)| a.name), Some("view.close"));
         // Settings is global, so it applies in any scope.
         assert_eq!(table.resolve("ctrl+comma", &[]).map(|(a, _)| a.name), Some("win.settings"));
+        // The viewer toggle is global too, so the same key works in browsing and in the viewer.
+        assert_eq!(table.resolve("b", &[Scope::Global, Scope::Browse]).map(|(a, _)| a.name), Some("win.toggle-viewer"));
+        assert_eq!(table.resolve("b", &[Scope::Global, Scope::View, Scope::Image]).map(|(a, _)| a.name), Some("win.toggle-viewer"));
     }
 
     #[test]

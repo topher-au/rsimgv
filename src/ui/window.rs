@@ -109,6 +109,9 @@ mod imp {
         /// Whether the viewer is showing the playlist, rather than the folder's items. The viewer then has nothing to
         /// do with the folder the window shows, which stays as it was.
         pub(super) playlist_playing: Cell<bool>,
+        /// Whether the viewer was showing the playlist when the toggle key left it, so the key brings the playlist
+        /// back where it was rather than showing the folder's selection.
+        pub(super) resume_playlist_on_toggle: Cell<bool>,
         /// Whether the playlist's sidebar is open. It is kept as the sidebar opens and closes, and the sidebar is then
         /// put beside whichever page is shown.
         pub(super) playlist_shown: Cell<bool>,
@@ -895,6 +898,7 @@ impl Window {
         let imp = self.imp();
         imp.viewer.close();
         imp.viewer_open.set(false);
+        imp.resume_playlist_on_toggle.set(false);
         self.cover_browsers(false);
         self.place_playlist();
         imp.playlist_playing.set(false);
@@ -907,6 +911,31 @@ impl Window {
         }
         self.update_context_highlights();
         self.update_title();
+    }
+
+    /// Shows the item selected in the browse view in the viewer, or returns from the viewer to the browse view. The
+    /// viewer and the browse view keep the same item, so the toggle does not change which picture or video is active.
+    /// A viewer that was showing the playlist goes back to it, where it was left.
+    fn toggle_viewer(&self) {
+        let imp = self.imp();
+        if imp.viewer_open.get() {
+            let playlist = imp.playlist_playing.get();
+            self.close_viewer();
+            // `close_viewer` clears this, so it is set after closing to bring the playlist back next time.
+            imp.resume_playlist_on_toggle.set(playlist);
+            return;
+        }
+        if imp.resume_playlist_on_toggle.take() {
+            self.play_playlist();
+            return;
+        }
+        let Some(browse) = self.active_browse() else { return };
+        let Some(name) = browse.selected_name() else { return };
+        let Some(folder) = self.current_path() else { return };
+        let path = folder.join(name);
+        if browse.media_paths().iter().any(|listed| *listed == path) {
+            self.open_viewer(&browse, &path);
+        }
     }
 
     /// Applies the settings the viewer shows its pictures and videos with, and the window title, which
@@ -1084,6 +1113,7 @@ impl Window {
         bound_action(self, &weak, "focus-tree", |window| window.focus_pane(FocusPane::Tree));
         bound_action(self, &weak, "focus-playlist", |window| window.focus_pane(FocusPane::Playlist));
         bound_action(self, &weak, "focus-viewer", |window| window.focus_pane(FocusPane::Content));
+        bound_action(self, &weak, "toggle-viewer", Window::toggle_viewer);
         bound_action(self, &weak, "focus-cycle", |window| window.cycle_focus(false));
         bound_action(self, &weak, "focus-cycle-reverse", |window| window.cycle_focus(true));
         bound_action(self, &weak, "toggle-sidebar", |window| {
@@ -4055,6 +4085,43 @@ pub(crate) mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
+    /// The toggle key goes between the browse view and the viewer, keeping the picture or video active in both.
+    fn viewer_toggle_keeps_the_item(app: &adw::Application, settings: &Settings) {
+        let root = std::env::temp_dir().join(format!("rsimgv-toggle-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let alpha = root.join("alpha");
+        fs::create_dir_all(&alpha).unwrap();
+        let pixbuf = gtk::gdk_pixbuf::Pixbuf::new(gtk::gdk_pixbuf::Colorspace::Rgb, false, 8, 8, 8).unwrap();
+        for name in ["one.png", "two.png"] {
+            pixbuf.savev(alpha.join(name), "png", &[]).unwrap();
+        }
+
+        let window = Window::new(app, settings);
+        window.navigate(&alpha);
+        let browse = window.active_browse().unwrap();
+        let viewer = window.imp().viewer.clone();
+        let shows = |path: &Path| viewer.shown_item().is_some_and(|item| item.path == path);
+        wait_for("the folder to list", || browse.media_paths().len() == 2);
+
+        browse.select_named("one.png");
+        window.toggle_viewer();
+        wait_for("the selected item in the viewer", || shows(&alpha.join("one.png")));
+        assert!(window.viewer_is_open(), "the toggle opens the viewer");
+
+        // The viewer moves, and the browse view follows it. Toggling back and forth keeps the same item.
+        viewer.step(true);
+        wait_for("the next item", || shows(&alpha.join("two.png")) && browse.selected_name().as_deref() == Some("two.png"));
+        window.toggle_viewer();
+        assert!(!window.viewer_is_open(), "the toggle returns to browsing");
+        assert_eq!(browse.selected_name().as_deref(), Some("two.png"), "the item stays selected");
+        window.toggle_viewer();
+        wait_for("the same item when the viewer comes back", || shows(&alpha.join("two.png")));
+        assert!(window.viewer_is_open(), "the toggle opens the viewer again");
+
+        window.destroy();
+        let _ = fs::remove_dir_all(&root);
+    }
+
     /// The viewer goes through the playlist without the folder shown, or the item selected in it, having any part in it.
     fn playlist_plays_apart_from_browsing(app: &adw::Application, settings: &Settings) {
         let root = std::env::temp_dir().join(format!("rsimgv-playlist-{}", std::process::id()));
@@ -4309,6 +4376,7 @@ pub(crate) mod tests {
         tabs_keep_their_own_state(&app, &settings);
         folders_remember_their_sorts(&app, &settings);
         viewer_steps_between_folders(&app, &settings);
+        viewer_toggle_keeps_the_item(&app, &settings);
         playlist_plays_apart_from_browsing(&app, &settings);
         playlist_menu_actions(&app, &settings);
         context_actions_work(&app, &settings);
