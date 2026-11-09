@@ -955,8 +955,14 @@ impl Window {
         }
         let Some((mtime, size)) = stamp(path) else { return };
         let weak = self.downgrade();
-        MediaInfo::shared().request(path, mtime, size, || true, move || {
+        let info = MediaInfo::shared();
+        let path = path.to_path_buf();
+        let ready_path = path.clone();
+        info.clone().request(&path, mtime, size, || true, move || {
             if let Some(window) = weak.upgrade() {
+                if let Some(duration) = info.get(&ready_path, mtime, size).and_then(|metadata| metadata.duration) {
+                    playlist::with(|list| list.set_duration(&ready_path, duration));
+                }
                 if let Some(panel) = window.imp().playlist_panel.get() {
                     panel.refresh();
                 }
@@ -1640,6 +1646,7 @@ impl Window {
     /// Saves the playlist and has every window show it as it is now.
     fn playlist_changed(&self) {
         crate::debug_log!("playlist-debug: window playlist_changed len={}", playlist::with(|list| list.len()));
+        self.cache_playlist_durations();
         self.save_playlist();
         for window in self.app_windows() {
             window.show_playlist_change();
@@ -1661,6 +1668,20 @@ impl Window {
         if let Err(err) = playlist::save() {
             eprintln!("rsimgv: could not save the playlist: {err}");
             self.notify_error(&format!("Could not save the playlist: {err}"));
+        }
+    }
+
+    /// Reads the durations the playlist does not have yet, so saving it writes every length that is known.
+    fn cache_playlist_durations(&self) {
+        let missing: Vec<PathBuf> = playlist::with(|list| {
+            list.order().iter().filter(|path| list.duration(path).is_none()).cloned().collect()
+        });
+        let info = MediaInfo::shared();
+        for path in missing {
+            let Some((mtime, size)) = stamp(&path) else { continue };
+            if let Some(duration) = info.get(&path, mtime, size).and_then(|metadata| metadata.duration) {
+                playlist::with(|list| list.set_duration(&path, duration));
+            }
         }
     }
 
@@ -2126,11 +2147,11 @@ impl Window {
 
     /// Makes the playlist what was loaded, or adds it to the end, and says how that went.
     fn take_loaded_playlist(&self, loaded: format::Parsed, replace: bool, source: Option<PathBuf>) {
-        let format::Parsed { paths, titles, skipped, state } = loaded;
+        let format::Parsed { paths, titles, durations, skipped, state } = loaded;
         let saved = paths.clone();
         let entries = paths.into_iter().zip(titles);
         let count = playlist::with(|list| {
-            if replace {
+            let count = if replace {
                 list.clear();
                 list.set_source(source);
                 list.add_with_titles(entries);
@@ -2140,7 +2161,13 @@ impl Window {
                 // The order the loaded playlist was shuffled into and what it had played belong to it alone, so they
                 // are not applied to the playlist they are added to.
                 list.add_with_titles(entries)
+            };
+            for (path, duration) in saved.iter().zip(durations) {
+                if let Some(seconds) = duration {
+                    list.set_duration(path, seconds);
+                }
             }
+            count
         });
         let mut text = format!("Loaded {count} {}", if count == 1 { "item" } else { "items" });
         if skipped > 0 {
@@ -2156,7 +2183,7 @@ impl Window {
             self.announce_playlist("The playlist is empty");
             return;
         }
-        let dialog = gtk::FileDialog::builder().title("Save Playlist").initial_name("playlist.m3u8").filters(&playlist_file_filters()).build();
+        let dialog = gtk::FileDialog::builder().title("Save Playlist").initial_name("playlist.xspf").filters(&playlist_file_filters()).build();
         let weak = self.downgrade();
         dialog.save(Some(self), None::<&gio::Cancellable>, move |result| {
             let Some(path) = result.ok().and_then(|file| file.path()) else { return };
@@ -2166,20 +2193,26 @@ impl Window {
         });
     }
 
-    /// Writes the playlist to `path`, in the format its extension names. A name without one becomes an M3U8 file.
+    /// Writes the playlist to `path`, in the format its extension names. A name without one becomes an XSPF file.
     fn write_playlist_file(&self, path: PathBuf) {
         let (path, file_format) = match Format::from_path(&path) {
             Some(file_format) => (path, file_format),
             None => {
                 let mut name = path.into_os_string();
-                name.push(".m3u8");
-                (PathBuf::from(name), Format::M3u)
+                name.push(".xspf");
+                (PathBuf::from(name), Format::Xspf)
             }
         };
-        let text = playlist::with(|list| {
-            let entries: Vec<(PathBuf, String)> = list.order().iter().map(|path| (path.clone(), list.title(path))).collect();
-            format::write(file_format, &entries, &list.export_state())
+        self.cache_playlist_durations();
+        let (entries, state) = playlist::with(|list| {
+            // XSPF keeps each item's shuffle place, played state and title with the item, so it lists the made order.
+            // The other formats list the order the panel shows and keep the made order in their own state.
+            let order = if file_format == Format::Xspf { list.items() } else { list.order() };
+            let entries: Vec<format::Item> = order.iter().map(|path| (path.clone(), list.title(path), list.duration(path))).collect();
+            let state = if file_format == Format::Xspf { list.state() } else { list.export_state() };
+            (entries, state)
         });
+        let text = format::write(file_format, &entries, &state);
         let weak = self.downgrade();
         glib::spawn_future_local(async move {
             let name = path.file_name().map_or_else(|| path.display().to_string(), |name| name.to_string_lossy().into_owned());
@@ -4412,7 +4445,7 @@ pub(crate) mod tests {
             assert_eq!(read.paths, [gamma.join("two.png"), alpha.join("one.png")], "{name}");
         }
         window.write_playlist_file(root.join("bare"));
-        wait_for("a name with no extension to become M3U8", || root.join("bare.m3u8").exists());
+        wait_for("a name with no extension to become XSPF", || root.join("bare.xspf").exists());
 
         // Saved as it changes, and read back when the app starts.
         let saved = playlist::with(|list| list.clone());
@@ -4437,6 +4470,7 @@ pub(crate) mod tests {
         settings.reset("viewer.folder-end");
         window.destroy();
         let _ = fs::remove_file(playlist::file());
+        let _ = fs::remove_file(crate::settings::config_path().with_file_name("playlist.m3u8"));
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -4855,19 +4889,21 @@ fn apply_playlist_header_style(header: &adw::HeaderBar, style: &str) {
 }
 
 /// The pictures and videos a playlist's text lists, with how many entries it had that are not those left out. Relative
-/// entries are found from `base`. The indices the file keeps for its orders and played items are moved with the items
-/// that are kept.
+/// entries are found from `base`. The indices the file keeps for its orders, played items and item shown are moved with
+/// the items that are kept.
 fn playlist_from_bytes(bytes: &[u8], base: &Path) -> format::Parsed {
-    let format::Parsed { paths, titles, skipped, mut state } = format::read(bytes, base);
+    let format::Parsed { paths, titles, durations, skipped, mut state } = format::read(bytes, base);
     let listed = paths.len();
     let mut kept_paths = Vec::with_capacity(listed);
     let mut kept_titles = Vec::with_capacity(listed);
+    let mut kept_durations = Vec::with_capacity(listed);
     let mut positions = Vec::with_capacity(listed);
-    for (path, title) in paths.into_iter().zip(titles) {
+    for ((path, title), duration) in paths.into_iter().zip(titles).zip(durations) {
         if playlist::is_playable(&path) {
             positions.push(Some(kept_paths.len()));
             kept_paths.push(path);
             kept_titles.push(title);
+            kept_durations.push(duration);
         } else {
             positions.push(None);
         }
@@ -4884,7 +4920,8 @@ fn playlist_from_bytes(bytes: &[u8], base: &Path) -> format::Parsed {
     state.shuffled = state.shuffled.and_then(&keep);
     state.made = state.made.and_then(&keep);
     state.played = state.played.into_iter().filter_map(|index| positions.get(index).copied().flatten()).collect();
-    format::Parsed { paths: kept_paths, titles: kept_titles, skipped: skipped + listed - len, state }
+    state.current = state.current.and_then(|index| positions.get(index).copied().flatten());
+    format::Parsed { paths: kept_paths, titles: kept_titles, durations: kept_durations, skipped: skipped + listed - len, state }
 }
 
 /// The file types the playlist dialogs offer: all the formats, then each one.

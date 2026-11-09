@@ -511,11 +511,15 @@ fn show_length(label: &gtk::Label, path: &Path, fetch: bool) {
     if !is_video(path) {
         return;
     }
-    set_label_if_changed(&label, &length_text(None));
+    // A length saved with the playlist shows until the file's own metadata is read.
+    let saved = crate::playlist::with(|list| list.duration(path));
+    set_label_if_changed(&label, &length_text(saved));
     let Some((mtime, size)) = stamp(path) else { return };
     let info = MediaInfo::shared();
     if !fetch {
-        set_label_if_changed(&label, &length_text(info.get(path, mtime, size).and_then(|metadata| metadata.duration)));
+        let duration = info.get(path, mtime, size).and_then(|metadata| metadata.duration);
+        remember_duration(path, duration);
+        set_label_if_changed(&label, &length_text(duration.or(saved)));
         return;
     }
     let shows = Rc::new({
@@ -535,12 +539,23 @@ fn show_length(label: &gtk::Label, path: &Path, fetch: bool) {
         let path = path.to_path_buf();
         move || {
             if let (true, Some(label)) = (shows(), weak.upgrade()) {
-                set_label_if_changed(&label, &length_text(info.get(&path, mtime, size).and_then(|metadata| metadata.duration)));
+                let duration = info.get(&path, mtime, size).and_then(|metadata| metadata.duration);
+                remember_duration(&path, duration);
+                set_label_if_changed(&label, &length_text(duration.or(saved)));
             }
         }
     };
     let metadata = info.request(path, mtime, size, wanted, ready);
-    set_label_if_changed(&label, &length_text(metadata.and_then(|metadata| metadata.duration)));
+    let duration = metadata.and_then(|metadata| metadata.duration);
+    remember_duration(path, duration);
+    set_label_if_changed(&label, &length_text(duration.or(saved)));
+}
+
+/// Keeps a length read for a playlist item, so it is saved with the playlist.
+fn remember_duration(path: &Path, duration: Option<f64>) {
+    if let Some(seconds) = duration {
+        crate::playlist::with(|list| list.set_duration(path, seconds));
+    }
 }
 
 /// Whether `label` is at least partly on screen in the playlist. A label not laid out yet counts as on screen, as it is

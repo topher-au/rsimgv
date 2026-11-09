@@ -133,13 +133,13 @@ A folder stands for the pictures and videos in it and in the folders under it. A
 
 These can all be rebound, and first item, last item, load, save and clear can be given keys, in the keybinding editor. While the viewer shows the playlist, its own previous and next keys, the thumbnail bar and auto-advance go through the playlist too. They stop at its ends, whatever the **folder-end** setting says.
 
-The panel's buttons load and save M3U and M3U8 (`.m3u`, `.m3u8`), PLS (`.pls`) and XSPF (`.xspf`) files. Saved files use absolute paths. Loading into a playlist that has items asks whether to replace them or add to the end. Web addresses and files that are not pictures or videos are left out, and you are told how many. A file listed twice is kept once.
+The panel's buttons load and save M3U and M3U8 (`.m3u`, `.m3u8`), PLS (`.pls`) and XSPF (`.xspf`) files, and XSPF is the default when a name has no extension. Saved files use absolute paths. Each item keeps its title, and its duration where it is known, in whatever the format holds. Loading into a playlist that has items asks whether to replace them or add to the end. Web addresses and files that are not pictures or videos are left out, and you are told how many. A file listed twice is kept once.
 
-The shuffle button plays the playlist in a random order, with the item shown first so it keeps playing. The order the items were made in is kept beside it: turning shuffle off goes back to that order, and moving items while shuffled changes only the shuffled order. Adding and removing change both. Saved playlist files keep the made order, the shuffled order too, and which items have been played, in comments and extensions that other players ignore. Exporting a file writes the order the panel shows, and keeps the shuffled order and the played items too.
+The shuffle button plays the playlist in a random order, with the item shown first so it keeps playing. The order the items were made in is kept beside it: turning shuffle off goes back to that order, and moving items while shuffled changes only the shuffled order. Adding and removing change both. Saved playlist files keep the made order, the shuffled order too, which items have been played, and the item shown, in comments and extensions that other players ignore. Exporting a file keeps as much of that state as the format holds: XSPF lists the made order with each item's place in the shuffle, and the other formats write the order the panel shows.
 
 The panel's detach button takes it out into a window of its own, which keeps working with the playlist and its keys. Its button puts it back, and closing that window does the same. The panel shows beside the browse view on the right, opposite the sidebar.
 
-The playlist is kept in `playlist.m3u8` beside the settings file. Other programs can drive it with the `win.playlist-*` actions over the remote control server.
+The playlist is kept as XSPF in `playlist.xspf` beside the settings file; an older `playlist.m3u8` is read and moved over the first time the playlist is loaded. Other programs can drive it with the `win.playlist-*` actions over the remote control server.
 
 ## Settings
 

@@ -1,6 +1,6 @@
 //! Reading and writing playlists in the standard formats: M3U (and M3U8), PLS and XSPF. Pure: no GTK.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Component, Path, PathBuf};
@@ -13,9 +13,12 @@ pub enum Format {
     Xspf,
 }
 
+/// An item a playlist file writes: its path, the title it is shown by, and its duration in seconds if it is known.
+pub type Item = (PathBuf, String, Option<f64>);
+
 /// What a playlist file records about how the playlist was being used, as indices into the items in the order the file
-/// lists them: the shuffled order it plays in, or the order its items were made in, and which of its items have been
-/// played. Other players ignore it.
+/// lists them: the shuffled order it plays in, or the order its items were made in, which item was shown, and which have
+/// been played. Other players ignore it.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct State {
     /// The order the items play in while shuffled, when the file lists them in the order they were made.
@@ -25,25 +28,30 @@ pub struct State {
     pub made: Option<Vec<usize>>,
     /// The indices of the items that have been played.
     pub played: Vec<usize>,
+    /// The index of the item last shown, if there is one.
+    pub current: Option<usize>,
 }
 
 /// What a playlist file holds that can be used here: its local files, and how many entries were something else, such
 /// as a web address.
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Default, PartialEq)]
 pub struct Parsed {
     pub paths: Vec<PathBuf>,
     /// The title each path is given in the file, if it is. Parallel to `paths`.
     pub titles: Vec<Option<String>>,
+    /// The duration each path is given in the file, in seconds, if it is. Parallel to `paths`.
+    pub durations: Vec<Option<f64>>,
     pub skipped: usize,
     pub state: State,
 }
 
 impl Parsed {
-    fn push(&mut self, path: Option<PathBuf>, title: Option<String>) {
+    fn push(&mut self, path: Option<PathBuf>, title: Option<String>, duration: Option<f64>) {
         match path {
             Some(path) => {
                 self.paths.push(path);
                 self.titles.push(title);
+                self.durations.push(duration);
             }
             None => self.skipped += 1,
         }
@@ -80,8 +88,8 @@ impl Format {
     }
 }
 
-/// The text of a playlist file holding `items`: absolute paths, each with the title it is shown by, and `state`.
-pub fn write(format: Format, items: &[(PathBuf, String)], state: &State) -> String {
+/// The text of a playlist file holding `items`, with `state`.
+pub fn write(format: Format, items: &[Item], state: &State) -> String {
     match format {
         Format::M3u => write_m3u(items, state),
         Format::Pls => write_pls(items, state),
@@ -99,6 +107,11 @@ fn parse_indices(text: &str) -> Vec<usize> {
     text.split(',').filter_map(|index| index.trim().parse().ok()).collect()
 }
 
+/// A duration in seconds as whole seconds, which is what M3U and PLS hold, or -1 when it is not known.
+fn whole_seconds(duration: Option<f64>) -> i64 {
+    duration.filter(|seconds| seconds.is_finite() && *seconds >= 0.0).map_or(-1, |seconds| seconds.round() as i64)
+}
+
 /// The state lines of an M3U file, which are comments to other players.
 fn m3u_state_lines(state: &State) -> String {
     let mut lines = String::new();
@@ -110,6 +123,9 @@ fn m3u_state_lines(state: &State) -> String {
     }
     if !state.played.is_empty() {
         lines.push_str(&format!("#X-RSIMGV-PLAYED:{}\n", index_list(&state.played)));
+    }
+    if let Some(current) = state.current {
+        lines.push_str(&format!("#X-RSIMGV-CURRENT:{current}\n"));
     }
     lines
 }
@@ -133,40 +149,54 @@ pub(super) fn decode(bytes: &[u8]) -> String {
     }
 }
 
-fn write_m3u(items: &[(PathBuf, String)], state: &State) -> String {
+fn write_m3u(items: &[Item], state: &State) -> String {
     let mut text = format!("#EXTM3U\n{}", m3u_state_lines(state));
-    for (item, title) in items {
-        text.push_str(&format!("#EXTINF:-1,{}\n{}\n", one_line(title), plain_or_uri(item)));
+    for (item, title, duration) in items {
+        text.push_str(&format!("#EXTINF:{},{}\n{}\n", whole_seconds(*duration), one_line(title), plain_or_uri(item)));
     }
     text
 }
 
 fn read_m3u(text: &str, base: &Path) -> Parsed {
     let mut parsed = Parsed::default();
-    // An #EXTINF line gives the title of the entry after it.
-    let mut title = None;
+    // An #EXTINF line gives the duration and title of the entry after it.
+    let mut entry = None;
     for line in text.lines() {
         let trimmed = line.trim();
-        if let Some(info) = trimmed.strip_prefix("#EXTINF:") {
-            title = info.split_once(',').and_then(|(_, title)| nonempty(title));
+        if let Some(extinf) = trimmed.strip_prefix("#EXTINF:") {
+            let (duration, title) = extinf.split_once(',').map_or((extinf, ""), |(duration, title)| (duration, title));
+            let duration = duration
+                .split_whitespace()
+                .next()
+                .and_then(|duration| duration.parse::<f64>().ok())
+                .filter(|seconds| seconds.is_finite() && *seconds >= 0.0);
+            entry = Some((nonempty(title), duration));
         } else if let Some(indices) = trimmed.strip_prefix("#X-RSIMGV-MADE:") {
             parsed.state.made = Some(parse_indices(indices));
         } else if let Some(indices) = trimmed.strip_prefix("#X-RSIMGV-SHUFFLE:") {
             parsed.state.shuffled = Some(parse_indices(indices));
         } else if let Some(indices) = trimmed.strip_prefix("#X-RSIMGV-PLAYED:") {
             parsed.state.played = parse_indices(indices);
+        } else if let Some(current) = trimmed.strip_prefix("#X-RSIMGV-CURRENT:") {
+            parsed.state.current = current.trim().parse().ok();
         } else if !trimmed.is_empty() && !trimmed.starts_with('#') {
-            parsed.push(entry_path(line, base, false), title.take());
+            let (title, duration) = entry.take().unwrap_or_default();
+            parsed.push(entry_path(line, base, false), title, duration);
         }
     }
     parsed
 }
 
-fn write_pls(items: &[(PathBuf, String)], state: &State) -> String {
+fn write_pls(items: &[Item], state: &State) -> String {
     let mut text = String::from("[playlist]\n");
-    for (index, (item, title)) in items.iter().enumerate() {
+    for (index, (item, title, duration)) in items.iter().enumerate() {
         let number = index + 1;
-        text.push_str(&format!("File{number}={}\nTitle{number}={}\nLength{number}=-1\n", plain_or_uri(item), one_line(title)));
+        text.push_str(&format!(
+            "File{number}={}\nTitle{number}={}\nLength{number}={}\n",
+            plain_or_uri(item),
+            one_line(title),
+            whole_seconds(*duration)
+        ));
     }
     text.push_str(&format!("NumberOfEntries={}\n", items.len()));
     if let Some(made) = &state.made {
@@ -178,6 +208,9 @@ fn write_pls(items: &[(PathBuf, String)], state: &State) -> String {
     if !state.played.is_empty() {
         text.push_str(&format!("X-RSIMGV-PLAYED={}\n", index_list(&state.played)));
     }
+    if let Some(current) = state.current {
+        text.push_str(&format!("X-RSIMGV-CURRENT={current}\n"));
+    }
     text.push_str("Version=2\n");
     text
 }
@@ -185,6 +218,7 @@ fn write_pls(items: &[(PathBuf, String)], state: &State) -> String {
 fn read_pls(text: &str, base: &Path) -> Parsed {
     let mut files: Vec<(u64, &str)> = Vec::new();
     let mut titles: HashMap<u64, &str> = HashMap::new();
+    let mut lengths: HashMap<u64, f64> = HashMap::new();
     let mut state = State::default();
     for line in text.lines() {
         let Some((key, value)) = line.split_once('=') else { continue };
@@ -193,19 +227,27 @@ fn read_pls(text: &str, base: &Path) -> Parsed {
             files.push((number, value));
         } else if let Some(number) = numbered(key, "title") {
             titles.insert(number, value);
+        } else if let Some(number) = numbered(key, "length") {
+            if let Ok(seconds) = value.trim().parse::<f64>() {
+                if seconds.is_finite() && seconds >= 0.0 {
+                    lengths.insert(number, seconds);
+                }
+            }
         } else if key.eq_ignore_ascii_case("X-RSIMGV-MADE") {
             state.made = Some(parse_indices(value));
         } else if key.eq_ignore_ascii_case("X-RSIMGV-SHUFFLE") {
             state.shuffled = Some(parse_indices(value));
         } else if key.eq_ignore_ascii_case("X-RSIMGV-PLAYED") {
             state.played = parse_indices(value);
+        } else if key.eq_ignore_ascii_case("X-RSIMGV-CURRENT") {
+            state.current = value.trim().parse().ok();
         }
     }
     // The numbers give the order, whatever order the lines are in.
     files.sort_by_key(|(number, _)| *number);
     let mut parsed = Parsed { state, ..Default::default() };
     for (number, value) in files {
-        parsed.push(entry_path(value, base, false), titles.get(&number).and_then(|title| nonempty(title)));
+        parsed.push(entry_path(value, base, false), titles.get(&number).and_then(|title| nonempty(title)), lengths.get(&number).copied());
     }
     parsed
 }
@@ -217,38 +259,79 @@ fn numbered(key: &str, name: &str) -> Option<u64> {
     head.eq_ignore_ascii_case(name).then(|| number.parse().ok()).flatten()
 }
 
-fn write_xspf(items: &[(PathBuf, String)], state: &State) -> String {
+fn write_xspf(items: &[Item], state: &State) -> String {
     let mut text = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<playlist version=\"1\" xmlns=\"http://xspf.org/ns/0/\">\n");
-    if state.made.is_some() || state.shuffled.is_some() || !state.played.is_empty() {
+    // A file listed in the order shown, rather than the order its items were made in, keeps the made order at the
+    // playlist level, since the items themselves are already in the order they play in.
+    if let Some(made) = &state.made {
         text.push_str("  <extension application=\"https://au.topher.rsimgv/playlist\">\n");
-        if let Some(made) = &state.made {
-            text.push_str(&format!("    <made>{}</made>\n", index_list(made)));
-        }
-        if let Some(shuffled) = &state.shuffled {
-            text.push_str(&format!("    <shuffle>{}</shuffle>\n", index_list(shuffled)));
-        }
-        if !state.played.is_empty() {
-            text.push_str(&format!("    <played>{}</played>\n", index_list(&state.played)));
-        }
+        text.push_str(&format!("    <made>{}</made>\n", index_list(made)));
         text.push_str("  </extension>\n");
     }
+    // Each item's place in the shuffled order, when the file lists the order the items were made in. A file listed in
+    // the order shown is already in that order, so each item's place is its own.
+    let shuffle_positions = state.shuffled.as_ref().map(|order| {
+        let mut positions = vec![None; items.len()];
+        for (position, index) in order.iter().enumerate() {
+            if let Some(place) = positions.get_mut(*index) {
+                *place = Some(position);
+            }
+        }
+        positions
+    });
+    let played_items: HashSet<usize> = state.played.iter().copied().collect();
     text.push_str("  <trackList>\n");
-    for (item, title) in items {
-        text.push_str(&format!(
-            "    <track>\n      <location>{}</location>\n      <title>{}</title>\n    </track>\n",
-            xml_escape(&file_uri(item)),
-            xml_escape(&one_line(title))
-        ));
+    for (index, (item, title, duration)) in items.iter().enumerate() {
+        text.push_str("    <track>\n");
+        text.push_str(&format!("      <location>{}</location>\n", xml_escape(&file_uri(item))));
+        text.push_str(&format!("      <title>{}</title>\n", xml_escape(&one_line(title))));
+        if let Some(duration) = duration.filter(|seconds| seconds.is_finite() && *seconds >= 0.0) {
+            text.push_str(&format!("      <duration>{}</duration>\n", (duration * 1000.0).round() as i64));
+        }
+        let shuffle_index = match &shuffle_positions {
+            Some(positions) => positions.get(index).copied().flatten(),
+            None if state.made.is_some() => Some(index),
+            None => None,
+        };
+        let played = played_items.contains(&index);
+        let current = state.current == Some(index);
+        if shuffle_index.is_some() || played || current {
+            text.push_str("      <extension application=\"https://au.topher.rsimgv/playlist\">\n");
+            if let Some(shuffle_index) = shuffle_index {
+                text.push_str(&format!("        <shuffle-index>{shuffle_index}</shuffle-index>\n"));
+            }
+            if played {
+                text.push_str("        <played>true</played>\n");
+            }
+            if current {
+                text.push_str("        <current>true</current>\n");
+            }
+            text.push_str("      </extension>\n");
+        }
+        text.push_str("    </track>\n");
     }
     text.push_str("  </trackList>\n</playlist>\n");
     text
+}
+
+/// The item indices in the order their shuffle indices give, if they are each there once. `None` for an order that does
+/// not hold every item.
+fn per_item_shuffle_order(indices: &[Option<usize>]) -> Option<Vec<usize>> {
+    let mut order = vec![None; indices.len()];
+    for (item, index) in indices.iter().enumerate() {
+        *order.get_mut((*index)?)? = Some(item);
+    }
+    order.into_iter().collect()
 }
 
 /// A track's first location is the one used; any others are other places to find the same thing.
 fn read_xspf(text: &str, base: &Path) -> Parsed {
     let text = without_xml_comments(text);
     let mut parsed = Parsed::default();
-    for extension in xml_elements(&text, "extension") {
+    // The playlist-level extension, before the tracks. Tracks have extensions of their own, so only what is written
+    // before them is looked at here.
+    let head = text.split("<trackList").next().unwrap_or(&text);
+    for extension in xml_elements(head, "extension") {
         if let Some(made) = xml_elements(extension, "made").first() {
             parsed.state.made = Some(parse_indices(&xml_text(made)));
         }
@@ -258,12 +341,50 @@ fn read_xspf(text: &str, base: &Path) -> Parsed {
         if let Some(played) = xml_elements(extension, "played").first() {
             parsed.state.played = parse_indices(&xml_text(played));
         }
-    }
-    for track in xml_elements(&text, "track") {
-        if let Some(location) = xml_elements(track, "location").first() {
-            let title = xml_elements(track, "title").first().and_then(|title| nonempty(&xml_text(title)));
-            parsed.push(entry_path(xml_text(location).trim(), base, true), title);
+        if let Some(current) = xml_elements(extension, "current").first() {
+            parsed.state.current = xml_text(current).trim().parse().ok();
         }
+    }
+    let mut shuffle_indices = Vec::new();
+    let mut played = Vec::new();
+    let mut current = None;
+    for track in xml_elements(&text, "track") {
+        let locations = xml_elements(track, "location");
+        let Some(location) = locations.first() else { continue };
+        let title = xml_elements(track, "title").first().and_then(|title| nonempty(&xml_text(title)));
+        // XSPF gives a duration in milliseconds, and this keeps it in seconds.
+        let duration = xml_elements(track, "duration")
+            .first()
+            .and_then(|duration| xml_text(duration).trim().parse::<f64>().ok())
+            .filter(|millis| millis.is_finite() && *millis >= 0.0)
+            .map(|millis| millis / 1000.0);
+        let index = parsed.paths.len();
+        parsed.push(entry_path(xml_text(location).trim(), base, true), title, duration);
+        let extensions = xml_elements(track, "extension");
+        let extension = extensions.first();
+        shuffle_indices.push(
+            extension.and_then(|extension| xml_elements(extension, "shuffle-index").first().and_then(|index| xml_text(index).trim().parse().ok())),
+        );
+        played.push(extension.and_then(|extension| {
+            xml_elements(extension, "played").first().map(|played| matches!(xml_text(played).trim(), "true" | "1"))
+        }));
+        let is_current = extension.is_some_and(|extension| {
+            xml_elements(extension, "current").first().is_some_and(|current| matches!(xml_text(current).trim(), "true" | "1"))
+        });
+        if is_current && current.is_none() {
+            current = Some(index);
+        }
+    }
+    // Per-item metadata is used when the file does not give a playlist-level order. An order that does not hold every
+    // item is not used.
+    if parsed.state.shuffled.is_none() && parsed.state.made.is_none() && !shuffle_indices.is_empty() {
+        parsed.state.shuffled = per_item_shuffle_order(&shuffle_indices);
+    }
+    if played.iter().any(Option::is_some) {
+        parsed.state.played = played.iter().enumerate().filter(|(_, played)| **played == Some(true)).map(|(index, _)| index).collect();
+    }
+    if let Some(current) = current {
+        parsed.state.current = Some(current);
     }
     parsed
 }
@@ -492,21 +613,25 @@ mod tests {
         ]
     }
 
-    /// The awkward paths, each with a title that needs care in a file too.
-    fn titled_items() -> Vec<(PathBuf, String)> {
+    /// The awkward paths, each with a title that needs care in a file too, and a duration in whole seconds as the
+    /// line-based formats hold them.
+    fn titled_items() -> Vec<Item> {
         let titles = ["Plain", "With, a comma & <angle>", "Ünï title", "Hash", "Two\nlines", "Not UTF-8"];
-        awkward_items().into_iter().zip(titles).map(|(path, title)| (path, title.to_owned())).collect()
+        let durations = [Some(12.0), None, Some(125.0), None, Some(0.0), None];
+        awkward_items().into_iter().zip(titles).zip(durations).map(|((path, title), duration)| (path, title.to_owned(), duration)).collect()
     }
 
     #[test]
-    fn every_format_round_trips_awkward_paths_and_titles() {
+    fn every_format_round_trips_awkward_paths_titles_and_durations() {
         let expected_titles = ["Plain", "With, a comma & <angle>", "Ünï title", "Hash", "Two lines", "Not UTF-8"];
+        let expected_durations = [Some(12.0), None, Some(125.0), None, Some(0.0), None];
         for format in [Format::M3u, Format::Pls, Format::Xspf] {
             let text = write(format, &titled_items(), &State::default());
             let parsed = read(text.as_bytes(), Path::new("/elsewhere"));
             let expected = Parsed {
                 paths: awkward_items(),
                 titles: expected_titles.map(|title| Some(title.to_owned())).to_vec(),
+                durations: expected_durations.to_vec(),
                 skipped: 0,
                 state: State::default(),
             };
@@ -515,10 +640,10 @@ mod tests {
     }
 
     #[test]
-    fn every_format_keeps_the_shuffled_order_and_played_items() {
+    fn every_format_keeps_the_shuffled_order_played_items_and_current_item() {
         for state in [
-            State { shuffled: Some(vec![2, 0, 1]), made: None, played: vec![0, 2] },
-            State { shuffled: None, made: Some(vec![2, 0, 1]), played: vec![0, 2] },
+            State { shuffled: Some(vec![2, 0, 1, 5, 3, 4]), made: None, played: vec![0, 2], current: Some(1) },
+            State { shuffled: None, made: Some(vec![2, 0, 1, 5, 3, 4]), played: vec![0, 2], current: Some(1) },
         ] {
             for format in [Format::M3u, Format::Pls, Format::Xspf] {
                 let text = write(format, &titled_items(), &state);

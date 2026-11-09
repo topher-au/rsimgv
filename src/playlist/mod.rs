@@ -1,5 +1,5 @@
 //! The playlist: pictures and videos in the order the user chooses, wherever they are, apart from the folder being
-//! browsed. There is one, which the windows share, kept in `playlist.m3u8` beside the settings file. Pure: no GTK.
+//! browsed. There is one, which the windows share, kept as XSPF in `playlist.xspf` beside the settings file. Pure: no GTK.
 
 pub mod format;
 
@@ -13,10 +13,6 @@ use std::path::{Path, PathBuf};
 use format::Format;
 
 use crate::settings::config_path;
-
-/// The line in the playlist's own file that says which item it was left on, as an index into the made order. Other
-/// players ignore it, as a comment.
-const CURRENT_TAG: &str = "#X-RSIMGV-CURRENT:";
 
 /// Each path appears once, so an item is known by its path, and adding one twice changes nothing.
 ///
@@ -32,6 +28,8 @@ pub struct Playlist {
     current: Option<usize>,
     /// The titles given to items, where they differ from the item's file name. An item without one is shown by that.
     titles: HashMap<PathBuf, String>,
+    /// The durations of items, in seconds, where they have been read or were saved with the playlist.
+    durations: HashMap<PathBuf, f64>,
     /// The items that have been played, so the panel can mark them.
     played: HashSet<PathBuf>,
     /// The file the playlist was last loaded from or saved to, which saving it again writes to.
@@ -131,7 +129,6 @@ impl Playlist {
     }
 
     /// The items in the order they were made, whether or not they are shuffled.
-    #[cfg(test)]
     pub fn items(&self) -> &[PathBuf] {
         &self.items
     }
@@ -180,13 +177,26 @@ impl Playlist {
         self.played.contains(path)
     }
 
+    /// Keeps the duration of the item `path`, in seconds, for showing and for saving with the playlist.
+    pub fn set_duration(&mut self, path: &Path, seconds: f64) {
+        if self.members.contains(path) && seconds.is_finite() && seconds >= 0.0 {
+            self.durations.insert(path.to_path_buf(), seconds);
+        }
+    }
+
+    /// The duration of the item `path` in seconds, if it is known.
+    pub fn duration(&self, path: &Path) -> Option<f64> {
+        self.durations.get(path).copied()
+    }
+
     /// What the playlist's own file keeps of how it is being used, as indices into the made order: the shuffled order,
-    /// and which items have been played.
+    /// which items have been played, and the item shown.
     pub(crate) fn state(&self) -> format::State {
         let positions: HashMap<&Path, usize> = self.items.iter().enumerate().map(|(index, item)| (item.as_path(), index)).collect();
         let shuffled = self.shuffled.as_ref().map(|order| order.iter().filter_map(|item| positions.get(item.as_path()).copied()).collect());
         let played = self.items.iter().enumerate().filter(|(_, item)| self.played.contains(*item)).map(|(index, _)| index).collect();
-        format::State { shuffled, made: None, played }
+        let current = self.current_path().and_then(|path| positions.get(path).copied());
+        format::State { shuffled, made: None, played, current }
     }
 
     /// What an exported file keeps of how the playlist is being used, as indices into the shown order it is written in:
@@ -196,13 +206,14 @@ impl Playlist {
         let positions: HashMap<&Path, usize> = shown.iter().enumerate().map(|(index, item)| (item.as_path(), index)).collect();
         let made = self.shuffled.as_ref().map(|_| self.items.iter().filter_map(|item| positions.get(item.as_path()).copied()).collect());
         let played = shown.iter().enumerate().filter(|(_, item)| self.played.contains(*item)).map(|(index, _)| index).collect();
-        format::State { shuffled: None, made, played }
+        format::State { shuffled: None, made, played, current: self.current }
     }
 
-    /// Takes the shuffled order and played items a saved file holds, as indices into `saved`, the items it lists in
-    /// their made order, or in their shown order when it also gives the made order. An order that does not hold each
-    /// item exactly once is not used.
+    /// Takes the shuffled order, played items and item shown a saved file holds, as indices into `saved`, the items it
+    /// lists in their made order, or in their shown order when it also gives the made order. An order that does not hold
+    /// each item exactly once is not used.
     pub(crate) fn apply_state(&mut self, state: format::State, saved: &[PathBuf]) {
+        let current = state.current.and_then(|index| saved.get(index)).cloned();
         let len = self.len();
         let mut resolved = |indices: Vec<usize>| {
             let mut seen = HashSet::new();
@@ -224,6 +235,9 @@ impl Playlist {
             }
         }
         self.played = state.played.into_iter().filter_map(|index| saved.get(index)).filter(|item| self.members.contains(*item)).cloned().collect();
+        if let Some(current) = current {
+            self.set_current_path(&current);
+        }
     }
 
     /// Adds the paths not already there to the end of each order. Returns how many were added.
@@ -294,6 +308,7 @@ impl Playlist {
         self.members = self.items.iter().cloned().collect();
         let members = &self.members;
         self.played.retain(|item| members.contains(item));
+        self.durations.retain(|item, _| members.contains(item));
         let last = self.len().checked_sub(1);
         self.current = self.current.zip(last).map(|(current, last)| (current - gone_before_current).min(last));
         total - self.len()
@@ -394,32 +409,25 @@ impl Playlist {
         (!self.is_empty()).then(|| self.current.unwrap_or(0))
     }
 
-    /// The text of the playlist's own file: an M3U file of the items in the order they were made, with the item shown,
-    /// the shuffled order if there is one, and the items played, noted in it.
+    /// The text of the playlist's own file: an XSPF file of the items in the order they were made, each with its title,
+    /// duration and how it has been used, and the playlist's shuffled order and item shown noted per item.
     fn to_saved_text(&self) -> String {
-        let titled: Vec<(PathBuf, String)> = self.items.iter().map(|item| (item.clone(), self.title(item))).collect();
-        let text = format::write(Format::M3u, &titled, &self.state());
-        let positions: HashMap<&Path, usize> = self.items.iter().enumerate().map(|(index, item)| (item.as_path(), index)).collect();
-        let mut notes = String::new();
-        if let Some(current) = self.current_path().and_then(|path| positions.get(path)) {
-            notes.push_str(&format!("{CURRENT_TAG}{current}\n"));
-        }
-        text.replacen('\n', &format!("\n{notes}"), 1)
+        let items: Vec<format::Item> = self.items.iter().map(|item| (item.clone(), self.title(item), self.duration(item))).collect();
+        format::write(Format::Xspf, &items, &self.state())
     }
 
     /// The playlist a saved file holds.
     fn from_saved_bytes(bytes: &[u8], base: &Path) -> Self {
-        let text = format::decode(bytes);
         let read = format::read(bytes, base);
         let saved = read.paths.clone();
         let mut playlist = Self::default();
         playlist.add_with_titles(read.paths.into_iter().zip(read.titles));
-        playlist.apply_state(read.state, &saved);
-        let current = text.lines().find_map(|line| line.strip_prefix(CURRENT_TAG)).map(str::trim);
-        let current = current.and_then(|index| index.parse::<usize>().ok()).and_then(|index| saved.get(index));
-        if let Some(current) = current.cloned() {
-            playlist.set_current_path(&current);
+        for (path, duration) in saved.iter().zip(read.durations) {
+            if let Some(seconds) = duration {
+                playlist.set_duration(path, seconds);
+            }
         }
+        playlist.apply_state(read.state, &saved);
         playlist
     }
 }
@@ -475,20 +483,32 @@ pub fn is_playable(path: &Path) -> bool {
     path.file_name().is_some_and(|name| crate::fs::walk::is_media_name(&name.to_string_lossy()))
 }
 
-/// The playlist's own file: `playlist.m3u8` beside the settings file.
+/// The playlist's own file: `playlist.xspf` beside the settings file. XSPF keeps a title, a duration and the app's own
+/// metadata for each item, and has no limit on how many there are.
 pub fn file() -> PathBuf {
+    config_path().with_file_name("playlist.xspf")
+}
+
+/// The file the playlist was kept in before it was XSPF, which is read when there is no XSPF file yet.
+fn legacy_file() -> PathBuf {
     config_path().with_file_name("playlist.m3u8")
 }
 
 /// Loads the playlist's own file, if there is one.
 pub fn load() {
     let file = file();
-    let Ok(bytes) = std::fs::read(&file) else { return };
-    let mut loaded = Playlist::from_saved_bytes(&bytes, file.parent().unwrap_or(Path::new("/")));
+    let legacy = legacy_file();
+    let source = if file.exists() { file.clone() } else { legacy };
+    let Ok(bytes) = std::fs::read(&source) else { return };
+    let mut loaded = Playlist::from_saved_bytes(&bytes, source.parent().unwrap_or(Path::new("/")));
     // Entries that are neither pictures nor videos are left out, as they are when they are added.
     let other: Vec<PathBuf> = loaded.order().iter().filter(|path| !is_playable(path)).cloned().collect();
     loaded.remove_under(&other);
     with(|playlist| *playlist = loaded);
+    // The next save writes XSPF, so an older M3U playlist is moved over now rather than waiting for a change.
+    if source != file {
+        let _ = save();
+    }
 }
 
 /// Writes the playlist to its own file.
@@ -647,7 +667,8 @@ mod tests {
         let mut list = playlist(&["a b.png", "c.mp4", "d.png"]);
         list.set_current(1);
         let text = list.to_saved_text();
-        assert!(text.starts_with("#EXTM3U\n#X-RSIMGV-CURRENT:1\n"), "{text}");
+        assert!(text.starts_with("<?xml"), "{text}");
+        assert!(text.contains("<current>true</current>"), "{text}");
         assert_eq!(Playlist::from_saved_bytes(text.as_bytes(), Path::new("/")), list);
 
         let unstarted = playlist(&["a"]);
@@ -732,13 +753,17 @@ mod tests {
         list.set_current_path(Path::new("/c"));
         list.mark_played(Path::new("/b"));
         list.mark_played(Path::new("/d"));
+        list.set_duration(Path::new("/b"), 42.0);
         let text = list.to_saved_text();
-        assert!(text.contains("#X-RSIMGV-SHUFFLE:"), "{text}");
-        assert!(text.contains("#X-RSIMGV-PLAYED:"), "{text}");
+        assert!(text.contains("<shuffle-index>"), "{text}");
+        assert!(text.contains("<played>true</played>"), "{text}");
+        assert!(text.contains("<current>true</current>"), "{text}");
+        assert!(text.contains("<duration>42000</duration>"), "{text}");
         let loaded = Playlist::from_saved_bytes(text.as_bytes(), Path::new("/"));
         assert_eq!(loaded.items(), list.items());
         assert_eq!(loaded.order(), list.order());
         assert_eq!(loaded.current_path(), Some(Path::new("/c")));
+        assert_eq!(loaded.duration(Path::new("/b")), Some(42.0));
         assert_eq!(loaded, list, "the played items come back too");
     }
 
@@ -756,7 +781,7 @@ mod tests {
         list.set_shuffled_with(true, counting());
         list.mark_played(Path::new("/a"));
         list.mark_played(Path::new("/c"));
-        let entries: Vec<(PathBuf, String)> = list.order().iter().map(|item| (item.clone(), list.title(item))).collect();
+        let entries: Vec<format::Item> = list.order().iter().map(|item| (item.clone(), list.title(item), list.duration(item))).collect();
         let text = format::write(Format::M3u, &entries, &list.export_state());
         let loaded = Playlist::from_saved_bytes(text.as_bytes(), Path::new("/"));
         assert_eq!(loaded.items(), list.items(), "the made order is kept");
