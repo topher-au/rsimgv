@@ -749,7 +749,9 @@ impl MpvStream {
         };
         let crop = base
             .map(|rect| framing::with_aspect(rect, framing.aspect))
-            .map(|rect| framing::trimmed(rect, framing.trim_pixels, source));
+            .map(|rect| framing::trimmed(rect, framing.trim_pixels, source))
+            // The shape and trim must not make a strip of the crop either. A crop the user holds is kept as it is.
+            .filter(|rect| imp.crop_locked.get() || source.is_none_or(|source| framing::usable(*rect, source)));
         // The output aspect is set after the crop, so it stretches the picture that is left.
         let aspect = imp.aspect.get().and_then(|aspect| {
             let rect = crop.or_else(full)?;
@@ -837,11 +839,14 @@ impl MpvStream {
         settled.set(if changed { 0 } else { settled.get() + 1 });
     }
 
-    /// Crops to `rect`, unless that is the video as it is or little different from the crop in use. A rectangle that covers
-    /// the whole video takes the crop off. Whether the crop changed.
+    /// Crops to `rect`, unless that is the video as it is, little different from the crop in use, or not a usable crop of
+    /// it. A rectangle that covers the whole video takes the crop off. Whether the crop changed.
     fn use_crop(&self, rect: CropRect, source: Option<(i32, i32)>) -> bool {
         let imp = self.imp();
-        let whole = source.is_some_and(|(width, height)| rect.left == 0 && rect.top == 0 && rect.width >= width && rect.height >= height);
+        // A crop found in a bar, a stray edge or a line of text can be a strip too thin to be a picture. It is left out, so
+        // the crop in use, if any, stays.
+        let Some((width, height)) = source.filter(|source| framing::usable(rect, *source)) else { return false };
+        let whole = rect.left == 0 && rect.top == 0 && rect.width >= width && rect.height >= height;
         let next = (!whole).then_some(rect);
         let differs = match (imp.crop.get(), next) {
             (None, None) => false,

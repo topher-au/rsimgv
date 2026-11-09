@@ -578,6 +578,32 @@ pub fn changed(old: CropRect, new: CropRect) -> bool {
     f64::from((old.width - new.width).abs()) > f64::from(old.width) * CHANGE_RATIO || f64::from((old.height - new.height).abs()) > f64::from(old.height) * CHANGE_RATIO
 }
 
+/// The least share of a video's width and height a crop may keep, so a stray edge or a line of text is not taken for the
+/// picture's border.
+const MIN_CROP_SHARE: f64 = 0.125;
+/// How much longer, either way, a crop's shape may be than the video's, so a picture is not cropped to a strip.
+const MAX_SHAPE_FACTOR: f64 = 5.0;
+
+/// Whether `rect` is a usable crop of a `source`-sized video: it must lie within the video, keep enough of its width and
+/// height, and not be so elongated, either way, that it is a strip rather than a picture. Detection can find such a rectangle
+/// in a bar, a stray edge or a line of text, and cropping to it leaves a frame that is very wide and short or tall and thin.
+pub fn usable(rect: CropRect, source: (i32, i32)) -> bool {
+    let (source_width, source_height) = source;
+    if source_width <= 0 || source_height <= 0 || rect.width <= 0 || rect.height <= 0 || rect.left < 0 || rect.top < 0 {
+        return false;
+    }
+    if rect.left.saturating_add(rect.width) > source_width || rect.top.saturating_add(rect.height) > source_height {
+        return false;
+    }
+    let kept_width = f64::from(rect.width) / f64::from(source_width);
+    let kept_height = f64::from(rect.height) / f64::from(source_height);
+    if kept_width < MIN_CROP_SHARE || kept_height < MIN_CROP_SHARE {
+        return false;
+    }
+    let shape = (f64::from(rect.width) / f64::from(rect.height)) / (f64::from(source_width) / f64::from(source_height));
+    (1.0 / MAX_SHAPE_FACTOR..=MAX_SHAPE_FACTOR).contains(&shape)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -698,6 +724,23 @@ mod tests {
         assert!(!agree(rect(404, 720, 438, 0), rect(404, 720, 450, 0)));
         assert!(!changed(rect(1000, 500, 0, 0), rect(1040, 500, 0, 0)));
         assert!(changed(rect(1000, 500, 0, 0), rect(1200, 500, 0, 0)));
+    }
+
+    #[test]
+    fn a_crop_must_lie_within_the_video_and_not_be_a_strip() {
+        let source = (1280, 720);
+        assert!(usable(rect(1280, 720, 0, 0), source), "the whole video");
+        assert!(usable(rect(404, 720, 438, 0), source), "a pillarboxed picture, 9:16");
+        assert!(usable(rect(404, 720, 876, 0), source), "a picture at the right edge");
+        assert!(usable(rect(1280, 500, 0, 110), source), "a letterboxed picture");
+        assert!(usable(rect(1280, 548, 0, 86), source), "a 21:9 picture in a 16:9 video");
+        assert!(!usable(rect(1280, 4, 0, 0), source), "a very wide, short frame");
+        assert!(!usable(rect(4, 720, 0, 0), source), "a tall, thin frame");
+        assert!(!usable(rect(0, 720, 0, 0), source), "no width");
+        assert!(!usable(rect(404, 720, 1000, 0), source), "past the video's edge");
+        assert!(!usable(rect(404, 720, -2, 0), source), "before the video's edge");
+        assert!(!usable(rect(404, 720, 438, 0), (0, 720)), "a video with no width");
+        assert!(!usable(rect(404, 720, 438, 0), (1280, 0)), "a video with no height");
     }
 
     #[test]
