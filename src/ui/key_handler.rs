@@ -61,6 +61,13 @@ fn handle(window: &Window, key: gdk::Key, state: gdk::ModifierType) -> glib::Pro
     if typing {
         return glib::Propagation::Proceed;
     }
+    // The crop editor takes these itself: Escape cancels it rather than closing the viewer, Enter applies it, and Tab
+    // moves between its edge boxes.
+    if window.viewer_is_crop_editing()
+        && matches!(key, gdk::Key::Escape | gdk::Key::Return | gdk::Key::KP_Enter | gdk::Key::Tab | gdk::Key::ISO_Left_Tab)
+    {
+        return glib::Propagation::Proceed;
+    }
     let scopes = window.active_scopes();
     let Some((action, value, target, script, notification)) = keybindings::with_table(|table| {
         table

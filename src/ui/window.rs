@@ -3008,6 +3008,11 @@ impl Window {
         self.imp().viewer_open.get()
     }
 
+    /// Whether the viewer is showing a video with its manual crop editor open.
+    pub(super) fn viewer_is_crop_editing(&self) -> bool {
+        self.imp().viewer.is_crop_editing()
+    }
+
     /// Moves to the next or previous folder that holds a picture or video, in depth-first order of the folder tree.
     /// Browsing, the folder's first picture or video is selected going forward, and its last going back. In the
     /// viewer, the first picture or video is shown either way. Returns the folder moved to, or `None` when there is no

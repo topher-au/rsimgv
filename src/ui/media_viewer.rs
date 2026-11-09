@@ -1125,6 +1125,11 @@ impl MediaViewer {
         }
     }
 
+    /// Whether a manual crop is being edited over the video.
+    pub fn is_crop_editing(&self) -> bool {
+        self.imp().crop_editor.borrow().is_some()
+    }
+
     /// Opens a draggable crop over the video, or closes the one that is open. The video is shown uncropped while it is
     /// being edited, and the crop is applied and kept with the file when Apply is pressed.
     pub fn toggle_manual_crop(&self) {
@@ -3138,6 +3143,11 @@ impl MediaViewer {
     fn reveal_near(&self, pointer: Option<(f64, f64)>) {
         let imp = self.imp();
         imp.pointer.set(pointer);
+        // While a crop is being edited, the pointer drags its edges and types into its boxes rather than bringing up the
+        // header, the bars or the controls.
+        if imp.crop_editor.borrow().is_some() {
+            return;
+        }
         let (width, height) = (f64::from(self.width()), f64::from(self.height()));
         let layout = imp.controls_layout.get();
         let bottom = match pointer {

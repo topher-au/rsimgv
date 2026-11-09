@@ -99,6 +99,11 @@ thumbnail-bar .thumbnail-bar-header {
   color: #fff;
 }
 
+// The crop editor's instructions and its Apply and Cancel buttons.
+.crop-actions {
+  padding: 4px;
+}
+
 thumbnail-bar.dragging {
   opacity: 0.6;
 }

@@ -133,6 +133,12 @@ fn sync_entries(entries: &Entries, rect: CropFraction, source: (i32, i32)) {
     entries.syncing.set(false);
 }
 
+/// Whether `x`, `y`, in `fixed`, is over one of the edge boxes.
+fn over_entry(entries: &Entries, fixed: &gtk::Fixed, x: f64, y: f64) -> bool {
+    let point = gtk::graphene::Point::new(x as f32, y as f32);
+    entries.all().iter().any(|spin| spin.compute_bounds(fixed).is_some_and(|bounds| bounds.contains_point(&point)))
+}
+
 /// Puts each edge's value box at the middle of that edge of the crop.
 fn position_entries(fixed: &gtk::Fixed, entries: &Entries, state: &State, width: i32, height: i32) {
     let picture = framing::fitted(f64::from(width), f64::from(height), f64::from(state.source.0.max(1)), f64::from(state.source.1.max(1)));
@@ -216,7 +222,6 @@ impl CropEditor {
         let fixed = gtk::Fixed::new();
         fixed.set_hexpand(true);
         fixed.set_vexpand(true);
-        fixed.set_can_target(false);
         for entry in entries.all() {
             fixed.put(entry, 0.0, 0.0);
         }
@@ -239,8 +244,16 @@ impl CropEditor {
         let drag = gtk::GestureDrag::new();
         drag.connect_drag_begin({
             let state = state.clone();
+            let entries = entries.clone();
             let area = area.clone();
-            move |_, x, y| {
+            let fixed = fixed.clone();
+            move |gesture, x, y| {
+                // Presses on an edge box belong to it, so typing and stepping do not also drag the crop.
+                if over_entry(&entries, &fixed, x, y) {
+                    state.borrow_mut().grab = None;
+                    gesture.set_state(gtk::EventSequenceState::Denied);
+                    return;
+                }
                 let mut state = state.borrow_mut();
                 let picture = picture_rect(&area, state.source);
                 state.grab = hit(picture, state.rect, x, y);
@@ -268,25 +281,34 @@ impl CropEditor {
             let state = state.clone();
             move |_, _, _| state.borrow_mut().grab = None
         });
-        area.add_controller(drag);
+        // The boxes lie over the picture, so the drag is taken by their container, while presses on the boxes
+        // themselves are left to them.
+        fixed.add_controller(drag);
 
         let motion = gtk::EventControllerMotion::new();
         motion.connect_motion({
             let state = state.clone();
+            let entries = entries.clone();
             let area = area.clone();
+            let fixed = fixed.clone();
             move |_, x, y| {
+                if over_entry(&entries, &fixed, x, y) {
+                    fixed.set_cursor_from_name(None);
+                    return;
+                }
                 let state = state.borrow();
                 let picture = picture_rect(&area, state.source);
-                area.set_cursor_from_name(cursor(hit(picture, state.rect, x, y)));
+                fixed.set_cursor_from_name(cursor(hit(picture, state.rect, x, y)));
             }
         });
-        area.add_controller(motion);
+        fixed.add_controller(motion);
 
         let apply = gtk::Button::with_label("Apply");
         apply.add_css_class("suggested-action");
         let cancel = gtk::Button::with_label("Cancel");
         let bar = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         bar.add_css_class("osd");
+        bar.add_css_class("crop-actions");
         bar.set_halign(gtk::Align::Center);
         bar.set_valign(gtk::Align::End);
         bar.set_margin_bottom(24);
@@ -314,14 +336,24 @@ impl CropEditor {
         let keys = gtk::EventControllerKey::new();
         keys.set_propagation_phase(gtk::PropagationPhase::Capture);
         keys.connect_key_pressed({
+            let state = state.clone();
+            let entries = entries.clone();
+            let on_apply = on_apply.clone();
             let on_cancel = on_cancel.clone();
-            move |_, key, _, _| {
-                if key == gdk::Key::Escape {
+            move |_, key, _, _| match key {
+                gdk::Key::Escape => {
                     on_cancel();
                     glib::Propagation::Stop
-                } else {
-                    glib::Propagation::Proceed
                 }
+                gdk::Key::Return | gdk::Key::KP_Enter => {
+                    // A value typed into a box is taken before the crop is applied.
+                    for entry in entries.all() {
+                        entry.update();
+                    }
+                    on_apply(state.borrow().rect);
+                    glib::Propagation::Stop
+                }
+                _ => glib::Propagation::Proceed,
             }
         });
         root.add_controller(keys);
