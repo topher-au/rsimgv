@@ -13,6 +13,20 @@ pub enum Format {
     Xspf,
 }
 
+/// What a playlist file records about how the playlist was being used, as indices into the items in the order the file
+/// lists them: the shuffled order it plays in, or the order its items were made in, and which of its items have been
+/// played. Other players ignore it.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct State {
+    /// The order the items play in while shuffled, when the file lists them in the order they were made.
+    pub shuffled: Option<Vec<usize>>,
+    /// The order the items were made in, when the file lists them in the order they are shown and played, which is the
+    /// shuffled order while shuffling. It is `None` when the file lists them in their made order.
+    pub made: Option<Vec<usize>>,
+    /// The indices of the items that have been played.
+    pub played: Vec<usize>,
+}
+
 /// What a playlist file holds that can be used here: its local files, and how many entries were something else, such
 /// as a web address.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -21,6 +35,7 @@ pub struct Parsed {
     /// The title each path is given in the file, if it is. Parallel to `paths`.
     pub titles: Vec<Option<String>>,
     pub skipped: usize,
+    pub state: State,
 }
 
 impl Parsed {
@@ -65,13 +80,38 @@ impl Format {
     }
 }
 
-/// The text of a playlist file holding `items`: absolute paths, each with the title it is shown by.
-pub fn write(format: Format, items: &[(PathBuf, String)]) -> String {
+/// The text of a playlist file holding `items`: absolute paths, each with the title it is shown by, and `state`.
+pub fn write(format: Format, items: &[(PathBuf, String)], state: &State) -> String {
     match format {
-        Format::M3u => write_m3u(items),
-        Format::Pls => write_pls(items),
-        Format::Xspf => write_xspf(items),
+        Format::M3u => write_m3u(items, state),
+        Format::Pls => write_pls(items, state),
+        Format::Xspf => write_xspf(items, state),
     }
+}
+
+/// The indices `indices` as one comma-separated line.
+fn index_list(indices: &[usize]) -> String {
+    indices.iter().map(usize::to_string).collect::<Vec<_>>().join(",")
+}
+
+/// The indices a comma-separated line names, leaving out anything that is not a number.
+fn parse_indices(text: &str) -> Vec<usize> {
+    text.split(',').filter_map(|index| index.trim().parse().ok()).collect()
+}
+
+/// The state lines of an M3U file, which are comments to other players.
+fn m3u_state_lines(state: &State) -> String {
+    let mut lines = String::new();
+    if let Some(made) = &state.made {
+        lines.push_str(&format!("#X-RSIMGV-MADE:{}\n", index_list(made)));
+    }
+    if let Some(shuffled) = &state.shuffled {
+        lines.push_str(&format!("#X-RSIMGV-SHUFFLE:{}\n", index_list(shuffled)));
+    }
+    if !state.played.is_empty() {
+        lines.push_str(&format!("#X-RSIMGV-PLAYED:{}\n", index_list(&state.played)));
+    }
+    lines
 }
 
 /// Reads the playlist file contents `bytes`, of any format. Relative entries are relative to `base`, the file's folder.
@@ -93,8 +133,8 @@ pub(super) fn decode(bytes: &[u8]) -> String {
     }
 }
 
-fn write_m3u(items: &[(PathBuf, String)]) -> String {
-    let mut text = String::from("#EXTM3U\n");
+fn write_m3u(items: &[(PathBuf, String)], state: &State) -> String {
+    let mut text = format!("#EXTM3U\n{}", m3u_state_lines(state));
     for (item, title) in items {
         text.push_str(&format!("#EXTINF:-1,{}\n{}\n", one_line(title), plain_or_uri(item)));
     }
@@ -109,6 +149,12 @@ fn read_m3u(text: &str, base: &Path) -> Parsed {
         let trimmed = line.trim();
         if let Some(info) = trimmed.strip_prefix("#EXTINF:") {
             title = info.split_once(',').and_then(|(_, title)| nonempty(title));
+        } else if let Some(indices) = trimmed.strip_prefix("#X-RSIMGV-MADE:") {
+            parsed.state.made = Some(parse_indices(indices));
+        } else if let Some(indices) = trimmed.strip_prefix("#X-RSIMGV-SHUFFLE:") {
+            parsed.state.shuffled = Some(parse_indices(indices));
+        } else if let Some(indices) = trimmed.strip_prefix("#X-RSIMGV-PLAYED:") {
+            parsed.state.played = parse_indices(indices);
         } else if !trimmed.is_empty() && !trimmed.starts_with('#') {
             parsed.push(entry_path(line, base, false), title.take());
         }
@@ -116,19 +162,30 @@ fn read_m3u(text: &str, base: &Path) -> Parsed {
     parsed
 }
 
-fn write_pls(items: &[(PathBuf, String)]) -> String {
+fn write_pls(items: &[(PathBuf, String)], state: &State) -> String {
     let mut text = String::from("[playlist]\n");
     for (index, (item, title)) in items.iter().enumerate() {
         let number = index + 1;
         text.push_str(&format!("File{number}={}\nTitle{number}={}\nLength{number}=-1\n", plain_or_uri(item), one_line(title)));
     }
-    text.push_str(&format!("NumberOfEntries={}\nVersion=2\n", items.len()));
+    text.push_str(&format!("NumberOfEntries={}\n", items.len()));
+    if let Some(made) = &state.made {
+        text.push_str(&format!("X-RSIMGV-MADE={}\n", index_list(made)));
+    }
+    if let Some(shuffled) = &state.shuffled {
+        text.push_str(&format!("X-RSIMGV-SHUFFLE={}\n", index_list(shuffled)));
+    }
+    if !state.played.is_empty() {
+        text.push_str(&format!("X-RSIMGV-PLAYED={}\n", index_list(&state.played)));
+    }
+    text.push_str("Version=2\n");
     text
 }
 
 fn read_pls(text: &str, base: &Path) -> Parsed {
     let mut files: Vec<(u64, &str)> = Vec::new();
     let mut titles: HashMap<u64, &str> = HashMap::new();
+    let mut state = State::default();
     for line in text.lines() {
         let Some((key, value)) = line.split_once('=') else { continue };
         let key = key.trim();
@@ -136,11 +193,17 @@ fn read_pls(text: &str, base: &Path) -> Parsed {
             files.push((number, value));
         } else if let Some(number) = numbered(key, "title") {
             titles.insert(number, value);
+        } else if key.eq_ignore_ascii_case("X-RSIMGV-MADE") {
+            state.made = Some(parse_indices(value));
+        } else if key.eq_ignore_ascii_case("X-RSIMGV-SHUFFLE") {
+            state.shuffled = Some(parse_indices(value));
+        } else if key.eq_ignore_ascii_case("X-RSIMGV-PLAYED") {
+            state.played = parse_indices(value);
         }
     }
     // The numbers give the order, whatever order the lines are in.
     files.sort_by_key(|(number, _)| *number);
-    let mut parsed = Parsed::default();
+    let mut parsed = Parsed { state, ..Default::default() };
     for (number, value) in files {
         parsed.push(entry_path(value, base, false), titles.get(&number).and_then(|title| nonempty(title)));
     }
@@ -154,8 +217,22 @@ fn numbered(key: &str, name: &str) -> Option<u64> {
     head.eq_ignore_ascii_case(name).then(|| number.parse().ok()).flatten()
 }
 
-fn write_xspf(items: &[(PathBuf, String)]) -> String {
-    let mut text = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<playlist version=\"1\" xmlns=\"http://xspf.org/ns/0/\">\n  <trackList>\n");
+fn write_xspf(items: &[(PathBuf, String)], state: &State) -> String {
+    let mut text = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<playlist version=\"1\" xmlns=\"http://xspf.org/ns/0/\">\n");
+    if state.made.is_some() || state.shuffled.is_some() || !state.played.is_empty() {
+        text.push_str("  <extension application=\"https://au.topher.rsimgv/playlist\">\n");
+        if let Some(made) = &state.made {
+            text.push_str(&format!("    <made>{}</made>\n", index_list(made)));
+        }
+        if let Some(shuffled) = &state.shuffled {
+            text.push_str(&format!("    <shuffle>{}</shuffle>\n", index_list(shuffled)));
+        }
+        if !state.played.is_empty() {
+            text.push_str(&format!("    <played>{}</played>\n", index_list(&state.played)));
+        }
+        text.push_str("  </extension>\n");
+    }
+    text.push_str("  <trackList>\n");
     for (item, title) in items {
         text.push_str(&format!(
             "    <track>\n      <location>{}</location>\n      <title>{}</title>\n    </track>\n",
@@ -171,6 +248,17 @@ fn write_xspf(items: &[(PathBuf, String)]) -> String {
 fn read_xspf(text: &str, base: &Path) -> Parsed {
     let text = without_xml_comments(text);
     let mut parsed = Parsed::default();
+    for extension in xml_elements(&text, "extension") {
+        if let Some(made) = xml_elements(extension, "made").first() {
+            parsed.state.made = Some(parse_indices(&xml_text(made)));
+        }
+        if let Some(shuffled) = xml_elements(extension, "shuffle").first() {
+            parsed.state.shuffled = Some(parse_indices(&xml_text(shuffled)));
+        }
+        if let Some(played) = xml_elements(extension, "played").first() {
+            parsed.state.played = parse_indices(&xml_text(played));
+        }
+    }
     for track in xml_elements(&text, "track") {
         if let Some(location) = xml_elements(track, "location").first() {
             let title = xml_elements(track, "title").first().and_then(|title| nonempty(&xml_text(title)));
@@ -414,21 +502,36 @@ mod tests {
     fn every_format_round_trips_awkward_paths_and_titles() {
         let expected_titles = ["Plain", "With, a comma & <angle>", "Ünï title", "Hash", "Two lines", "Not UTF-8"];
         for format in [Format::M3u, Format::Pls, Format::Xspf] {
-            let text = write(format, &titled_items());
+            let text = write(format, &titled_items(), &State::default());
             let parsed = read(text.as_bytes(), Path::new("/elsewhere"));
             let expected = Parsed {
                 paths: awkward_items(),
                 titles: expected_titles.map(|title| Some(title.to_owned())).to_vec(),
                 skipped: 0,
+                state: State::default(),
             };
             assert_eq!(parsed, expected, "{format:?}: {text}");
         }
     }
 
     #[test]
+    fn every_format_keeps_the_shuffled_order_and_played_items() {
+        for state in [
+            State { shuffled: Some(vec![2, 0, 1]), made: None, played: vec![0, 2] },
+            State { shuffled: None, made: Some(vec![2, 0, 1]), played: vec![0, 2] },
+        ] {
+            for format in [Format::M3u, Format::Pls, Format::Xspf] {
+                let text = write(format, &titled_items(), &state);
+                let parsed = read(text.as_bytes(), Path::new("/"));
+                assert_eq!(parsed.state, state, "{format:?}: {text}");
+            }
+        }
+    }
+
+    #[test]
     fn an_empty_playlist_round_trips() {
         for format in [Format::M3u, Format::Pls, Format::Xspf] {
-            assert_eq!(read(write(format, &[]).as_bytes(), Path::new("/")), Parsed::default(), "{format:?}");
+            assert_eq!(read(write(format, &[], &State::default()).as_bytes(), Path::new("/")), Parsed::default(), "{format:?}");
         }
     }
 

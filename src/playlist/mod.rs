@@ -14,10 +14,9 @@ use format::Format;
 
 use crate::settings::config_path;
 
-/// The lines in the playlist's own file that say which item it was left on, and the shuffled order, as indices into the
-/// original order. Other players ignore them, as comments.
+/// The line in the playlist's own file that says which item it was left on, as an index into the made order. Other
+/// players ignore it, as a comment.
 const CURRENT_TAG: &str = "#X-RSIMGV-CURRENT:";
-const SHUFFLE_TAG: &str = "#X-RSIMGV-SHUFFLE:";
 
 /// Each path appears once, so an item is known by its path, and adding one twice changes nothing.
 ///
@@ -33,15 +32,14 @@ pub struct Playlist {
     current: Option<usize>,
     /// The titles given to items, where they differ from the item's file name. An item without one is shown by that.
     titles: HashMap<PathBuf, String>,
-    /// The items shown from the playlist in this run of the application, so the panel can mark them as played.
+    /// The items that have been played, so the panel can mark them.
     played: HashSet<PathBuf>,
     /// The file the playlist was last loaded from or saved to, which saving it again writes to.
     source: Option<PathBuf>,
 }
 
-/// Two playlists are the same when their items, orders, current item and titles are. The file a playlist was loaded
-/// from or saved to is where it goes next, and what this run has played is panel state, not part of what the playlist
-/// holds, so neither is compared.
+/// Two playlists are the same when their items, orders, current item, titles and played items are. The file a playlist
+/// was loaded from or saved to is where it goes next, not part of what the playlist holds, so it is not compared.
 impl PartialEq for Playlist {
     fn eq(&self, other: &Self) -> bool {
         self.items == other.items
@@ -49,6 +47,7 @@ impl PartialEq for Playlist {
             && self.members == other.members
             && self.current == other.current
             && self.titles == other.titles
+            && self.played == other.played
     }
 }
 
@@ -171,14 +170,60 @@ impl Playlist {
         self.current
     }
 
-    /// Marks the item `path` as played, if it is in the playlist. Returns whether that was the first time this run.
+    /// Marks the item `path` as played, if it is in the playlist. Returns whether that was the first time.
     pub fn mark_played(&mut self, path: &Path) -> bool {
         self.members.contains(path) && self.played.insert(path.to_path_buf())
     }
 
-    /// Whether the item `path` has been played this run.
+    /// Whether the item `path` has been played.
     pub fn is_played(&self, path: &Path) -> bool {
         self.played.contains(path)
+    }
+
+    /// What the playlist's own file keeps of how it is being used, as indices into the made order: the shuffled order,
+    /// and which items have been played.
+    pub(crate) fn state(&self) -> format::State {
+        let positions: HashMap<&Path, usize> = self.items.iter().enumerate().map(|(index, item)| (item.as_path(), index)).collect();
+        let shuffled = self.shuffled.as_ref().map(|order| order.iter().filter_map(|item| positions.get(item.as_path()).copied()).collect());
+        let played = self.items.iter().enumerate().filter(|(_, item)| self.played.contains(*item)).map(|(index, _)| index).collect();
+        format::State { shuffled, made: None, played }
+    }
+
+    /// What an exported file keeps of how the playlist is being used, as indices into the shown order it is written in:
+    /// the made order when it is shuffled, and which items have been played.
+    pub(crate) fn export_state(&self) -> format::State {
+        let shown = self.order();
+        let positions: HashMap<&Path, usize> = shown.iter().enumerate().map(|(index, item)| (item.as_path(), index)).collect();
+        let made = self.shuffled.as_ref().map(|_| self.items.iter().filter_map(|item| positions.get(item.as_path()).copied()).collect());
+        let played = shown.iter().enumerate().filter(|(_, item)| self.played.contains(*item)).map(|(index, _)| index).collect();
+        format::State { shuffled: None, made, played }
+    }
+
+    /// Takes the shuffled order and played items a saved file holds, as indices into `saved`, the items it lists in
+    /// their made order, or in their shown order when it also gives the made order. An order that does not hold each
+    /// item exactly once is not used.
+    pub(crate) fn apply_state(&mut self, state: format::State, saved: &[PathBuf]) {
+        let len = self.len();
+        let mut resolved = |indices: Vec<usize>| {
+            let mut seen = HashSet::new();
+            let order: Vec<PathBuf> = indices.into_iter().filter_map(|index| saved.get(index).cloned()).filter(|item| seen.insert(item.clone())).collect();
+            (order.len() == len).then_some(order)
+        };
+        if len > 0 {
+            if let Some(made) = state.made.and_then(&mut resolved) {
+                // The file lists the shown order, so the made order puts the items back as they were before shuffling.
+                // A file that lists an item twice is kept once, as it is when added.
+                let mut seen = HashSet::new();
+                let shown: Vec<PathBuf> =
+                    saved.iter().filter(|item| self.members.contains(*item)).filter(|item| seen.insert((*item).clone())).cloned().collect();
+                self.items = made;
+                self.members = self.items.iter().cloned().collect();
+                self.shuffled = Some(shown);
+            } else if let Some(shuffled) = state.shuffled.and_then(&mut resolved) {
+                self.shuffled = Some(shuffled);
+            }
+        }
+        self.played = state.played.into_iter().filter_map(|index| saved.get(index)).filter(|item| self.members.contains(*item)).cloned().collect();
     }
 
     /// Adds the paths not already there to the end of each order. Returns how many were added.
@@ -350,43 +395,28 @@ impl Playlist {
     }
 
     /// The text of the playlist's own file: an M3U file of the items in the order they were made, with the item shown,
-    /// and the shuffled order if there is one, noted in it.
+    /// the shuffled order if there is one, and the items played, noted in it.
     fn to_saved_text(&self) -> String {
         let titled: Vec<(PathBuf, String)> = self.items.iter().map(|item| (item.clone(), self.title(item))).collect();
-        let text = format::write(Format::M3u, &titled);
+        let text = format::write(Format::M3u, &titled, &self.state());
         let positions: HashMap<&Path, usize> = self.items.iter().enumerate().map(|(index, item)| (item.as_path(), index)).collect();
         let mut notes = String::new();
         if let Some(current) = self.current_path().and_then(|path| positions.get(path)) {
             notes.push_str(&format!("{CURRENT_TAG}{current}\n"));
         }
-        if let Some(shuffled) = &self.shuffled {
-            let indices: Vec<String> = shuffled.iter().filter_map(|item| positions.get(item.as_path())).map(usize::to_string).collect();
-            notes.push_str(&format!("{SHUFFLE_TAG}{}\n", indices.join(",")));
-        }
         text.replacen('\n', &format!("\n{notes}"), 1)
     }
 
-    /// The playlist a saved file holds. A shuffled order that does not hold each item exactly once is not used.
+    /// The playlist a saved file holds.
     fn from_saved_bytes(bytes: &[u8], base: &Path) -> Self {
         let text = format::decode(bytes);
         let read = format::read(bytes, base);
         let saved = read.paths.clone();
         let mut playlist = Self::default();
         playlist.add_with_titles(read.paths.into_iter().zip(read.titles));
-        let note = |tag: &str| text.lines().find_map(|line| line.strip_prefix(tag)).map(str::trim);
-        if let Some(indices) = note(SHUFFLE_TAG) {
-            let mut seen = HashSet::new();
-            let shuffled: Vec<PathBuf> = indices
-                .split(',')
-                .filter_map(|index| index.trim().parse::<usize>().ok())
-                .filter_map(|index| saved.get(index).cloned())
-                .filter(|item| seen.insert(item.clone()))
-                .collect();
-            if shuffled.len() == playlist.len() {
-                playlist.shuffled = Some(shuffled);
-            }
-        }
-        let current = note(CURRENT_TAG).and_then(|index| index.parse::<usize>().ok()).and_then(|index| saved.get(index));
+        playlist.apply_state(read.state, &saved);
+        let current = text.lines().find_map(|line| line.strip_prefix(CURRENT_TAG)).map(str::trim);
+        let current = current.and_then(|index| index.parse::<usize>().ok()).and_then(|index| saved.get(index));
         if let Some(current) = current.cloned() {
             playlist.set_current_path(&current);
         }
@@ -696,16 +726,42 @@ mod tests {
     }
 
     #[test]
-    fn the_saved_file_keeps_both_orders_and_the_item_shown() {
+    fn the_saved_file_keeps_both_orders_the_item_shown_and_the_played_items() {
         let mut list = playlist(&["a", "b", "c", "d"]);
         list.set_shuffled_with(true, counting());
         list.set_current_path(Path::new("/c"));
+        list.mark_played(Path::new("/b"));
+        list.mark_played(Path::new("/d"));
         let text = list.to_saved_text();
         assert!(text.contains("#X-RSIMGV-SHUFFLE:"), "{text}");
+        assert!(text.contains("#X-RSIMGV-PLAYED:"), "{text}");
         let loaded = Playlist::from_saved_bytes(text.as_bytes(), Path::new("/"));
         assert_eq!(loaded.items(), list.items());
         assert_eq!(loaded.order(), list.order());
         assert_eq!(loaded.current_path(), Some(Path::new("/c")));
+        assert_eq!(loaded, list, "the played items come back too");
+    }
+
+    #[test]
+    fn a_played_index_that_is_not_there_is_left_out() {
+        let text = "#EXTM3U\n#X-RSIMGV-PLAYED:0,9\n/a\n/b\n";
+        let loaded = Playlist::from_saved_bytes(text.as_bytes(), Path::new("/"));
+        assert!(loaded.is_played(Path::new("/a")));
+        assert!(!loaded.is_played(Path::new("/b")));
+    }
+
+    #[test]
+    fn an_exported_playlist_keeps_both_orders_and_the_played_items() {
+        let mut list = playlist(&["a", "b", "c", "d"]);
+        list.set_shuffled_with(true, counting());
+        list.mark_played(Path::new("/a"));
+        list.mark_played(Path::new("/c"));
+        let entries: Vec<(PathBuf, String)> = list.order().iter().map(|item| (item.clone(), list.title(item))).collect();
+        let text = format::write(Format::M3u, &entries, &list.export_state());
+        let loaded = Playlist::from_saved_bytes(text.as_bytes(), Path::new("/"));
+        assert_eq!(loaded.items(), list.items(), "the made order is kept");
+        assert_eq!(loaded.order(), list.order(), "and the shuffled order");
+        assert_eq!(loaded, list, "and the played items");
     }
 
     #[test]

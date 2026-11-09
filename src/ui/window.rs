@@ -1,5 +1,5 @@
 use std::cell::{Cell, RefCell};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::rc::Rc;
 use std::path::{Path, PathBuf};
 
@@ -1766,6 +1766,9 @@ impl Window {
         let played = playlist::with(|list| list.mark_played(path));
         if playlist::with(|list| list.set_current_path(path)) {
             self.playlist_position_changed();
+        } else if played {
+            // The item is already the current one, so only what has been played changed, and the file keeps that.
+            self.save_playlist();
         }
         // Every window's panel marks the item, as the playlist is shared between them.
         if played {
@@ -2123,15 +2126,19 @@ impl Window {
 
     /// Makes the playlist what was loaded, or adds it to the end, and says how that went.
     fn take_loaded_playlist(&self, loaded: format::Parsed, replace: bool, source: Option<PathBuf>) {
-        let format::Parsed { paths, titles, skipped } = loaded;
+        let format::Parsed { paths, titles, skipped, state } = loaded;
+        let saved = paths.clone();
         let entries = paths.into_iter().zip(titles);
         let count = playlist::with(|list| {
             if replace {
                 list.clear();
                 list.set_source(source);
                 list.add_with_titles(entries);
+                list.apply_state(state, &saved);
                 list.len()
             } else {
+                // The order the loaded playlist was shuffled into and what it had played belong to it alone, so they
+                // are not applied to the playlist they are added to.
                 list.add_with_titles(entries)
             }
         });
@@ -2171,7 +2178,7 @@ impl Window {
         };
         let text = playlist::with(|list| {
             let entries: Vec<(PathBuf, String)> = list.order().iter().map(|path| (path.clone(), list.title(path))).collect();
-            format::write(file_format, &entries)
+            format::write(file_format, &entries, &list.export_state())
         });
         let weak = self.downgrade();
         glib::spawn_future_local(async move {
@@ -4848,13 +4855,36 @@ fn apply_playlist_header_style(header: &adw::HeaderBar, style: &str) {
 }
 
 /// The pictures and videos a playlist's text lists, with how many entries it had that are not those left out. Relative
-/// entries are found from `base`.
+/// entries are found from `base`. The indices the file keeps for its orders and played items are moved with the items
+/// that are kept.
 fn playlist_from_bytes(bytes: &[u8], base: &Path) -> format::Parsed {
-    let mut parsed = format::read(bytes, base);
-    let listed = parsed.paths.len();
-    parsed.paths.retain(|item| playlist::is_playable(item));
-    parsed.skipped += listed - parsed.paths.len();
-    parsed
+    let format::Parsed { paths, titles, skipped, mut state } = format::read(bytes, base);
+    let listed = paths.len();
+    let mut kept_paths = Vec::with_capacity(listed);
+    let mut kept_titles = Vec::with_capacity(listed);
+    let mut positions = Vec::with_capacity(listed);
+    for (path, title) in paths.into_iter().zip(titles) {
+        if playlist::is_playable(&path) {
+            positions.push(Some(kept_paths.len()));
+            kept_paths.push(path);
+            kept_titles.push(title);
+        } else {
+            positions.push(None);
+        }
+    }
+    // An order that no longer holds each kept item once and only once, such as one naming a skipped entry twice, is
+    // dropped rather than becoming a different order.
+    let len = kept_paths.len();
+    let keep = |indices: Vec<usize>| {
+        let mut seen = HashSet::new();
+        let order: Vec<usize> =
+            indices.into_iter().filter_map(|index| positions.get(index).copied().flatten()).filter(|index| seen.insert(*index)).collect();
+        (order.len() == len).then_some(order)
+    };
+    state.shuffled = state.shuffled.and_then(&keep);
+    state.made = state.made.and_then(&keep);
+    state.played = state.played.into_iter().filter_map(|index| positions.get(index).copied().flatten()).collect();
+    format::Parsed { paths: kept_paths, titles: kept_titles, skipped: skipped + listed - len, state }
 }
 
 /// The file types the playlist dialogs offer: all the formats, then each one.

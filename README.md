@@ -135,7 +135,7 @@ These can all be rebound, and first item, last item, load, save and clear can be
 
 The panel's buttons load and save M3U and M3U8 (`.m3u`, `.m3u8`), PLS (`.pls`) and XSPF (`.xspf`) files. Saved files use absolute paths. Loading into a playlist that has items asks whether to replace them or add to the end. Web addresses and files that are not pictures or videos are left out, and you are told how many. A file listed twice is kept once.
 
-The shuffle button plays the playlist in a random order, with the item shown first so it keeps playing. The order the items were made in is kept beside it: turning shuffle off goes back to that order, and moving items while shuffled changes only the shuffled order. Adding and removing change both. Saved playlist files keep the made order, and the shuffled order too, in comments that other players ignore. Exporting a file writes the order the panel shows.
+The shuffle button plays the playlist in a random order, with the item shown first so it keeps playing. The order the items were made in is kept beside it: turning shuffle off goes back to that order, and moving items while shuffled changes only the shuffled order. Adding and removing change both. Saved playlist files keep the made order, the shuffled order too, and which items have been played, in comments and extensions that other players ignore. Exporting a file writes the order the panel shows, and keeps the shuffled order and the played items too.
 
 The panel's detach button takes it out into a window of its own, which keeps working with the playlist and its keys. Its button puts it back, and closing that window does the same. The panel shows beside the browse view on the right, opposite the sidebar.
 
