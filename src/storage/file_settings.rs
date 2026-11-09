@@ -167,6 +167,11 @@ impl FileSettings {
         self.file.file_stem().and_then(|stem| stem.to_str())
     }
 
+    /// Every setting saved for the file, as the YAML values are.
+    pub fn values(&self) -> &Mapping {
+        &self.values
+    }
+
     /// The value of `key`, if it is set.
     pub fn get(&self, key: &str) -> Option<&Value> {
         self.values.get(key)

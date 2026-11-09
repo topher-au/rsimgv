@@ -14,7 +14,9 @@ from rsimgv_api import (
     Client,
     ConnectionFailed,
     HttpTransport,
+    IpcError,
     NoSuchFile,
+    NoSuchSetting,
     NoSuchTab,
     NotAFolder,
     TcpTransport,
@@ -93,6 +95,59 @@ def fake_answer(request: dict) -> dict:
     if method == "view.screenshot":
         # "PNG!" in base64, standing in for an image file.
         return result({"format": "png", "width": 2, "height": 1, "data": "UE5HIQ=="})
+    if method == "metadata.get":
+        entries = []
+        for path in params["paths"]:
+            if path == "/nope":
+                entries.append({"path": path, "error": "no_such_file"})
+                continue
+            entries.append({
+                "path": path,
+                "name": path.rsplit("/", 1)[-1],
+                "is_dir": False,
+                "size": 3,
+                "modified": 1.0,
+                "mime_type": "image/jpeg",
+                "media": {
+                    "width": 2, "height": 1, "duration": None, "frame_rate": None,
+                    "codec": "jpeg", "audio_codec": None, "bit_rate": None,
+                },
+                "media_pending": False,
+            })
+        return result({"metadata": entries})
+    if method == "files.state":
+        if params.get("path") == "/nope":
+            return error("file_error", "could not read the state")
+        return result({"path": params["path"], "hash": "abc", "values": {"position": 93.5, "speed": 1.25}})
+    if method in ("files.set_state", "files.state.set"):
+        return result({"path": params["path"], "hash": "abc", "values": params["values"]})
+    if method in ("files.reset_state", "files.state.reset"):
+        return result({"path": params["path"], "hash": "abc", "values": {}})
+    if method == "settings.list":
+        return result({"settings": {"browse.item-size": 128, "browse.show-hidden": False}})
+    if method == "settings.get":
+        values = {"browse.item-size": 128, "browse.show-hidden": False}
+        key = params.get("key")
+        if key not in values:
+            return error("no_such_setting", f"no setting named {key}")
+        return result({"key": key, "value": values[key]})
+    if method == "settings.set":
+        value = 128 if params.get("value") is None else params["value"]
+        return result({"key": params["key"], "value": value})
+    if method == "settings.update":
+        return result({"settings": params["values"]})
+    if method == "settings.reset":
+        return result({})
+    if method == "settings.describe":
+        return result({"settings": [
+            {
+                "key": "browse.item-size",
+                "type": "i",
+                "description": "Size in pixels of each browse item",
+                "default": 128,
+                "value": 128,
+            },
+        ]})
     return error("unknown_method", method)
 
 
@@ -177,6 +232,35 @@ class TransportTests(unittest.TestCase):
         self.assertEqual(client.navigate.back(3), 3)
         with self.assertRaises(NotAFolder):
             client.navigate.to("/bad")
+
+        self.assertEqual(client.metadata.one("/a/x.jpg").media.width, 2)
+        metadata = client.metadata.get("/a/x.jpg", "/nope")
+        self.assertEqual(metadata[0].mime_type, "image/jpeg")
+        self.assertFalse(metadata[0].media_pending)
+        self.assertEqual(metadata[1].error, "no_such_file")
+        self.assertFalse(metadata[1].exists)
+        self.assertEqual(client.files.metadata("/a/x.jpg")[0].size, 3)
+
+        state = client.state.get("/a/x.mp4")
+        self.assertEqual((state.hash, state["position"], state["speed"]), ("abc", 93.5, 1.25))
+        self.assertEqual(client.files.state("/a/x.mp4").path, "/a/x.mp4")
+        state = client.state.update("/a/x.mp4", position=12.0, speed=1.5)
+        self.assertEqual(state.values, {"position": 12.0, "speed": 1.5})
+        self.assertEqual(client.state.set("/a/x.mp4", "volume", 0.5)["volume"], 0.5)
+        self.assertEqual(client.state.remove("/a/x.mp4", "speed").values, {})
+        with self.assertRaises(IpcError):
+            client.state.get("/nope")
+
+        self.assertEqual(client.settings.get("browse.item-size"), 128)
+        self.assertFalse(client.settings["browse.show-hidden"])
+        self.assertEqual(client.settings.get("no.such", 7), 7)
+        with self.assertRaises(NoSuchSetting):
+            client.settings.get("no.such")
+        self.assertEqual(client.settings.set("browse.item-size", 160), 160)
+        self.assertEqual(client.settings.update({"browse.show-hidden": True}), {"browse.show-hidden": True})
+        client.settings.reset("browse.item-size")
+        self.assertEqual(client.settings.describe()[0].default, 128)
+        self.assertIn("browse.item-size", client.settings)
 
         shot = client.screenshot()
         self.assertEqual((shot.format, shot.width, shot.height, shot.data), ("png", 2, 1, b"PNG!"))

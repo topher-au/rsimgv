@@ -77,6 +77,70 @@ impl Settings {
         group.value(name)
     }
 
+    /// Whether the schema has a setting called `key`.
+    pub fn has(&self, key: &str) -> bool {
+        self.lookup(key).is_some()
+    }
+
+    /// The group that `key` is in and its name in that group, if the schema has it.
+    fn lookup<'a>(&'a self, key: &'a str) -> Option<(&'a gio::Settings, &'a str)> {
+        let (group, name) = key.rsplit_once('.').unwrap_or(("", key));
+        let settings = self.groups.get(group)?;
+        let schema = settings.settings_schema()?;
+        schema.has_key(name).then_some((settings, name))
+    }
+
+    /// The schema entry for `key`, if the schema has it.
+    fn schema_key(&self, key: &str) -> Option<gio::SettingsSchemaKey> {
+        let (settings, name) = self.lookup(key)?;
+        settings.settings_schema().map(|schema| schema.key(name))
+    }
+
+    /// The dotted name of every setting in the schema, sorted.
+    pub fn keys(&self) -> Vec<String> {
+        let mut keys = Vec::new();
+        for (group, settings) in &*self.groups {
+            let Some(schema) = settings.settings_schema() else { continue };
+            for name in schema.list_keys() {
+                keys.push(if group.is_empty() { name.to_string() } else { format!("{group}.{name}") });
+            }
+        }
+        keys.sort();
+        keys
+    }
+
+    /// The GVariant type of `key`, if the schema has it.
+    pub fn value_type(&self, key: &str) -> Option<glib::VariantType> {
+        self.schema_key(key).map(|key| key.value_type())
+    }
+
+    /// The default value of `key`, if the schema has it.
+    pub fn default_value(&self, key: &str) -> Option<glib::Variant> {
+        self.schema_key(key).map(|key| key.default_value())
+    }
+
+    /// The description of `key`, if the schema has it.
+    pub fn description(&self, key: &str) -> Option<glib::GString> {
+        self.schema_key(key).and_then(|key| key.description())
+    }
+
+    /// The summary of `key`, if the schema has it.
+    pub fn summary(&self, key: &str) -> Option<glib::GString> {
+        self.schema_key(key).and_then(|key| key.summary())
+    }
+
+    /// Whether `value` fits the range of `key`. A key that the schema does not have fits nothing.
+    pub fn range_check(&self, key: &str, value: &glib::Variant) -> bool {
+        self.schema_key(key).is_some_and(|key| key.range_check(value))
+    }
+
+    /// Resets `key` to its schema default. Returns false if the schema has no such key.
+    pub fn reset_key(&self, key: &str) -> bool {
+        let Some((group, name)) = self.lookup(key) else { return false };
+        group.reset(name);
+        true
+    }
+
     pub fn get<T: FromVariant>(&self, key: &str) -> T {
         let (group, name) = self.locate(key);
         group.get(name)

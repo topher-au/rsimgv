@@ -14,5 +14,6 @@ dependencies = []
 # Screenshot.to_image returns a Pillow image.
 image = ["Pillow"]
 
-[tool.setuptools.packages.find]
-where = ["src"]
+[tool.setuptools]
+package-dir = { "" = "src" }
+py-modules = ["rsimgv_api"]

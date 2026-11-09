@@ -59,6 +59,20 @@
 //!                   codec, audio_codec and bit_rate, from what the app has read of it; it is null for a
 //!                   folder or other file. A picture or video not read yet is queued, so media is null and media_pending is
 //!                   true until a later request finds it. A path that does not exist gives {"path", "error": "no_such_file"}.
+//!   files.state     {"path"}                 -> {"path", "hash", "values"}
+//!                   The state saved for a file, such as where a video was left, by the file's content hash. values holds
+//!                   the keys as saved. A file with no state yet gives {}.
+//!   files.set_state {"path", "values"}       -> {"path", "hash", "values"}
+//!                   Sets each key in values, or removes it when the value is null, and gives the state afterwards.
+//!   files.reset_state {"path", "keys"?}      -> {"path", "hash", "values"}
+//!                   Removes each key, or the whole state with no keys, and gives the state afterwards.
+//!   settings.list   {}                       -> {"settings": {key: value, ...}}
+//!                   Every application setting, by its dotted name, at its current value.
+//!   settings.get    {"key"}                  -> {"key", "value"}
+//!   settings.set    {"key", "value"}         -> {"key", "value"}   a null value resets the setting to its default
+//!   settings.update {"values"}               -> {"settings": {key: value, ...}}   sets or resets each setting
+//!   settings.reset  {"keys"?}                -> {}   resets these settings, or every setting with no keys
+//!   settings.describe {}                     -> {"settings": [{"key", "type", "description", "default", "value"}, ...]}
 //!
 //! "tab" in tabs.files and tabs.select is a tab id, or "current" for the selected tab. "index" is a tab's
 //! position, counted from 0 in tab order.
@@ -66,13 +80,17 @@
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
+use glib::variant::ToVariant;
 use gtk::{gio, glib};
 use gtk::prelude::*;
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
+use serde_yaml_ng::{Mapping, Value as YamlValue};
 
 use crate::fs::metadata::{MediaInfo, MediaMetadata};
 use crate::fs::thumbnail;
+use crate::settings::{app_settings, Settings};
 use crate::storage::bookmarks;
+use crate::storage::file_settings::FileSettings;
 use crate::services::ipc::Error;
 use crate::keybindings::actions::{all, find, target_info, DEFAULT_NOTIFICATION_SECONDS, NOTIFICATION_LEVELS};
 use crate::ui::{Level, Message, Window};
@@ -194,6 +212,128 @@ pub fn handle(window: &Window, method: &str, params: &Value) -> Result<Value, Er
         "metadata.get" => {
             let metadata: Vec<Value> = path_list_param(params)?.into_iter().map(file_metadata).collect();
             Ok(json!({"metadata": metadata}))
+        }
+        "files.state" | "files.state.get" => {
+            let path = text_param(params, "path")?;
+            let state = file_state(path)?;
+            Ok(state_json(path, &state))
+        }
+        "files.set_state" | "files.state.set" => {
+            let path = text_param(params, "path")?;
+            let changes = params
+                .get("values")
+                .or_else(|| params.get("changes"))
+                .and_then(Value::as_object)
+                .ok_or_else(|| Error::new("invalid_params", "the parameter values must be an object of file state"))?;
+            let mut state = file_state(path)?;
+            let changes: Vec<(&str, Option<YamlValue>)> =
+                changes.iter().map(|(key, value)| (key.as_str(), (!value.is_null()).then(|| json_to_yaml(value)))).collect();
+            state
+                .apply(changes)
+                .map_err(|err| Error::new("file_error", format!("could not save the state of {path}: {err}")))?;
+            Ok(state_json(path, &state))
+        }
+        "files.reset_state" | "files.state.reset" => {
+            let path = text_param(params, "path")?;
+            let mut state = file_state(path)?;
+            let keys: Vec<String> = match params.get("keys") {
+                None | Some(Value::Null) => state.values().keys().filter_map(|key| key.as_str().map(str::to_owned)).collect(),
+                Some(Value::String(key)) => vec![key.clone()],
+                Some(Value::Array(keys)) => keys
+                    .iter()
+                    .map(|key| {
+                        key.as_str()
+                            .map(str::to_owned)
+                            .ok_or_else(|| Error::new("invalid_params", "each key must be text"))
+                    })
+                    .collect::<Result<_, _>>()?,
+                Some(_) => return Err(Error::new("invalid_params", "the parameter keys must be a list of settings")),
+            };
+            let changes: Vec<(&str, Option<YamlValue>)> = keys.iter().map(|key| (key.as_str(), None)).collect();
+            state
+                .apply(changes)
+                .map_err(|err| Error::new("file_error", format!("could not save the state of {path}: {err}")))?;
+            Ok(state_json(path, &state))
+        }
+        "settings.list" => Ok(json!({"settings": all_settings_json()})),
+        "settings.get" => {
+            let settings = app_settings();
+            let key = text_param(params, "key")?;
+            if !settings.has(key) {
+                return Err(no_setting(key));
+            }
+            Ok(json!({"key": key, "value": variant_json(&settings.value(key))}))
+        }
+        "settings.set" => {
+            let settings = app_settings();
+            let key = text_param(params, "key")?;
+            let value = params.get("value").cloned().unwrap_or(Value::Null);
+            let saved = set_setting(&settings, key, &value)?;
+            Ok(json!({"key": key, "value": saved}))
+        }
+        "settings.update" => {
+            let settings = app_settings();
+            let values = params
+                .get("values")
+                .and_then(Value::as_object)
+                .ok_or_else(|| Error::new("invalid_params", "the parameter values must be an object of settings"))?;
+            let mut prepared = Vec::with_capacity(values.len());
+            for (key, value) in values {
+                let change = prepare_setting(&settings, key, value)?;
+                prepared.push((key.as_str(), change));
+            }
+            let mut saved = Map::new();
+            for (key, change) in prepared {
+                match change {
+                    Some(value) => set_variant(&settings, key, &value)?,
+                    None => {
+                        if !settings.reset_key(key) {
+                            return Err(no_setting(key));
+                        }
+                    }
+                }
+                saved.insert(key.to_owned(), variant_json(&settings.value(key)));
+            }
+            Ok(json!({"settings": saved}))
+        }
+        "settings.reset" => {
+            let settings = app_settings();
+            let keys: Vec<String> = match params.get("keys") {
+                None | Some(Value::Null) => settings.keys(),
+                Some(Value::String(key)) => vec![key.clone()],
+                Some(Value::Array(keys)) => keys
+                    .iter()
+                    .map(|key| {
+                        key.as_str()
+                            .map(str::to_owned)
+                            .ok_or_else(|| Error::new("invalid_params", "each key must be text"))
+                    })
+                    .collect::<Result<_, _>>()?,
+                Some(_) => return Err(Error::new("invalid_params", "the parameter keys must be a list of settings")),
+            };
+            for key in &keys {
+                if !settings.reset_key(key) {
+                    return Err(no_setting(key));
+                }
+            }
+            Ok(json!({}))
+        }
+        "settings.describe" => {
+            let settings = app_settings();
+            let settings: Vec<Value> = settings
+                .keys()
+                .into_iter()
+                .map(|key| {
+                    json!({
+                        "key": key,
+                        "type": settings.value_type(&key).map_or_else(String::new, |ty| ty.as_str().to_owned()),
+                        "description": settings.description(&key).map_or_else(String::new, |text| text.to_string()),
+                        "default": settings.default_value(&key).map_or(Value::Null, |value| variant_json(&value)),
+                        "value": variant_json(&settings.value(&key)),
+                    })
+                })
+                .collect();
+            Ok(json!({"settings": settings}))
         }
         "window.info" => Ok(json!({
             "current_path": window.current_path().map(|path| path.to_string_lossy().into_owned()),
@@ -493,6 +633,164 @@ fn media_json(media: &MediaMetadata) -> Value {
         "audio_codec": media.audio_codec,
         "bit_rate": media.bit_rate,
     })
+}
+
+/// The state saved for the file at `path`. Reading it hashes the file, so it follows the file by content.
+fn file_state(path: &str) -> Result<FileSettings, Error> {
+    FileSettings::for_path(Path::new(path))
+        .map_err(|err| Error::new("file_error", format!("could not read the state of {path}: {err}")))
+}
+
+/// What the IPC says about a file's state.
+fn state_json(path: &str, state: &FileSettings) -> Value {
+    json!({"path": path, "hash": state.hash(), "values": yaml_mapping_json(state.values())})
+}
+
+fn yaml_mapping_json(mapping: &Mapping) -> Value {
+    let mut values = Map::new();
+    for (key, value) in mapping {
+        let key = key.as_str().map_or_else(|| format!("{key:?}"), str::to_owned);
+        values.insert(key, yaml_to_json(value));
+    }
+    Value::Object(values)
+}
+
+fn yaml_to_json(value: &YamlValue) -> Value {
+    match value {
+        YamlValue::Null => Value::Null,
+        YamlValue::Bool(flag) => Value::Bool(*flag),
+        YamlValue::Number(number) => number
+            .as_i64()
+            .map(Value::from)
+            .or_else(|| number.as_u64().map(Value::from))
+            .or_else(|| number.as_f64().and_then(serde_json::Number::from_f64).map(Value::Number))
+            .unwrap_or(Value::Null),
+        YamlValue::String(text) => Value::String(text.clone()),
+        YamlValue::Sequence(items) => Value::Array(items.iter().map(yaml_to_json).collect()),
+        YamlValue::Mapping(mapping) => yaml_mapping_json(mapping),
+        YamlValue::Tagged(tagged) => yaml_to_json(&tagged.value),
+    }
+}
+
+fn json_to_yaml(value: &Value) -> YamlValue {
+    match value {
+        Value::Null => YamlValue::Null,
+        Value::Bool(flag) => YamlValue::Bool(*flag),
+        Value::Number(number) => {
+            if let Some(integer) = number.as_i64() {
+                YamlValue::Number(integer.into())
+            } else if let Some(unsigned) = number.as_u64() {
+                YamlValue::Number(unsigned.into())
+            } else {
+                YamlValue::Number(number.as_f64().unwrap_or(0.0).into())
+            }
+        }
+        Value::String(text) => YamlValue::String(text.clone()),
+        Value::Array(items) => YamlValue::Sequence(items.iter().map(json_to_yaml).collect()),
+        Value::Object(values) => YamlValue::Mapping(
+            values.iter().map(|(key, value)| (YamlValue::String(key.clone()), json_to_yaml(value))).collect(),
+        ),
+    }
+}
+
+fn all_settings_json() -> Value {
+    let settings = app_settings();
+    let mut values = Map::new();
+    for key in settings.keys() {
+        values.insert(key.clone(), variant_json(&settings.value(&key)));
+    }
+    Value::Object(values)
+}
+
+/// The JSON form of a setting's value. A type without a JSON equivalent is its GVariant text.
+fn variant_json(value: &glib::Variant) -> Value {
+    match value.type_().as_str() {
+        "b" => value.get::<bool>().map_or(Value::Null, Value::Bool),
+        "y" => value.get::<u8>().map_or(Value::Null, Value::from),
+        "n" => value.get::<i16>().map_or(Value::Null, Value::from),
+        "q" => value.get::<u16>().map_or(Value::Null, Value::from),
+        "i" => value.get::<i32>().map_or(Value::Null, Value::from),
+        "u" => value.get::<u32>().map_or(Value::Null, Value::from),
+        "x" => value.get::<i64>().map_or(Value::Null, Value::from),
+        "t" => value.get::<u64>().map_or(Value::Null, Value::from),
+        "d" => value.get::<f64>().and_then(serde_json::Number::from_f64).map_or(Value::Null, Value::Number),
+        "s" => value.str().map_or(Value::Null, |text| Value::String(text.to_owned())),
+        _ if value.type_().is_array() || value.type_().is_tuple() => {
+            Value::Array(value.iter().map(|item| variant_json(&item)).collect())
+        }
+        _ => Value::String(value.print(false).to_string()),
+    }
+}
+
+/// The GVariant of `value` as type `ty`, if it fits.
+fn json_to_variant(value: &Value, ty: &glib::VariantTy) -> Option<glib::Variant> {
+    match ty.as_str() {
+        "b" => value.as_bool().map(|flag| flag.to_variant()),
+        "y" => value.as_u64().and_then(|number| u8::try_from(number).ok()).map(|number| number.to_variant()),
+        "n" => value.as_i64().and_then(|number| i16::try_from(number).ok()).map(|number| number.to_variant()),
+        "q" => value.as_u64().and_then(|number| u16::try_from(number).ok()).map(|number| number.to_variant()),
+        "i" => value.as_i64().and_then(|number| i32::try_from(number).ok()).map(|number| number.to_variant()),
+        "u" => value.as_u64().and_then(|number| u32::try_from(number).ok()).map(|number| number.to_variant()),
+        "x" => value.as_i64().map(|number| number.to_variant()),
+        "t" => value.as_u64().map(|number| number.to_variant()),
+        "d" => value.as_f64().map(|number| number.to_variant()),
+        "s" => value.as_str().map(|text| text.to_variant()),
+        _ if ty.is_array() => {
+            let items: Option<Vec<_>> = value.as_array()?.iter().map(|item| json_to_variant(item, ty.element())).collect();
+            Some(glib::Variant::array_from_iter_with_type(ty.element(), items?))
+        }
+        _ if ty.is_tuple() => {
+            let items = value.as_array()?;
+            if items.len() != ty.n_items() {
+                return None;
+            }
+            let items: Option<Vec<_>> = items.iter().zip(members(ty)).map(|(item, member)| json_to_variant(item, member)).collect();
+            Some(glib::Variant::tuple_from_iter(items?))
+        }
+        _ => glib::Variant::parse(Some(ty), value.as_str()?).ok(),
+    }
+}
+
+fn members(ty: &glib::VariantTy) -> impl Iterator<Item = &glib::VariantTy> {
+    std::iter::successors(ty.first(), |member| member.next())
+}
+
+/// The variant to set the setting `key` to, or None to reset it. A null value resets it.
+fn prepare_setting(settings: &Settings, key: &str, value: &Value) -> Result<Option<glib::Variant>, Error> {
+    if !settings.has(key) {
+        return Err(no_setting(key));
+    }
+    if value.is_null() {
+        return Ok(None);
+    }
+    let Some(ty) = settings.value_type(key) else { return Err(no_setting(key)) };
+    let variant = json_to_variant(value, &ty)
+        .ok_or_else(|| Error::new("invalid_params", format!("the setting {key} takes a value of type {}", ty.as_str())))?;
+    if !settings.range_check(key, &variant) {
+        return Err(Error::new("invalid_params", format!("the value for the setting {key} is out of range")));
+    }
+    Ok(Some(variant))
+}
+
+fn set_variant(settings: &Settings, key: &str, value: &glib::Variant) -> Result<(), Error> {
+    settings.set_value(key, value).map_err(|err| Error::new("invalid_params", err.to_string()))
+}
+
+/// Sets the setting `key` to `value`, or resets it for a null, and gives the value saved.
+fn set_setting(settings: &Settings, key: &str, value: &Value) -> Result<Value, Error> {
+    match prepare_setting(settings, key, value)? {
+        Some(value) => set_variant(settings, key, &value)?,
+        None => {
+            if !settings.reset_key(key) {
+                return Err(no_setting(key));
+            }
+        }
+    }
+    Ok(variant_json(&settings.value(key)))
+}
+
+fn no_setting(key: &str) -> Error {
+    Error::new("no_such_setting", format!("no setting named {key}"))
 }
 
 fn text_param<'a>(params: &'a Value, key: &str) -> Result<&'a str, Error> {
