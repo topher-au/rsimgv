@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Client for rsimgv's REST API: list the actions and run them"
 requires-python = ">=3.10"
 license = { text = "GPL-3.0-or-later" }
-dependencies = []
+dependencies = ["pydantic>=2"]
 
 [project.optional-dependencies]
 # Screenshot.to_image returns a Pillow image.

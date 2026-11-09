@@ -11,14 +11,21 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from rsimgv_api import (
+    ActionInfo,
     Client,
     ConnectionFailed,
+    FileInfo,
+    FileMetadata,
+    FileState,
     HttpTransport,
     IpcError,
+    MediaMetadata,
     NoSuchFile,
     NoSuchSetting,
     NoSuchTab,
     NotAFolder,
+    Screenshot,
+    SettingInfo,
     TcpTransport,
     UnixTransport,
     UnknownAction,
@@ -178,6 +185,50 @@ class _HttpHandler(BaseHTTPRequestHandler):
 def _serve(server):
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server
+
+
+class ModelTests(unittest.TestCase):
+    """The values rsimgv answers with are frozen Pydantic models, so each one serializes to JSON."""
+
+    def test_a_screenshot_round_trips_through_json_with_base64_data(self):
+        shot = Screenshot(format="png", width=2, height=1, data=b"PNG!")
+        self.assertNotIn("data", repr(shot))
+        self.assertEqual(json.loads(shot.to_json())["data"], "UE5HIQ==")
+        self.assertEqual(Screenshot.from_json(shot.to_json()), shot)
+
+    def test_nested_metadata_serializes(self):
+        metadata = FileMetadata(
+            path="/a/x.jpg",
+            name="x.jpg",
+            is_dir=False,
+            size=3,
+            modified=1.0,
+            media=MediaMetadata(width=2, height=1, codec="jpeg"),
+        )
+        self.assertEqual(json.loads(metadata.to_json())["media"]["width"], 2)
+        self.assertEqual(FileMetadata.from_json(metadata.to_json()), metadata)
+
+    def test_file_state_keeps_its_mapping_interface_and_serializes_its_values(self):
+        state = FileState(path="/a/x.mp4", hash="abc", values={"position": 93.5})
+        self.assertEqual(state["position"], 93.5)
+        self.assertEqual(state.to_dict(), {"position": 93.5})
+        self.assertEqual(json.loads(state.to_json())["values"], {"position": 93.5})
+        self.assertEqual(FileState.from_json(state.to_json()), state)
+
+    def test_the_other_values_serialize(self):
+        action = ActionInfo(
+            name="win.toggle-sidebar",
+            label="Toggle Sidebar",
+            description="Show or hide the sidebar.",
+            scope="global",
+            icon="sidebar-show-symbolic",
+            defaults=("f9",),
+        )
+        info = FileInfo(name="x.jpg", path="/a/x.jpg", is_dir=False, size=3, modified=1.0)
+        setting = SettingInfo(key="browse.item-size", type="i", description="Item size", default=128, value=160)
+        for value, expected in ((action, "win.toggle-sidebar"), (info, "x.jpg"), (setting, "browse.item-size")):
+            self.assertIn(expected, value.to_json())
+            self.assertEqual(type(value).from_json(value.to_json()), value)
 
 
 class TransportTests(unittest.TestCase):

@@ -30,6 +30,12 @@ The application settings, the metadata of files, and the state kept for each fil
     print(state.values["position"])           # where the video was left
     client.state.update("/home/me/Videos/clip.mp4", position=93.5, speed=1.25)
     client.state.remove("/home/me/Videos/clip.mp4", "speed")
+
+Every value rsimgv answers with is a Pydantic model, so it can be turned into JSON:
+
+    print(metadata.to_json())                 # or metadata.model_dump_json()
+    print(state.to_dict())                    # just the saved values
+    metadata = type(metadata).from_json(text)  # read a value back
 """
 
 from __future__ import annotations
@@ -42,9 +48,10 @@ import socket
 import time
 import urllib.error
 import urllib.request
-from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol, Union
+from typing import TYPE_CHECKING, Any, Protocol, TypeVar, Union
+
+from pydantic import BaseModel, ConfigDict, Field
 
 if TYPE_CHECKING:
     import PIL.Image
@@ -56,6 +63,31 @@ TabRef = Union[int, str]
 
 #: Tells a lookup with no default from one whose default is None.
 _MISSING = object()
+
+_ModelT = TypeVar("_ModelT", bound="RsimgvModel")
+
+
+class RsimgvModel(BaseModel):
+    """Base for the values rsimgv answers with. A value does not change once made, and it serializes to JSON.
+
+    ``model_dump()`` gives one as a dict, and ``model_dump_json()`` or :meth:`to_json` as a JSON string.
+    """
+
+    model_config = ConfigDict(
+        frozen=True,
+        # Raw image bytes in a screenshot become base64 text in JSON, and back again in :meth:`from_json`.
+        ser_json_bytes="base64",
+        val_json_bytes="base64",
+    )
+
+    def to_json(self, *, indent: int | None = None) -> str:
+        """The value as a JSON string."""
+        return self.model_dump_json(indent=indent)
+
+    @classmethod
+    def from_json(cls: type[_ModelT], data: str | bytes) -> _ModelT:
+        """The value :meth:`to_json` gave back from its JSON string."""
+        return cls.model_validate_json(data)
 
 
 class RsimgvError(Exception):
@@ -215,15 +247,14 @@ class HttpTransport:
             raise ConnectionFailed(f"could not reach rsimgv at {self.url}: {error}") from error
 
 
-@dataclass(frozen=True)
-class Screenshot:
+class Screenshot(RsimgvModel):
     """The media the viewer showed, at its own size: ``data`` is the image file's bytes, in ``format``."""
 
     format: str
     width: int
     height: int
     # Left out of the repr, as an image is too long to print.
-    data: bytes = field(repr=False)
+    data: bytes = Field(repr=False)
 
     def to_image(self, max_size: int | tuple[int, int] | None = None) -> "PIL.Image.Image":
         """The image as a Pillow image. With ``max_size``, a number or a ``(width, height)``, it is scaled down to fit
@@ -246,8 +277,7 @@ class Screenshot:
         return path
 
 
-@dataclass(frozen=True)
-class ActionInfo:
+class ActionInfo(RsimgvModel):
     """What rsimgv says about one action."""
 
     name: str
@@ -258,8 +288,7 @@ class ActionInfo:
     defaults: tuple[str, ...]
 
 
-@dataclass(frozen=True)
-class FileInfo:
+class FileInfo(RsimgvModel):
     """What rsimgv says about one item in a folder. ``size`` is in bytes, for a file; ``modified`` is in seconds
     since the Unix epoch. Either is None when rsimgv could not read it."""
 
@@ -270,8 +299,7 @@ class FileInfo:
     modified: float | None
 
 
-@dataclass(frozen=True)
-class MediaMetadata:
+class MediaMetadata(RsimgvModel):
     """What rsimgv read from a picture or a video. ``duration`` is in seconds, ``frame_rate`` in frames per second,
     and ``bit_rate`` in bits per second. A field rsimgv has not read yet is None."""
 
@@ -288,8 +316,7 @@ class MediaMetadata:
 MediaInfo = MediaMetadata
 
 
-@dataclass(frozen=True)
-class FileMetadata:
+class FileMetadata(RsimgvModel):
     """The metadata of one path. ``media`` is None for a folder or a file that is not a picture or video, and also
     while rsimgv is still reading a picture or video's metadata; ``media_pending`` says which. A path that does not
     exist has ``error`` set to ``"no_such_file"``."""
@@ -310,15 +337,14 @@ class FileMetadata:
         return self.error is None
 
 
-@dataclass(frozen=True)
-class FileState:
+class FileState(RsimgvModel):
     """The state rsimgv keeps for one file, such as where a video was left. ``values`` holds the keys as they are
     saved, which is empty for a file with no state yet. ``hash`` is the content hash the state is kept under, so it
     follows a file that is moved or renamed."""
 
     path: str
     hash: str | None
-    values: dict[str, Any] = field(default_factory=dict)
+    values: dict[str, Any] = Field(default_factory=dict)
 
     def __getitem__(self, key: str) -> Any:
         return self.values[key]
@@ -347,8 +373,7 @@ class FileState:
         return dict(self.values)
 
 
-@dataclass(frozen=True)
-class SettingInfo:
+class SettingInfo(RsimgvModel):
     """What rsimgv says about one application setting, including its schema type and default, and its current value."""
 
     key: str
@@ -1002,6 +1027,7 @@ __all__ = [
     "NotAFolder",
     "RequestRefused",
     "RsimgvError",
+    "RsimgvModel",
     "Screenshot",
     "SettingInfo",
     "SettingsNamespace",
