@@ -7,5 +7,9 @@
 /packaging/arch/pkg/
 /packaging/arch/*.tar.gz
 /packaging/arch/*.pkg.tar.*
+/*.pkg.tar.*
 # Scratch files
 /temp/
+/docs/PROJECT_STATUS.md
+# Editor files
+.idea/
