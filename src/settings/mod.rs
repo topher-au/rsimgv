@@ -53,8 +53,33 @@ pub fn open() -> anyhow::Result<Settings> {
     let root = schema.path().with_context(|| format!("the settings schema {SCHEMA_ID} has no path"))?;
     let backend = YamlSettingsBackend::new(config_path(), &root)?;
     let settings = Settings::new(backend.settings(&schema, None));
+    check_schemas(&settings, &root)?;
     APP.with(|app| *app.borrow_mut() = Some(App { backend, schema }));
     Ok(settings)
+}
+
+/// The schema this source ships, embedded so the installed one can be checked against it.
+const SHIPPED_SCHEMA: &str = include_str!("../../data/au.topher.rsimgv.gschema.xml");
+
+/// Checks that `settings` has every group the application's settings ship with. An installed schema older than the
+/// binary lacks the groups added since, and the first setting read from one would panic; failing here instead says
+/// what is wrong and how to fix it.
+fn check_schemas(settings: &Settings, root: &str) -> anyhow::Result<()> {
+    for line in SHIPPED_SCHEMA.lines() {
+        let Some(tag) = line.trim().strip_prefix("<schema ") else { continue };
+        let (Some(id), Some(path)) = (attribute(tag, "id=\""), attribute(tag, "path=\"")) else { continue };
+        let group = path.strip_prefix(root).and_then(|below| below.strip_suffix('/')).map(|below| below.replace('/', ".")).unwrap_or_default();
+        anyhow::ensure!(
+            settings.has_group(&group),
+            "the installed settings schema {id} is older than this build: it has no {group} group; reinstall rsimgv"
+        );
+    }
+    Ok(())
+}
+
+/// The value of the attribute `name`, such as `id="`, in the rest of a `<schema` tag.
+fn attribute<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
+    tag.split_once(name)?.1.split_once('"').map(|(value, _)| value)
 }
 
 /// New `Settings` for the application's schema, on the backend `open` created.

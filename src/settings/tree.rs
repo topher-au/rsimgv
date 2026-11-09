@@ -41,6 +41,12 @@ impl Settings {
         (settings, name)
     }
 
+    /// Whether the schema has the group `group`, the empty name being the root. It is used to check an installed
+    /// schema against the one the build expects, so an older one is reported before a setting in it is read.
+    pub fn has_group(&self, group: &str) -> bool {
+        self.groups.contains_key(group)
+    }
+
     pub fn boolean(&self, key: &str) -> bool {
         let (group, name) = self.locate(key);
         group.boolean(name)

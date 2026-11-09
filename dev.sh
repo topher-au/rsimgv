@@ -21,6 +21,12 @@ export RSIMGV_GRESOURCE="$PWD/builddir/rsimgv.gresource"
 export RSIMGV_SVP_PLUGINS="$PWD/builddir"
 export RSIMGV_PLUGINS="$PWD/data/plugins"
 
+# Compiled every time, so a renamed or edited schema is never stale. It is exported before a Cargo command too, so
+# `cargo run` and `cargo test` use the schema beside the source rather than an installed one that may be older.
+mkdir -p builddir/data
+glib-compile-schemas --targetdir="$PWD/builddir/data" data
+export GSETTINGS_SCHEMA_DIR="$PWD/builddir/data"
+
 # Pass a command through to Cargo, using the same target directory as the Meson build. Only the artifacts Cargo
 # compiles against are rebuilt, not the application binary.
 if [ "${1:-}" = "cargo" ]; then
@@ -31,13 +37,6 @@ if [ "${1:-}" = "cargo" ]; then
 fi
 
 meson compile -C builddir
-
-# Compiled every time, so a renamed or edited schema is never stale.
-mkdir -p builddir/data
-glib-compile-schemas --targetdir="$PWD/builddir/data" data
-export GSETTINGS_SCHEMA_DIR="$PWD/builddir/data"
-# The plugins shipped with the source are discovered without installing them.
-export RSIMGV_PLUGINS="$PWD/data/plugins"
 
 if [ "${1:-}" = "test" ]; then
     shift
