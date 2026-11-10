@@ -80,6 +80,8 @@ mod imp {
         #[template_child]
         pub collapse_on_navigate_row: TemplateChild<adw::SwitchRow>,
         #[template_child]
+        pub tree_monitoring_row: TemplateChild<adw::ComboRow>,
+        #[template_child]
         pub item_size_row: TemplateChild<adw::SpinRow>,
         #[template_child]
         pub filename_row: TemplateChild<adw::ComboRow>,
@@ -905,7 +907,8 @@ fn bind_switches(settings: &Settings, imp: &imp::PreferencesDialog) {
 
 /// Binds each combo row to a string setting whose value is one of `choices`, by position in the row.
 fn bind_choices(settings: &Settings, imp: &imp::PreferencesDialog) {
-    let combos: [(&str, &glib::Object, &[&str]); 23] = [
+    let combos: [(&str, &glib::Object, &[&str]); 24] = [
+        ("browse.tree-monitoring", imp.tree_monitoring_row.upcast_ref(), &["off", "expanded", "visible"]),
         ("browse.video-frame-previews", imp.video_frame_previews_row.upcast_ref(), &["none", "frames", "embedded"]),
         ("thumbnails.aggression", imp.thumbnail_aggression_row.upcast_ref(), &["low", "standard", "increased", "high", "extreme"]),
         ("video.crop.method", imp.video_crop_method_row.upcast_ref(), &["cropdetect", "edges", "static", "across"]),

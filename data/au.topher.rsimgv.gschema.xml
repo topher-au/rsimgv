@@ -49,6 +49,15 @@
       <default>false</default>
       <summary>Collapse folders outside the current path when navigating</summary>
     </key>
+    <key name="tree-monitoring" type="s">
+      <choices>
+        <choice value="off"/>
+        <choice value="expanded"/>
+        <choice value="visible"/>
+      </choices>
+      <default>'expanded'</default>
+      <summary>Which folders in the sidebar tree follow changes on disk: none, the expanded ones, or every one with a row</summary>
+    </key>
     <key name="item-size" type="i">
       <default>128</default>
       <range min="32" max="2048"/>
