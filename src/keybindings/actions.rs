@@ -466,6 +466,9 @@ pub const ACTIONS: &[ActionInfo] = &[
         name: "browse.open", description: "Open the item under the cursor: a folder is browsed, a picture or video is shown in the viewer.", icon: "document-open-symbolic", label: "Open", defaults: &["e", "return"],
     },
     ActionInfo {
+        name: "browse.properties", description: "Show the properties of the marked items, or of the item under the cursor, or of the folder if there is none: what they are, how big, when they changed, and their permissions.", icon: "document-properties-symbolic", label: "Properties", defaults: &["alt+return"],
+    },
+    ActionInfo {
         name: "browse.show-tooltip", description: "Show the description of the item under the cursor, which otherwise opens only when the pointer rests over an item.", icon: "dialog-information-symbolic", label: "Show Tooltip", defaults: &[],
     },
     ActionInfo {
