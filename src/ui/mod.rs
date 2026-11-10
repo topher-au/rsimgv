@@ -30,6 +30,7 @@ mod playlist_panel;
 mod playlist_toolbar;
 mod navigation_bar;
 mod preferences;
+mod properties;
 mod rotated_label;
 mod tight_layout;
 mod window;
@@ -110,6 +111,11 @@ mod tests {
     #[test]
     fn fs_tree_widget() {
         run_on_gtk_thread(|| super::fs_tree::tests::run_scenarios());
+    }
+
+    #[test]
+    fn properties_widget() {
+        run_on_gtk_thread(|| super::properties::tests::run_scenarios());
     }
 
     #[test]

@@ -670,7 +670,7 @@ impl Window {
                     "open-in-new-tab" if path.is_dir() => window.open_background_tab(&path),
                     "open-in-new-window" => window.open_in_new_window(&path),
                     "copy-path" => window.clipboard().set_text(&path.to_string_lossy()),
-                    "show-properties" => window.show_properties(&path),
+                    "show-properties" => window.show_properties(vec![path]),
                     "rename-bookmark" => window.ask_bookmark_name("Rename Bookmark", path),
                     "remove-bookmark" => window.remove_bookmark(&path),
                     _ => {}
@@ -678,6 +678,18 @@ impl Window {
             });
             self.add_action(&action);
         }
+        // The properties of several items at once: the marked ones, when the menu is on one of them.
+        let action = gio::SimpleAction::new("show-properties-of", Some(glib::VariantTy::STRING_ARRAY));
+        action.connect_activate({
+            let weak = weak.clone();
+            move |_, parameter| {
+                let (Some(window), Some(paths)) = (weak.upgrade(), parameter.and_then(|p| p.get::<Vec<String>>())) else {
+                    return;
+                };
+                window.show_properties(paths.into_iter().map(PathBuf::from).collect());
+            }
+        });
+        self.add_action(&action);
     }
 
     /// The actions behind the tab context menu. Each takes the id of the tab it works on.
@@ -751,11 +763,13 @@ impl Window {
             menu.append_item(&item("Open in New Tab", "win.open-in-new-tab"));
             menu.append_item(&item("Open in New Window", "win.open-in-new-window"));
         }
+        let targets = self.context_targets(path);
         let details = gio::Menu::new();
         details.append_item(&item("Copy Path", "win.copy-path"));
-        details.append_item(&item("Properties", "win.show-properties"));
+        let properties = gio::MenuItem::new(Some("Properties"), None);
+        properties.set_action_and_target_value(Some("win.show-properties-of"), Some(&targets.to_variant()));
+        details.append_item(&properties);
         let playlist_section = gio::Menu::new();
-        let targets = self.context_targets(path);
         for (label, action) in playlist_menu_items(path, is_dir, targets.len()) {
             let item = gio::MenuItem::new(Some(label), None);
             item.set_action_and_target_value(Some(action), Some(&targets.to_variant()));
@@ -808,24 +822,34 @@ impl Window {
         gtk::prelude::GtkWindowExt::present(&window);
     }
 
-    /// Shows a folder's or file's name, type, size, and when it was modified.
-    fn show_properties(&self, path: &Path) {
-        // The file is queried on a worker, so a slow or remote file does not hold up the window.
-        let path = path.to_path_buf();
+    /// Shows the properties of `paths` in a dialog, over this window.
+    fn show_properties(&self, paths: Vec<PathBuf>) {
+        if paths.is_empty() {
+            return;
+        }
         let weak = self.downgrade();
-        glib::spawn_future_local(async move {
-            let query = path.clone();
-            let Ok((heading, body)) = gio::spawn_blocking(move || properties_text(&query)).await else { return };
-            let Some(window) = weak.upgrade() else { return };
-            window.present_properties(&heading, &body);
+        super::properties::present(self, paths, self.current_path(), move |path| {
+            // A link's target may be a file, in which case the folder it is in is the place to go.
+            let folder = if path.is_dir() { Some(path) } else { path.parent() };
+            if let (Some(window), Some(folder)) = (weak.upgrade(), folder) {
+                window.navigate(folder);
+            }
         });
     }
 
-    /// Presents a properties dialog with `heading` and `body`.
-    fn present_properties(&self, heading: &str, body: &str) {
-        let dialog = adw::AlertDialog::new(Some(heading), Some(body));
-        adw::prelude::AlertDialogExt::add_response(&dialog, "close", "Close");
-        adw::prelude::AdwDialogExt::present(&dialog, Some(self));
+    /// What the properties action is for: the marked items, or else the one under the cursor, or else, with nothing
+    /// in the folder to point at, the folder itself.
+    fn properties_targets(&self) -> Vec<PathBuf> {
+        let Some(browse) = self.active_browse() else { return Vec::new() };
+        let marked = browse.marked_paths();
+        if !marked.is_empty() {
+            return marked;
+        }
+        match (browse.path(), browse.selected_name()) {
+            (Some(folder), Some(name)) => vec![folder.join(name)],
+            (Some(folder), None) => vec![folder],
+            _ => Vec::new(),
+        }
     }
 
     /// Roots the tree at `root`, and shows the folder in it if it lies under `root`. The folder itself does not change.
@@ -1239,6 +1263,7 @@ impl Window {
         bound_action(&browse, &weak, "last", |window| window.with_browse(|view| view.select_last()));
         bound_action(&browse, &weak, "select-all", |window| window.with_browse(|view| view.select_all()));
         bound_action(&browse, &weak, "open", |window| window.with_browse(|view| view.activate_selected()));
+        bound_action(&browse, &weak, "properties", |window| window.show_properties(window.properties_targets()));
         bound_action(&browse, &weak, "show-tooltip", |window| window.with_browse(|view| view.show_tooltip_now()));
         bound_action(&browse, &weak, "toggle-hidden", |window| window.toggle_setting("browse.show-hidden"));
         bound_action(&browse, &weak, "toggle-media-only", |window| window.toggle_setting("browse.media-only"));
@@ -3498,7 +3523,7 @@ impl Window {
             let weak = weak.clone();
             move |_, path| {
                 if let Some(window) = weak.upgrade() {
-                    window.show_properties(path);
+                    window.show_properties(vec![path.to_path_buf()]);
                 }
             }
         });
@@ -4168,6 +4193,43 @@ pub(crate) mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
+    /// The properties action opens a dialog for the item under the cursor, for the marked items when there are some,
+    /// and for the folder when it holds nothing to point at.
+    fn properties_open_for_the_selection(app: &adw::Application, settings: &Settings) {
+        let root = std::env::temp_dir().join(format!("rsimgv-properties-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("empty")).unwrap();
+        fs::write(root.join("one.png"), "x").unwrap();
+        fs::write(root.join("two.png"), "x").unwrap();
+
+        let window = Window::new(app, settings);
+        window.present();
+        assert!(window.navigate(&root));
+        let browse = window.active_browse().expect("a browse view");
+        wait_for("the folder listed", || browse.item_count() == 3);
+        let open_dialog = || adw::prelude::AdwApplicationWindowExt::visible_dialog(&window);
+        assert!(open_dialog().is_none());
+
+        browse.select_named("one.png");
+        assert_eq!(window.properties_targets(), vec![root.join("one.png")], "the item under the cursor");
+        gtk::prelude::WidgetExt::activate_action(&window, "browse.properties", None).expect("the properties action");
+        wait_for("the dialog", || open_dialog().is_some());
+        assert_eq!(adw::prelude::AdwDialogExt::title(&open_dialog().unwrap()), "Properties");
+        adw::prelude::AdwDialogExt::close(&open_dialog().unwrap());
+        wait_for("the dialog closing", || open_dialog().is_none());
+
+        browse.select_all();
+        assert_eq!(window.properties_targets().len(), 3, "the marked items");
+        gtk::prelude::WidgetExt::activate_action(&window, "win.show-properties-of", Some(&vec![root.join("one.png").to_string_lossy().into_owned(), root.join("two.png").to_string_lossy().into_owned()].to_variant()))
+            .expect("the properties of several items");
+        wait_for("the dialog for several", || open_dialog().is_some());
+        adw::prelude::AdwDialogExt::close(&open_dialog().unwrap());
+        wait_for("the dialog closing again", || open_dialog().is_none());
+
+        window.destroy();
+        let _ = fs::remove_dir_all(&root);
+    }
+
     /// Each tab keeps its own folder and history; switching tabs shows the one chosen.
     fn tabs_keep_their_own_state(app: &adw::Application, settings: &Settings) {
         let root = std::env::temp_dir().join(format!("rsimgv-tabs-{}", std::process::id()));
@@ -4591,6 +4653,7 @@ pub(crate) mod tests {
         playlist_plays_apart_from_browsing(&app, &settings);
         playlist_menu_actions(&app, &settings);
         context_actions_work(&app, &settings);
+        properties_open_for_the_selection(&app, &settings);
         window_size_is_saved(&app, &settings);
         size_change_is_saved_without_closing(&app, &settings);
         let window = Window::new(&app, &settings);
@@ -4942,28 +5005,6 @@ fn playlist_file_filters() -> gio::ListStore {
         filters.append(&filter);
     }
     filters
-}
-
-/// The heading and body of the properties dialog for the file at `path`, read from the file.
-fn properties_text(path: &Path) -> (String, String) {
-    let attributes = "standard::display-name,standard::size,standard::content-type,time::modified";
-    let file = gio::File::for_path(path);
-    match file.query_info(attributes, gio::FileQueryInfoFlags::NONE, gio::Cancellable::NONE) {
-        Ok(info) => {
-            let mut lines = vec![format!("Location: {}", path.parent().map_or_else(String::new, |p| p.display().to_string()))];
-            if let Some(kind) = info.content_type() {
-                lines.push(format!("Type: {}", gio::content_type_get_description(&kind)));
-            }
-            if info.file_type() != gio::FileType::Directory {
-                lines.push(format!("Size: {}", glib::format_size(info.size() as u64)));
-            }
-            if let Some(time) = info.modification_date_time().and_then(|t| t.format("%Y-%m-%d %H:%M").ok()) {
-                lines.push(format!("Modified: {time}"));
-            }
-            (info.display_name().to_string(), lines.join("\n"))
-        }
-        Err(err) => (path.display().to_string(), err.to_string()),
-    }
 }
 
 /// The folder a step moves to from `current`, in depth-first order of the folder tree: the next or previous folder,
