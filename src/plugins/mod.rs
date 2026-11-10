@@ -284,6 +284,12 @@ fn load_entry(index: usize) {
 
 /// Builds the panels a window has a slot for. Called when a window is made and after a reload.
 pub fn build_panels(window: &Window) {
+    add_panels(window, None);
+}
+
+/// Builds the sidebar panels of the plugin at `only`, or of every running plugin when `only` is `None`. Panels
+/// already in the window are not checked, so a caller adds only the plugins that have none yet.
+fn add_panels(window: &Window, only: Option<usize>) {
     #[cfg(feature = "python")]
     {
         // A plugin with a panel is needed as soon as a window exists, even when it is on-demand.
@@ -293,8 +299,9 @@ pub fn build_panels(window: &Window) {
                 .entries
                 .iter()
                 .enumerate()
-                .filter(|(_, entry)| {
-                    entry.enabled
+                .filter(|(index, entry)| {
+                    only.is_none_or(|wanted| wanted == *index)
+                        && entry.enabled
                         && entry.error.is_none()
                         && entry.python.is_none()
                         && entry.manifest.contributes.panels.iter().any(|panel| panel.slot == "sidebar.bottom")
@@ -310,7 +317,7 @@ pub fn build_panels(window: &Window) {
         MANAGER.with(|manager| {
             let mut manager = manager.borrow_mut();
             for index in 0..manager.entries.len() {
-                if manager.entries[index].python.is_none() {
+                if only.is_some_and(|wanted| wanted != index) || manager.entries[index].python.is_none() {
                     continue;
                 }
                 let panels: Vec<(String, String)> = manager.entries[index]
@@ -437,7 +444,14 @@ pub fn invoke_action(name: &str, window: &Window) -> bool {
             let manager = manager.borrow();
             for entry in &manager.entries {
                 if let Some(action) = entry.manifest.contributes.actions.iter().find(|action| entry.manifest.action_name(&action.id) == name) {
-                    let Some(plugin) = &entry.python else { return Some((None, entry.manifest.id.clone(), action.id.clone(), entry.error.clone())) };
+                    let Some(plugin) = &entry.python else {
+                        let error = if entry.enabled {
+                            entry.error.clone()
+                        } else {
+                            Some(format!("the plugin {} is disabled", entry.manifest.id))
+                        };
+                        return Some((None, entry.manifest.id.clone(), action.id.clone(), error));
+                    };
                     return Some((
                         Some(clone_py(&plugin.instance)),
                         entry.manifest.id.clone(),
@@ -686,31 +700,7 @@ fn reload_one(id: &str) -> Result<(), String> {
         err
     })?;
 
-    #[cfg(feature = "python")]
-    {
-        let (instance, module_name) = MANAGER.with(|manager| {
-            let manager = manager.borrow();
-            let entry = &manager.entries[index];
-            (
-                entry.python.as_ref().map(|plugin| clone_py(&plugin.instance)),
-                entry.python.as_ref().map(|plugin| plugin.module_name.clone()),
-            )
-        });
-        if let Some(instance) = instance {
-            if let Err(err) = python::deactivate(&instance) {
-                eprintln!("rsimgv: plugin {id}: {err}");
-            }
-        }
-        remove_panels(index);
-        disconnect_signals(id);
-        remove_sources(id);
-        if let Some(module_name) = module_name {
-            python::purge(&module_name);
-        }
-        MANAGER.with(|manager| manager.borrow_mut().entries[index].python = None);
-    }
-    #[cfg(not(feature = "python"))]
-    remove_panels(index);
+    unload_entry(index);
 
     MANAGER.with(|manager| {
         let mut manager = manager.borrow_mut();
@@ -721,19 +711,98 @@ fn reload_one(id: &str) -> Result<(), String> {
     load_entry(index);
     collect_menu_items();
 
-    let windows: Vec<Window> = MANAGER.with(|manager| {
+    for window in open_windows() {
+        build_panels(&window);
+        build_menu(&window);
+    }
+    Ok(())
+}
+
+/// Turns a plugin on or off and saves the choice to `plugins.disabled`. Turning a plugin off stops its code and
+/// removes its panels and menu items at once; turning it on loads it again where it needs loading.
+pub fn set_enabled(id: &str, enabled: bool, settings: &Settings) -> Result<(), String> {
+    let index = MANAGER.with(|manager| manager.borrow().entries.iter().position(|entry| entry.manifest.id == id));
+    let Some(index) = index else { return Err(format!("no plugin {id}")) };
+    let (was_enabled, needs_loading) = MANAGER.with(|manager| {
+        let manager = manager.borrow();
+        let entry = &manager.entries[index];
+        let has_panel = entry.manifest.contributes.panels.iter().any(|panel| panel.slot == "sidebar.bottom");
+        (entry.enabled, entry.manifest.startup == manifest::Startup::Always || has_panel)
+    });
+    if was_enabled == enabled {
+        return Ok(());
+    }
+
+    let mut disabled: Vec<String> = settings.strv("plugins.disabled").iter().map(|id| id.to_string()).collect();
+    disabled.retain(|other| other != id);
+    if !enabled {
+        disabled.push(id.to_owned());
+    }
+    settings
+        .set_strv("plugins.disabled", disabled.as_slice())
+        .map_err(|err| format!("cannot save the plugin choice: {err}"))?;
+
+    MANAGER.with(|manager| manager.borrow_mut().entries[index].enabled = enabled);
+    if enabled {
+        if needs_loading {
+            load_entry(index);
+        }
+    } else {
+        unload_entry(index);
+        MANAGER.with(|manager| manager.borrow_mut().entries[index].error = None);
+    }
+    collect_menu_items();
+
+    for window in open_windows() {
+        if enabled {
+            add_panels(&window, Some(index));
+        }
+        build_menu(&window);
+    }
+    Ok(())
+}
+
+/// Stops a plugin's Python code and removes what it has put in the windows. The manifest and the actions it
+/// declares stay registered, so its keybindings still resolve.
+fn unload_entry(index: usize) {
+    #[cfg(feature = "python")]
+    {
+        let (id, instance, module_name) = MANAGER.with(|manager| {
+            let manager = manager.borrow();
+            let entry = &manager.entries[index];
+            (
+                entry.manifest.id.clone(),
+                entry.python.as_ref().map(|plugin| clone_py(&plugin.instance)),
+                entry.python.as_ref().map(|plugin| plugin.module_name.clone()),
+            )
+        });
+        if let Some(instance) = instance {
+            if let Err(err) = python::deactivate(&instance) {
+                eprintln!("rsimgv: plugin {id}: {err}");
+            }
+        }
+        remove_panels(index);
+        disconnect_signals(&id);
+        remove_sources(&id);
+        if let Some(module_name) = module_name {
+            python::purge(&module_name);
+        }
+        MANAGER.with(|manager| manager.borrow_mut().entries[index].python = None);
+    }
+    #[cfg(not(feature = "python"))]
+    remove_panels(index);
+}
+
+/// The application's open windows.
+fn open_windows() -> Vec<Window> {
+    MANAGER.with(|manager| {
         manager
             .borrow()
             .app
             .as_ref()
             .map(|app| app.windows().into_iter().filter_map(|window| window.downcast::<Window>().ok()).collect())
             .unwrap_or_default()
-    });
-    for window in windows {
-        build_panels(&window);
-        build_menu(&window);
-    }
-    Ok(())
+    })
 }
 
 fn remove_panels(index: usize) {

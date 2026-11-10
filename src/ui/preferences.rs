@@ -592,7 +592,8 @@ impl PreferencesDialog {
 }
 
 impl PreferencesDialog {
-    /// Lists the plugins, with a reload button and the settings each exposes, and binds the auto-reload switch.
+    /// Lists the plugins. Each row has a switch that turns the plugin on or off at once, a reload button and the
+    /// settings the plugin exposes. Also binds the auto-reload switch.
     fn bind_plugins(&self, settings: &Settings) {
         settings.bind("plugins.auto-reload", &*self.imp().plugin_auto_reload_row, "active").build();
 
@@ -600,128 +601,164 @@ impl PreferencesDialog {
         list.remove_all();
         let value = crate::plugins::list();
         for plugin in value["plugins"].as_array().into_iter().flatten() {
-            let name = plugin["name"].as_str().unwrap_or("Plugin");
-            let id = plugin["id"].as_str().unwrap_or_default().to_owned();
-            let runtime = plugin["runtime"].as_str().unwrap_or_default();
-            let description = plugin["description"].as_str().unwrap_or_default();
-            let running = plugin["running"].as_bool().unwrap_or(false);
-            let error = plugin["error"].as_str();
-            let subtitle = match error {
-                Some(error) => format!("{id} · {runtime} · {error}"),
-                None if description.is_empty() => {
-                    format!("{id} · {runtime} · {}", if running { "running" } else { "not running" })
-                }
-                None => format!("{description} · {runtime} · {}", if running { "running" } else { "not running" }),
-            };
-
-            let settings = crate::plugins::plugin_settings(&id);
-            let row: gtk::Widget = if settings.is_empty() {
-                adw::ActionRow::builder().title(name).subtitle(&subtitle).build().upcast()
-            } else {
-                let expander = adw::ExpanderRow::builder().title(name).subtitle(&subtitle).build();
-                let values = crate::plugins::plugin_config(&id);
-                for setting in settings {
-                    let current = values.get(&setting.key).cloned().unwrap_or(setting.default.clone());
-                    let key = setting.key.clone();
-                    let plugin_id = id.clone();
-                    let widget: gtk::Widget = match setting.kind.as_str() {
-                        "bool" => {
-                            let row = adw::SwitchRow::builder()
-                                .title(&setting.label)
-                                .subtitle(&setting.description)
-                                .active(current.as_bool().unwrap_or(false))
-                                .build();
-                            row.connect_active_notify(move |row| {
-                                let _ = crate::plugins::set_plugin_setting(
-                                    &plugin_id,
-                                    &key,
-                                    serde_json::Value::Bool(row.is_active()),
-                                );
-                            });
-                            row.upcast()
-                        }
-                        "int" => {
-                            let minimum = setting.min.unwrap_or(0) as f64;
-                            let maximum = setting.max.unwrap_or(1_000_000) as f64;
-                            let value = current.as_i64().unwrap_or(minimum as i64) as f64;
-                            let row = adw::SpinRow::with_range(minimum, maximum, 1.0);
-                            row.set_title(&setting.label);
-                            row.set_subtitle(&setting.description);
-                            row.set_value(value.clamp(minimum, maximum));
-                            row.connect_value_notify(move |row| {
-                                let _ = crate::plugins::set_plugin_setting(
-                                    &plugin_id,
-                                    &key,
-                                    serde_json::Value::from(row.value() as i64),
-                                );
-                            });
-                            row.upcast()
-                        }
-                        "choice" => {
-                            let choices: Vec<&str> = setting.choices.iter().map(String::as_str).collect();
-                            let row = adw::ComboRow::builder()
-                                .title(&setting.label)
-                                .subtitle(&setting.description)
-                                .model(&gtk::StringList::new(&choices))
-                                .build();
-                            let selected = current
-                                .as_str()
-                                .and_then(|value| setting.choices.iter().position(|choice| choice == value))
-                                .unwrap_or(0);
-                            row.set_selected(selected as u32);
-                            let choices = setting.choices.clone();
-                            row.connect_selected_notify(move |row| {
-                                if let Some(choice) = choices.get(row.selected() as usize) {
-                                    let _ = crate::plugins::set_plugin_setting(
-                                        &plugin_id,
-                                        &key,
-                                        serde_json::Value::String(choice.clone()),
-                                    );
-                                }
-                            });
-                            row.upcast()
-                        }
-                        _ => {
-                            let row = adw::EntryRow::builder()
-                                .title(&setting.label)
-                                .text(current.as_str().unwrap_or_default())
-                                .build();
-                            if !setting.description.is_empty() {
-                                row.set_tooltip_text(Some(&setting.description));
-                            }
-                            row.connect_apply(move |row| {
-                                let _ = crate::plugins::set_plugin_setting(
-                                    &plugin_id,
-                                    &key,
-                                    serde_json::Value::String(row.text().to_string()),
-                                );
-                            });
-                            row.upcast()
-                        }
-                    };
-                    expander.add_row(&widget);
-                }
-                expander.upcast()
-            };
-
-            let reload = gtk::Button::from_icon_name("view-refresh-symbolic");
-            reload.set_tooltip_text(Some("Reload plugin"));
-            reload.set_valign(gtk::Align::Center);
-            reload.add_css_class("flat");
-            let reload_id = id.clone();
-            reload.connect_clicked(move |_| {
-                if let Err(err) = crate::plugins::reload(Some(&reload_id)) {
-                    eprintln!("rsimgv: {err}");
-                }
-            });
-
-            if let Some(row) = row.downcast_ref::<adw::ActionRow>() {
-                row.add_suffix(&reload);
-            } else if let Some(row) = row.downcast_ref::<adw::ExpanderRow>() {
-                row.add_suffix(&reload);
-            }
-            list.append(&row);
+            list.append(&Self::plugin_row(plugin, settings));
         }
+    }
+
+    /// The row for one plugin: its name and status, a switch that enables it, a reload button, and the settings it
+    /// exposes. Turning it on or off applies at once and refreshes the row's status.
+    fn plugin_row(plugin: &serde_json::Value, settings: &Settings) -> adw::ExpanderRow {
+        let id = plugin["id"].as_str().unwrap_or_default().to_owned();
+        let name = plugin["name"].as_str().unwrap_or("Plugin");
+        let enabled = plugin["enabled"].as_bool().unwrap_or(true);
+
+        let row = adw::ExpanderRow::builder().title(name).subtitle(Self::plugin_subtitle(plugin)).build();
+        let declared = crate::plugins::plugin_settings(&id);
+        row.set_enable_expansion(!declared.is_empty());
+        let values = crate::plugins::plugin_config(&id);
+        for setting in declared {
+            let current = values.get(&setting.key).cloned().unwrap_or(setting.default.clone());
+            let key = setting.key.clone();
+            let plugin_id = id.clone();
+            let widget: gtk::Widget = match setting.kind.as_str() {
+                "bool" => {
+                    let widget = adw::SwitchRow::builder()
+                        .title(&setting.label)
+                        .subtitle(&setting.description)
+                        .active(current.as_bool().unwrap_or(false))
+                        .build();
+                    widget.connect_active_notify(move |widget| {
+                        let _ = crate::plugins::set_plugin_setting(
+                            &plugin_id,
+                            &key,
+                            serde_json::Value::Bool(widget.is_active()),
+                        );
+                    });
+                    widget.upcast()
+                }
+                "int" => {
+                    let minimum = setting.min.unwrap_or(0) as f64;
+                    let maximum = setting.max.unwrap_or(1_000_000) as f64;
+                    let value = current.as_i64().unwrap_or(minimum as i64) as f64;
+                    let widget = adw::SpinRow::with_range(minimum, maximum, 1.0);
+                    widget.set_title(&setting.label);
+                    widget.set_subtitle(&setting.description);
+                    widget.set_value(value.clamp(minimum, maximum));
+                    widget.connect_value_notify(move |widget| {
+                        let _ = crate::plugins::set_plugin_setting(
+                            &plugin_id,
+                            &key,
+                            serde_json::Value::from(widget.value() as i64),
+                        );
+                    });
+                    widget.upcast()
+                }
+                "choice" => {
+                    let choices: Vec<&str> = setting.choices.iter().map(String::as_str).collect();
+                    let widget = adw::ComboRow::builder()
+                        .title(&setting.label)
+                        .subtitle(&setting.description)
+                        .model(&gtk::StringList::new(&choices))
+                        .build();
+                    let selected = current
+                        .as_str()
+                        .and_then(|value| setting.choices.iter().position(|choice| choice == value))
+                        .unwrap_or(0);
+                    widget.set_selected(selected as u32);
+                    let choices = setting.choices.clone();
+                    widget.connect_selected_notify(move |widget| {
+                        if let Some(choice) = choices.get(widget.selected() as usize) {
+                            let _ = crate::plugins::set_plugin_setting(
+                                &plugin_id,
+                                &key,
+                                serde_json::Value::String(choice.clone()),
+                            );
+                        }
+                    });
+                    widget.upcast()
+                }
+                _ => {
+                    let widget = adw::EntryRow::builder()
+                        .title(&setting.label)
+                        .text(current.as_str().unwrap_or_default())
+                        .build();
+                    if !setting.description.is_empty() {
+                        widget.set_tooltip_text(Some(&setting.description));
+                    }
+                    widget.connect_apply(move |widget| {
+                        let _ = crate::plugins::set_plugin_setting(
+                            &plugin_id,
+                            &key,
+                            serde_json::Value::String(widget.text().to_string()),
+                        );
+                    });
+                    widget.upcast()
+                }
+            };
+            row.add_row(&widget);
+        }
+
+        let reload = gtk::Button::from_icon_name("view-refresh-symbolic");
+        reload.set_tooltip_text(Some("Reload plugin"));
+        reload.set_valign(gtk::Align::Center);
+        reload.add_css_class("flat");
+        reload.set_sensitive(enabled);
+        let reload_id = id.clone();
+        reload.connect_clicked(move |_| {
+            if let Err(err) = crate::plugins::reload(Some(&reload_id)) {
+                eprintln!("rsimgv: {err}");
+            }
+        });
+
+        let switch = gtk::Switch::builder()
+            .valign(gtk::Align::Center)
+            .active(enabled)
+            .tooltip_text("Enable plugin")
+            .build();
+        let switch_id = id.clone();
+        let settings = settings.clone();
+        switch.connect_state_set({
+            let row = row.clone();
+            let reload = reload.clone();
+            move |_, state| {
+                // A failed change keeps the switch where it was, so it still shows what is running.
+                if let Err(err) = crate::plugins::set_enabled(&switch_id, state, &settings) {
+                    eprintln!("rsimgv: {err}");
+                    return glib::Propagation::Stop;
+                }
+                let current = crate::plugins::list()["plugins"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .find(|plugin| plugin["id"].as_str() == Some(switch_id.as_str()))
+                    .cloned()
+                    .unwrap_or_default();
+                row.set_subtitle(&Self::plugin_subtitle(&current));
+                reload.set_sensitive(state);
+                glib::Propagation::Proceed
+            }
+        });
+
+        row.add_suffix(&switch);
+        row.add_suffix(&reload);
+        row
+    }
+
+    /// The status line under a plugin's name: what it does, its runtime, and whether it is running.
+    fn plugin_subtitle(plugin: &serde_json::Value) -> String {
+        let id = plugin["id"].as_str().unwrap_or_default();
+        let description = plugin["description"].as_str().filter(|text| !text.is_empty()).unwrap_or(id);
+        let runtime = plugin["runtime"].as_str().unwrap_or_default();
+        let status = if !plugin["enabled"].as_bool().unwrap_or(true) {
+            "disabled"
+        } else if let Some(error) = plugin["error"].as_str() {
+            error
+        } else if plugin["running"].as_bool().unwrap_or(false) {
+            "running"
+        } else {
+            "not running"
+        };
+        format!("{description} · {runtime} · {status}")
     }
 
     /// Lists the scripts, and adds, edits or removes them through a dialog. Each change is saved to the

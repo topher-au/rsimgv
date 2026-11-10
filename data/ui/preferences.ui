@@ -1490,7 +1490,7 @@
                             <child>
                               <object class="AdwPreferencesGroup">
                                 <property name="title">Installed plugins</property>
-                                <property name="description">Plugins extend rsimgv with actions, menus, keybindings and sidebar panels. Python plugins reload when their files change, unless Auto-reload is off.</property>
+                                <property name="description">Plugins extend rsimgv with actions, menus, keybindings and sidebar panels. Switching a plugin off or on takes effect at once. Python plugins reload when their files change, unless Auto-reload is off.</property>
                                 <child>
                                   <object class="AdwSwitchRow" id="plugin_auto_reload_row">
                                     <property name="title">Auto-reload Python plugins</property>
