@@ -10,8 +10,12 @@
   background-color: color-mix(in srgb, currentColor 8%, transparent);
 }
 
+// The primary selected item has an outline with a soft glow around it.
 .rsimgv-item.selected {
   background-color: color-mix(in srgb, var(--accent-bg-color) 25%, transparent);
+  box-shadow:
+    0 0 0 2px var(--accent-bg-color),
+    0 0 10px 2px color-mix(in srgb, var(--accent-bg-color) 60%, transparent);
 }
 
 // An item marked with others for acting on together.
