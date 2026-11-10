@@ -4,6 +4,7 @@
 use gtk::prelude::*;
 use gtk::gio;
 
+use super::menus;
 use super::OverflowBox;
 
 /// One of the toolbar's entries, in the order the row shows them.
@@ -41,6 +42,7 @@ impl Toolbar {
                     overflow.add_button(&button);
                 }
                 Slot::Menu { label, icon, menu } => {
+                    menus::track(&menu);
                     let button = gtk::MenuButton::new();
                     button.set_icon_name(icon);
                     button.set_tooltip_text(Some(label));

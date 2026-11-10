@@ -18,6 +18,7 @@ use super::image_canvas::{Fit, OriginalFocus, Scaling, PAN_STEP};
 use super::media_controls::SEEK_STEP;
 use super::media_viewer::{side_from_name, FolderEnd, ZoomIndicator, VOLUME_STEP};
 use super::key_handler::ActionKeyHandler;
+use super::menus;
 use super::fs_tree::TreeSnapshot;
 use super::path_bar::OpenTarget;
 use super::{BrowseSearch, BrowseView, FsTree, HeaderBar, MediaViewer, MessageOverlay, NavigationBar, OverlaySplitView, PathBar, PreferencesDialog, ShownItem};
@@ -81,6 +82,9 @@ mod imp {
         /// The header's main menu, which gets a section for plugin menu items.
         #[template_child]
         pub menu_button: TemplateChild<gtk::MenuButton>,
+        /// The browse view's sort and view options menu.
+        #[template_child]
+        pub sort_button: TemplateChild<gtk::MenuButton>,
         /// The position of that section, so a reload can remove it before adding a new one.
         pub(super) plugin_menu_section: Cell<Option<u32>>,
         #[template_child]
@@ -346,6 +350,12 @@ impl Window {
         window.add_tab_actions();
         window.add_binding_actions();
         window.add_playlist_actions(settings);
+        // The menus in the template show the shortcuts of their actions, and are rebuilt when the bindings change.
+        for button in [&window.imp().menu_button, &window.imp().sort_button] {
+            if let Some(menu) = button.menu_model().and_then(|model| model.downcast::<gio::Menu>().ok()) {
+                menus::track(&menu);
+            }
+        }
         let keys = ActionKeyHandler::install(&window);
         let _ = window.imp().key_handler.set(keys);
         window.connect_sources();
@@ -766,14 +776,10 @@ impl Window {
         let targets = self.context_targets(path);
         let details = gio::Menu::new();
         details.append_item(&item("Copy Path", "win.copy-path"));
-        let properties = gio::MenuItem::new(Some("Properties"), None);
-        properties.set_action_and_target_value(Some("win.show-properties-of"), Some(&targets.to_variant()));
-        details.append_item(&properties);
+        details.append_item(&menus::targeted("Properties", "win.show-properties-of", &targets.to_variant()));
         let playlist_section = gio::Menu::new();
         for (label, action) in playlist_menu_items(path, is_dir, targets.len()) {
-            let item = gio::MenuItem::new(Some(label), None);
-            item.set_action_and_target_value(Some(action), Some(&targets.to_variant()));
-            playlist_section.append_item(&item);
+            playlist_section.append_item(&menus::targeted(label, action, &targets.to_variant()));
         }
         if playlist_section.n_items() > 0 {
             menu.append_section(None, &playlist_section);
@@ -3601,11 +3607,7 @@ impl Window {
             tab_menu.remove_all();
             let Some(id) = page.and_then(tab_id) else { return };
             let target = id.to_variant();
-            let item = |label: &str, action: &str| {
-                let item = gio::MenuItem::new(Some(label), None);
-                item.set_action_and_target_value(Some(action), Some(&target));
-                item
-            };
+            let item = |label: &str, action: &str| menus::targeted(label, action, &target);
             tab_menu.append_item(&item("_Duplicate Tab", "win.tab-duplicate"));
             tab_menu.append_item(&item("Open in New _Window", "win.tab-new-window"));
             tab_menu.append_item(&item("Copy _Path", "win.tab-copy-path"));
@@ -4836,9 +4838,7 @@ fn valued_action(map: &impl IsA<gio::ActionMap>, window: &glib::WeakRef<Window>,
 /// Adds an action named `name` to `map` that runs `run` on the window, if the window still exists.
 /// A menu item that runs `action` on `path`.
 fn path_menu_item(label: &str, action: &str, path: &Path) -> gio::MenuItem {
-    let item = gio::MenuItem::new(Some(label), None);
-    item.set_action_and_target_value(Some(action), Some(&path.to_string_lossy().into_owned().to_variant()));
-    item
+    menus::targeted(label, action, &path.to_string_lossy().into_owned().to_variant())
 }
 
 /// Pops up `menu` at (`x`, `y`) within `parent`.

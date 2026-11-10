@@ -635,11 +635,12 @@ impl KeybindingList {
         label.set_label(conflict.as_deref().unwrap_or_default());
     }
 
-    /// Saves the bindings file and shows the new rows.
+    /// Saves the bindings file, shows the new rows, and shows the new shortcuts in the menus.
     fn commit(&self) {
         if let Err(err) = keybindings::save() {
             eprintln!("rsimgv: could not save keybindings: {err}");
         }
+        super::menus::refresh_tracked();
         self.refresh();
     }
 

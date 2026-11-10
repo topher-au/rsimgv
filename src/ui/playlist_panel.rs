@@ -18,6 +18,7 @@ use gtk::{gdk, gio, glib};
 
 use super::drag;
 use super::media_viewer::is_video;
+use super::menus;
 use super::playlist_toolbar::{Slot, Toolbar};
 use crate::fs::metadata::{anonymous, MediaInfo};
 use crate::playlist;
@@ -754,11 +755,7 @@ fn attach_row_menu(row: &gtk::Widget, item: &gtk::ListItem, settings: &Settings)
 /// The menu of an item at `position` in the playlist, whose path is `path`: what the item is played and removed by, its
 /// file's actions, and which columns are shown.
 fn row_menu(settings: &Settings, position: u32, path: &str) -> gio::Menu {
-    let item = |label: &str, action: &str, value: glib::Variant| {
-        let item = gio::MenuItem::new(Some(label), None);
-        item.set_action_and_target_value(Some(action), Some(&value));
-        item
-    };
+    let item = |label: &str, action: &str, value: glib::Variant| menus::targeted(label, action, &value);
     let menu = gio::Menu::new();
     let edit = gio::Menu::new();
     edit.append_item(&item("Play", "win.playlist-play-index", position.to_variant()));
@@ -779,7 +776,7 @@ fn row_menu(settings: &Settings, position: u32, path: &str) -> gio::Menu {
 
     let columns = gio::Menu::new();
     for (_, action, label, _, _) in COLUMNS {
-        columns.append(Some(label), Some(&format!("win.{action}")));
+        columns.append_item(&menus::item(label, &format!("win.{action}")));
     }
     menu.append_section(None, &columns);
     menu
@@ -816,18 +813,18 @@ fn toolbar(actions: &gio::SimpleActionGroup, search: &gtk::SearchBar) -> Toolbar
     search.bind_property("search-mode-enabled", &search_toggle, "active").bidirectional().sync_create().build();
 
     let save = gio::Menu::new();
-    save.append(Some("Load"), Some("win.playlist-load"));
-    save.append(Some("Save"), Some("win.playlist-save-current"));
-    save.append(Some("Save as..."), Some("win.playlist-save"));
-    save.append(Some("Load from URL"), Some("win.playlist-load-url"));
+    save.append_item(&menus::item("Load", "win.playlist-load"));
+    save.append_item(&menus::item("Save", "win.playlist-save-current"));
+    save.append_item(&menus::item("Save as...", "win.playlist-save"));
+    save.append_item(&menus::item("Load from URL", "win.playlist-load-url"));
     let add = gio::Menu::new();
-    add.append(Some("Add current item"), Some("win.playlist-add-current"));
-    add.append(Some("Add file(s)"), Some("win.playlist-add-files"));
-    add.append(Some("Add directory"), Some("win.playlist-add-directory"));
+    add.append_item(&menus::item("Add current item", "win.playlist-add-current"));
+    add.append_item(&menus::item("Add file(s)", "win.playlist-add-files"));
+    add.append_item(&menus::item("Add directory", "win.playlist-add-directory"));
     let remove = gio::Menu::new();
-    remove.append(Some("Remove current item"), Some("win.playlist-remove-current"));
-    remove.append(Some("Remove selected"), Some("playlist.remove-selected"));
-    remove.append(Some("Remove all"), Some("win.playlist-clear"));
+    remove.append_item(&menus::item("Remove current item", "win.playlist-remove-current"));
+    remove.append_item(&menus::item("Remove selected", "playlist.remove-selected"));
+    remove.append_item(&menus::item("Remove all", "win.playlist-clear"));
 
     let slots = vec![
         Slot::Menu { label: "Save / Load", icon: "document-save-symbolic", menu: save },
