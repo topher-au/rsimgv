@@ -4,6 +4,7 @@ mod node;
 mod sort;
 mod store;
 pub mod metadata;
+pub mod properties;
 pub mod thumbnail;
 pub mod walk;
 
