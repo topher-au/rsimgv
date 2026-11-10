@@ -38,7 +38,7 @@ mod window;
 pub use browse_search::BrowseSearch;
 pub use browse_view::BrowseView;
 pub use floating_bar::FloatingBar;
-pub use item_grid::ItemGrid;
+pub use item_grid::{CursorMove, ItemGrid};
 pub use media_viewer::{MediaViewer, ShownItem};
 pub use message_overlay::{Level, Message, MessageOverlay};
 pub use fs_tree::FsTree;

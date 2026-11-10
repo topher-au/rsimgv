@@ -454,6 +454,45 @@ pub const ACTIONS: &[ActionInfo] = &[
         name: "browse.cursor-page-down", description: "Move the cursor down one page.", icon: "pan-down-symbolic", label: "Page Down", defaults: &["page_down"],
     },
     ActionInfo {
+        name: "browse.keep-up", description: "Move the cursor up one row, keeping the marked items.", icon: "go-up-symbolic", label: "Move Up Keeping Selection", defaults: &["ctrl+up"],
+    },
+    ActionInfo {
+        name: "browse.keep-down", description: "Move the cursor down one row, keeping the marked items.", icon: "go-down-symbolic", label: "Move Down Keeping Selection", defaults: &["ctrl+down"],
+    },
+    ActionInfo {
+        name: "browse.keep-previous", description: "Move the cursor to the item before it, keeping the marked items.", icon: "go-previous-symbolic", label: "Move Left Keeping Selection", defaults: &["ctrl+left"],
+    },
+    ActionInfo {
+        name: "browse.keep-next", description: "Move the cursor to the item after it, keeping the marked items.", icon: "go-next-symbolic", label: "Move Right Keeping Selection", defaults: &["ctrl+right"],
+    },
+    ActionInfo {
+        name: "browse.keep-page-up", description: "Move the cursor up one page, keeping the marked items.", icon: "pan-up-symbolic", label: "Page Up Keeping Selection", defaults: &["ctrl+page_up"],
+    },
+    ActionInfo {
+        name: "browse.keep-page-down", description: "Move the cursor down one page, keeping the marked items.", icon: "pan-down-symbolic", label: "Page Down Keeping Selection", defaults: &["ctrl+page_down"],
+    },
+    ActionInfo {
+        name: "browse.extend-up", description: "Move the cursor up one row, marking every item from the anchor to it.", icon: "go-up-symbolic", label: "Extend Selection Up", defaults: &["shift+up"],
+    },
+    ActionInfo {
+        name: "browse.extend-down", description: "Move the cursor down one row, marking every item from the anchor to it.", icon: "go-down-symbolic", label: "Extend Selection Down", defaults: &["shift+down"],
+    },
+    ActionInfo {
+        name: "browse.extend-previous", description: "Move the cursor to the item before it, marking every item from the anchor to it.", icon: "go-previous-symbolic", label: "Extend Selection Left", defaults: &["shift+left"],
+    },
+    ActionInfo {
+        name: "browse.extend-next", description: "Move the cursor to the item after it, marking every item from the anchor to it.", icon: "go-next-symbolic", label: "Extend Selection Right", defaults: &["shift+right"],
+    },
+    ActionInfo {
+        name: "browse.extend-page-up", description: "Move the cursor up one page, marking every item from the anchor to it.", icon: "pan-up-symbolic", label: "Extend Selection Page Up", defaults: &["shift+page_up"],
+    },
+    ActionInfo {
+        name: "browse.extend-page-down", description: "Move the cursor down one page, marking every item from the anchor to it.", icon: "pan-down-symbolic", label: "Extend Selection Page Down", defaults: &["shift+page_down"],
+    },
+    ActionInfo {
+        name: "browse.toggle-mark", description: "Mark the item under the cursor, or unmark it if it is marked, leaving the other marks as they are.", icon: "emblem-default-symbolic", label: "Toggle Selection", defaults: &["ctrl+space"],
+    },
+    ActionInfo {
         name: "browse.first", description: "Move the cursor to the first item.", icon: "go-first-symbolic", label: "First Item", defaults: &["home"],
     },
     ActionInfo {

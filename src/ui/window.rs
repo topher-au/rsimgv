@@ -21,7 +21,7 @@ use super::key_handler::ActionKeyHandler;
 use super::fs_tree::TreeSnapshot;
 use super::path_bar::OpenTarget;
 use super::{BrowseSearch, BrowseView, FsTree, HeaderBar, MediaViewer, MessageOverlay, NavigationBar, OverlaySplitView, PathBar, PreferencesDialog, ShownItem};
-use super::{Level, Message};
+use super::{CursorMove, Level, Message};
 use super::message_overlay::MessageId;
 use super::keybinds_overlay::KeybindsOverlay;
 use super::playlist_panel::{stamp, PlaylistPanel, SortColumn};
@@ -1253,12 +1253,27 @@ impl Window {
 
         let browse = gio::SimpleActionGroup::new();
         bound_action(&browse, &weak, "up-directory", Window::go_up);
-        bound_action(&browse, &weak, "cursor-up", |window| window.with_browse(|view| view.move_cursor_y(-1)));
-        bound_action(&browse, &weak, "cursor-down", |window| window.with_browse(|view| view.move_cursor_y(1)));
-        bound_action(&browse, &weak, "cursor-previous", |window| window.with_browse(|view| view.move_cursor_x(-1)));
-        bound_action(&browse, &weak, "cursor-next", |window| window.with_browse(|view| view.move_cursor_x(1)));
-        bound_action(&browse, &weak, "cursor-page-up", |window| window.with_browse(|view| view.move_cursor_page(-1)));
-        bound_action(&browse, &weak, "cursor-page-down", |window| window.with_browse(|view| view.move_cursor_page(1)));
+        // Plain keys move the cursor and mark only the item it lands on. Ctrl keys move it and keep the marks, and
+        // Shift keys mark every item from the anchor to where it lands.
+        bound_action(&browse, &weak, "cursor-up", |window| window.with_browse(|view| view.move_cursor_y(-1, CursorMove::Replace)));
+        bound_action(&browse, &weak, "cursor-down", |window| window.with_browse(|view| view.move_cursor_y(1, CursorMove::Replace)));
+        bound_action(&browse, &weak, "cursor-previous", |window| window.with_browse(|view| view.move_cursor_x(-1, CursorMove::Replace)));
+        bound_action(&browse, &weak, "cursor-next", |window| window.with_browse(|view| view.move_cursor_x(1, CursorMove::Replace)));
+        bound_action(&browse, &weak, "cursor-page-up", |window| window.with_browse(|view| view.move_cursor_page(-1, CursorMove::Replace)));
+        bound_action(&browse, &weak, "cursor-page-down", |window| window.with_browse(|view| view.move_cursor_page(1, CursorMove::Replace)));
+        bound_action(&browse, &weak, "keep-up", |window| window.with_browse(|view| view.move_cursor_y(-1, CursorMove::Keep)));
+        bound_action(&browse, &weak, "keep-down", |window| window.with_browse(|view| view.move_cursor_y(1, CursorMove::Keep)));
+        bound_action(&browse, &weak, "keep-previous", |window| window.with_browse(|view| view.move_cursor_x(-1, CursorMove::Keep)));
+        bound_action(&browse, &weak, "keep-next", |window| window.with_browse(|view| view.move_cursor_x(1, CursorMove::Keep)));
+        bound_action(&browse, &weak, "keep-page-up", |window| window.with_browse(|view| view.move_cursor_page(-1, CursorMove::Keep)));
+        bound_action(&browse, &weak, "keep-page-down", |window| window.with_browse(|view| view.move_cursor_page(1, CursorMove::Keep)));
+        bound_action(&browse, &weak, "extend-up", |window| window.with_browse(|view| view.move_cursor_y(-1, CursorMove::Extend)));
+        bound_action(&browse, &weak, "extend-down", |window| window.with_browse(|view| view.move_cursor_y(1, CursorMove::Extend)));
+        bound_action(&browse, &weak, "extend-previous", |window| window.with_browse(|view| view.move_cursor_x(-1, CursorMove::Extend)));
+        bound_action(&browse, &weak, "extend-next", |window| window.with_browse(|view| view.move_cursor_x(1, CursorMove::Extend)));
+        bound_action(&browse, &weak, "extend-page-up", |window| window.with_browse(|view| view.move_cursor_page(-1, CursorMove::Extend)));
+        bound_action(&browse, &weak, "extend-page-down", |window| window.with_browse(|view| view.move_cursor_page(1, CursorMove::Extend)));
+        bound_action(&browse, &weak, "toggle-mark", |window| window.with_browse(|view| view.toggle_mark_at_cursor()));
         bound_action(&browse, &weak, "first", |window| window.with_browse(|view| view.select_first()));
         bound_action(&browse, &weak, "last", |window| window.with_browse(|view| view.select_last()));
         bound_action(&browse, &weak, "select-all", |window| window.with_browse(|view| view.select_all()));

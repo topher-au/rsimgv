@@ -20,6 +20,7 @@ use crate::fs::thumbnail::{Media as ThumbnailMedia, Size as ThumbnailSize, Thumb
 use crate::storage::video_crops::VideoCrops;
 use crate::storage::watch_history::{format_duration, WatchHistory};
 use super::drag;
+use super::CursorMove;
 use super::thumbnail_paint::{picture_paintable, ScatteredThumbnail, MAX_PHOTOS, PHOTO_SHARE};
 use super::video_preview::VideoPreview;
 use crate::fs::metadata::{MediaInfo, MediaMetadata};
@@ -1451,7 +1452,7 @@ mod imp {
             // Cursor movement is exposed as actions on the `browse` group, so keys and menus can share them.
             let actions = gtk::gio::SimpleActionGroup::new();
             for (name, move_cursor) in [
-                ("cursor-x", crate::ui::ItemGrid::move_cursor_x as fn(&crate::ui::ItemGrid, i32)),
+                ("cursor-x", crate::ui::ItemGrid::move_cursor_x as fn(&crate::ui::ItemGrid, i32, CursorMove)),
                 ("cursor-y", crate::ui::ItemGrid::move_cursor_y),
                 ("cursor-page", crate::ui::ItemGrid::move_cursor_page),
             ] {
@@ -1461,7 +1462,7 @@ mod imp {
                     let (Some(grid), Some(n)) = (grid.upgrade(), parameter.and_then(|value| value.get::<i32>())) else {
                         return;
                     };
-                    move_cursor(&grid, n);
+                    move_cursor(&grid, n, CursorMove::Replace);
                 });
                 actions.add_action(&action);
             }
@@ -2380,21 +2381,27 @@ impl BrowseView {
         self.imp().grid.activate_selected();
     }
 
-    /// Moves the cursor `items` along the list: negative moves back.
-    pub fn move_cursor_x(&self, items: i32) {
-        self.imp().grid.move_cursor_x(items);
+    /// Moves the cursor `items` along the list: negative moves back. `mode` says what happens to the marks.
+    pub fn move_cursor_x(&self, items: i32, mode: CursorMove) {
+        self.imp().grid.move_cursor_x(items, mode);
         self.keyboard_moved();
     }
 
-    /// Moves the cursor `rows` rows down the grid: negative moves up.
-    pub fn move_cursor_y(&self, rows: i32) {
-        self.imp().grid.move_cursor_y(rows);
+    /// Moves the cursor `rows` rows down the grid: negative moves up. `mode` says what happens to the marks.
+    pub fn move_cursor_y(&self, rows: i32, mode: CursorMove) {
+        self.imp().grid.move_cursor_y(rows, mode);
         self.keyboard_moved();
     }
 
-    /// Moves the cursor `pages` pages down the grid: negative moves up.
-    pub fn move_cursor_page(&self, pages: i32) {
-        self.imp().grid.move_cursor_page(pages);
+    /// Moves the cursor `pages` pages down the grid: negative moves up. `mode` says what happens to the marks.
+    pub fn move_cursor_page(&self, pages: i32, mode: CursorMove) {
+        self.imp().grid.move_cursor_page(pages, mode);
+        self.keyboard_moved();
+    }
+
+    /// Marks the item under the cursor, or unmarks it if it is marked.
+    pub fn toggle_mark_at_cursor(&self) {
+        self.imp().grid.toggle_mark_at_cursor();
         self.keyboard_moved();
     }
 

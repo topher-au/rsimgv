@@ -22,6 +22,15 @@ const SPACING_Y: i32 = 8;
 /// The most layouts the view is put back after a reflow over, in case the rows never settle.
 const MAX_RESTORE_PASSES: u8 = 20;
 
+/// What a move of the cursor does to the marks. A plain move marks only the item it lands on, a ctrl move leaves the
+/// marks as they are, and a shift move marks every item from the anchor to where it lands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CursorMove {
+    Replace,
+    Keep,
+    Extend,
+}
+
 /// The position `delta` items on from `current`, kept within `count` items. With nothing selected, any
 /// move starts at the first item.
 fn target_position(current: u32, count: u32, delta: i64) -> u32 {
@@ -736,30 +745,47 @@ impl ItemGrid {
     }
 
     /// Moves the selection `items` along the list: negative moves back. Moves are clamped to the grid.
-    pub fn move_cursor_x(&self, items: i32) {
-        self.move_cursor(i64::from(items));
+    pub fn move_cursor_x(&self, items: i32, mode: CursorMove) {
+        self.move_cursor(i64::from(items), mode);
     }
 
     /// Moves the selection `rows` rows down the grid: negative moves up.
-    pub fn move_cursor_y(&self, rows: i32) {
+    pub fn move_cursor_y(&self, rows: i32, mode: CursorMove) {
         let columns = i64::from(self.columns(self.width()).count);
-        self.move_cursor(i64::from(rows) * columns);
+        self.move_cursor(i64::from(rows) * columns, mode);
     }
 
     /// Moves the selection `pages` pages down the grid, where a page is the rows the scroller shows.
-    pub fn move_cursor_page(&self, pages: i32) {
+    pub fn move_cursor_page(&self, pages: i32, mode: CursorMove) {
         let row_height = f64::from(self.cell_size().1 + SPACING_Y);
         let rows = (self.page_height() / row_height).floor().max(1.0) as i32;
-        self.move_cursor_y(pages * rows);
+        self.move_cursor_y(pages * rows, mode);
     }
 
-    fn move_cursor(&self, delta: i64) {
+    fn move_cursor(&self, delta: i64, mode: CursorMove) {
         let Some(model) = self.imp().model.borrow().clone() else { return };
         let count = model.n_items();
         if count == 0 {
             return;
         }
-        self.select(target_position(model.selected(), count, delta));
+        let target = target_position(model.selected(), count, delta);
+        match mode {
+            CursorMove::Replace => {
+                self.clear_marks();
+                self.select(target);
+            }
+            CursorMove::Keep => self.select(target),
+            CursorMove::Extend => self.mark_range_to(target),
+        }
+    }
+
+    /// Marks the item under the cursor if it is not marked, and unmarks it if it is, as ctrl+space does.
+    pub fn toggle_mark_at_cursor(&self) {
+        let Some(model) = self.imp().model.borrow().clone() else { return };
+        let current = model.selected();
+        if current < model.n_items() {
+            self.toggle_mark(current);
+        }
     }
 
     /// The height of the part of the grid the scroller shows.

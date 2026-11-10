@@ -10,12 +10,13 @@
   background-color: color-mix(in srgb, currentColor 8%, transparent);
 }
 
-// The primary selected item has an outline with a soft glow around it.
+// The cursor's item, the primary selection: a thick ring with a glow around it. Marked items only get a tint, so the
+// two read differently even when the cursor is on a marked item.
 .rsimgv-item.selected {
-  background-color: color-mix(in srgb, var(--accent-bg-color) 25%, transparent);
+  background-color: color-mix(in srgb, var(--accent-color) 20%, transparent);
   box-shadow:
-    0 0 0 2px var(--accent-bg-color),
-    0 0 10px 2px color-mix(in srgb, var(--accent-bg-color) 60%, transparent);
+    0 0 0 3px var(--accent-color),
+    0 0 14px 3px color-mix(in srgb, var(--accent-color) 70%, transparent);
 }
 
 // An item marked with others for acting on together.

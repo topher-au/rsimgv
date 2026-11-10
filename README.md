@@ -48,6 +48,7 @@ library of pictures and videos without leaving the window.
 - **Browse view** showing the current folder as a grid of files and folders. Folders come first, then
   files, in natural name order. Item size is adjustable, names can be ellipsized or wrapped, and the info
   line shows size and modification time.
+- **Selecting items**: a click selects one item. Ctrl-click adds or removes one item, and Shift-click marks the items from the anchor, the item the cursor last moved from by a plain click or move, to the one clicked. The arrow and Page keys move the cursor and select only the item it lands on. With Ctrl they move the cursor and keep the selection, with Shift they select every item from the anchor to the cursor, and Ctrl+Space adds or removes the item under the cursor.
 - **Media filter**: only pictures and videos are listed by default. Turn it off to see every file.
 - **Video previews**: while a video is the active item, its preview can play a sequence of captured frames or an embedded
   player in the item's frame. The preview follows the video's locked crop, and fills the square when thumbnails are cropped
