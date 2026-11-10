@@ -48,6 +48,28 @@ pub fn row_indent(depth: u32) -> i32 {
     (depth.saturating_sub(1) as i32) * LEVEL_INDENT
 }
 
+/// Which folders of the tree follow changes on disk, as set by `browse.tree-monitoring`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Monitoring {
+    /// None: a folder is read again when the tree reveals it.
+    Off,
+    /// The expanded folders, as Nautilus follows the folders expanded in its list view. One that is collapsed is let
+    /// go of after a short while.
+    Expanded,
+    /// Every folder with a row in the tree, expanded or not, which takes a watch each.
+    Visible,
+}
+
+impl Monitoring {
+    fn from_name(name: &str) -> Self {
+        match name {
+            "expanded" => Self::Expanded,
+            "visible" => Self::Visible,
+            _ => Self::Off,
+        }
+    }
+}
+
 /// How the root header is labelled.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, glib::Enum)]
 #[enum_type(name = "RsimgvRootDisplay")]
@@ -91,6 +113,13 @@ mod imp {
         /// Whether navigating collapses every folder outside the new folder's path.
         #[property(get, set)]
         collapse_on_navigate: Cell<bool>,
+        /// Which folders follow changes on disk: `off`, `expanded` or `visible`.
+        #[property(get, set)]
+        monitoring: RefCell<String>,
+        /// The folders told to follow changes, by path, so that they can be told to stop.
+        pub(super) watched: RefCell<HashMap<PathBuf, FsNode>>,
+        /// Whether a pass over the rows to decide which folders follow changes is waiting for the main loop.
+        pub(super) sweep_scheduled: Cell<bool>,
     }
 
     #[glib::object_subclass]
@@ -135,6 +164,8 @@ mod imp {
             obj.add_css_class("rsimgv-fs-tree");
             obj.connect_root_collapsible_notify(|tree| tree.refresh_root_rows());
             obj.connect_root_display_notify(|tree| tree.refresh_root_rows());
+            self.monitoring.replace("expanded".to_owned());
+            obj.connect_monitoring_notify(|tree| tree.schedule_sweep());
 
             // Double-click (or Enter) on a row activates it, which toggles its expansion.
             let tree = obj.downgrade();
@@ -314,6 +345,26 @@ impl FsTree {
                 tree.emit_by_name::<()>("location-selected", &[&path]);
             }
         });
+        // Which folders follow changes depends on which rows are there and expanded, so it is decided again when either
+        // changes. The root row was expanded before this, and rows that come later are watched as they appear.
+        let weak = self.downgrade();
+        let watch_rows = move |model: &gtk::TreeListModel, position: u32, added: u32| {
+            let Some(tree) = weak.upgrade() else { return };
+            for row in (position..position + added).filter_map(|index| model.item(index).and_downcast::<gtk::TreeListRow>()) {
+                let weak = tree.downgrade();
+                row.connect_expanded_notify(move |_| {
+                    if let Some(tree) = weak.upgrade() {
+                        tree.schedule_sweep();
+                    }
+                });
+            }
+            tree.schedule_sweep();
+        };
+        model.connect_items_changed({
+            let watch_rows = watch_rows.clone();
+            move |model, position, _, added| watch_rows(model, position, added)
+        });
+        watch_rows(&model, 0, model.n_items());
         imp.list_view.set_model(Some(&selection));
         imp.selection.replace(Some(selection));
         imp.root.replace(Some(root));
@@ -324,6 +375,55 @@ impl FsTree {
         self.refresh_root_rows();
         self.emit_by_name::<()>("root-changed", &[]);
         Ok(())
+    }
+
+    /// Decides which folders follow changes once the main loop is idle, so a burst of rows is one pass.
+    fn schedule_sweep(&self) {
+        let imp = self.imp();
+        if imp.sweep_scheduled.replace(true) {
+            return;
+        }
+        let weak = self.downgrade();
+        glib::idle_add_local_once(move || {
+            let Some(tree) = weak.upgrade() else { return };
+            tree.imp().sweep_scheduled.set(false);
+            tree.sweep_watches();
+        });
+    }
+
+    /// Tells the folders that should follow changes, by the monitoring setting and the rows there are, to do so, and
+    /// the others to stop. A folder told to stop keeps following for a while longer.
+    fn sweep_watches(&self) {
+        let imp = self.imp();
+        let mode = Monitoring::from_name(&self.monitoring());
+        let mut wanted: HashMap<PathBuf, FsNode> = HashMap::new();
+        if let (Monitoring::Expanded | Monitoring::Visible, Some(model)) = (mode, imp.tree_model.borrow().as_ref()) {
+            for row in (0..model.n_items()).filter_map(|index| model.item(index).and_downcast::<gtk::TreeListRow>()) {
+                let Some(node) = node_of(&row).filter(FsNode::is_dir) else { continue };
+                if mode == Monitoring::Visible || row.is_expanded() {
+                    wanted.insert(node.path().to_path_buf(), node);
+                }
+            }
+        }
+        let mut watched = imp.watched.borrow_mut();
+        // A node that is not the one wanted at its path is from a tree since replaced.
+        watched.retain(|path, node| {
+            let kept = wanted.get(path) == Some(&*node);
+            if !kept {
+                node.set_watched(false);
+            }
+            kept
+        });
+        for (path, node) in wanted {
+            node.set_watched(true);
+            watched.insert(path, node);
+        }
+        let any = !watched.is_empty();
+        drop(watched);
+        // A folder that follows its changes may have gained or lost its first subfolder, which shows in its arrow.
+        if any {
+            self.restyle_rows();
+        }
     }
 
     /// The directory the tree is rooted at.
@@ -1375,6 +1475,46 @@ pub(crate) mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
+    /// With the monitoring setting on `expanded`, an expanded folder follows folders created and removed on disk, and
+    /// is let go of a while after it is collapsed. With it `off`, nothing follows.
+    fn monitoring_follows_expanded_folders() {
+        let root = temp_root("fs-tree-monitoring");
+        fs::create_dir_all(root.join("open/inner")).unwrap();
+        fs::create_dir_all(root.join("closed/inner")).unwrap();
+
+        let tree = FsTree::new();
+        tree.set_monitoring("expanded".to_owned());
+        tree.set_root_path(&root).unwrap();
+        wait_for("top level listed", || row_exists(&tree, &root.join("open")));
+        tree.expand_to_path(&root.join("open/inner"), false);
+        wait_for("open expanded", || is_expanded(&tree, &root.join("open")));
+        let open = node_at(&tree, &root.join("open")).unwrap();
+        let closed = node_at(&tree, &root.join("closed")).unwrap();
+        wait_for("the expanded folder follows", || open.is_following());
+        assert!(!closed.is_following(), "a folder that is not expanded is not followed");
+
+        fs::create_dir(root.join("open/fresh")).unwrap();
+        wait_for("the new folder", || row_exists(&tree, &root.join("open/fresh")));
+        fs::remove_dir(root.join("open/inner")).unwrap();
+        wait_for("the removed folder", || !row_exists(&tree, &root.join("open/inner")));
+
+        // A folder collapsed stays followed for a moment, then is let go of.
+        let row = find_row(&model_of(&tree).unwrap(), &root.join("open")).unwrap();
+        row.set_expanded(false);
+        wait_for("the collapsed folder is let go of", || !open.is_following());
+
+        tree.set_monitoring("off".to_owned());
+        row.set_expanded(true);
+        wait_for("expanded again", || is_expanded(&tree, &root.join("open")));
+        for _ in 0..50 {
+            glib::MainContext::default().iteration(false);
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert!(!open.is_following(), "with monitoring off nothing follows");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
     pub(crate) fn run_scenarios() {
         reveal_outside_root_returns_to_filesystem_root();
         snapshot_keeps_root();
@@ -1386,5 +1526,6 @@ pub(crate) mod tests {
         toggles_hidden_directories();
         root_properties();
         arrows_and_double_click();
+        monitoring_follows_expanded_folders();
     }
 }

@@ -290,6 +290,7 @@ impl Window {
         // Settings drive the view: the browse view's properties and the tree follow their keys, and
         // the menu's "Show Hidden Directories" item is an action bound to its key.
         settings.bind("browse.collapse-on-navigate", &tree, "collapse-on-navigate").build();
+        settings.bind("browse.tree-monitoring", &tree, "monitoring").build();
         settings.bind("window.sidebar.bookmarks-expanded", &*imp.bookmarks_expander, "expanded").build();
         settings.bind("window.sidebar.filesystem-expanded", &*imp.filesystem_expander, "expanded").build();
         tree.set_show_hidden(settings.boolean("browse.show-hidden"));

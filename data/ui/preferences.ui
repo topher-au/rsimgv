@@ -549,6 +549,21 @@
                                     <property name="subtitle">Closes the folders in the sidebar tree outside the current path</property>
                                   </object>
                                 </child>
+                                <child>
+                                  <object class="AdwComboRow" id="tree_monitoring_row">
+                                    <property name="title">Follow changes on disk</property>
+                                    <property name="subtitle">Which folders in the tree notice folders being created, removed or renamed. Expanded folders are let go of a moment after they close. Following every visible folder takes a file watch for each</property>
+                                    <property name="model">
+                                      <object class="GtkStringList">
+                                        <items>
+                                          <item>None</item>
+                                          <item>Expanded folders</item>
+                                          <item>All visible folders</item>
+                                        </items>
+                                      </object>
+                                    </property>
+                                  </object>
+                                </child>
                               </object>
                             </child>
                             <child>
