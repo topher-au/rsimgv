@@ -62,7 +62,7 @@ impl FileFacts {
             name: info.display_name().to_string(),
             is_dir,
             is_symlink,
-            link_target: info.symlink_target().map(|target| target.to_string_lossy().into_owned()),
+            link_target: is_symlink.then(|| info.symlink_target()).flatten().map(|target| target.to_string_lossy().into_owned()),
             content_type: info.content_type().map(|kind| kind.to_string()),
             size: info.size().max(0) as u64,
             modified: seconds("time::modified"),
@@ -430,6 +430,13 @@ pub fn set_mode(path: &Path, mode: u32) -> Result<(), String> {
     gio::File::for_path(path)
         .set_attribute_uint32("unix::mode", mode, gio::FileQueryInfoFlags::NONE, gio::Cancellable::NONE)
         .map_err(|err| err.to_string())
+}
+
+/// The bytes free on the filesystem the file at `path` is on, if that is known. This reads the disk, so it runs on a
+/// worker thread.
+pub fn free_space(path: &Path) -> Option<u64> {
+    let info = gio::File::for_path(path).query_filesystem_info("filesystem::free", gio::Cancellable::NONE).ok()?;
+    info.has_attribute("filesystem::free").then(|| info.attribute_uint64("filesystem::free"))
 }
 
 /// The class of the user among a file's: the owner if they own it, else the group if it is the group they run in,
