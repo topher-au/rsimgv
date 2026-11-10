@@ -42,8 +42,9 @@ python3 tools/extract_reference.py ../rsimgv
 python3 build.py
 ```
 
-It reads `src/keybindings/actions.rs`, `src/settings/store.rs` and `data/au.topher.rimgv.gschema.xml`, and warns about
-any setting it has no section for (add it to `SECTIONS` in the script).
+It reads `src/keybindings/actions.rs` and `data/au.topher.rsimgv.gschema.xml`, and warns about any setting it has no
+section for (add it to `SECTIONS` in the script). The settings file's YAML names come from the schema's paths, so a
+new child schema is placed automatically.
 
 The rest of the documentation is written by hand from the source and the behaviour of the app, so check it against
 the app when features change.
