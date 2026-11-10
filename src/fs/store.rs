@@ -119,6 +119,12 @@ impl Watching {
     }
 }
 
+impl Drop for Watching {
+    fn drop(&mut self) {
+        self.cancel();
+    }
+}
+
 /// Receives a batch of entries as it arrives.
 type OnBatch = Rc<dyn Fn(&[FileEntry])>;
 /// Receives how a read ended.

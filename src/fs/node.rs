@@ -1,4 +1,5 @@
-//! A directory entry in `FsTree`. Children are read on demand, through the shared `FileStore`.
+//! A directory entry in `FsTree`. Children are read on demand, through the shared `FileStore`. A node that is
+//! watched is also kept up to date as its folder changes, as Nautilus does for the folders expanded in its list view.
 
 use std::cell::{Cell, OnceCell, RefCell};
 use std::future::Future;
@@ -9,7 +10,10 @@ use futures_channel::oneshot;
 use gio::prelude::*;
 use glib::subclass::prelude::*;
 
-use super::{natural_cmp, FileEntry, FileStore};
+use super::{natural_cmp, FileEntry, FileStore, ListingChange, Watching};
+
+/// How long a node stays followed after it stops being watched, so that one shown again soon is not read again.
+const UNWATCH_DELAY: std::time::Duration = std::time::Duration::from_secs(2);
 
 #[derive(Default)]
 enum LoadState {
@@ -38,6 +42,12 @@ mod imp {
         pub(super) state: RefCell<LoadState>,
         pub(super) subdirs: Cell<Option<Subdirs>>,
         pub(super) checking: Cell<bool>,
+        /// Whether the node is meant to follow changes to its folder.
+        pub(super) watched: Cell<bool>,
+        /// The hold on the folder's listing, while it is followed.
+        pub(super) watching: RefCell<Option<Watching>>,
+        /// Lets go of the listing once the node has stopped being watched for `UNWATCH_DELAY`.
+        pub(super) unwatch_timer: RefCell<Option<glib::SourceId>>,
     }
 
     #[glib::object_subclass]
@@ -175,7 +185,134 @@ impl FsNode {
                 let _ = tx.send(());
             }
         }
+        if self.imp().watched.get() {
+            self.follow();
+        }
     }
+
+    /// Sets whether the node follows changes to its folder, so that its children stay as the folder is. Following
+    /// ends `UNWATCH_DELAY` after the node stops being watched, unless it is watched again by then.
+    pub fn set_watched(&self, watched: bool) {
+        let imp = self.imp();
+        if !self.is_dir() {
+            return;
+        }
+        imp.watched.set(watched);
+        if watched {
+            if let Some(timer) = imp.unwatch_timer.take() {
+                timer.remove();
+            }
+            if matches!(*imp.state.borrow(), LoadState::Loaded) {
+                self.follow();
+            }
+        } else if imp.watching.borrow().is_some() && imp.unwatch_timer.borrow().is_none() {
+            let node = self.downgrade();
+            let timer = glib::timeout_add_local_once(UNWATCH_DELAY, move || {
+                let Some(node) = node.upgrade() else { return };
+                node.imp().unwatch_timer.take();
+                if !node.imp().watched.get() {
+                    node.imp().watching.take();
+                }
+            });
+            imp.unwatch_timer.replace(Some(timer));
+        }
+    }
+
+    /// Whether the node follows changes to its folder now.
+    pub fn is_following(&self) -> bool {
+        self.imp().watching.borrow().is_some()
+    }
+
+    /// Starts following the folder's listing, if it is not followed already.
+    fn follow(&self) {
+        let imp = self.imp();
+        if imp.watching.borrow().is_some() {
+            return;
+        }
+        let node = self.downgrade();
+        let watching = FileStore::shared().watch(self.path(), move |change| {
+            if let Some(node) = node.upgrade() {
+                node.apply_change(change);
+            }
+        });
+        imp.watching.replace(watching);
+    }
+
+    /// Brings the children up to date with a change to the folder's listing. Only the subfolders count.
+    fn apply_change(&self, change: &ListingChange) {
+        // A node still loading takes the listing as it is when its read ends.
+        if !matches!(*self.imp().state.borrow(), LoadState::Loaded) {
+            return;
+        }
+        let children = self.children();
+        match change {
+            ListingChange::Added(entries) | ListingChange::Changed(entries) => {
+                for entry in entries {
+                    self.put_child(&children, entry);
+                }
+            }
+            ListingChange::Removed(paths) => {
+                for path in paths {
+                    remove_child(&children, path);
+                }
+            }
+            ListingChange::Moved(moves) => {
+                for (old, new) in moves {
+                    remove_child(&children, old);
+                    self.put_child(&children, new);
+                }
+            }
+            ListingChange::Reload => {
+                // Let go of the listing, which is current no longer, so that it is read again.
+                self.imp().watching.take();
+                self.start_loading();
+                return;
+            }
+        }
+        self.imp().subdirs.set(Some(subdirs_of(&children)));
+    }
+
+    /// Puts the folder `entry` among the children, in its place by name. An entry that is not a folder is not a child,
+    /// and takes the place of one that was.
+    fn put_child(&self, children: &gio::ListStore, entry: &FileEntry) {
+        if !entry.is_dir() {
+            remove_child(children, entry.path());
+            return;
+        }
+        if self.child_with_path(entry.path()).is_some() {
+            return;
+        }
+        let node = FsNode::new(entry.path().to_path_buf(), true);
+        let name = node.name();
+        let position = (0..children.n_items())
+            .find(|&position| {
+                children.item(position).and_downcast::<FsNode>().is_some_and(|other| natural_cmp(&other.name(), &name).is_gt())
+            })
+            .unwrap_or(children.n_items());
+        children.insert(position, &node);
+    }
+}
+
+/// Takes the child at `path` out of `children`, if there is one.
+fn remove_child(children: &gio::ListStore, path: &Path) {
+    let position = (0..children.n_items())
+        .find(|&position| children.item(position).and_downcast::<FsNode>().is_some_and(|node| node.path() == path));
+    if let Some(position) = position {
+        children.remove(position);
+    }
+}
+
+/// What the subfolders in `children` are, as far as expanding is concerned.
+fn subdirs_of(children: &gio::ListStore) -> Subdirs {
+    let mut found = Subdirs::default();
+    for node in (0..children.n_items()).filter_map(|position| children.item(position).and_downcast::<FsNode>()) {
+        if node.is_hidden() {
+            found.hidden = true;
+        } else {
+            found.plain = true;
+        }
+    }
+    found
 }
 
 /// Reads this directory through the shared store and fills in the subdirectories once the read ends.
@@ -284,5 +421,91 @@ mod sync_tests {
         assert_eq!(names, ["/root/a", "/root/d", "/root/c"]);
         assert!(store.item(0).as_ref() == Some(a.upcast_ref::<glib::Object>()), "a is the same node");
         assert!(store.item(2).as_ref() == Some(c.upcast_ref::<glib::Object>()), "c is the same node");
+    }
+}
+
+#[cfg(test)]
+mod watch_tests {
+    use super::*;
+
+    fn folder(name: &str, subfolders: &[&str]) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("rsimgv-node-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for sub in subfolders {
+            std::fs::create_dir_all(dir.join(sub)).unwrap();
+        }
+        dir
+    }
+
+    fn run_until(ctx: &glib::MainContext, what: &str, done: impl Fn() -> bool) {
+        let start = std::time::Instant::now();
+        while !done() {
+            assert!(start.elapsed() < std::time::Duration::from_secs(10), "{what} did not happen");
+            if !ctx.iteration(false) {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        }
+    }
+
+    fn child_names(node: &FsNode) -> Vec<String> {
+        let children = node.children();
+        (0..children.n_items()).filter_map(|i| children.item(i).and_downcast::<FsNode>()).map(|child| child.name()).collect()
+    }
+
+    /// A node loaded and watched.
+    fn watched_node(ctx: &glib::MainContext, dir: &Path) -> FsNode {
+        let node = FsNode::new(dir.to_path_buf(), true);
+        let loaded = Rc::new(Cell::new(false));
+        node.start_loading();
+        glib::spawn_future_local({
+            let (node, loaded) = (node.clone(), loaded.clone());
+            async move {
+                node.loaded().await;
+                loaded.set(true);
+            }
+        });
+        run_until(ctx, "the load", || loaded.get());
+        node.set_watched(true);
+        assert!(node.is_following());
+        node
+    }
+
+    #[test]
+    fn a_watched_node_follows_its_subfolders_in_order_and_ignores_files() {
+        let dir = folder("follow", &["b", "d"]);
+        let ctx = glib::MainContext::new();
+        ctx.with_thread_default(|| {
+            let node = watched_node(&ctx, &dir);
+            assert_eq!(child_names(&node), ["b", "d"]);
+
+            std::fs::create_dir(dir.join("c")).unwrap();
+            std::fs::write(dir.join("file.txt"), b"x").unwrap();
+            run_until(&ctx, "the new folder", || child_names(&node) == ["b", "c", "d"]);
+
+            std::fs::remove_dir(dir.join("b")).unwrap();
+            run_until(&ctx, "the removal", || child_names(&node) == ["c", "d"]);
+
+            std::fs::rename(dir.join("d"), dir.join("a")).unwrap();
+            run_until(&ctx, "the rename", || child_names(&node) == ["a", "c"]);
+            assert_eq!(node.expandable(false), Some(true));
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn the_subfolder_flag_follows_the_folder() {
+        let dir = folder("flag", &[]);
+        let ctx = glib::MainContext::new();
+        ctx.with_thread_default(|| {
+            let node = watched_node(&ctx, &dir);
+            std::fs::create_dir(dir.join(".hidden")).unwrap();
+            run_until(&ctx, "the hidden folder", || child_names(&node) == [".hidden"]);
+            assert_eq!(node.expandable(false), Some(false), "a hidden folder does not count unless hidden ones are shown");
+            assert_eq!(node.expandable(true), Some(true));
+            std::fs::create_dir(dir.join("shown")).unwrap();
+            run_until(&ctx, "the folder", || node.expandable(false) == Some(true));
+        })
+        .unwrap();
     }
 }
