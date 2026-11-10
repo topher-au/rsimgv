@@ -1,0 +1,70 @@
+title: Overlays and notifications
+desc: The configurable media overlay in rsimgv: elements, places, text templates, styling, and how notifications stack.
+---
+<p class="lead">Everything rsimgv draws over a picture or video is an element of one overlay: the seek display, volume, speed, rotation and zoom displays, a media status, notification messages, and templates of your own. The <em>Overlay</em> page under <em>Viewer</em> arranges them.</p>
+
+{{shot prefs-overlay "The Overlay page, with its map of nine places"}}
+
+<h2>The map</h2>
+<p>The page shows the item as a map of nine places: top, middle and bottom, each with left, middle and right. Elements in one place stack, the first on top. Drag an element to another place or another spot in its own, or press the <strong>+</strong> in a place to add one. Click an element to edit it. <strong>Reset the overlay</strong> goes back to the layout the older seek overlay and status bar settings make.</p>
+<p>Each place has a margin from the edge of the frame, in pixels, so elements need not touch the edge. A place in the middle of a side takes its margin on the sides it is near.</p>
+
+<h2>Kinds of element</h2>
+<dl>
+  <dt>Seek display</dt><dd>A progress bar and the time, which come up when the video is skipped through. The bar and the text can be shown separately, the bar can be upright, and the time can be written as elapsed and total, remaining and total, or just one of them.</dd>
+  <dt>Volume display</dt><dd>The volume as a bar, text or both, which comes up when it changes. It dims for a video with no sound and shows a mute icon when muted.</dd>
+  <dt>Speed display</dt><dd>The playback speed, as a multiplier, a fraction or a percentage.</dd>
+  <dt>Rotation display</dt><dd>How far the item is turned, in degrees, as a percentage of a full turn, or in words.</dd>
+  <dt>Zoom display</dt><dd>The zoom level of a picture, in percent.</dd>
+  <dt>Media status</dt><dd>The playback state, time, percent, speed, volume and a filename line, in the style of mpv's on-screen display. It can show the state as emoji or plain characters, and the filename on its own line with its own size, colour and opacity.</dd>
+  <dt>Notification messages</dt><dd>Where messages appear, and how they look. See below.</dd>
+  <dt>Template</dt><dd>Text of your own, made by a template.</dd>
+</dl>
+
+<h2>Text templates</h2>
+<p>A template writes text with the values of the item, in the style of mpv's <code>${property}</code>:</p>
+<ul>
+  <li><code>${name}</code> is the value of the property <code>name</code>, or nothing while it has none.</li>
+  <li><code>${name:text}</code> is the value, or <code>text</code> while the property has none. The text is itself a template.</li>
+  <li><code>${?name:text}</code> is <code>text</code> only while the property has a value.</li>
+  <li><code>${!name:text}</code> is <code>text</code> only while the property has no value.</li>
+  <li><code>${?name==value:text}</code> and <code>${?name!=value:text}</code> show the text only while the property equals or does not equal the value. Numbers compare as numbers, so <code>0</code> and <code>0.0</code> are equal.</li>
+  <li><code>$$</code> is a dollar sign, and <code>\</code> before a character in a text or comparison value makes it literal.</li>
+</ul>
+<p>These are the properties a template can read:</p>
+<div class="table-wrap"><table>
+<thead><tr><th>Property</th><th>What it is</th></tr></thead>
+<tbody>
+<tr><td><code>state</code>, <code>state-icon</code></td><td>Playing, Paused or Ended, and an icon for it.</td></tr>
+<tr><td><code>time-pos</code>, <code>duration</code>, <code>time-remaining</code>, <code>percent-pos</code></td><td>The playback position, length, time left and percentage.</td></tr>
+<tr><td><code>speed</code>, <code>speed-changed</code>, <code>speed-fraction</code>, <code>speed-percent</code></td><td>The speed as a number, only when it is not normal, as a fraction, or in percent.</td></tr>
+<tr><td><code>rotation</code>, <code>rotation-percent</code>, <code>rotation-name</code>, <code>mirrored</code></td><td>How far the item is turned, and whether it is mirrored.</td></tr>
+<tr><td><code>zoom</code></td><td>The zoom level of a picture, in percent.</td></tr>
+<tr><td><code>volume</code>, <code>mute</code>, <code>no-audio</code></td><td>The volume, whether it is muted, and whether the video has sound.</td></tr>
+<tr><td><code>loading</code>, <code>fps</code></td><td><em>Loading...</em> until the video has loaded, and the frame rate.</td></tr>
+<tr><td><code>filename</code>, <code>path</code></td><td>The name and full path of the file.</td></tr>
+<tr><td><code>playlist-pos</code>, <code>playlist-count</code></td><td>The item's place among those the viewer steps through, and how many there are.</td></tr>
+<tr><td><code>resolution</code>, <code>file-size</code></td><td>The width and height, and the size of the file.</td></tr>
+<tr><td><code>views</code>, <code>watch-time</code></td><td>The viewing history's counts, such as <em>3</em> and <em>12m 05s</em>.</td></tr>
+</tbody>
+</table></div>
+<p>A template element can also be marked as <em>Markup</em>, which renders the text as GTK markup, such as <code>&lt;b&gt;bold&lt;/b&gt;</code>.</p>
+
+<h2>When an element shows</h2>
+<dl>
+  <dt>Visibility</dt><dd><code>always</code>, for as long as the item is shown; <code>seek</code>, for its number of seconds after the video is skipped through; or <code>paused</code>, while the video is paused.</dd>
+  <dt>Show over</dt><dd>Pictures and videos, videos only, or pictures only.</dd>
+  <dt>Only in fullscreen</dt><dd>Keeps the element for fullscreen.</dd>
+  <dt>Fade</dt><dd>Fade in and out over a time you set, rather than appearing at once.</dd>
+</dl>
+
+<h2>Look and effects</h2>
+<p>The <em>Look</em> tab sets the font family and size, text colour and opacity, background colour and opacity, corner radius, padding, the opacity of the whole element, and its least width and height. Text can be justified, given a minimum size, and turned by an angle.</p>
+<p>The <em>Effects</em> tab adds an outline round the letters (a stroke) and a drop shadow, under the text, under the background, or both, with its offset, blur, colour and opacity. A seek or volume display also has spacing and alignment options for its bar and text.</p>
+
+<h2>Notifications</h2>
+<p>Messages appear where the notification element is. Notifications go away by themselves after a few seconds, and persistent messages stay until dismissed. The element sets how many notifications a stack shows at once (5 by default, up to 20), the newest nearest the edge, and what happens when the stack is full: the oldest is pushed out, or the new one waits unseen until a place frees up.</p>
+<p>rsimgv uses notifications for script failures, SVP and crop changes, focus changes and other notices, and other programs can show, change and dismiss their own through <a href="remote-control.html#messages"><code>messages.show</code></a>. The Show Notification action binds a key to a message with its own text, level and duration; see <a href="scripts.html#messages">Scripts and messages</a>.</p>
+
+<h2>The layout setting</h2>
+<p>The whole layout is kept as JSON in <code>viewer.overlay-layout</code>. The page writes it for you, but it can be edited by hand or copied between machines. While it is empty, the older seek overlay and status bar settings make the layout. See the <a href="settings.html#viewer">settings reference</a>.</p>

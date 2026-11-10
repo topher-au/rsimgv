@@ -16,8 +16,13 @@ desc: Requirements, building and installing rsimgv, and what happens the first t
   <li><code>sassc</code>, to compile the stylesheets</li>
   <li><code>glib-compile-resources</code> and <code>glib-compile-schemas</code>, which are part of GLib</li>
 </ul>
+<h3>Optional</h3>
+<ul>
+  <li>Python plugin support needs <code>python3-embed</code> 3.10 or newer and <code>pygobject-3.0</code> 3.50 or newer. It is built by default when both are found; configure with <code>-Dpython=auto</code>, <code>-Dpython=enabled</code> or <code>-Dpython=disabled</code>.</li>
+  <li>The SVP plugins are built from the open-svpflow source in <code>third_party/</code> and embedded, so no separate SVP installation is needed. See <a href="svp.html">SVP frame interpolation</a>.</li>
+</ul>
 <h3>Run time</h3>
-<p>The built program embeds its interface, stylesheets and icons in a GResource bundle, so it needs nothing beyond the shared libraries it links. Two optional tools improve video thumbnails: <code>ffmpeg</code> makes the frames a video shows when it is previewed, and <code>ffprobe</code> reads a video's duration.</p>
+<p>The built program embeds its interface, stylesheets, icons and the SVP plugins in a GResource bundle, so it needs nothing beyond the shared libraries it links. Two optional tools improve video metadata and previews: <code>ffprobe</code> reads a video's duration, codecs and frame rate, and <code>ffmpeg</code> makes the frames a video shows when it is previewed.</p>
 
 <h2>Build and install with Meson</h2>
 <pre><code>git clone https://git.topher.au/topher/rsimgv.git
@@ -25,7 +30,7 @@ cd rsimgv
 meson setup builddir --prefix=/usr/local
 meson compile -C builddir
 meson install -C builddir</code></pre>
-<p>Installing copies the GSettings schema and the application icons into the system data directories, and the desktop file that lets rsimgv open pictures and videos from other applications.</p>
+<p>Installing copies the GSettings schema, the application icons, the desktop file and the bundled plugins into the system data directories. The desktop file lets rsimgv open pictures and videos from other applications.</p>
 
 <h3>Helper scripts</h3>
 <p>The <code>scripts/</code> folder wraps the same steps:</p>
@@ -45,20 +50,21 @@ makepkg -si</code></pre>
 <p>For development, <code>dev.sh</code> sets up the build directory if needed, rebuilds, and runs the app from it, with the schema and resource bundle pointed at the build directory:</p>
 <pre><code>./dev.sh              # rebuild and run rsimgv
 ./dev.sh ~/Pictures   # extra arguments go to rsimgv
-./dev.sh test         # rebuild and run the test suite</code></pre>
+./dev.sh test         # rebuild and run the test suite
+./dev.sh cargo check  # run a Cargo command in the build environment</code></pre>
 
 <h2>First launch</h2>
 <p>With no arguments, rsimgv opens a window on the folder that was open when you last closed it, falling back to your home folder. Change that with the <em>Start location</em> setting: the last open folder, the root folder, your home folder, or a specific folder.</p>
 <ol class="steps">
   <li><strong>Pick a folder</strong><br>Click a folder in the tree, or press <kbd>Ctrl</kbd>+<kbd>L</kbd> and type a path.</li>
   <li><strong>Open a picture</strong><br>Double-click it, or move the cursor with the arrow keys or <kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd> and press <kbd>Enter</kbd> or <kbd>E</kbd>.</li>
-  <li><strong>Step through the folder</strong><br>Use <kbd>,</kbd> and <kbd>.</kbd> for the previous and next item. Press <kbd>Q</kbd> or <kbd>Esc</kbd> to go back to the grid.</li>
+  <li><strong>Step through the folder</strong><br>Use <kbd>,</kbd> and <kbd>.</kbd> for the previous and next item. Press <kbd>Q</kbd> or <kbd>Esc</kbd> to go back to the grid, or <kbd>B</kbd> to toggle the viewer.</li>
   <li><strong>See what else is bound</strong><br>Press <kbd>F1</kbd> for the keys in force where you are, or <kbd>Ctrl</kbd>+<kbd>,</kbd> for the preferences.</li>
 </ol>
 
 {{shot keybinds-overlay-browse "F1 lists the keybindings in force while browsing"}}
 
 <h2>Where your data lives</h2>
-<p>Settings are kept as YAML in <code>~/.config/rsimgv/rsimgv.conf</code>, beside your keybindings, bookmarks and per-file settings. Thumbnails are cached under <code>~/.cache/rsimgv</code>. See <a href="files.html">Files and folders</a> for the full list.</p>
+<p>Settings are kept as YAML in <code>~/.config/rsimgv/rsimgv.conf</code>, beside your keybindings, bookmarks, playlist and per-file settings. The metadata index and viewing history are in <code>~/.local/share/rsimgv/media-index.sqlite3</code>, and thumbnails are cached under <code>~/.cache/rsimgv</code>. See <a href="files.html">Files and folders</a> for the full list.</p>
 
-<div class="callout warn"><strong>Trying it without touching your settings</strong><p>Launching rsimgv rewrites <code>last-directory</code> and <code>last-file</code> in your real configuration file. To experiment without that, point <code>RSIMGV_CONFIG</code> at another file, or give it empty <code>XDG_CONFIG_HOME</code>, <code>XDG_CACHE_HOME</code> and <code>XDG_DATA_HOME</code> directories.</p></div>
+<div class="callout warn"><strong>Trying it without touching your settings</strong><p>Launching rsimgv rewrites <code>start.last-directory</code> and <code>start.last-file</code> in your real configuration file. To experiment without that, point <code>RSIMGV_CONFIG</code> and <code>RSIMGV_DATA</code> at other files and folders, or give it empty <code>XDG_CONFIG_HOME</code>, <code>XDG_CACHE_HOME</code> and <code>XDG_DATA_HOME</code> directories.</p></div>

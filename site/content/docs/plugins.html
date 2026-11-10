@@ -1,0 +1,117 @@
+title: Plugins
+desc: Python plugins in rsimgv: discovery, the manifest, the Python API, actions, menus, events, panels, settings and the bundled LLM Screenshot plugin.
+---
+<p class="lead">Plugins extend rsimgv with Python: they can add actions, keybindings, menus, events and sidebar panels, and declare their own settings. The bundled <strong>LLM Screenshot</strong> plugin sends the viewer's picture or video frame to an OpenAI-compatible vision model.</p>
+
+{{shot prefs-plugins "The Plugins page under Integration"}}
+
+<div class="callout"><strong>Python support is a build option</strong><p>Python plugin support is built by default when <code>python3-embed</code> and <code>pygobject-3.0</code> are available. Configure with <code>-Dpython=auto</code>, <code>-Dpython=enabled</code> or <code>-Dpython=disabled</code>.</p></div>
+
+<h2>Where plugins live</h2>
+<p>A plugin is a directory containing <code>plugin.yaml</code>. They are looked for in:</p>
+<ol>
+  <li><code>$RSIMGV_PLUGINS</code> (a colon-separated list, useful while developing)</li>
+  <li><code>$XDG_DATA_HOME/rsimgv/plugins</code> (usually <code>~/.local/share/rsimgv/plugins</code>)</li>
+  <li>each <code>$XDG_DATA_DIRS/rsimgv/plugins</code></li>
+  <li>the directories in <code>plugins.extra-directories</code></li>
+</ol>
+<p>A plugin is enabled unless its id is in <code>plugins.disabled</code>. Python files and manifests are watched and reloaded when they change, unless <code>plugins.auto-reload</code> is off. The <em>Plugins</em> page lists what was found, shows each plugin's settings, and reloads them.</p>
+
+<h2>The manifest</h2>
+<pre><code>api: 1
+id: com.example.hello
+name: Hello
+version: 0.1.0
+runtime: python
+entry: plugin.py
+startup: on-demand
+
+events: [folder.navigated, viewer.item_changed]
+
+contributes:
+  actions:
+    - id: greet
+      label: Greet
+      description: Say hello to the selected item.
+      scope: browse
+      default_keys: [ctrl+alt+g]
+  menus:
+    - menu: main
+      label: Greet
+      action: greet
+  panels:
+    - id: response
+      slot: sidebar.bottom
+      title: Hello
+  settings:
+    - key: greeting
+      label: Greeting
+      kind: string
+      default: Hello</code></pre>
+<ul>
+  <li><code>api</code> must be <code>1</code>. Plugin ids may contain lowercase letters, digits, dots and hyphens.</li>
+  <li>Action names become <code>plugin.&lt;id&gt;.&lt;action&gt;</code> and can be bound in the keybinding editor.</li>
+  <li>Panel slots are <code>sidebar.bottom</code>, <code>browse.header</code>, <code>viewer.overlay</code> and <code>preferences.plugins</code>.</li>
+  <li>Setting kinds are <code>string</code>, <code>text</code>, <code>int</code>, <code>bool</code> and <code>choice</code>. Settings are written to the plugin's own <code>config.json</code> and shown on the Plugins page. A <code>choice</code> setting takes <code>choices</code>; an <code>int</code> setting can take <code>min</code> and <code>max</code>.</li>
+</ul>
+
+<h2>The Python contract</h2>
+<p>The host imports <code>entry</code> and instantiates <code>create_plugin()</code> or the <code>Plugin</code> class, then calls:</p>
+<pre><code>class Plugin:
+    def activate(self, host): ...
+    def deactivate(self): ...
+    def invoke_action(self, action, context): ...
+    def on_event(self, name, data): ...
+    def create_panel(self, panel_id, instance_id, container, context): ...
+    def panel_destroyed(self, panel_id, instance_id): ...</code></pre>
+<p><code>create_panel</code> receives a host-owned <code>Gtk.Box</code> and appends its widgets to it.</p>
+
+<h3>The <code>rsimgv</code> module</h3>
+<pre><code>rsimgv.host.call(method, params=None) -&gt; dict
+rsimgv.host.log(level, message)
+rsimgv.host.config_path() -&gt; str
+rsimgv.host.plugin_id
+rsimgv.host.generation
+
+rsimgv.ui.connect(widget, signal, callback) -&gt; int
+rsimgv.ui.idle_add(callback) -&gt; int
+rsimgv.ui.timeout_add(ms, callback) -&gt; int
+rsimgv.ui.source_remove(id)
+rsimgv.ui.disconnect_all()
+
+rsimgv.notify(text, level="info", seconds=4)
+rsimgv.request_reload()
+rsimgv.action_done(result)</code></pre>
+<ul>
+  <li><code>host.call</code> runs the same methods as the JSON IPC, on the GTK main thread.</li>
+  <li><code>ui.idle_add</code> is safe to call from a worker thread and runs the callback on the GTK main thread.</li>
+  <li><code>ui.connect</code> and <code>ui.timeout_add</code> are tracked and cleaned up on reload.</li>
+  <li><code>action_done</code> reports an action's result. An IPC <code>actions.run</code> waits for it and returns the result to the client (up to 120 seconds); a dictionary with an <code>error</code> key becomes an error response.</li>
+  <li>Plugins are trusted code. A C-extension crash can terminate rsimgv.</li>
+</ul>
+
+<h2>Plugins and the remote control</h2>
+<p><code>actions.run</code> with a plugin action blocks until the plugin calls <code>rsimgv.action_done</code> and returns its result:</p>
+<pre><code>{"id": 1, "method": "actions.run", "params": {"name": "plugin.com.example.llm-screenshot.analyze"}}
+{"id": 1, "result": {"result": "The picture shows ..."}}</code></pre>
+<p><code>plugins.list</code>, <code>plugins.reload</code>, <code>plugins.settings</code> and <code>plugins.set-setting</code> are also available. See <a href="remote-control.html#plugins">Remote control: plugins</a>. A plugin action started from a keybinding or menu does not wait; it reports errors as window notifications.</p>
+
+<h2>The bundled LLM Screenshot plugin</h2>
+<p>Open a picture or video and press <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>L</kbd>, or choose <strong>Analyze with LLM</strong> from the main menu. The viewer's current picture or video frame is sent to an OpenAI-compatible vision model, and the description appears in a persistent overlay notification and in the sidebar panel.</p>
+<p>Set the endpoint, model, prompt and limits on the Plugins page, or in <code>$XDG_CONFIG_HOME/rsimgv/plugins/com.example.llm-screenshot/config.json</code>:</p>
+<pre><code>{
+  "base_url": "https://api.openai.com/v1",
+  "model": "gpt-4o-mini",
+  "prompt": "Describe this image and identify anything notable about it.",
+  "max_tokens": 500,
+  "timeout_seconds": 60,
+  "api_key_env": "OPENAI_API_KEY"
+}</code></pre>
+<p>The API key is read from the environment variable named by <code>api_key_env</code>; it is never stored in the config file.</p>
+
+<h2>Limits</h2>
+<ul>
+  <li>Hot reload re-imports Python modules; C extensions and GObject types from earlier generations stay loaded for the process lifetime.</li>
+  <li>A plugin stuck in a loop blocks the GTK thread.</li>
+  <li>Native Rust plugins are not implemented yet.</li>
+</ul>

@@ -1,7 +1,7 @@
 title: Remote control (IPC)
 desc: Drive a running rsimgv from other programs with its JSON interface over a Unix socket, TCP or HTTP: every method, with examples.
 ---
-<p class="lead">A running rsimgv can be driven by other programs. Anything you can do with a key, you can do with a request: run an action, open a tab, select a file, ask what the viewer is showing, take a screenshot of it, or put a message on screen.</p>
+<p class="lead">A running rsimgv can be driven by other programs. Anything you can do with a key, you can do with a request: run an action, open a tab, select a file, ask what the viewer is showing, take a screenshot of it, read file metadata and thumbnails, change settings, or put a message on screen.</p>
 
 <h2>Turn it on</h2>
 <p>The interface is off by default. Enable one or more transports under <em>General → Remote control</em> in the preferences, and they start or stop straight away.</p>
@@ -23,7 +23,7 @@ desc: Drive a running rsimgv from other programs with its JSON interface over a 
 
 {"id": 1, "result": {"tabs": [{"id": 1, "index": 0, "path": "/home/me/Pictures", "active": true}]}}
 {"id": 1, "error": {"code": "...", "message": "..."}}</code></pre>
-<p>Requests are carried out on the window's own thread, so they see exactly what you see. A request that is not answered within five seconds is given up on.</p>
+<p>Requests are carried out on the window's own thread, so they see exactly what you see. A request that is not answered within 180 seconds is given up on. A plugin action can take up to 120 seconds of that while the plugin works.</p>
 
 <h3>Examples</h3>
 <pre><code># HTTP
@@ -50,14 +50,14 @@ def call(method, **params):
 
 call("navigate.to", path="/home/me/Pictures")
 print(call("view.info"))</code></pre>
-<p>The repository's <code>scripts/get_screenshot.py</code> is a complete small client: it asks <code>view.info</code> for what the viewer shows and <code>view.screenshot</code> for a PNG of it.</p>
+<p>The repository's <code>scripts/get_screenshot.py</code> is a complete small client: it asks <code>view.info</code> for what the viewer shows and <code>view.screenshot</code> for a PNG of it. The <code>clients/open-webui</code> tool exposes the whole interface to an Open WebUI assistant.</p>
 
 <h2 id="actions">Actions</h2>
 <dl>
-  <dt><code>actions.list</code></dt><dd>Lists every action: <code>name</code>, <code>label</code>, <code>description</code>, its default <code>scope</code>, the <code>contexts</code> it can be bound in, its <code>icon</code> and its default key <code>defaults</code>.</dd>
-  <dt><code>actions.run</code> <code>{"name", "value"?}</code></dt><dd>Runs the action <code>name</code>, with <code>value</code> for the actions that take one, such as <code>video.seek</code>. <code>win.notify</code> takes <code>{"message", "level"?, "seconds"?}</code> instead and shows the message over the window.</dd>
+  <dt><code>actions.list</code></dt><dd>Lists every action: <code>name</code>, <code>label</code>, <code>description</code>, its default <code>scope</code>, the <code>contexts</code> it can be bound in, its <code>icon</code> and its default key <code>defaults</code>. Plugin actions are included while their plugin is loaded.</dd>
+  <dt><code>actions.run</code> <code>{"name", "value"?, "target"?}</code></dt><dd>Runs the action <code>name</code>, with <code>value</code> for the actions that take one, such as <code>video.seek</code> or <code>video.frame-seek</code>, and <code>target</code> for those that choose one, such as <code>application</code> for the volume actions or <code>16:9</code> for <code>video.set-aspect</code>. <code>win.notify</code> takes <code>{"message", "level"?, "seconds"?}</code> instead and shows the message over the window. A plugin action waits for the plugin's result.</dd>
 </dl>
-<p>All the names are in the <a href="keybindings.html#every-action-and-its-default-keys">action table</a>. For instance, <code>{"method": "actions.run", "params": {"name": "video.play-pause"}}</code> toggles playback.</p>
+<p>All the names are in the <a href="keybindings.html#every-action-and-its-default-keys">action table</a>. For instance, <code>{"method": "actions.run", "params": {"name": "video.play-pause"}}</code> toggles playback. The playlist is driven the same way, with the <code>win.playlist-*</code> actions.</p>
 
 <h2>Window</h2>
 <dl>
@@ -109,6 +109,39 @@ print(call("view.info"))</code></pre>
 shot = call("view.screenshot")
 open("frame.png", "wb").write(base64.b64decode(shot["data"]))</code></pre>
 
+<h2 id="metadata">Metadata and thumbnails</h2>
+<dl>
+  <dt><code>metadata.get</code> <code>{"paths"}</code></dt><dd>Returns <code>metadata</code>, one entry per path in the order given: <code>path</code>, <code>name</code>, <code>is_dir</code>, <code>size</code> in bytes, <code>modified</code> in seconds since the Unix epoch, <code>mime_type</code>, and <code>media</code>. <code>media</code> holds a picture's or video's <code>width</code>, <code>height</code>, <code>duration</code>, <code>frame_rate</code>, <code>codec</code>, <code>audio_codec</code> and <code>bit_rate</code>; it is null for a folder or other file. A picture or video not read yet is queued, so <code>media</code> is null and <code>media_pending</code> is true until a later request finds it. A path that does not exist gives <code>{"path", "error": "no_such_file"}</code>.</dd>
+  <dt><code>thumbnails.get</code> <code>{"paths", "max_size"?}</code></dt><dd>Returns <code>thumbnails</code>, one per path: <code>path</code>, the pixels of the thumbnail in <code>size</code>, its <code>format</code> (<code>png</code>) and base64 <code>data</code>. It gives the largest thumbnail rsimgv has already made for the file, at most <code>max_size</code> pixels across (default 256, up to 2048). <code>data</code> is null for a file with no thumbnail yet, which the window makes when it shows the file. Thumbnails are read from the disk cache, so none are given while the thumbnail cache is off.</dd>
+</dl>
+
+<h2 id="file-state">File state</h2>
+<dl>
+  <dt><code>files.state</code> <code>{"path"}</code></dt><dd>Returns the state saved for a file, by its content hash: <code>path</code>, <code>hash</code> and <code>values</code>, holding the keys as saved, such as <code>position</code>, <code>speed</code>, <code>volume</code>, <code>aspect</code>, <code>rotation</code>, <code>zoom</code> and <code>pan</code>. A file with no state yet gives empty <code>values</code>.</dd>
+  <dt><code>files.set_state</code> <code>{"path", "values"}</code></dt><dd>Sets each key in <code>values</code>, or removes it when the value is null, and gives the state afterwards.</dd>
+  <dt><code>files.reset_state</code> <code>{"path", "keys"?}</code></dt><dd>Removes each key, or the whole state with no keys, and gives the state afterwards.</dd>
+</dl>
+<p><code>files.state.get</code>, <code>files.state.set</code> and <code>files.state.reset</code> are accepted as aliases.</p>
+
+<h2 id="settings">Settings</h2>
+<dl>
+  <dt><code>settings.list</code></dt><dd>Returns <code>settings</code>, every application setting by its dotted name at its current value.</dd>
+  <dt><code>settings.get</code> <code>{"key"}</code></dt><dd>Returns the setting's <code>key</code> and <code>value</code>.</dd>
+  <dt><code>settings.set</code> <code>{"key", "value"}</code></dt><dd>Sets a setting; a null value resets it to its default. Returns the value saved.</dd>
+  <dt><code>settings.update</code> <code>{"values"}</code></dt><dd>Sets or resets each setting in one call, and returns <code>settings</code> with their new values. A null value resets that setting.</dd>
+  <dt><code>settings.reset</code> <code>{"keys"?}</code></dt><dd>Resets these settings, or every setting with no keys.</dd>
+  <dt><code>settings.describe</code></dt><dd>Returns <code>settings</code>, each with its <code>key</code>, <code>type</code>, <code>description</code>, <code>default</code> and current <code>value</code>.</dd>
+</dl>
+<p>Changes apply at once, exactly as if they were made in the preferences dialog or in the settings file.</p>
+
+<h2 id="plugins">Plugins</h2>
+<dl>
+  <dt><code>plugins.list</code></dt><dd>Returns <code>plugins</code>: each with its <code>id</code>, <code>name</code>, <code>description</code>, <code>version</code>, <code>runtime</code>, whether it is <code>enabled</code> and <code>running</code>, and any <code>error</code>.</dd>
+  <dt><code>plugins.settings</code> <code>{"id"}</code></dt><dd>Returns the settings the plugin declares and their current <code>values</code>.</dd>
+  <dt><code>plugins.set-setting</code> <code>{"id", "key", "value"}</code></dt><dd>Sets one of the plugin's settings and reloads it so it reads the new value.</dd>
+  <dt><code>plugins.reload</code> <code>{"id"?}</code></dt><dd>Reloads one plugin, or every plugin with no id.</dd>
+</dl>
+
 <h2 id="messages">Messages</h2>
 <dl>
   <dt><code>messages.show</code> <code>{"text", "level"?, "position"?, "persistent"?, "seconds"?, "dismissible"?}</code></dt><dd>Shows a message over the window and returns its <code>id</code>. <code>level</code> is <code>info</code> (the default), <code>success</code>, <code>warning</code>, <code>error</code> or <code>plain</code>. <code>position</code> is <code>top-left</code>, <code>top-center</code>, <code>top-right</code>, <code>bottom-left</code>, <code>bottom-center</code> (the default) or <code>bottom-right</code>. It goes away after <code>seconds</code> (4 by default) unless <code>persistent</code> is true, when it stays until dismissed. <code>dismissible</code> puts a close button on it, which a persistent message has unless it is false.</dd>
@@ -121,5 +154,6 @@ open("frame.png", "wb").write(base64.b64decode(shot["data"]))</code></pre>
   <li>A <strong>hotkey daemon</strong> or stream-deck button that sends <code>actions.run</code> for <code>video.play-pause</code> or <code>view.next</code>.</li>
   <li>A <strong>sorting workflow</strong> in which a script calls <code>files.selected</code>, files the picture away, then calls <code>actions.run</code> with <code>view.next</code>.</li>
   <li>A <strong>kiosk or slideshow</strong> controller that calls <code>navigate.to</code> and steps the viewer on a timer.</li>
+  <li>A <strong>library dashboard</strong> that reads <code>metadata.get</code> and <code>thumbnails.get</code> for a folder.</li>
   <li>A <strong>progress display</strong> for a long job, using <code>messages.show</code> and <code>messages.update</code>.</li>
 </ul>

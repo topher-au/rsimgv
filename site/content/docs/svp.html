@@ -1,25 +1,24 @@
 title: SVP frame interpolation
-desc: Smooth video playback in rsimgv with SmoothVideo Project: requirements, output frame rate modes and options.
+desc: Smooth video playback in rsimgv with SmoothVideo Project: bundled open-svpflow plugins, output frame rate modes and options.
 ---
-<p class="lead">SVP (SmoothVideo Project) makes video look fluid by synthesising frames between the real ones. rsimgv can run videos played through libmpv through SVP's VapourSynth plugins, the same way SVP's own <code>svpctl</code> does.</p>
+<p class="lead">SVP (SmoothVideo Project) makes video look fluid by synthesising frames between the real ones. rsimgv runs videos played through libmpv through SVP's VapourSynth plugins, the same way SVP's own <code>svpctl</code> does.</p>
 
 {{shot prefs-videos-svp "The SVP tab of the video preferences"}}
 
-<div class="callout"><strong>rsimgv does not include SVP</strong><p>You need SmoothVideo Project installed separately. rsimgv only loads the plugin libraries SVP installs.</p></div>
+<div class="callout"><strong>Bundled plugins</strong><p>rsimgv builds and embeds the open-svpflow VapourSynth plugins, so a separate SmoothVideo Project installation is not required. Point <em>Plugin libraries</em> at SVP's own directory if you would rather use its libraries instead.</p></div>
 
 <h2>Requirements</h2>
 <ul>
-  <li>SVP installed, with its VapourSynth plugin libraries (<code>libsvpflow1_vs64.so</code> and <code>libsvpflow2_vs64.so</code>, or the same names without <code>_vs64</code>) in one directory. The default directory is <code>/opt/svp/plugins</code>.</li>
-  <li>An mpv build with VapourSynth support, because rsimgv loads SVP through mpv's <code>vapoursynth</code> filter.</li>
-  <li>The <code>mpv</code> video backend. The SVP page offers to switch to it when it is not the chosen one.</li>
+  <li>The <code>mpv</code> video backend, with an mpv build that has VapourSynth support, because rsimgv loads SVP through mpv's <code>vapoursynth</code> filter. The SVP page offers to switch to it when it is not the chosen one.</li>
+  <li>The bundled plugins, or SVP installed with its own VapourSynth plugin libraries (<code>libsvpflow1_vs64.so</code> and <code>libsvpflow2_vs64.so</code>, or the same names without <code>_vs64</code>) in one directory, named by <em>Plugin libraries</em> (<code>video.svp.plugin-directory</code>).</li>
   <li>Optionally an NVIDIA GPU, for SVP's optical flow analysis on the GPU. Without it, SVP's CPU analysis is used.</li>
 </ul>
 
 <h2>Turning it on</h2>
 <ol class="steps">
   <li><strong>Open the SVP tab</strong><br><kbd>Ctrl</kbd>+<kbd>,</kbd> for the preferences, then <em>Videos → SVP</em>.</li>
-  <li><strong>Check the plugin directory</strong><br>Point <em>Plugin directory</em> at the folder holding SVP's libraries.</li>
-  <li><strong>Switch on <em>Interpolate frames with SVP</em></strong><br>It applies to videos you open from then on.</li>
+  <li><strong>Choose the plugin libraries</strong><br>Leave <em>Plugin libraries</em> empty for the bundled ones, or point it at SVP's own directory.</li>
+  <li><strong>Switch on <em>Interpolate frames with SVP</em></strong><br>It applies to videos you open from then on. <kbd>V</kbd> turns it on or off while watching.</li>
 </ol>
 
 <h2>Output frame rate</h2>
@@ -36,7 +35,10 @@ desc: Smooth video playback in rsimgv with SmoothVideo Project: requirements, ou
 <p>In <code>fixed</code> and <code>variable</code>, a <em>Target frame rate</em> of 0 means the source's rate. Whatever the mode picks is rounded to a whole number of frames a second and kept between the <em>Minimum</em> (60 by default) and <em>Maximum</em> (240 by default) frame rates. Because the target follows the playback speed in the <code>display</code> and <code>variable</code> modes, slow motion and fast forward keep the output within range.</p>
 
 <h2>NVIDIA optical flow</h2>
-<p><em>NVIDIA optical flow</em> (on by default) runs SVP's motion analysis on the GPU through SVP's second plugin, rather than on the CPU. Turn it off if you have no NVIDIA GPU.</p>
+<p><em>NVIDIA optical flow</em> (<code>video.svp.nvof</code>, on by default) runs SVP's motion analysis on the GPU through SVP's second plugin, rather than on the CPU. Turn it off if you have no NVIDIA GPU.</p>
+
+<h2>Seeking and start-up</h2>
+<p>mpv reloads SVP after every seek, which would make skipping through a video wait for it. <em>Pause SVP while seeking</em> (<code>video.svp.seek-bypass.enabled</code>, on by default) leaves SVP out of the video while it is skipped through and just after it starts, and brings it back after <em>Seconds until SVP comes back</em> (<code>video.svp.seek-bypass.delay</code>, 1 second by default) after the last seek. A new video starts without SVP for the same moment. Turn it off to have SVP from the first frame, at the cost of waiting on every skip.</p>
 
 <h2>SVP's manager socket</h2>
 <p>SVP's libraries expect to find a local server, normally run by <code>svpctl</code> or SVP Manager, at <code>/tmp/com.svpteam.svp</code>. While SVP is on, rsimgv serves that socket itself, answering handshakes and leaving SVP's settings as they are, so no other SVP process needs to be running. Each client is served on a thread of its own, so a busy main thread does not hold up the filter.</p>
