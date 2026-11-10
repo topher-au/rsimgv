@@ -346,6 +346,15 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_menu_shows_the_first_binding_of_its_action() {
+        let table = BindingTable::defaults();
+        assert_eq!(table.shortcut("video.play-pause").map(|binding| binding.chord.as_str()), Some("space"));
+        assert_eq!(table.shortcut("browse.cursor-up").map(|binding| binding.chord.as_str()), Some("up"));
+        assert!(table.shortcut("browse.show-tooltip").is_none(), "an action with no chords shows none");
+        assert!(table.shortcut("no.such-action").is_none());
+    }
+
+    #[test]
     fn the_deepest_scope_wins_a_chord() {
         let table = BindingTable::defaults();
         // Space is only bound in the video scope.
