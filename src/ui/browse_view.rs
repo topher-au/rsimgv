@@ -23,7 +23,7 @@ use super::drag;
 use super::thumbnail_paint::{picture_paintable, ScatteredThumbnail, MAX_PHOTOS, PHOTO_SHARE};
 use super::video_preview::VideoPreview;
 use crate::fs::metadata::{MediaInfo, MediaMetadata};
-use crate::fs::{natural_cmp, FileEntry, FileStore, Reading};
+use crate::fs::{natural_cmp, FileEntry, FileStore, ListingChange, Reading, Watching};
 
 /// A file or folder in a browse view, as the IPC reports it.
 pub struct ListedFile {
@@ -294,6 +294,62 @@ fn runs(descending: &[u32]) -> Vec<(u32, u32)> {
         }
     }
     runs
+}
+
+/// Where in `store` the entries at `wanted` are.
+fn positions_of(store: &gio::ListStore, wanted: &std::collections::HashSet<&Path>) -> HashMap<PathBuf, u32> {
+    (0..store.n_items())
+        .filter_map(|position| {
+            let entry = store.item(position).and_downcast::<FileEntry>()?;
+            wanted.contains(entry.path()).then(|| (entry.path().to_path_buf(), position))
+        })
+        .collect()
+}
+
+/// Puts `entries` in `store`: in place of the item for the same path, or after the others if there is none.
+fn put_entries(store: &gio::ListStore, entries: &[FileEntry]) {
+    let wanted = entries.iter().map(|entry| entry.path()).collect();
+    let known = positions_of(store, &wanted);
+    let mut new = Vec::new();
+    for entry in entries {
+        match known.get(entry.path()) {
+            Some(&position) => store.splice(position, 1, std::slice::from_ref(entry)),
+            None => new.push(entry.clone()),
+        }
+    }
+    store.splice(store.n_items(), 0, &new);
+}
+
+/// Applies a change to a folder's listing to the items of `store`, which are the folder's entries in no order, so that
+/// only the items the change names are touched. Whether anything changed.
+fn apply_to_items(store: &gio::ListStore, change: &ListingChange) -> bool {
+    match change {
+        ListingChange::Added(entries) | ListingChange::Changed(entries) => {
+            put_entries(store, entries);
+            !entries.is_empty()
+        }
+        ListingChange::Removed(paths) => {
+            let wanted = paths.iter().map(PathBuf::as_path).collect();
+            let mut positions: Vec<u32> = positions_of(store, &wanted).into_values().collect();
+            positions.sort_unstable_by(|a, b| b.cmp(a));
+            for (first, count) in runs(&positions) {
+                store.splice(first, count, &[] as &[FileEntry]);
+            }
+            !positions.is_empty()
+        }
+        ListingChange::Moved(moves) => {
+            // One at a time, since a later move can start from where an earlier one ended.
+            for (old, new) in moves {
+                let known = positions_of(store, &std::iter::once(old.as_path()).collect());
+                match known.get(old) {
+                    Some(&position) => store.splice(position, 1, std::slice::from_ref(new)),
+                    None => put_entries(store, std::slice::from_ref(new)),
+                }
+            }
+            !moves.is_empty()
+        }
+        ListingChange::Reload => false,
+    }
 }
 
 fn entry_in(view: &BrowseView, cell: &gtk::Box) -> Option<FileEntry> {
@@ -1068,7 +1124,7 @@ mod imp {
         /// When each file was last modified, as thumbnails are asked for, so they are not read from the disk each time.
         pub(super) prefetch_stamps: RefCell<HashMap<PathBuf, i64>>,
         /// Watches the folder shown, while the view is active.
-        pub(super) monitor: RefCell<Option<gio::FileMonitor>>,
+        pub(super) monitor: RefCell<Option<Watching>>,
         /// The timer that lists the folder again after its changes have settled.
         pub(super) refresh_timer: RefCell<Option<glib::SourceId>>,
         /// How far each folder visited in this view was scrolled, so returning to one restores it.
@@ -2014,39 +2070,76 @@ impl BrowseView {
         }
     }
 
-    /// Watches the folder shown while the view is active, and stops watching otherwise or when the folder changes.
+    /// Watches the folder shown while the view is active, and stops watching otherwise or when the folder changes. The
+    /// folder's listing is kept up to date by the store, and each change to it comes to `apply_change`.
     fn update_monitor(&self) {
         let imp = self.imp();
         if let Some(timer) = imp.refresh_timer.take() {
             timer.remove();
         }
-        if let Some(monitor) = imp.monitor.take() {
-            monitor.cancel();
+        if let Some(watching) = imp.monitor.take() {
+            watching.cancel();
         }
         if !imp.active.get() {
             return;
         }
         let Some(path) = self.path() else { return };
-        let Ok(monitor) = gio::File::for_path(&path).monitor_directory(gio::FileMonitorFlags::NONE, gio::Cancellable::NONE)
-        else {
-            return;
-        };
         let weak = self.downgrade();
-        monitor.connect_changed(move |_, _, _, event| {
-            let changed = matches!(
-                event,
-                gio::FileMonitorEvent::Created
-                    | gio::FileMonitorEvent::Deleted
-                    | gio::FileMonitorEvent::Renamed
-                    | gio::FileMonitorEvent::MovedIn
-                    | gio::FileMonitorEvent::MovedOut
-                    | gio::FileMonitorEvent::ChangesDoneHint
-            );
-            if let (true, Some(view)) = (changed, weak.upgrade()) {
-                view.schedule_refresh();
+        let watching = FileStore::shared().watch(&path, move |change| {
+            if let Some(view) = weak.upgrade() {
+                view.apply_change(change);
             }
         });
-        imp.monitor.replace(Some(monitor));
+        imp.monitor.replace(watching);
+    }
+
+    /// Brings the items up to date with a change to the folder, touching only the items it names. A listing that cannot
+    /// be brought up to date from changes is read again.
+    fn apply_change(&self, change: &ListingChange) {
+        let imp = self.imp();
+        if matches!(change, ListingChange::Reload) {
+            self.schedule_refresh();
+            return;
+        }
+        // The subfolders' items are not the folder's listing, so a change in the folder does not touch them.
+        if imp.search.borrow().lists_tree() {
+            return;
+        }
+        // A folder being listed is reconciled with the whole listing once that ends, which has the change in it.
+        if imp.reading.borrow().is_some() {
+            imp.refresh_skipped.set(true);
+            return;
+        }
+        let Some(store) = imp.store.get() else { return };
+        let selected = self.selected_name();
+        // A selected item that is renamed stays selected under its new name.
+        let selected = match (change, &selected) {
+            (ListingChange::Moved(moves), Some(name)) => moves
+                .iter()
+                .find(|(old, _)| old.file_name().is_some_and(|old| old.to_string_lossy() == *name))
+                .map(|(_, new)| new.name())
+                .or(selected),
+            _ => selected,
+        };
+        let mut changed = false;
+        imp.grid.batch_changes(|| changed = apply_to_items(store, change));
+        if let Some(name) = selected {
+            self.select_by_name(&name);
+        }
+        self.update_status();
+        if changed {
+            self.emit_by_name::<()>("listing-changed", &[]);
+        }
+    }
+
+    /// Selects the item called `name`, if there is one. Unlike `select_named`, it leaves the scroll where it is.
+    fn select_by_name(&self, name: &str) {
+        let Some(model) = self.imp().grid.model() else { return };
+        let position = (0..model.n_items())
+            .find(|&position| model.item(position).and_downcast::<FileEntry>().is_some_and(|entry| entry.name() == name));
+        if let Some(position) = position {
+            model.set_selected(position);
+        }
     }
 
     /// Lists the folder again once it has stopped changing for `REFRESH_DELAY`.
@@ -2148,6 +2241,10 @@ impl BrowseView {
             return;
         }
         let Some(path) = self.path() else { return };
+        // A watched listing is kept, so the view lets go of it to have the folder read again.
+        if let Some(watching) = imp.monitor.take() {
+            watching.cancel();
+        }
         let files = FileStore::shared();
         files.discard_idle(&path);
         let listed = Rc::new(RefCell::new(Vec::new()));
@@ -2170,6 +2267,7 @@ impl BrowseView {
         };
         let reading = files.read(&path, on_batch, on_done);
         imp.reading.replace(Some(reading));
+        self.update_monitor();
     }
 
     /// Makes the items match `listed`: entries that are gone are removed, new or changed ones are added, and
@@ -2177,11 +2275,7 @@ impl BrowseView {
     fn reconcile(&self, listed: &[FileEntry]) {
         let imp = self.imp();
         let Some(store) = imp.store.get() else { return };
-        let selected = imp
-            .grid
-            .model()
-            .and_then(|model| model.item(model.selected()).and_downcast::<FileEntry>())
-            .map(|entry| entry.name());
+        let selected = self.selected_name();
 
         // Entries are matched by path, which unlike a display name is unique within a folder.
         let mut wanted: std::collections::HashMap<PathBuf, FileEntry> =
@@ -2210,13 +2304,8 @@ impl BrowseView {
             store.splice(store.n_items(), 0, &added);
         });
 
-        // Selecting by name here, rather than with `select_named`, leaves the scroll where it is.
-        if let (Some(name), Some(model)) = (selected, imp.grid.model()) {
-            let position = (0..model.n_items())
-                .find(|&position| model.item(position).and_downcast::<FileEntry>().is_some_and(|entry| entry.name() == name));
-            if let Some(position) = position {
-                model.set_selected(position);
-            }
+        if let Some(name) = selected {
+            self.select_by_name(&name);
         }
         self.update_status();
         if changed {
@@ -3343,6 +3432,48 @@ pub(crate) mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
+    /// Files added, renamed and removed on disk reach the listing as the folder's monitor reports them. A selected file
+    /// that is renamed stays selected under its new name.
+    fn the_listing_follows_files_added_renamed_and_removed() {
+        let root = std::env::temp_dir().join(format!("rsimgv-browse-follow-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        for name in ["a.png", "b.png"] {
+            fs::write(root.join(name), "x").unwrap();
+        }
+
+        let view = BrowseView::new();
+        let window = gtk::Window::new();
+        window.set_default_size(600, 400);
+        window.set_child(Some(&view));
+        window.present();
+        view.set_path(&root);
+        wait_for("listing", || view.item_count() == 2);
+        view.select_named("a.png");
+        view.set_active(true);
+        pump_frames(30);
+        let shown = || {
+            let mut names = view.item_names();
+            names.sort();
+            names
+        };
+
+        fs::write(root.join("c.png"), "x").unwrap();
+        wait_for("the added file", || shown() == ["a.png", "b.png", "c.png"]);
+
+        fs::rename(root.join("a.png"), root.join("renamed.png")).unwrap();
+        wait_for("the renamed file", || shown() == ["b.png", "c.png", "renamed.png"]);
+        pump_frames(30);
+        assert_eq!(view.selected_name().as_deref(), Some("renamed.png"), "the selection follows the rename");
+
+        fs::remove_file(root.join("b.png")).unwrap();
+        wait_for("the removed file", || shown() == ["c.png", "renamed.png"]);
+        assert_eq!(view.selected_name().as_deref(), Some("renamed.png"));
+
+        window.destroy();
+        let _ = fs::remove_dir_all(&root);
+    }
+
     /// A thumbnail is let go from memory once its item has left the screen, by its cell too.
     fn an_item_leaving_the_screen_lets_go_of_its_thumbnail() {
         let root = std::env::temp_dir().join(format!("rsimgv-browse-unload-{}", std::process::id()));
@@ -3441,6 +3572,7 @@ pub(crate) mod tests {
     pub(crate) fn run_scenarios() {
         item_size_change_reaches_rendered_items();
         modified_selection_is_not_reported_as_lost();
+        the_listing_follows_files_added_renamed_and_removed();
         a_fitted_folder_is_laid_out_once_per_picture();
         the_fit_setting_reaches_folders_on_screen();
         an_item_leaving_the_screen_lets_go_of_its_thumbnail();
@@ -3625,5 +3757,68 @@ mod run_tests {
     fn neighbouring_removals_form_one_run() {
         assert_eq!(runs(&[9, 8, 7, 4, 2, 1]), vec![(7, 3), (4, 1), (1, 2)]);
         assert_eq!(runs(&[]), Vec::<(u32, u32)>::new());
+    }
+}
+
+#[cfg(test)]
+mod change_tests {
+    use super::*;
+
+    fn entry(name: &str, size: i64) -> FileEntry {
+        let info = gio::FileInfo::new();
+        info.set_display_name(name);
+        info.set_size(size);
+        FileEntry::new(PathBuf::from("/folder").join(name), info)
+    }
+
+    fn items(names: &[&str]) -> gio::ListStore {
+        let store = gio::ListStore::new::<FileEntry>();
+        store.splice(0, 0, &names.iter().map(|name| entry(name, 1)).collect::<Vec<_>>());
+        store
+    }
+
+    fn names(store: &gio::ListStore) -> Vec<String> {
+        (0..store.n_items()).filter_map(|i| store.item(i).and_downcast::<FileEntry>()).map(|e| e.name()).collect()
+    }
+
+    #[test]
+    fn an_added_entry_is_appended_and_a_listed_one_is_replaced() {
+        let store = items(&["a", "b"]);
+        let kept = store.item(0).unwrap();
+        assert!(apply_to_items(&store, &ListingChange::Added(vec![entry("c", 1), entry("b", 7)])));
+        assert_eq!(names(&store), ["a", "b", "c"]);
+        assert_eq!(store.item(0).unwrap(), kept, "an item that was not named is the same object");
+        assert_eq!(store.item(1).and_downcast::<FileEntry>().unwrap().size(), 7);
+    }
+
+    #[test]
+    fn a_changed_entry_takes_the_place_of_the_old_one() {
+        let store = items(&["a", "b", "c"]);
+        apply_to_items(&store, &ListingChange::Changed(vec![entry("b", 9)]));
+        assert_eq!(names(&store), ["a", "b", "c"]);
+        assert_eq!(store.item(1).and_downcast::<FileEntry>().unwrap().size(), 9);
+    }
+
+    #[test]
+    fn removed_entries_are_taken_out_and_unknown_paths_are_ignored() {
+        let store = items(&["a", "b", "c", "d", "e"]);
+        let path = |name: &str| PathBuf::from("/folder").join(name);
+        assert!(apply_to_items(&store, &ListingChange::Removed(vec![path("b"), path("c"), path("e"), path("nope")])));
+        assert_eq!(names(&store), ["a", "d"]);
+        assert!(!apply_to_items(&store, &ListingChange::Removed(vec![path("nope")])));
+    }
+
+    #[test]
+    fn a_moved_entry_keeps_its_place_and_moves_can_chain() {
+        let store = items(&["a", "b", "c"]);
+        let path = |name: &str| PathBuf::from("/folder").join(name);
+        apply_to_items(&store, &ListingChange::Moved(vec![(path("b"), entry("beta", 1))]));
+        assert_eq!(names(&store), ["a", "beta", "c"]);
+        // a becomes b, then c becomes a: the second move does not start from the first's result.
+        apply_to_items(&store, &ListingChange::Moved(vec![(path("a"), entry("b", 1)), (path("c"), entry("a", 1))]));
+        assert_eq!(names(&store), ["b", "beta", "a"]);
+        // A move from a path that is not shown brings the entry in.
+        apply_to_items(&store, &ListingChange::Moved(vec![(path("elsewhere"), entry("arrived", 1))]));
+        assert_eq!(names(&store), ["b", "beta", "a", "arrived"]);
     }
 }
