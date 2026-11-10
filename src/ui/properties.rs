@@ -246,6 +246,7 @@ impl Properties {
             this.free.set(free);
             this.update();
             this.nav.replace_with_tags(&["main"]);
+            this.fit_height();
             this.watch_files();
             this.start_count(true);
         });
@@ -431,6 +432,15 @@ impl Properties {
         self.update_media(first);
         self.update_permissions(&facts);
         self.updating.set(false);
+        self.fit_height();
+    }
+
+    /// Sizes the dialog to the main page. A dialog is sized when it is presented, while it shows the spinner, and does not
+    /// grow with what replaces it, so Nautilus gives it the height of the page it loaded. The width stays as it is.
+    fn fit_height(&self) {
+        let (Some(dialog), Some(main)) = (self.dialog.upgrade(), self.nav.find_page("main")) else { return };
+        let (_, natural, _, _) = main.measure(gtk::Orientation::Vertical, WIDTH);
+        dialog.set_content_height(natural);
     }
 
     /// The icon of the first file, or its thumbnail if it is a picture or a video.
@@ -840,6 +850,15 @@ pub(crate) mod tests {
         row.selected_item().and_downcast::<gtk::StringObject>().map(|item| item.string().to_string()).unwrap_or_default()
     }
 
+    /// The dialog is as tall as the page it shows, not as tall as the spinner it showed while loading.
+    fn assert_dialog_fits_its_page(properties: &Properties) {
+        let main = properties.nav.find_page("main").expect("the main page");
+        let (_, natural, _, _) = main.measure(gtk::Orientation::Vertical, WIDTH);
+        assert!(natural > 200, "the page has content to fit: {natural}");
+        wait_for("the dialog to be as tall as its page", || properties.nav.height() >= natural);
+        assert_eq!(properties.nav.width(), WIDTH, "the width is the one asked for");
+    }
+
     /// A lone file shows what it is and where, and a change on disk reaches the dialog.
     fn a_file_shows_its_facts_and_follows_changes() {
         let dir = root("props-file");
@@ -847,6 +866,7 @@ pub(crate) mod tests {
         fs::write(&file, "hello").unwrap();
         let (window, properties, opened) = open(vec![file.clone()], None);
 
+        assert_dialog_fits_its_page(&properties);
         assert_eq!(properties.name.text(), "note.txt");
         assert!(properties.kind.is_visible() && properties.kind.text().contains("text/plain"));
         assert!(properties.size.is_visible() && properties.size.text().starts_with("5 bytes"));
