@@ -42,7 +42,7 @@ struct Panel {
 
 /// Whether the window has a place for panels in `slot`. The other slots are accepted in a manifest but not built yet.
 fn builds_slot(slot: &str) -> bool {
-    matches!(slot, "sidebar.bottom" | "viewer.overlay")
+    matches!(slot, "sidebar.bottom" | "browse.sidebar" | "viewer.overlay")
 }
 
 struct Entry {
@@ -366,6 +366,19 @@ fn add_panels(window: &Window, only: Option<usize>) {
                         container.set_valign(vertical);
                         overlay.add_overlay(&container);
                         Some(overlay)
+                    } else if slot == "browse.sidebar" {
+                        // The chat sidebar is open while a panel in it is shown, so it follows the panel's visibility.
+                        window.browse_sidebar_host().append(&container);
+                        container.connect_visible_notify({
+                            let weak = window.downgrade();
+                            move |_| {
+                                if let Some(window) = weak.upgrade() {
+                                    window.update_chat_sidebar();
+                                }
+                            }
+                        });
+                        window.update_chat_sidebar();
+                        None
                     } else {
                         window.plugin_panel_host().append(&container);
                         None
@@ -852,7 +865,10 @@ fn remove_panels(index: usize) {
             Some(overlay) => overlay.remove_overlay(&panel.container),
             None => panel.container.unparent(),
         }
-        let _ = panel.window;
+        // A chat sidebar with no panel left in it closes.
+        if let Some(window) = panel.window.upgrade() {
+            window.update_chat_sidebar();
+        }
     }
 }
 

@@ -173,7 +173,7 @@ impl Manifest {
             }
         }
         for panel in &self.contributes.panels {
-            if !matches!(panel.slot.as_str(), "sidebar.bottom" | "browse.header" | "viewer.overlay" | "preferences.plugins") {
+            if !matches!(panel.slot.as_str(), "sidebar.bottom" | "browse.sidebar" | "browse.header" | "viewer.overlay" | "preferences.plugins") {
                 return Err(format!("the panel slot {:?} is not known", panel.slot));
             }
             if !panel.position.is_empty()

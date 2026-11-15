@@ -200,6 +200,10 @@
       <default>false</default>
       <summary>Whether the window was maximized when it was last closed</summary>
     </key>
+    <key name="chat-width" type="i">
+      <default>-1</default>
+      <summary>Width of a plugin's chat sidebar chosen by dragging, in pixels; -1 uses the default width</summary>
+    </key>
   </schema>
   <schema id="au.topher.rsimgv.window.sidebar" path="/au/topher/rsimgv/window/sidebar/">
     <key name="width" type="i">

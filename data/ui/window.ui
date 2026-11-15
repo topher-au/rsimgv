@@ -8,6 +8,7 @@
       <object class="AdwBreakpoint">
         <condition>max-width: 800px</condition>
         <setter object="playlist_split" property="collapsed">True</setter>
+        <setter object="chat_split" property="collapsed">True</setter>
       </object>
     </child>
     <property name="content">
@@ -335,6 +336,15 @@
               <object class="GtkSearchBar" id="browse_search_bar"/>
             </child>
             <property name="content">
+              <!-- A plugin's chat is a sidebar on the end side, outside the playlist's. Plugin panels in the
+                   browse.sidebar slot are added to chat_panels, and the sidebar is open while one is shown. -->
+              <object class="RsimgvOverlaySplitView" id="chat_split">
+                <child type="sidebar">
+                  <object class="GtkBox" id="chat_panels">
+                    <property name="orientation">vertical</property>
+                  </object>
+                </child>
+                <child type="content">
               <!-- The playlist is a sidebar below the header, on the opposite side from the browse split's. -->
               <object class="RsimgvOverlaySplitView" id="playlist_split">
                 <child type="content">
@@ -351,6 +361,8 @@
                   <object class="AdwTabView" id="tab_view"/>
                 </property>
                   </object>
+                </child>
+              </object>
                 </child>
               </object>
             </property>

@@ -68,6 +68,12 @@ mod imp {
         pub bookmarks_list: TemplateChild<gtk::ListBox>,
         #[template_child]
         pub playlist_split: TemplateChild<OverlaySplitView>,
+        /// The sidebar on the end side that holds a plugin's chat, outside the playlist's.
+        #[template_child]
+        pub chat_split: TemplateChild<OverlaySplitView>,
+        /// Where plugin panels in the `browse.sidebar` slot are added.
+        #[template_child]
+        pub chat_panels: TemplateChild<gtk::Box>,
         /// The window the playlist is in while it is taken out of the window, if it is.
         pub(super) playlist_window: RefCell<Option<adw::Window>>,
         /// The header of that window, which its header style setting changes.
@@ -363,6 +369,7 @@ impl Window {
         let panel = PlaylistPanel::new(settings);
         let _ = window.imp().playlist_panel.set(panel);
         window.setup_playlist_splits(settings);
+        window.setup_chat_split(settings);
         GtkWindowExt::connect_focus_widget_notify(&window, |window| window.update_context_highlights());
         if settings.boolean("playlist.detached") {
             window.detach_playlist(settings);
@@ -584,6 +591,53 @@ impl Window {
     /// The box at the bottom of the sidebar where plugin panels are added.
     pub fn plugin_panel_host(&self) -> gtk::Box {
         self.imp().plugin_panels.clone()
+    }
+
+    /// The box in the chat sidebar, where plugin panels in the `browse.sidebar` slot are added.
+    pub fn browse_sidebar_host(&self) -> gtk::Box {
+        self.imp().chat_panels.clone()
+    }
+
+    /// Opens the chat sidebar while a panel in it is shown, and closes it when none is, so a plugin that hides its
+    /// panel does not leave an empty sidebar.
+    pub fn update_chat_sidebar(&self) {
+        let imp = self.imp();
+        let mut child = imp.chat_panels.first_child();
+        let mut any = false;
+        while let Some(panel) = child {
+            any |= panel.is_visible();
+            child = panel.next_sibling();
+        }
+        imp.chat_split.set_show_sidebar(any);
+    }
+
+    /// Sets up the chat sidebar: on the end side, wide enough to hold a conversation, and as wide as it was last left.
+    /// Closing it, as clicking outside it does when the window is narrow, hides the panels in it.
+    fn setup_chat_split(&self, settings: &Settings) {
+        let imp = self.imp();
+        let split = (*imp.chat_split).clone();
+        split.set_sidebar_position(gtk::PackType::End);
+        split.set_min_sidebar_width(300);
+        split.set_max_sidebar_width(800);
+        split.set_enable_show_gesture(false);
+        split.set_enable_hide_gesture(false);
+        let width = settings.int("window.chat-width");
+        split.set_user_sidebar_width((width > 0).then_some(width));
+        split.set_show_sidebar(false);
+        split.connect_show_sidebar_changed({
+            let weak = self.downgrade();
+            move |_, shown| {
+                if shown {
+                    return;
+                }
+                let Some(window) = weak.upgrade() else { return };
+                let mut child = window.imp().chat_panels.first_child();
+                while let Some(panel) = child {
+                    panel.set_visible(false);
+                    child = panel.next_sibling();
+                }
+            }
+        });
     }
 
     /// The window's main menu, which plugin items are appended to.
@@ -4088,6 +4142,9 @@ fn save_window_state(window: &Window, settings: &Settings) {
         let _ = settings.set_int("window.height", window.height());
     }
     save_playlist_layout(window, settings);
+    if let Some(width) = window.imp().chat_split.user_sidebar_width() {
+        let _ = settings.set_int("window.chat-width", width);
+    }
 }
 
 /// Saves the playlist's layout: whether it is shown and how wide it is beside the page, and whether it is in a window of
