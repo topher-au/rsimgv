@@ -181,3 +181,40 @@ contributes:
       default: 1000
       min: 200
       max: 5000
+    - key: temperature
+      label: Temperature
+      description: Sent as temperature. Leave empty to use the server's own.
+      kind: string
+      default: ""
+    - key: top_p
+      label: Top p
+      description: Sent as top_p. Leave empty to use the server's own.
+      kind: string
+      default: ""
+    - key: extra_params
+      label: Extra request parameters
+      description: 'A JSON object merged into every request, for anything else the server takes, such as {"top_k": 40, "seed": 1, "stop": ["###"]}.'
+      kind: text
+      default: ""
+    - key: thinking
+      label: Thinking
+      description: Whether the model may think before it answers. The Think button in the chat changes this too. It matters only when the parameters below are set.
+      kind: bool
+      default: true
+    - key: thinking_on_params
+      label: Parameters for thinking on
+      description: 'A JSON object merged into the request while thinking is on. For example {"reasoning_effort": "high"}, or empty to send nothing.'
+      kind: text
+      default: ""
+    - key: thinking_off_params
+      label: Parameters for thinking off
+      description: 'A JSON object merged into the request while thinking is off. The default suits Qwen3 on vLLM and llama.cpp; OpenAI models take {"reasoning_effort": "low"}.'
+      kind: text
+      default: '{"chat_template_kwargs": {"enable_thinking": false}}'
+    - key: card_opacity
+      label: Viewer card opacity (%)
+      description: How opaque the chat card over the picture is. Only its background changes; the text stays clear.
+      kind: int
+      default: 100
+      min: 20
+      max: 100

@@ -55,6 +55,28 @@ or the *Stop speaking* action, silences it. Recording also silences it.
 `play_command` plays the result, with `{input}` replaced by the audio file.
 Markdown is stripped before speaking and code blocks are skipped.
 
+## Request parameters
+
+Besides the model, the token limit and streaming, the plugin settings hold:
+
+- **Temperature** and **Top p**, sent when they are not empty.
+- **Extra request parameters**, a JSON object merged into every request for anything else the server takes,
+  such as `{"top_k": 40, "seed": 1}`. It is merged into nested objects rather than replacing them, and it
+  cannot change `messages` or `stream`.
+- **Thinking.** Servers differ in how thinking is switched, so the request fields for each state are settings:
+  **Parameters for thinking on** and **Parameters for thinking off**, both JSON objects, merged after the extra
+  parameters. The **Think** button in the chat header switches between them and remembers the choice. The
+  default for off, `{"chat_template_kwargs": {"enable_thinking": false}}`, suits Qwen3 on vLLM and llama.cpp;
+  an OpenAI reasoning model takes `{"reasoning_effort": "low"}`. With both empty the button is hidden. A value
+  that is not valid JSON, or a number that is not a number, is reported and left out.
+
+The model's reasoning is still shown when it thinks; turning thinking off only asks it not to.
+
+## The viewer card's opacity
+
+**Viewer card opacity** sets how opaque the card's background is, from 20 to 100 percent. Only the background
+fades, so the text stays clear over the picture.
+
 ## Voice conversation
 
 The headset button (or `Ctrl+Alt+V` in the viewer) starts a hands-free conversation. It needs a voice input

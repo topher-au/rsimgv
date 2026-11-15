@@ -18,6 +18,7 @@ GTK main thread.
 
 import array
 import collections
+import copy
 import json
 import math
 import os
@@ -38,9 +39,10 @@ import xml.etree.ElementTree as ElementTree
 import gi
 
 gi.require_version("Gtk", "4.0")
+gi.require_version("Gdk", "4.0")
 gi.require_version("Pango", "1.0")
 gi.require_version("Graphene", "1.0")
-from gi.repository import Graphene, Gtk, Pango
+from gi.repository import Gdk, Graphene, Gtk, Pango
 
 import rsimgv
 
@@ -100,6 +102,13 @@ DEFAULTS = {
     "vad_record_command": "parecord --raw --format=s16le --rate=16000 --channels=1 --latency-msec=30",
     "vad_threshold": 400,
     "vad_silence_ms": 1000,
+    "card_opacity": 100,
+    "temperature": "",
+    "top_p": "",
+    "extra_params": "",
+    "thinking": True,
+    "thinking_on_params": "",
+    "thinking_off_params": '{"chat_template_kwargs": {"enable_thinking": false}}',
 }
 
 LIMITS = {
@@ -108,6 +117,7 @@ LIMITS = {
     "timeout_seconds": (5, 600),
     "vad_threshold": (50, 8000),
     "vad_silence_ms": (200, 5000),
+    "card_opacity": (20, 100),
 }
 
 BACKENDS = ("off", "http", "command")
@@ -117,6 +127,15 @@ BACKENDS = ("off", "http", "command")
 
 CODE_STYLE = 'font_family="monospace" background="#808080" bgalpha="20%"'
 HEADING_SIZES = {1: "xx-large", 2: "x-large", 3: "large"}
+
+
+def deep_merge(target, source):
+    """Merges `source` into `target`, going into objects that both have rather than replacing them."""
+    for key, value in source.items():
+        if isinstance(value, dict) and isinstance(target.get(key), dict):
+            deep_merge(target[key], value)
+        else:
+            target[key] = copy.deepcopy(value)
 
 
 def escape(text):
@@ -534,6 +553,7 @@ class Panel:
         self.mic_button = None
         self.speak_button = None
         self.voice_button = None
+        self.thinking_button = None
         self.stop_speaking_button = None
         self.bubbles = []
         self.streaming = None
@@ -565,6 +585,15 @@ class Plugin:
         self._listener = None
         self._voice_busy = False
         self._hearing = False
+        self._config_file = None
+        self._thinking = True
+        # The request parameters, parsed from the settings when the plugin loads.
+        self._temperature = None
+        self._top_p = None
+        self._extra_params = {}
+        self._thinking_on = {}
+        self._thinking_off = {}
+        self._card_style = None
 
     def activate(self, host):
         self._active = True
@@ -573,7 +602,9 @@ class Plugin:
         directory = os.path.dirname(config_path)
         self._history_path = os.path.join(directory, "history.json")
         self._layout_path = os.path.join(directory, "layout.json")
+        self._config_file = os.path.join(directory, "config.json")
         self._config = self._load_config(config_path)
+        self._parse_parameters()
         self._speak = bool(self._config["auto_speak"]) and self._config["tts_backend"] != "off"
         self._history = self._load_history()
 
@@ -587,6 +618,7 @@ class Plugin:
         self._stop_speech()
         self._abandon_recording()
         self._end_voice()
+        self._remove_card_style()
         self._panels = {}
 
     # -- host callbacks --------------------------------------------------
@@ -627,6 +659,11 @@ class Plugin:
         panel.speak_button.add_css_class("flat")
         panel.speak_button.set_visible(config["tts_backend"] != "off")
 
+        panel.thinking_button = Gtk.Button(label="Think")
+        panel.thinking_button.add_css_class("flat")
+        panel.thinking_button.add_css_class("caption")
+        panel.thinking_button.set_visible(bool(self._thinking_on or self._thinking_off))
+
         panel.voice_button = Gtk.Button.new_from_icon_name("audio-headset-symbolic")
         panel.voice_button.add_css_class("flat")
         panel.voice_button.set_visible(config["asr_backend"] != "off")
@@ -643,6 +680,7 @@ class Plugin:
         header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2)
         header.append(panel.file_label)
         header.append(panel.stop_speaking_button)
+        header.append(panel.thinking_button)
         header.append(panel.voice_button)
         header.append(panel.speak_button)
         header.append(clear_button)
@@ -697,6 +735,7 @@ class Plugin:
         rsimgv.ui.connect(panel.mic_button, "clicked", lambda *_: self._toggle_record(panel))
         rsimgv.ui.connect(panel.speak_button, "clicked", lambda *_: self._toggle_speak())
         rsimgv.ui.connect(panel.voice_button, "clicked", lambda *_: self._toggle_voice())
+        rsimgv.ui.connect(panel.thinking_button, "clicked", lambda *_: self._toggle_thinking())
         rsimgv.ui.connect(panel.stop_speaking_button, "clicked", lambda *_: self._stop_speech())
         rsimgv.ui.connect(clear_button, "clicked", lambda *_: self._clear())
 
@@ -706,6 +745,7 @@ class Plugin:
         rsimgv.ui.connect(adjustment, "changed", lambda a: self._grew(panel, a))
 
         if panel.in_viewer:
+            self._apply_card_style(container)
             self._place_card(panel, header, handle)
             container.set_visible(self._chat_shown)
             for child in (header, panel.scroll, footer, row):
@@ -965,10 +1005,10 @@ class Plugin:
         self._set_status("Waiting for the reply…")
 
         api_key = os.environ.get(self._config["api_key_env"], "").strip()
-        messages = self._build_messages(image)
+        body = self._request_body(self._build_messages(image))
         threading.Thread(
             target=self._chat_worker,
-            args=(self._generation, request, api_key, messages),
+            args=(self._generation, request, api_key, body),
             daemon=True,
         ).start()
 
@@ -1101,16 +1141,26 @@ class Plugin:
         self._set_status("")
         self._refresh_controls()
 
-    def _chat_worker(self, generation, request, api_key, messages):
+    def _request_body(self, messages):
+        """The chat completions request: the settings' parameters, then the thinking choice, then the messages."""
         config = self._config
-        body = {
-            "model": config["model"],
-            "max_tokens": config["max_tokens"],
-            "messages": messages,
-        }
+        body = {"model": config["model"], "max_tokens": config["max_tokens"]}
+        if self._temperature is not None:
+            body["temperature"] = self._temperature
+        if self._top_p is not None:
+            body["top_p"] = self._top_p
+        deep_merge(body, self._extra_params)
+        deep_merge(body, self._thinking_on if self._thinking else self._thinking_off)
+        # These two are the plugin's own, so no parameter can change them.
+        body["messages"] = messages
         if config["stream"]:
             body["stream"] = True
+        else:
+            body.pop("stream", None)
+        return body
 
+    def _chat_worker(self, generation, request, api_key, body):
+        config = self._config
         try:
             response = self._open(
                 f"{config['base_url'].rstrip('/')}/chat/completions",
@@ -1396,6 +1446,95 @@ class Plugin:
         elif panel is not None:
             panel.entry.set_text(text)
             panel.entry.grab_focus()
+
+    # -- request parameters ----------------------------------------------
+
+    def _parse_parameters(self):
+        """Reads the request parameters from the settings, telling the user about any that cannot be used."""
+        config = self._config
+        self._thinking = config["thinking"]
+        self._temperature = self._parse_number("Temperature", config["temperature"])
+        self._top_p = self._parse_number("Top p", config["top_p"])
+        self._extra_params = self._parse_object("Extra request parameters", config["extra_params"])
+        self._thinking_on = self._parse_object("Parameters for thinking on", config["thinking_on_params"])
+        self._thinking_off = self._parse_object("Parameters for thinking off", config["thinking_off_params"])
+
+    @staticmethod
+    def _parse_number(name, text):
+        text = text.strip()
+        if not text:
+            return None
+        try:
+            return float(text)
+        except ValueError:
+            rsimgv.notify(f"{NAME}: {name} must be a number, so it is not sent.", level="warning", seconds=8)
+            return None
+
+    @staticmethod
+    def _parse_object(name, text):
+        text = text.strip()
+        if not text:
+            return {}
+        try:
+            value = json.loads(text)
+        except ValueError as exc:
+            rsimgv.notify(f"{NAME}: {name} is not valid JSON ({exc}), so it is not sent.", level="warning", seconds=10)
+            return {}
+        if not isinstance(value, dict):
+            rsimgv.notify(f"{NAME}: {name} must be a JSON object, so it is not sent.", level="warning", seconds=10)
+            return {}
+        return value
+
+    def _toggle_thinking(self):
+        self._thinking = not self._thinking
+        self._save_setting("thinking", self._thinking)
+        self._refresh_controls()
+
+    def _save_setting(self, key, value):
+        """Keeps a setting changed in the panel, by merging it into the plugin's config file."""
+        try:
+            try:
+                with open(self._config_file, "r", encoding="utf-8") as file:
+                    saved = json.load(file)
+            except FileNotFoundError:
+                saved = {}
+            if not isinstance(saved, dict):
+                saved = {}
+            saved[key] = value
+            temporary = f"{self._config_file}.tmp"
+            os.makedirs(os.path.dirname(self._config_file), exist_ok=True)
+            with open(temporary, "w", encoding="utf-8") as file:
+                json.dump(saved, file, indent=2)
+            os.replace(temporary, self._config_file)
+        except (OSError, ValueError) as exc:
+            rsimgv.notify(f"{NAME}: cannot save the setting: {exc}", level="warning", seconds=8)
+
+    # -- the viewer card's background ------------------------------------
+
+    def _apply_card_style(self, container):
+        """Gives the viewer card the background opacity from the settings.
+
+        Only the card's own background is made see-through, not its text, so a
+        rule for one class is added for the display rather than fading the widget.
+        """
+        container.add_css_class("llm-chat-card")
+        if self._card_style is not None:
+            return
+        opacity = self._config["card_opacity"] / 100
+        provider = Gtk.CssProvider()
+        provider.load_from_string(
+            f".llm-chat-card {{ background-color: alpha(@window_bg_color, {opacity:.2f}); }}"
+        )
+        display = Gdk.Display.get_default()
+        if display is None:
+            return
+        Gtk.StyleContext.add_provider_for_display(display, provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+        self._card_style = (display, provider)
+
+    def _remove_card_style(self):
+        style, self._card_style = self._card_style, None
+        if style is not None:
+            Gtk.StyleContext.remove_provider_for_display(*style)
 
     # -- voice conversation ----------------------------------------------
 
@@ -1728,6 +1867,13 @@ class Plugin:
                 "Spoken replies are on" if self._speak else "Spoken replies are off"
             )
             panel.stop_speaking_button.set_visible(speaking)
+            panel.thinking_button.set_tooltip_text(
+                "The model may think before it answers" if self._thinking else "The model is asked not to think"
+            )
+            if self._thinking:
+                panel.thinking_button.add_css_class("suggested-action")
+            else:
+                panel.thinking_button.remove_css_class("suggested-action")
             panel.voice_button.set_tooltip_text(
                 "End the voice conversation" if self._listener else "Start a voice conversation"
             )
