@@ -20,6 +20,7 @@ import array
 import base64
 import collections
 import copy
+import difflib
 import json
 import math
 import os
@@ -125,6 +126,7 @@ DEFAULTS = {
     "thinking_off_params": '{"chat_template_kwargs": {"enable_thinking": false}}',
     "memory": True,
     "memory_limit": 100,
+    "barge_in": True,
 }
 
 LIMITS = {
@@ -414,6 +416,9 @@ class Listener:
     MAX_MS = 30000
     # Seconds ignored after listening resumes, so the end of a spoken reply is not heard.
     HOLDOFF = 0.5
+    # While a reply is being spoken the speakers' own sound reaches the microphone, so speech must be this much
+    # louder, and last twice as long, to count.
+    BARGE_FACTOR = 2.5
 
     def __init__(self, args, threshold, silence_ms, on_hearing, on_speech, on_ended):
         self.threshold = threshold
@@ -422,6 +427,8 @@ class Listener:
         self.on_speech = on_speech
         self.on_ended = on_ended
         self.gate = threading.Event()
+        # Set while a reply is being spoken.
+        self.speaking = threading.Event()
         self.stopped = threading.Event()
         self.proc = subprocess.Popen(
             args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
@@ -465,15 +472,20 @@ class Listener:
                     continue
 
                 level = self.level(frame)
-                threshold = max(self.threshold, floor * 3)
+                speaking = self.speaking.is_set()
+                # Over a reply the bar is raised, and the noise level is not learned, or the speakers' own sound
+                # would be taken for the room's and no voice could get above it.
+                threshold = max(self.threshold * (self.BARGE_FACTOR if speaking else 1), floor * 3)
+                start_frames = self.START_FRAMES * (2 if speaking else 1)
                 if speech is None:
                     preroll.append(frame)
                     if level >= threshold:
                         loud += 1
                     else:
                         loud = 0
-                        floor = min(2000.0, max(20.0, floor * 0.98 + level * 0.02))
-                    if loud >= self.START_FRAMES:
+                        if not speaking:
+                            floor = min(2000.0, max(20.0, floor * 0.98 + level * 0.02))
+                    if loud >= start_frames:
                         speech, voiced, silent = list(preroll), loud, 0
                         self.on_hearing(True)
                     continue
@@ -688,6 +700,10 @@ class Plugin:
         self._listener = None
         self._voice_busy = False
         self._hearing = False
+        # What was last spoken and when it stopped, to tell a transcript of the speakers from the user.
+        self._last_spoken = ""
+        self._spoken_at = 0.0
+        self._over_speech = False
         self._config_file = None
         self._memory_path = None
         self._memories = []
@@ -2008,6 +2024,13 @@ class Plugin:
         if not self._current(generation) or self._listener is None:
             return
         self._hearing = hearing
+        if hearing:
+            # Speech that starts over a reply, or just after it, may be the reply itself coming back through the microphone.
+            self._over_speech = (
+                self._speech is not None or time.monotonic() - self._spoken_at < 1.5
+            )
+            if self._speech is not None and self._config["barge_in"]:
+                self._stop_speech()
         self._refresh_controls()
 
     def _voice_speech(self, generation, pcm):
@@ -2041,8 +2064,9 @@ class Plugin:
         self._voice_busy = False
         if error is not None:
             rsimgv.notify(f"{NAME}: {error}", level="error", seconds=8)
-        elif self._is_speech(text):
+        elif self._is_speech(text) and not (self._over_speech and self._is_echo(text)):
             self._send(text)
+        self._over_speech = False
         self._refresh_controls()
 
     def _voice_ended(self, generation):
@@ -2065,19 +2089,36 @@ class Plugin:
             return False
         return not re.fullmatch(r"[\[(*♪].*[\])*♪]", text)
 
+    def _is_echo(self, text):
+        """Whether a transcript is mostly a stretch of what was just spoken, so the microphone heard the speakers."""
+        words = re.findall(r"\w+", text.lower())
+        spoken = re.findall(r"\w+", self._last_spoken.lower())
+        if len(words) < 3 or not spoken:
+            return False
+        match = difflib.SequenceMatcher(None, words, spoken, autojunk=False).find_longest_match(
+            0, len(words), 0, len(spoken)
+        )
+        return match.size / len(words) >= 0.8
+
     def _update_voice(self):
         """Opens the listener's gate when nothing else is going on, and says what the conversation is doing."""
         listener = self._listener
         if listener is None:
             return
-        idle = (
+        free = (
             self._request is None
-            and self._speech is None
             and not self._voice_busy
             and not self._transcribing
             and self._recorder is None
         )
-        if idle:
+        speaking = self._speech is not None
+        barge_in = self._config["barge_in"]
+        if speaking:
+            listener.speaking.set()
+        else:
+            listener.speaking.clear()
+        # The microphone stays open while a reply is spoken if the user may talk over it.
+        if free and (barge_in or not speaking):
             listener.gate.set()
         else:
             listener.gate.clear()
@@ -2086,11 +2127,11 @@ class Plugin:
             return
         if self._voice_busy:
             self._set_status("Transcribing…")
-        elif self._speech is not None:
-            self._set_status("Speaking…")
         elif self._hearing:
             self._set_status("Hearing you…")
-        elif idle:
+        elif speaking:
+            self._set_status("Speaking… talk to interrupt" if barge_in else "Speaking…")
+        elif free:
             self._set_status("Listening…")
 
     # -- spoken replies --------------------------------------------------
@@ -2119,6 +2160,8 @@ class Plugin:
             return
         speech = Speech()
         self._speech = speech
+        self._last_spoken = text
+        self._spoken_at = time.monotonic()
         self._refresh_controls()
         threading.Thread(
             target=self._speech_worker, args=(self._generation, speech, text), daemon=True
@@ -2128,6 +2171,7 @@ class Plugin:
         speech, self._speech = self._speech, None
         if speech is not None:
             speech.stop()
+            self._spoken_at = time.monotonic()
             self._refresh_controls()
 
     def _speech_worker(self, generation, speech, text):
@@ -2199,6 +2243,7 @@ class Plugin:
             return
         if self._speech is speech:
             self._speech = None
+            self._spoken_at = time.monotonic()
         if error is not None:
             rsimgv.notify(f"{NAME}: {error}", level="error", seconds=8)
         self._refresh_controls()

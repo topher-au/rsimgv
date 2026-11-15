@@ -104,9 +104,15 @@ backend, and a speech backend if the replies are to be heard.
   audio to standard output. Sound counts as speech when it is louder than **Speech loudness threshold** and
   a few times the room's own noise level, which is tracked as it changes. When you pause for **Pause that
   ends a message**, the speech is transcribed and sent, with the picture as for any message.
-- The reply is read aloud, and listening starts again when it ends. Listening is paused while the model
-  replies and while it speaks, so it does not hear itself. That also means you cannot interrupt it by
-  speaking; press the stop button next to the speaker instead.
+- The reply is read aloud, and listening starts again when it ends. Listening is paused while the model is
+  working out its reply.
+- **Interrupting.** While a reply is read aloud the microphone stays open. If you speak, the reading stops
+  and what you say is sent when you pause. The speakers' own sound reaches the microphone, so over a reply
+  the bar is raised to 2.5 times the loudness threshold and the speech must last twice as long to count, and
+  a transcript that is mostly a stretch of what was just spoken is discarded as an echo. Headphones, or a
+  microphone with echo cancellation (PipeWire's echo-cancel module), work best; raise the threshold if the
+  speakers still interrupt. Turn off **Interrupt replies by speaking** to pause listening while it speaks;
+  the stop button next to the speaker also silences it.
 - While a voice conversation is on, **Voice conversation prompt** is added to the system prompt. It tells
   the model that its reply will be spoken, so it should answer briefly and in plain text.
 - A transcript that is only a marker such as `[BLANK_AUDIO]` is ignored. If background noise starts
@@ -120,12 +126,14 @@ Replies are shown as markdown. A model's reasoning is shown while it works, take
 answer starts. It is kept with the conversation, never sent back to the model, and never spoken. Markdown is
 left out of what is spoken, and so are code blocks and web addresses.
 
-The chat follows new messages while it is scrolled to the bottom. Scroll up to read earlier ones and it stays
-where you are.
+The chat scrolls to the end when you send a message and when a response starts, and follows the response while
+you stay at the bottom. Scroll up to read earlier messages and it stays where you are until the next response.
+
+Outside the viewer the chat is in the sidebar, under the folder tree, and shares the sidebar's height with it.
 
 ## The viewer card
 
-Drag the card by its top bar to move it, and its bottom right corner to resize it. Double-click the top bar to
+Drag the card by its top bar to move it, and any of its four corners to resize it. Double-click the top bar to
 put it back. Its place is kept in `layout.json` beside the config.
 
 ## Limits
