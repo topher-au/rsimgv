@@ -225,3 +225,15 @@ contributes:
       default: 100
       min: 20
       max: 100
+    - key: memory
+      label: Memory
+      description: Let the model keep notes that are shared by every chat. They are sent with each request, and the model saves or forgets one by writing a tag in its reply, which is never shown or spoken.
+      kind: bool
+      default: true
+    - key: memory_limit
+      label: Memories kept
+      description: How many memories are kept. The oldest are dropped when there are more.
+      kind: int
+      default: 100
+      min: 1
+      max: 1000

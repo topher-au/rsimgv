@@ -77,6 +77,24 @@ The model's reasoning is still shown when it thinks; turning thinking off only a
 **Viewer card opacity** sets how opaque the card's background is, from 20 to 100 percent. Only the background
 fades, so the text stays clear over the picture.
 
+## Memory
+
+The model keeps notes that are shared by every chat, in `memory.json` beside the config. They are sent with
+each request, numbered, together with an instruction to save something worth keeping by writing
+`<memory>a short fact</memory>` in its reply, and to forget one with `<forget>its number</forget>`. This needs
+no tool calling from the server. The tags are removed from what is shown, stored and spoken, and a small
+notice says what was remembered or forgotten.
+
+The bookmark button in the chat header lists the memories, lets you add one, and forgets any. Clearing the chat
+keeps them. Turn **Memory** off in the settings to stop sending and saving them; **Memories kept** sets how many
+are kept, dropping the oldest.
+
+## Messages
+
+Your messages are on the right and the model's on the left. A message you send has a small picture of what
+was sent beside it; click it to open that file in the viewer. Each message has a delete button, which also
+deletes the reply to a message of yours. **Clear chat** is in the header and the main menu.
+
 ## Voice conversation
 
 The headset button (or `Ctrl+Alt+V` in the viewer) starts a hands-free conversation. It needs a voice input

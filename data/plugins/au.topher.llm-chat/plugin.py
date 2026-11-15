@@ -114,6 +114,8 @@ DEFAULTS = {
     "thinking": True,
     "thinking_on_params": "",
     "thinking_off_params": '{"chat_template_kwargs": {"enable_thinking": false}}',
+    "memory": True,
+    "memory_limit": 100,
 }
 
 LIMITS = {
@@ -123,6 +125,7 @@ LIMITS = {
     "vad_threshold": (50, 8000),
     "vad_silence_ms": (200, 5000),
     "card_opacity": (20, 100),
+    "memory_limit": (1, 1000),
 }
 
 BACKENDS = ("off", "http", "command")
@@ -275,6 +278,21 @@ def spoken_text(text):
     text = re.sub(r"(?<![\w*])\*(?=[^\s*])(.+?)(?<=[^\s*])\*(?![\w*])", r"\1", text)
     text = re.sub(r"(?<![\w_])_(?=[^\s_])(.+?)(?<=[^\s_])_(?![\w_])", r"\1", text)
     text = re.sub(r"~~(?=\S)(.+?)(?<=\S)~~", r"\1", text)
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
+# -- memory --------------------------------------------------------------
+
+MEMORY_TAGS = ("<memory>", "<forget>")
+
+
+def strip_memory_tags(text):
+    """A reply without the tags the model uses to save and forget memories, including one still arriving."""
+    text = re.sub(r"<(memory|forget)>.*?</\1>", "", text, flags=re.S)
+    text = re.sub(r"<(?:memory|forget)>.*\Z", "", text, flags=re.S)
+    index = text.rfind("<")
+    if index >= 0 and any(tag.startswith(text[index:]) for tag in MEMORY_TAGS):
+        text = text[:index]
     return re.sub(r"\n{3,}", "\n\n", text).strip()
 
 
@@ -625,6 +643,9 @@ class Panel:
         self.speak_button = None
         self.voice_button = None
         self.thinking_button = None
+        self.memory_button = None
+        self.memory_list = None
+        self.memory_entry = None
         self.stop_speaking_button = None
         self.bubbles = []
         self.streaming = None
@@ -657,6 +678,10 @@ class Plugin:
         self._voice_busy = False
         self._hearing = False
         self._config_file = None
+        self._memory_path = None
+        self._memories = []
+        # The memories as numbered in the last request, which is how the model names one to forget.
+        self._memory_ids = []
         self._thinking = True
         # The request parameters, parsed from the settings when the plugin loads.
         self._temperature = None
@@ -674,10 +699,12 @@ class Plugin:
         self._history_path = os.path.join(directory, "history.json")
         self._layout_path = os.path.join(directory, "layout.json")
         self._config_file = os.path.join(directory, "config.json")
+        self._memory_path = os.path.join(directory, "memory.json")
         self._config = self._load_config(config_path)
         self._parse_parameters()
         self._speak = bool(self._config["auto_speak"]) and self._config["tts_backend"] != "off"
         self._history = self._load_history()
+        self._memories = self._load_memories()
 
     def deactivate(self):
         # Work in flight cannot be joined safely. Its results are ignored when
@@ -749,7 +776,44 @@ class Plugin:
 
         clear_button = Gtk.Button.new_from_icon_name("edit-clear-all-symbolic")
         clear_button.add_css_class("flat")
-        clear_button.set_tooltip_text("Clear the chat")
+        clear_button.set_tooltip_text("Clear the chat. Memories are kept.")
+
+        panel.memory_button = Gtk.MenuButton()
+        panel.memory_button.set_icon_name("user-bookmarks-symbolic")
+        panel.memory_button.add_css_class("flat")
+        panel.memory_button.set_tooltip_text("Memories, shared by every chat")
+        panel.memory_button.set_visible(config["memory"])
+        panel.memory_list = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        memory_scroll = Gtk.ScrolledWindow()
+        memory_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        memory_scroll.set_propagate_natural_height(True)
+        memory_scroll.set_max_content_height(260)
+        memory_scroll.set_min_content_width(300)
+        memory_scroll.set_child(panel.memory_list)
+        panel.memory_entry = Gtk.Entry(hexpand=True)
+        panel.memory_entry.set_placeholder_text("Add a memory…")
+        memory_add = Gtk.Button.new_from_icon_name("list-add-symbolic")
+        memory_add.set_tooltip_text("Add this memory")
+        memory_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        memory_row.append(panel.memory_entry)
+        memory_row.append(memory_add)
+        memory_title = Gtk.Label(label="Memories", xalign=0.0)
+        memory_title.add_css_class("heading")
+        memory_note = Gtk.Label(
+            label="Shared by every chat. Ask the model to remember or forget something.", xalign=0.0
+        )
+        memory_note.set_wrap(True)
+        memory_note.set_max_width_chars(38)
+        memory_note.add_css_class("dim-label")
+        memory_note.add_css_class("caption")
+        memory_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        for margin in ("top", "bottom", "start", "end"):
+            getattr(memory_box, f"set_margin_{margin}")(10)
+        for child in (memory_title, memory_scroll, memory_row, memory_note):
+            memory_box.append(child)
+        popover = Gtk.Popover()
+        popover.set_child(memory_box)
+        panel.memory_button.set_popover(popover)
 
         header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2)
         header.append(panel.file_label)
@@ -757,6 +821,7 @@ class Plugin:
         header.append(panel.thinking_button)
         header.append(panel.voice_button)
         header.append(panel.speak_button)
+        header.append(panel.memory_button)
         header.append(clear_button)
 
         panel.log = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
@@ -812,6 +877,8 @@ class Plugin:
         rsimgv.ui.connect(panel.thinking_button, "clicked", lambda *_: self._toggle_thinking())
         rsimgv.ui.connect(panel.stop_speaking_button, "clicked", lambda *_: self._stop_speech())
         rsimgv.ui.connect(clear_button, "clicked", lambda *_: self._clear())
+        rsimgv.ui.connect(memory_add, "clicked", lambda *_: self._add_memory_from(panel))
+        rsimgv.ui.connect(panel.memory_entry, "activate", lambda *_: self._add_memory_from(panel))
 
         # The log follows new messages while it is at the bottom, and stays put once the reader scrolls up.
         adjustment = panel.scroll.get_vadjustment()
@@ -829,6 +896,7 @@ class Plugin:
             row.set_margin_bottom(8)
 
         self._panels[panel.key] = panel
+        self._refresh_memory()
         for message in self._history:
             self._add_bubble(
                 panel, message["role"], message["text"], message.get("file"), message.get("thinking", ""),
@@ -1180,6 +1248,8 @@ class Plugin:
         if self._listener is not None:
             # One system message, since not every server accepts two.
             system = f"{system}\n\n{self._config['voice_prompt'].strip()}".strip()
+        if self._config["memory"]:
+            system = f"{system}\n\n{self._memory_prompt()}".strip()
         if system:
             messages.append({"role": "system", "content": system})
 
@@ -1214,6 +1284,7 @@ class Plugin:
         self._request = None
         request.finish()
         thinking, reply = request.texts()
+        reply = strip_memory_tags(reply)
         message = self._remember_reply(thinking, reply) if reply.strip() else None
         self._finish_bubbles(
             thinking,
@@ -1329,6 +1400,7 @@ class Plugin:
     def _partial(self, generation, request, thinking, reply):
         if not self._current(generation) or self._request is not request:
             return
+        reply = strip_memory_tags(reply)
         for panel in self._panels.values():
             if panel.streaming is not None:
                 panel.streaming.show(thinking, reply)
@@ -1338,20 +1410,25 @@ class Plugin:
         if not self._current(generation) or self._request is not request:
             return
         self._request = None
-        thinking, reply = request.texts()
-        thinking, reply = thinking.strip(), reply.strip()
+        thinking, raw = request.texts()
+        thinking, raw = thinking.strip(), raw.strip()
+        reply = strip_memory_tags(raw)
+        changed = self._apply_memory_actions(raw)
 
-        if error is not None and not reply:
+        if error is not None and not reply and not changed:
             self._finish_bubbles(thinking, error, failed=True)
             rsimgv.notify(f"{NAME}: {error}", level="error", seconds=10)
-        elif not reply:
+        elif not reply and not changed:
             self._finish_bubbles(thinking, "(the model returned an empty reply)", failed=True)
         else:
+            # A reply that only saved a memory has nothing to say, so nothing is spoken.
+            speakable = bool(reply)
+            reply = reply or "(memory updated)"
             message = self._remember_reply(thinking, reply)
             self._finish_bubbles(thinking, reply, message_id=message["id"])
             if error is not None:
                 rsimgv.notify(f"{NAME}: the reply was cut short: {error}", level="warning", seconds=8)
-            elif (self._speak or self._listener is not None) and self._config["tts_backend"] != "off":
+            elif speakable and (self._speak or self._listener is not None) and self._config["tts_backend"] != "off":
                 self._speak_text(reply)
 
         self._set_status("")
@@ -1373,6 +1450,121 @@ class Plugin:
             if bubble is not None:
                 bubble.message_id = message_id
                 bubble.show(thinking, text, final=True, failed=failed)
+
+    # -- memory ----------------------------------------------------------
+
+    def _memory_prompt(self):
+        """What the model is told about its memory: what is saved, and how to save or forget something."""
+        self._memory_ids = [memory["id"] for memory in self._memories]
+        if self._memories:
+            saved = "Saved memories:\n" + "\n".join(
+                f"[{number}] {memory['text']}" for number, memory in enumerate(self._memories, 1)
+            )
+        else:
+            saved = "No memories are saved yet."
+        return (
+            "You have a persistent memory that is shared by every conversation. "
+            f"{saved}\n"
+            "When the user tells you something worth keeping for later, such as their name, preferences, people, "
+            "projects, or anything they ask you to remember, save it by writing <memory>one short, complete "
+            "fact</memory> in your reply. To forget a saved memory, write <forget>its number</forget>. Save "
+            "sparingly, never save what is already saved, and never mention or explain these tags."
+        )
+
+    def _apply_memory_actions(self, raw):
+        """Saves and forgets what a reply asked for. Returns whether anything changed."""
+        if not self._config["memory"]:
+            return False
+        changed = False
+        for match in re.finditer(r"<memory>(.*?)</memory>", raw, flags=re.S):
+            changed |= self._remember(match.group(1), announce=True)
+        for match in re.finditer(r"<forget>\s*(\d+)\s*</forget>", raw):
+            number = int(match.group(1))
+            if 1 <= number <= len(self._memory_ids):
+                changed |= self._forget(self._memory_ids[number - 1], announce=True)
+        return changed
+
+    def _remember(self, text, announce=False):
+        """Saves a memory. Returns False for an empty or repeated one."""
+        text = " ".join(text.split())[:500]
+        if not text or any(memory["text"].lower() == text.lower() for memory in self._memories):
+            return False
+        self._memories.append({"id": uuid.uuid4().hex, "text": text, "created": int(time.time())})
+        # The oldest are dropped when there are too many.
+        self._memories = self._memories[-self._config["memory_limit"]:]
+        self._save_memories()
+        self._refresh_memory()
+        if announce:
+            rsimgv.notify(f"Remembered: {text}", seconds=3)
+        return True
+
+    def _forget(self, memory_id, announce=False):
+        for memory in self._memories:
+            if memory["id"] == memory_id:
+                self._memories.remove(memory)
+                self._save_memories()
+                self._refresh_memory()
+                if announce:
+                    rsimgv.notify(f"Forgot: {memory['text']}", seconds=3)
+                return True
+        return False
+
+    def _add_memory_from(self, panel):
+        if self._remember(panel.memory_entry.get_text()):
+            panel.memory_entry.set_text("")
+
+    def _refresh_memory(self):
+        """Lists the memories in each panel's popover, each with a button to forget it."""
+        for panel in self._panels.values():
+            child = panel.memory_list.get_first_child()
+            while child is not None:
+                following = child.get_next_sibling()
+                panel.memory_list.remove(child)
+                child = following
+            if not self._memories:
+                empty = Gtk.Label(label="Nothing is remembered yet.", xalign=0.0)
+                empty.add_css_class("dim-label")
+                panel.memory_list.append(empty)
+            for memory in self._memories:
+                label = Gtk.Label(label=memory["text"], xalign=0.0, hexpand=True)
+                label.set_wrap(True)
+                label.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
+                label.set_max_width_chars(36)
+                forget = Gtk.Button.new_from_icon_name("user-trash-symbolic")
+                forget.add_css_class("flat")
+                forget.add_css_class("circular")
+                forget.set_valign(Gtk.Align.START)
+                forget.set_tooltip_text("Forget this")
+                forget.connect("clicked", lambda *_, memory_id=memory["id"]: self._forget(memory_id))
+                row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+                row.append(label)
+                row.append(forget)
+                panel.memory_list.append(row)
+
+    def _load_memories(self):
+        try:
+            with open(self._memory_path, "r", encoding="utf-8") as file:
+                loaded = json.load(file)
+        except FileNotFoundError:
+            return []
+        except Exception as exc:
+            rsimgv.notify(f"{NAME}: cannot read {self._memory_path}: {exc}", level="warning", seconds=8)
+            return []
+        return [
+            {"id": str(item.get("id") or uuid.uuid4().hex), "text": item["text"], "created": item.get("created", 0)}
+            for item in (loaded if isinstance(loaded, list) else [])
+            if isinstance(item, dict) and isinstance(item.get("text"), str) and item["text"].strip()
+        ]
+
+    def _save_memories(self):
+        temporary = f"{self._memory_path}.tmp"
+        try:
+            os.makedirs(os.path.dirname(self._memory_path), exist_ok=True)
+            with open(temporary, "w", encoding="utf-8") as file:
+                json.dump(self._memories, file, ensure_ascii=False, indent=2)
+            os.replace(temporary, self._memory_path)
+        except OSError as exc:
+            rsimgv.notify(f"{NAME}: cannot save the memories: {exc}", level="warning", seconds=8)
 
     # -- messages --------------------------------------------------------
 
