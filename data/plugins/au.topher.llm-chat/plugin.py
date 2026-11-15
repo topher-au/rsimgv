@@ -64,6 +64,15 @@ FOLLOW_SLACK = 24
 CARD_SIZE = (380, 480)
 CARD_MIN = (280, 220)
 
+# The corners of the viewer card that resize it, with where each sits and the pointer shown over it.
+CORNERS = {
+    "top-left": (Gtk.Align.START, Gtk.Align.START, "nw-resize"),
+    "top-right": (Gtk.Align.END, Gtk.Align.START, "ne-resize"),
+    "bottom-left": (Gtk.Align.START, Gtk.Align.END, "sw-resize"),
+    "bottom-right": (Gtk.Align.END, Gtk.Align.END, "se-resize"),
+}
+CORNER_SIZE = 12
+
 # The longest side of the picture kept beside each message you send.
 THUMB_SIZE = 96
 
@@ -348,6 +357,8 @@ class Request:
         self.thinking = []
         self.reply = []
         self.splitter = ThinkSplitter()
+        # Whether any of the response has been shown yet.
+        self.arrived = False
 
     def add(self, is_thinking, text):
         (self.thinking if is_thinking else self.reply).append(text)
@@ -856,18 +867,29 @@ class Plugin:
 
         footer = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
         footer.append(panel.status)
-        handle = None
-        if panel.in_viewer:
-            handle = Gtk.Label(label="◢")
-            handle.add_css_class("dim-label")
-            handle.set_tooltip_text("Drag to resize")
-            handle.set_cursor_from_name("nwse-resize")
-            footer.append(handle)
 
-        container.append(header)
-        container.append(panel.scroll)
-        container.append(footer)
-        container.append(row)
+        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        content.append(header)
+        content.append(panel.scroll)
+        content.append(footer)
+        content.append(row)
+
+        corners = {}
+        if panel.in_viewer:
+            # Each corner has a small handle over the content that resizes the card when it is dragged.
+            frame = Gtk.Overlay(vexpand=True)
+            frame.set_child(content)
+            for name, (horizontal, vertical, cursor) in CORNERS.items():
+                corner = Gtk.Box()
+                corner.set_size_request(CORNER_SIZE, CORNER_SIZE)
+                corner.set_halign(horizontal)
+                corner.set_valign(vertical)
+                corner.set_cursor_from_name(cursor)
+                frame.add_overlay(corner)
+                corners[name] = corner
+            container.append(frame)
+        else:
+            container.append(content)
 
         rsimgv.ui.connect(panel.send_button, "clicked", lambda *_: self._send_or_stop(panel))
         rsimgv.ui.connect(panel.entry, "activate", lambda *_: self._send_from(panel))
@@ -887,13 +909,17 @@ class Plugin:
 
         if panel.in_viewer:
             container.add_css_class("llm-chat-card")
-            self._place_card(panel, header, handle)
+            self._place_card(panel, header, corners)
             container.set_visible(self._chat_shown)
+            # Room round the content, so the corner handles are not over its buttons.
             for child in (header, panel.scroll, footer, row):
-                child.set_margin_start(8)
-                child.set_margin_end(8)
-            header.set_margin_top(8)
-            row.set_margin_bottom(8)
+                child.set_margin_start(CORNER_SIZE)
+                child.set_margin_end(CORNER_SIZE)
+            header.set_margin_top(CORNER_SIZE)
+            row.set_margin_bottom(CORNER_SIZE)
+        else:
+            # In the sidebar the chat takes its share of the height, rather than a strip under the folder tree.
+            container.set_vexpand(True)
 
         self._panels[panel.key] = panel
         self._refresh_memory()
@@ -915,8 +941,8 @@ class Plugin:
 
     # -- the viewer card: moving and resizing ----------------------------
 
-    def _place_card(self, panel, header, handle):
-        """Sets the card's saved size and place, and lets its header move it and its corner resize it."""
+    def _place_card(self, panel, header, corners):
+        """Sets the card's saved size and place, and lets its header move it and any of its corners resize it."""
         container = panel.container
         layout = self._load_layout()
         width, height = layout.get("w", CARD_SIZE[0]), layout.get("h", CARD_SIZE[1])
@@ -964,35 +990,54 @@ class Plugin:
         )
         header.add_controller(reset)
 
+        for name, corner in corners.items():
+            self._attach_resize(panel, corner, left=name.endswith("left"), top=name.startswith("top"))
+
+    def _attach_resize(self, panel, corner, left, top):
+        """Lets dragging `corner` resize the card. A left or top corner also moves the card, to keep the far edge still."""
+        container = panel.container
         resize = Gtk.GestureDrag()
         resize.set_button(1)
-        size = {}
+        state = {}
 
-        def resize_begin(gesture, x, y):
+        def begin(gesture, x, y):
             overlay = container.get_parent()
             if overlay is None:
                 return
             self._anchor_here(panel)
-            size["start"] = (container.get_width(), container.get_height())
-            size["local"] = (x, y)
-            size["pointer"] = self._in_overlay(handle, overlay, x, y)
+            state["origin"] = (container.get_margin_start(), container.get_margin_top())
+            state["size"] = (container.get_width(), container.get_height())
+            state["local"] = (x, y)
+            state["pointer"] = self._in_overlay(corner, overlay, x, y)
 
-        def resize_update(gesture, dx, dy):
+        def update(gesture, dx, dy):
             overlay = container.get_parent()
-            if overlay is None or "start" not in size:
+            if overlay is None or "size" not in state:
                 return
-            px, py = self._in_overlay(handle, overlay, size["local"][0] + dx, size["local"][1] + dy)
-            left, top = container.get_margin_start(), container.get_margin_top()
-            width = size["start"][0] + px - size["pointer"][0]
-            height = size["start"][1] + py - size["pointer"][1]
-            width = max(CARD_MIN[0], min(width, overlay.get_width() - left))
-            height = max(CARD_MIN[1], min(height, overlay.get_height() - top))
+            px, py = self._in_overlay(corner, overlay, state["local"][0] + dx, state["local"][1] + dy)
+            moved_x, moved_y = px - state["pointer"][0], py - state["pointer"][1]
+            x0, y0 = state["origin"]
+            w0, h0 = state["size"]
+            if left:
+                width = max(CARD_MIN[0], min(w0 - moved_x, x0 + w0))
+                x = x0 + w0 - width
+            else:
+                width = max(CARD_MIN[0], min(w0 + moved_x, overlay.get_width() - x0))
+                x = x0
+            if top:
+                height = max(CARD_MIN[1], min(h0 - moved_y, y0 + h0))
+                y = y0 + h0 - height
+            else:
+                height = max(CARD_MIN[1], min(h0 + moved_y, overlay.get_height() - y0))
+                y = y0
+            container.set_margin_start(int(x))
+            container.set_margin_top(int(y))
             container.set_size_request(int(width), int(height))
 
-        rsimgv.ui.connect(resize, "drag-begin", resize_begin)
-        rsimgv.ui.connect(resize, "drag-update", resize_update)
+        rsimgv.ui.connect(resize, "drag-begin", begin)
+        rsimgv.ui.connect(resize, "drag-update", update)
         rsimgv.ui.connect(resize, "drag-end", lambda *_: self._save_layout(panel))
-        handle.add_controller(resize)
+        corner.add_controller(resize)
 
     @staticmethod
     def _in_overlay(widget, overlay, x, y):
@@ -1090,10 +1135,16 @@ class Plugin:
             adjustment.set_value(adjustment.get_upper() - adjustment.get_page_size())
 
     def _scroll_down(self, panel):
-        """Follows the log to its end, as when the reader has just sent a message."""
+        """Follows the log to its end, as when the reader has just sent a message or a reply has started."""
         panel.follow = True
-        adjustment = panel.scroll.get_vadjustment()
-        adjustment.set_value(adjustment.get_upper() - adjustment.get_page_size())
+        self._follow_now(panel)
+        # The new message is not laid out yet, so go to the end again once it is.
+        rsimgv.ui.idle_add(lambda: self._follow_now(panel))
+
+    def _follow_now(self, panel):
+        if panel.follow and panel.key in self._panels:
+            adjustment = panel.scroll.get_vadjustment()
+            adjustment.set_value(adjustment.get_upper() - adjustment.get_page_size())
 
     # -- sending ---------------------------------------------------------
 
@@ -1148,6 +1199,7 @@ class Plugin:
         self._request = request
         for panel in self._panels.values():
             panel.streaming = self._add_bubble(panel, "assistant", "", None, live=True)
+            self._scroll_down(panel)
         self._refresh_controls()
         self._set_status("Waiting for the reply…")
 
@@ -1401,9 +1453,16 @@ class Plugin:
         if not self._current(generation) or self._request is not request:
             return
         reply = strip_memory_tags(reply)
+        first = not request.arrived
+        request.arrived = True
         for panel in self._panels.values():
             if panel.streaming is not None:
                 panel.streaming.show(thinking, reply)
+                # The first of a response always brings the log to its end; after that it follows only a reader who is there.
+                if first:
+                    self._scroll_down(panel)
+                else:
+                    rsimgv.ui.idle_add(lambda panel=panel: self._follow_now(panel))
         self._set_status("" if reply else ("Thinking…" if thinking else "Waiting for the reply…"))
 
     def _chat_done(self, generation, request, error):
@@ -1450,6 +1509,7 @@ class Plugin:
             if bubble is not None:
                 bubble.message_id = message_id
                 bubble.show(thinking, text, final=True, failed=failed)
+                rsimgv.ui.idle_add(lambda panel=panel: self._follow_now(panel))
 
     # -- memory ----------------------------------------------------------
 
