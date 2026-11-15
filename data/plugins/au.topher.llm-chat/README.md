@@ -91,6 +91,22 @@ and a request may take up to **Most rounds of tool calls** rounds before the mod
 - `look` gives the model a fresh picture, or the video's current frame, with the item's details. Use it after
   navigating or seeking.
 
+**Servers that do not do tool calling properly.** Some, such as llama.cpp without `--jinja`, either reject the
+`tools` field or leave the model's calls in its reply as text. The plugin copes with both. A call written as
+`<tool_call>{"name": ..., "arguments": ...}</tool_call>` or in the XML form newer Qwen models use is found in
+the reply, run, and kept out of what is shown. If the server rejects `tools`, the tools are described in the
+prompt instead, with a notice, and calls and results go back and forth as plain text.
+
+**Quick commands.** A message that is only a short command, such as `next image`, `show next`, `previous`,
+`first`, `last`, `pause`, `play`, `zoom in`, `zoom out`, `fullscreen` or `mute`, with perhaps `please` or
+`the` round it, is done at once without asking the model, by voice as well. Anything longer, such as
+`what is the next image in this folder`, goes to the model as usual. Turn off **Quick commands** to send
+everything to the model.
+
+While the viewer is not open, `navigate` moves the selection in the folder being browsed instead.
+
+Start rsimgv with `RSIMGV_CHAT_DEBUG=1` to log what the tools are sent and what comes back.
+
 Limits to know: the picture the model receives is the whole frame, so it cannot see zoom or pan, which change
 only what you see. `playback` toggles, since the viewer does not report whether a video is playing. The tools
 only control the viewer and the memories; none of them changes, moves or deletes a file.

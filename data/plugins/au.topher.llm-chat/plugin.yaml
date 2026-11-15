@@ -268,3 +268,8 @@ contributes:
       description: Shown above your messages. Empty shows User.
       kind: string
       default: ""
+    - key: quick_commands
+      label: Quick commands
+      description: Do a message that is only a short command, such as next image, show previous, pause, or zoom in, at once without asking the model. Needs Viewer tools.
+      kind: bool
+      default: true

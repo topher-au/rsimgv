@@ -133,6 +133,7 @@ DEFAULTS = {
     "chat_sidebar": True,
     "user_name": "",
     "tools": True,
+    "quick_commands": True,
     "tool_viewer": True,
     "tool_rounds": 5,
 }
@@ -303,13 +304,13 @@ def spoken_text(text):
 
 # -- memory --------------------------------------------------------------
 
-MEMORY_TAGS = ("<memory>", "<forget>")
+MEMORY_TAGS = ("<memory>", "<forget>", "<tool_call>")
 
 
 def strip_memory_tags(text):
     """A reply without the tags the model uses to save and forget memories, including one still arriving."""
-    text = re.sub(r"<(memory|forget)>.*?</\1>", "", text, flags=re.S)
-    text = re.sub(r"<(?:memory|forget)>.*\Z", "", text, flags=re.S)
+    text = re.sub(r"<(memory|forget|tool_call)>.*?</\1>", "", text, flags=re.S)
+    text = re.sub(r"<(?:memory|forget|tool_call)>.*\Z", "", text, flags=re.S)
     index = text.rfind("<")
     if index >= 0 and any(tag.startswith(text[index:]) for tag in MEMORY_TAGS):
         text = text[:index]
@@ -458,6 +459,99 @@ ZOOM_ACTIONS = {
 NAVIGATE_ACTIONS = {"next": "view.next", "previous": "view.previous", "first": "view.first", "last": "view.last"}
 
 
+def parse_text_tool_calls(text):
+    """Tool calls a model wrote into its reply as text. Returns (calls, the text without them).
+
+    A server that does not turn the model's tool calls into structured ones
+    leaves them in the reply, in the JSON form, ``<tool_call>{"name": ...,
+    "arguments": {...}}</tool_call>``, or in the XML form of newer Qwen models,
+    ``<tool_call><function=name><parameter=key>value</parameter></function></tool_call>``.
+    """
+    calls = []
+
+    def take(match):
+        body = match.group(1).strip()
+        call = None
+        try:
+            value = json.loads(body)
+            if isinstance(value, dict) and isinstance(value.get("name"), str):
+                call = (value["name"], value.get("arguments", value.get("parameters", {})))
+        except ValueError:
+            function = re.search(r"<function=([\w.-]+)>(.*?)</function>", body, flags=re.S)
+            if function:
+                arguments = {}
+                for key, raw in re.findall(r"<parameter=([\w.-]+)>\s*(.*?)\s*</parameter>", function.group(2), flags=re.S):
+                    try:
+                        arguments[key] = json.loads(raw)
+                    except ValueError:
+                        arguments[key] = raw
+                call = (function.group(1), arguments)
+        if call is None:
+            return match.group(0)
+        calls.append(call)
+        return ""
+
+    cleaned = re.sub(r"<tool_call>(.*?)</tool_call>", take, text, flags=re.S)
+    return calls, cleaned
+
+
+def describe_tools(specs):
+    """The tools as a list in words, for a model that is told about them in its prompt."""
+    lines = []
+    for spec in specs:
+        function = spec["function"]
+        arguments = ", ".join(
+            f"{key}: {'|'.join(map(str, value['enum'])) if 'enum' in value else value.get('type', 'any')}"
+            for key, value in function["parameters"]["properties"].items()
+        )
+        lines.append(f"- {function['name']}({arguments}): {function['description']}")
+    return "\n".join(lines)
+
+
+PROMPTED_TOOLS = (
+    "You can use tools. To use one, write a block like "
+    '<tool_call>{"name": "navigate", "arguments": {"to": "next"}}</tool_call> in your reply and then stop; the '
+    "result comes back in the next message. Tools:\n"
+)
+
+# Words that can come before or after a short command without changing it, as in "please show the next image".
+QUICK_FILLER = {
+    "please", "go", "to", "show", "me", "the", "a", "an", "open", "display", "view", "switch", "move", "skip",
+    "now", "one", "item", "image", "picture", "photo", "pic", "video", "file", "media", "thanks", "thank", "you",
+    "can", "could", "would", "just", "and", "then", "it", "i", "want", "see", "lets", "let", "hey", "ok", "okay", "s",
+}
+QUICK_COMMANDS = {
+    ("next",): ("navigate", {"to": "next"}),
+    ("previous",): ("navigate", {"to": "previous"}),
+    ("prev",): ("navigate", {"to": "previous"}),
+    ("back",): ("navigate", {"to": "previous"}),
+    ("first",): ("navigate", {"to": "first"}),
+    ("last",): ("navigate", {"to": "last"}),
+    ("play",): ("playback", {}),
+    ("pause",): ("playback", {}),
+    ("resume",): ("playback", {}),
+    ("zoom", "in"): ("zoom", {"action": "in"}),
+    ("zoom", "out"): ("zoom", {"action": "out"}),
+    ("fullscreen",): ("fullscreen", {}),
+    ("full", "screen"): ("fullscreen", {}),
+    ("mute",): ("volume", {"toggle_mute": True}),
+    ("unmute",): ("volume", {"toggle_mute": True}),
+}
+
+
+def quick_command(text):
+    """The tool a short command like "next image" or "show next" means, or None for anything else.
+
+    Only a message that is nothing but the command, perhaps with polite or
+    filler words round it, counts. "What is the next image in this folder?"
+    goes to the model.
+    """
+    words = re.findall(r"[a-z]+", text.lower())
+    if not words or len(words) > 8:
+        return None
+    return QUICK_COMMANDS.get(tuple(word for word in words if word not in QUICK_FILLER))
+
+
 # -- reasoning -----------------------------------------------------------
 
 
@@ -523,6 +617,9 @@ class Request:
         self.round_start = 0
         # A picture to show the model after the round's tool results: (viewer details, base64 PNG).
         self.look = None
+        # Whether this round's request carried the tools, and the reply of a round as the model wrote it.
+        self.sent_tools = False
+        self.round_raw = ""
 
     def add(self, is_thinking, text):
         (self.thinking if is_thinking else self.reply).append(text)
@@ -924,6 +1021,8 @@ class Plugin:
         self._spoken_at = 0.0
         self._over_speech = False
         self._config_file = None
+        # Set when the server turns out not to accept tools, so they are described in the prompt instead.
+        self._text_tools = False
         self._memory_path = None
         self._memories = []
         # The memories as numbered in the last request, which is how the model names one to forget.
@@ -1492,6 +1591,10 @@ class Plugin:
             return False
 
         self._stop_speech()
+        command = quick_command(text) if self._config["quick_commands"] and self._config["tool_viewer"] else None
+        if command is not None:
+            self._run_quick(text, *command)
+            return True
         context, filename, image, path = self._gather_context()
         message = {
             "id": uuid.uuid4().hex,
@@ -1514,6 +1617,26 @@ class Plugin:
         self._begin_request(image)
         return True
 
+    def _run_quick(self, text, name, args):
+        """Does a short command such as "next image" at once, without asking the model."""
+        result, note = self._execute_tool(Request(), name, args, checked=False)
+        failed = result.startswith("Error")
+        user = {"id": uuid.uuid4().hex, "role": "user", "text": text, "file": "", "context": ""}
+        reply = {
+            "id": uuid.uuid4().hex,
+            "role": "assistant",
+            "text": f"I could not do that: {result[7:]}" if failed else "Done.",
+            "notes": [note],
+        }
+        self._history += [user, reply]
+        self._trim_history()
+        self._save_history()
+        for panel in self._panels.values():
+            self._add_bubble(panel, "user", text, "", message=user)
+            self._add_bubble(panel, "assistant", reply["text"], None, message=reply)
+            self._scroll_down(panel)
+        self._refresh_controls()
+
     def _begin_request(self, image):
         """Starts a request for the conversation as it stands, which ends with a user message."""
         request = Request()
@@ -1532,6 +1655,8 @@ class Plugin:
         request.calls = {}
         api_key = os.environ.get(self._config["api_key_env"], "").strip()
         body = self._request_body(request.messages, tools=request.rounds < self._config["tool_rounds"])
+        request.sent_tools = "tools" in body
+        self._debug(f"round {request.rounds + 1}: {len(body.get('tools', []))} tools sent, text mode {self._text_tools}")
         threading.Thread(
             target=self._chat_worker,
             args=(self._generation, request, api_key, body),
@@ -1629,6 +1754,8 @@ class Plugin:
             system = f"{system}\n\n{self._config['voice_prompt'].strip()}".strip()
         if self._config["memory"]:
             system = f"{system}\n\n{self._memory_prompt()}".strip()
+        if self._text_tools:
+            system = f"{system}\n\n{self._prompted_tools()}".strip()
         if self._config["tools"] and self._config["tool_viewer"]:
             system = (
                 f"{system}\n\nYou can control the viewer with tools: move between items, zoom, pan, rotate, play, "
@@ -1697,7 +1824,7 @@ class Plugin:
         else:
             body.pop("stream", None)
         # The last round has no tools, so the model has to answer.
-        specs = self._tool_specs() if tools else []
+        specs = self._tool_specs() if tools and not self._text_tools else []
         if specs:
             body["tools"] = specs
         return body
@@ -1828,30 +1955,81 @@ class Plugin:
         if not self._current(generation) or self._request is not request:
             return
         calls = [request.calls[index] for index in sorted(request.calls) if request.calls[index]["name"]]
+        round_text = "".join(request.reply[request.round_start:])
+        self._debug(f"round read: {len(calls)} structured calls, error {error!r}, reply {round_text[:80]!r}")
+
+        # A server that does not structure the model's tool calls leaves them in its reply as text.
+        if not calls and error is None and self._tool_specs():
+            written, cleaned = parse_text_tool_calls(round_text)
+            if written:
+                self._debug(f"{len(written)} tool calls written as text")
+                del request.reply[request.round_start:]
+                request.reply.append(cleaned)
+                request.round_raw = round_text
+                calls = [
+                    {"id": "", "name": name, "arguments": arguments if isinstance(arguments, str) else json.dumps(arguments)}
+                    for name, arguments in written
+                ]
+
+        # A server that rejects the tools field gets them described in the prompt instead.
+        if (
+            error is not None
+            and request.sent_tools
+            and not self._text_tools
+            and not round_text.strip()
+            and re.search(r"tool|jinja|function", error, flags=re.I)
+        ):
+            self._text_tools = True
+            self._debug(f"the server rejected tools ({error}); asking for them in the prompt")
+            rsimgv.notify(
+                f"{NAME}: the server does not accept tools, so they are described in the prompt instead.",
+                level="warning",
+                seconds=6,
+            )
+            if request.messages and request.messages[0]["role"] == "system":
+                request.messages[0]["content"] += f"\n\n{self._prompted_tools()}"
+            else:
+                request.messages.insert(0, {"role": "system", "content": self._prompted_tools()})
+            self._start_round(request)
+            return
+
         if calls and error is None:
             self._run_tools(request, calls)
         else:
             self._chat_done(generation, request, error)
+
+    def _prompted_tools(self):
+        return PROMPTED_TOOLS + describe_tools(self._tool_specs())
 
     def _run_tools(self, request, calls):
         """Runs a round's tool calls, adds them and their results to the conversation, and asks again."""
         round_text = strip_memory_tags("".join(request.reply[request.round_start:]))
         for call in calls:
             call["id"] = call["id"] or f"call_{uuid.uuid4().hex[:12]}"
-        request.messages.append(
-            {
-                "role": "assistant",
-                "content": round_text,
-                "tool_calls": [
-                    {
-                        "id": call["id"],
-                        "type": "function",
-                        "function": {"name": call["name"], "arguments": call["arguments"] or "{}"},
-                    }
-                    for call in calls
-                ],
-            }
-        )
+        if self._text_tools:
+            # With no tools field the exchange is plain text both ways, as the model wrote the calls.
+            written = request.round_raw or "\n".join(
+                f'<tool_call>{{"name": "{call["name"]}", "arguments": {call["arguments"] or "{}"}}}</tool_call>'
+                for call in calls
+            )
+            request.messages.append({"role": "assistant", "content": written})
+        else:
+            request.messages.append(
+                {
+                    "role": "assistant",
+                    "content": round_text,
+                    "tool_calls": [
+                        {
+                            "id": call["id"],
+                            "type": "function",
+                            "function": {"name": call["name"], "arguments": call["arguments"] or "{}"},
+                        }
+                        for call in calls
+                    ],
+                }
+            )
+        request.round_raw = ""
+        results = []
 
         self._set_status("Using tools…")
         for call in calls:
@@ -1863,12 +2041,17 @@ class Plugin:
                 result, note = "Error: the arguments were not a valid JSON object.", f"{call['name']}: bad arguments"
             else:
                 result, note = self._execute_tool(request, call["name"], arguments)
-            request.messages.append({"role": "tool", "tool_call_id": call["id"], "content": result})
+            self._debug(f"tool {call['name']} {call['arguments']!r} -> {result[:100]!r}")
+            results.append(f"[{call['name']}] {result}")
+            if not self._text_tools:
+                request.messages.append({"role": "tool", "tool_call_id": call["id"], "content": result})
             request.notes.append(note)
             for panel in self._panels.values():
                 if panel.streaming is not None:
                     panel.streaming.add_note(note)
 
+        if self._text_tools:
+            request.messages.append({"role": "user", "content": "Tool results:\n" + "\n".join(results)})
         if request.look is not None:
             details, image = request.look
             request.look = None
@@ -1950,10 +2133,21 @@ class Plugin:
                 specs += VIEWER_TOOLS
         return specs
 
-    def _execute_tool(self, request, name, args):
-        """Runs one tool call on the main thread. Returns (what the model is told, a note for the chat)."""
-        if name not in {spec["function"]["name"] for spec in self._tool_specs()}:
-            return f"Error: there is no tool called {name}.", f"Unknown tool: {name}"
+    def _debug(self, text):
+        if DEBUG:
+            rsimgv.host.log("debug", f"chat tools: {text}")
+
+    def _execute_tool(self, request, name, args, checked=True):
+        """Runs one tool call on the main thread. Returns (what the model is told, a note for the chat).
+
+        A tool that is not enabled is refused, unless `checked` is off, as for a command the user typed.
+        """
+        available = [spec["function"]["name"] for spec in self._tool_specs()]
+        if checked and name not in available:
+            return (
+                f"Error: there is no tool called {name}. The tools are: {', '.join(available)}.",
+                f"Unknown tool: {name}",
+            )
         try:
             return getattr(self, f"_tool_{name}")(request, args)
         except Exception as exc:
@@ -2028,7 +2222,25 @@ class Plugin:
         direction = args.get("to")
         if direction not in NAVIGATE_ACTIONS:
             raise ValueError("to must be next, previous, first or last")
-        self._action(NAVIGATE_ACTIONS[direction])
+        try:
+            self._action(NAVIGATE_ACTIONS[direction])
+        except Exception:
+            # The viewer is not open, so move the selection in the folder being browsed instead.
+            current = rsimgv.host.call("files.selected").get("index")
+            index = {
+                "next": 0 if current is None else current + 1,
+                "previous": -1 if current is None else current - 1,
+                "first": 0,
+                "last": -1,
+            }[direction]
+            try:
+                selected = rsimgv.host.call("files.select_index", {"index": index}).get("selected")
+            except Exception as exc:
+                raise RuntimeError(f"there is no {direction} item here") from exc
+            return (
+                f"The viewer is not open, so the selection in the folder moved to the {direction} item: {selected}.",
+                f"{direction.capitalize()} item",
+            )
         return f"Moved to the {direction} item. Use look to see it.", f"{direction.capitalize()} item"
 
     def _tool_zoom(self, request, args):
