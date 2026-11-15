@@ -161,9 +161,9 @@ class Plugin:
     # -- host callbacks --------------------------------------------------
 
     def invoke_action(self, action, context):
-        if action == "speak_toggle":
+        if action == "speak-toggle":
             self._toggle_speak()
-        elif action == "stop_speaking":
+        elif action == "stop-speaking":
             self._stop_speech()
         else:
             return

@@ -11,11 +11,11 @@ events: [viewer.item_changed]
 
 contributes:
   actions:
-    - id: speak_toggle
+    - id: speak-toggle
       label: Speak chat replies
       description: Turn spoken replies on or off.
       scope: global
-    - id: stop_speaking
+    - id: stop-speaking
       label: Stop speaking
       description: Stop the reply being read aloud.
       scope: global
