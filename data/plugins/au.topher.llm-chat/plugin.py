@@ -2,14 +2,18 @@
 
 Every message is sent with the viewer's current picture or video frame, its
 filename and its metadata. The conversation is kept in a file beside the
-plugin's config and restored when rsimgv starts. Voice input records with an
-external program and transcribes with an HTTP endpoint or a local command;
-spoken replies are synthesized the same way and played by an external program.
+plugin's config and restored when rsimgv starts. Replies are shown as markdown,
+with the model's reasoning in a block that collapses when the answer starts.
+Voice input records with an external program and transcribes with an HTTP
+endpoint or a local command; spoken replies are synthesized the same way and
+played by an external program, with the markdown left out.
 
-Widget signals are connected in ``create_panel``, the one place the host gives
-the plugin a context that ``rsimgv.ui.connect`` accepts. Network requests and
-audio programs run on worker threads, and their results are posted back with
-``rsimgv.ui.idle_add``, which runs on the GTK main thread.
+Widget signals of a panel are connected in ``create_panel``, the one place the
+host gives the plugin a context that ``rsimgv.ui.connect`` accepts. Widgets made
+later, such as message bubbles, use plain ``connect``: they are destroyed with
+their panel. Network requests and audio programs run on worker threads, and
+their results are posted back with ``rsimgv.ui.idle_add``, which runs on the
+GTK main thread.
 """
 
 import json
@@ -21,15 +25,18 @@ import signal
 import subprocess
 import tempfile
 import threading
+import time
 import urllib.error
 import urllib.request
 import uuid
+import xml.etree.ElementTree as ElementTree
 
 import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Pango", "1.0")
-from gi.repository import Gtk, Pango
+gi.require_version("Graphene", "1.0")
+from gi.repository import Graphene, Gtk, Pango
 
 import rsimgv
 
@@ -42,6 +49,12 @@ MAX_BASE64 = 20_000_000
 MAX_STORED = 500
 # OpenAI's speech endpoint takes at most 4096 characters.
 MAX_SPOKEN = 4000
+# How near the bottom, in pixels, the log counts as following new messages.
+FOLLOW_SLACK = 24
+
+# The viewer card's size when it has not been resized, and the smallest it can be made.
+CARD_SIZE = (380, 480)
+CARD_MIN = (280, 220)
 
 DEFAULTS = {
     "base_url": "https://api.openai.com/v1",
@@ -82,12 +95,180 @@ LIMITS = {
 BACKENDS = ("off", "http", "command")
 
 
+# -- markdown ------------------------------------------------------------
+
+CODE_STYLE = 'font_family="monospace" background="#808080" bgalpha="20%"'
+HEADING_SIZES = {1: "xx-large", 2: "x-large", 3: "large"}
+
+
+def escape(text):
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def inline_markup(text):
+    """One line of markdown as Pango markup. Anything not recognised stays as text."""
+    text = escape(text)
+
+    # Code spans are lifted out first so nothing inside them is formatted.
+    spans = []
+
+    def keep(match):
+        spans.append(match.group(1))
+        return f"\x00{len(spans) - 1}\x00"
+
+    text = re.sub(r"`([^`\n]+)`", keep, text)
+    text = re.sub(r"!\[([^\]]*)\]\([^)\s]*\)", r"\1", text)
+    text = re.sub(
+        r"\[([^\]]+)\]\((https?://[^)\s]+)\)",
+        lambda m: f'<a href="{m.group(2).replace(chr(34), "%22")}">{m.group(1)}</a>',
+        text,
+    )
+    text = re.sub(r"\*\*(?=\S)(.+?)(?<=\S)\*\*", r"<b>\1</b>", text)
+    text = re.sub(r"(?<!\w)__(?=\S)(.+?)(?<=\S)__(?!\w)", r"<b>\1</b>", text)
+    text = re.sub(r"(?<![\w*])\*(?=[^\s*])(.+?)(?<=[^\s*])\*(?![\w*])", r"<i>\1</i>", text)
+    text = re.sub(r"(?<![\w_])_(?=[^\s_])(.+?)(?<=[^\s_])_(?![\w_])", r"<i>\1</i>", text)
+    text = re.sub(r"~~(?=\S)(.+?)(?<=\S)~~", r"<s>\1</s>", text)
+    return re.sub(
+        r"\x00(\d+)\x00",
+        lambda m: f"<span {CODE_STYLE}>{spans[int(m.group(1))]}</span>",
+        text,
+    )
+
+
+def well_formed(markup):
+    try:
+        ElementTree.fromstring(f"<r>{markup}</r>")
+    except ElementTree.ParseError:
+        return False
+    return True
+
+
+def markdown_markup(text):
+    """Markdown as Pango markup for a Gtk.Label. The result is always well formed."""
+    rendered = []
+    in_code = False
+    for line in text.split("\n"):
+        lines = []
+        if line.strip().startswith("```"):
+            in_code = not in_code
+            continue
+        if in_code:
+            lines.append(f"<span {CODE_STYLE}>{escape(line) or ' '}</span>")
+            rendered.append((lines[0], line))
+            continue
+
+        heading = re.match(r"^\s{0,3}(#{1,6})\s+(.*)$", line)
+        bullet = re.match(r"^(\s*)[-*+]\s+(.*)$", line)
+        numbered = re.match(r"^(\s*)(\d+[.)])\s+(.*)$", line)
+        quote = re.match(r"^\s*>\s?(.*)$", line)
+        if heading:
+            size = HEADING_SIZES.get(len(heading.group(1)))
+            attributes = f'size="{size}" ' if size else ""
+            lines.append(f'<span {attributes}weight="bold">{inline_markup(heading.group(2))}</span>')
+        elif re.fullmatch(r"\s*([-*_])(\s*\1){2,}\s*", line):
+            lines.append("────────────")
+        elif bullet:
+            lines.append(f"{'    ' * (len(bullet.group(1)) // 2)}• {inline_markup(bullet.group(2))}")
+        elif numbered:
+            lines.append(
+                f"{'    ' * (len(numbered.group(1)) // 2)}{numbered.group(2)} {inline_markup(numbered.group(3))}"
+            )
+        elif quote:
+            lines.append(f"<i>▎ {inline_markup(quote.group(1))}</i>")
+        else:
+            lines.append(inline_markup(line))
+        rendered.append((lines[0], line))
+
+    # Emphasis can overlap a link or another span and break the nesting. A line
+    # that does is shown as plain text rather than losing the whole message.
+    return "\n".join(markup if well_formed(markup) else escape(raw) for markup, raw in rendered)
+
+
+def spoken_text(text):
+    """Markdown reduced to what reads well aloud."""
+    text = re.sub(r"```.*?(```|\Z)", " ", text, flags=re.S)
+    text = re.sub(r"!?\[([^\]]*)\]\([^)]*\)", r"\1", text)
+    text = re.sub(r"https?://\S+", "", text)
+    text = re.sub(r"`([^`]*)`", r"\1", text)
+    text = re.sub(r"^\s{0,3}#{1,6}\s*", "", text, flags=re.M)
+    text = re.sub(r"^\s*>\s?", "", text, flags=re.M)
+    text = re.sub(r"^\s*[-*+]\s+", "", text, flags=re.M)
+    text = re.sub(r"^[ \t]*\|?[ \t:|-]+\|?[ \t]*$", "", text, flags=re.M)
+    text = text.replace("|", " ")
+    text = re.sub(r"\*\*(?=\S)(.+?)(?<=\S)\*\*", r"\1", text)
+    text = re.sub(r"(?<!\w)__(?=\S)(.+?)(?<=\S)__(?!\w)", r"\1", text)
+    text = re.sub(r"(?<![\w*])\*(?=[^\s*])(.+?)(?<=[^\s*])\*(?![\w*])", r"\1", text)
+    text = re.sub(r"(?<![\w_])_(?=[^\s_])(.+?)(?<=[^\s_])_(?![\w_])", r"\1", text)
+    text = re.sub(r"~~(?=\S)(.+?)(?<=\S)~~", r"\1", text)
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
+# -- reasoning -----------------------------------------------------------
+
+
+class ThinkSplitter:
+    """Separates ``<think>`` blocks from a reply that arrives in pieces."""
+
+    OPEN = "<think>"
+    CLOSE = "</think>"
+
+    def __init__(self):
+        self.thinking = False
+        self.buffer = ""
+
+    def feed(self, text):
+        """Returns (is_thinking, text) segments. A tag split across pieces is held back until it is whole."""
+        self.buffer += text
+        segments = []
+        while True:
+            tag = self.CLOSE if self.thinking else self.OPEN
+            index = self.buffer.find(tag)
+            if index >= 0:
+                if index:
+                    segments.append((self.thinking, self.buffer[:index]))
+                self.buffer = self.buffer[index + len(tag):]
+                self.thinking = not self.thinking
+                continue
+
+            held = 0
+            for length in range(min(len(tag) - 1, len(self.buffer)), 0, -1):
+                if tag.startswith(self.buffer[-length:]):
+                    held = length
+                    break
+            ready = self.buffer[: len(self.buffer) - held]
+            if ready:
+                segments.append((self.thinking, ready))
+            self.buffer = self.buffer[len(self.buffer) - held:]
+            return segments
+
+    def flush(self):
+        segments = [(self.thinking, self.buffer)] if self.buffer else []
+        self.buffer = ""
+        return segments
+
+
 class Request:
     """One chat request. Replies from a request that is no longer current are ignored."""
 
     def __init__(self):
         self.cancel = threading.Event()
-        self.parts = []
+        self.thinking = []
+        self.reply = []
+        self.splitter = ThinkSplitter()
+
+    def add(self, is_thinking, text):
+        (self.thinking if is_thinking else self.reply).append(text)
+
+    def feed(self, text):
+        for is_thinking, piece in self.splitter.feed(text):
+            self.add(is_thinking, piece)
+
+    def finish(self):
+        for is_thinking, piece in self.splitter.flush():
+            self.add(is_thinking, piece)
+
+    def texts(self):
+        return "".join(self.thinking), "".join(self.reply)
 
 
 class Speech:
@@ -105,11 +286,107 @@ class Speech:
                 self.proc.terminate()
 
 
+# -- widgets -------------------------------------------------------------
+
+
+class Bubble:
+    """One message in a panel's log."""
+
+    def __init__(self, role, text, thinking, filename, replay, regenerate, live=False):
+        self.role = role
+        # A live bubble is being written now, so it can say how long the model thought.
+        self._live = live
+        self.text = text
+        self.thinking = thinking
+        self.failed = False
+        self._started = time.monotonic()
+        self._thinking_shown = False
+        self._collapsed = False
+
+        self.box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        self.box.set_margin_start(6)
+        self.box.set_margin_end(6)
+
+        self.caption = Gtk.Label(label="You" if role == "user" else "Assistant", xalign=0.0, hexpand=True)
+        self.caption.add_css_class("caption-heading")
+        self.caption.set_ellipsize(Pango.EllipsizeMode.MIDDLE)
+        if role == "user":
+            self.caption.add_css_class("accent")
+            if filename:
+                self.caption.set_label(f"You · {filename}")
+
+        head = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2)
+        head.append(self.caption)
+        self.replay_button = Gtk.Button.new_from_icon_name("audio-volume-high-symbolic")
+        self.regenerate_button = Gtk.Button.new_from_icon_name("view-refresh-symbolic")
+        for button, tip, callback in (
+            (self.replay_button, "Read aloud", lambda *_: replay(self)),
+            (self.regenerate_button, "Regenerate", lambda *_: regenerate()),
+        ):
+            button.add_css_class("flat")
+            button.add_css_class("circular")
+            button.set_tooltip_text(tip)
+            button.set_visible(False)
+            button.connect("clicked", callback)
+            if role == "assistant":
+                head.append(button)
+
+        self.think_label = Gtk.Label(xalign=0.0, hexpand=True)
+        self.think_label.set_wrap(True)
+        self.think_label.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
+        self.think_label.set_selectable(True)
+        self.think_label.add_css_class("dim-label")
+        self.expander = Gtk.Expander(label="Thinking…")
+        self.expander.set_child(self.think_label)
+        self.expander.set_visible(False)
+
+        self.body = Gtk.Label(xalign=0.0, hexpand=True)
+        self.body.set_wrap(True)
+        self.body.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
+        self.body.set_selectable(True)
+
+        self.box.append(head)
+        self.box.append(self.expander)
+        self.box.append(self.body)
+        self.show(thinking, text, final=True)
+
+    def show(self, thinking, reply, final=False, failed=False):
+        """Shows the reasoning and the reply so far. The reasoning collapses when the reply starts."""
+        self.thinking, self.text, self.failed = thinking, reply, failed
+
+        if thinking:
+            self.expander.set_visible(True)
+            self.think_label.set_text(thinking)
+            if not self._thinking_shown:
+                self._thinking_shown = True
+                self.expander.set_expanded(not (reply or final))
+        if (reply or final) and thinking and not self._collapsed:
+            self._collapsed = True
+            self.expander.set_expanded(False)
+            seconds = time.monotonic() - self._started
+            self.expander.set_label(f"Thought for {seconds:.0f} s" if self._live else "Thought")
+
+        if self.role == "user":
+            self.body.set_text(reply)
+        elif failed:
+            self.body.set_text(reply)
+            self.body.add_css_class("error")
+        elif reply:
+            self.body.set_visible(True)
+            self.body.set_markup(markdown_markup(reply))
+        elif thinking and not final:
+            self.body.set_visible(False)
+        else:
+            self.body.set_visible(True)
+            self.body.set_text("" if final else "…")
+
+
 class Panel:
     """The widgets of one chat panel. Each window has its own."""
 
     def __init__(self, panel_id, instance_id):
         self.key = (panel_id, instance_id)
+        self.in_viewer = panel_id == "viewer-chat"
         self.container = None
         self.file_label = None
         self.scroll = None
@@ -120,7 +397,12 @@ class Panel:
         self.mic_button = None
         self.speak_button = None
         self.stop_speaking_button = None
+        self.bubbles = []
         self.streaming = None
+        # Whether new messages scroll into view. It is off while the reader is scrolled up.
+        self.follow = True
+        # Whether the viewer card is placed by margins from the top left rather than by the host's corner.
+        self.anchored = False
 
 
 class Plugin:
@@ -129,9 +411,11 @@ class Plugin:
         self._generation = None
         self._config = dict(DEFAULTS)
         self._history_path = None
+        self._layout_path = None
         self._history = []
         self._panels = {}
         self._request = None
+        self._last_image = None
         self._speech = None
         self._speak = False
         self._recorder = None
@@ -144,7 +428,9 @@ class Plugin:
         self._active = True
         self._generation = rsimgv.host.generation
         config_path = rsimgv.host.config_path()
-        self._history_path = os.path.join(os.path.dirname(config_path), "history.json")
+        directory = os.path.dirname(config_path)
+        self._history_path = os.path.join(directory, "history.json")
+        self._layout_path = os.path.join(directory, "layout.json")
         self._config = self._load_config(config_path)
         self._speak = bool(self._config["auto_speak"]) and self._config["tts_backend"] != "off"
         self._history = self._load_history()
@@ -186,7 +472,6 @@ class Plugin:
         panel = Panel(panel_id, instance_id)
         panel.container = container
         config = self._config
-        in_viewer = panel_id == "viewer-chat"
 
         panel.file_label = Gtk.Label(xalign=0.0, hexpand=True)
         panel.file_label.set_ellipsize(Pango.EllipsizeMode.MIDDLE)
@@ -218,10 +503,10 @@ class Plugin:
 
         panel.scroll = Gtk.ScrolledWindow(vexpand=True)
         panel.scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-        panel.scroll.set_min_content_height(320 if in_viewer else 260)
+        panel.scroll.set_min_content_height(80 if panel.in_viewer else 260)
         panel.scroll.set_child(panel.log)
 
-        panel.status = Gtk.Label(xalign=0.0)
+        panel.status = Gtk.Label(xalign=0.0, hexpand=True)
         panel.status.add_css_class("dim-label")
         panel.status.add_css_class("caption")
         panel.status.set_visible(False)
@@ -242,19 +527,20 @@ class Plugin:
         row.append(panel.entry)
         row.append(panel.send_button)
 
+        footer = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        footer.append(panel.status)
+        handle = None
+        if panel.in_viewer:
+            handle = Gtk.Label(label="◢")
+            handle.add_css_class("dim-label")
+            handle.set_tooltip_text("Drag to resize")
+            handle.set_cursor_from_name("nwse-resize")
+            footer.append(handle)
+
         container.append(header)
         container.append(panel.scroll)
-        container.append(panel.status)
+        container.append(footer)
         container.append(row)
-        if in_viewer:
-            # The host draws this panel as a card over the picture, so it is given a width and padding.
-            container.set_size_request(380, -1)
-            container.set_visible(self._chat_shown)
-            for child in (header, panel.scroll, panel.status, row):
-                child.set_margin_start(8)
-                child.set_margin_end(8)
-            header.set_margin_top(8)
-            row.set_margin_bottom(8)
 
         rsimgv.ui.connect(panel.send_button, "clicked", lambda *_: self._send_or_stop(panel))
         rsimgv.ui.connect(panel.entry, "activate", lambda *_: self._send_from(panel))
@@ -263,11 +549,26 @@ class Plugin:
         rsimgv.ui.connect(panel.stop_speaking_button, "clicked", lambda *_: self._stop_speech())
         rsimgv.ui.connect(clear_button, "clicked", lambda *_: self._clear())
 
+        # The log follows new messages while it is at the bottom, and stays put once the reader scrolls up.
+        adjustment = panel.scroll.get_vadjustment()
+        rsimgv.ui.connect(adjustment, "value-changed", lambda a: self._scrolled(panel, a))
+        rsimgv.ui.connect(adjustment, "changed", lambda a: self._grew(panel, a))
+
+        if panel.in_viewer:
+            self._place_card(panel, header, handle)
+            container.set_visible(self._chat_shown)
+            for child in (header, panel.scroll, footer, row):
+                child.set_margin_start(8)
+                child.set_margin_end(8)
+            header.set_margin_top(8)
+            row.set_margin_bottom(8)
+
         self._panels[panel.key] = panel
         for message in self._history:
-            self._add_bubble(panel, message["role"], message["text"], message.get("file"))
+            self._add_bubble(
+                panel, message["role"], message["text"], message.get("file"), message.get("thinking", "")
+            )
         self._refresh_controls()
-        self._scroll_down(panel)
 
         try:
             info = rsimgv.host.call("view.info")
@@ -277,6 +578,188 @@ class Plugin:
 
     def panel_destroyed(self, panel_id, instance_id):
         self._panels.pop((panel_id, instance_id), None)
+
+    # -- the viewer card: moving and resizing ----------------------------
+
+    def _place_card(self, panel, header, handle):
+        """Sets the card's saved size and place, and lets its header move it and its corner resize it."""
+        container = panel.container
+        layout = self._load_layout()
+        width, height = layout.get("w", CARD_SIZE[0]), layout.get("h", CARD_SIZE[1])
+        container.set_size_request(max(CARD_MIN[0], width), max(CARD_MIN[1], height))
+        if "x" in layout and "y" in layout:
+            self._anchor(panel, layout["x"], layout["y"])
+            # The overlay's size is known once it is shown, so keep the card inside it then.
+            rsimgv.ui.idle_add(lambda: self._clamp_card(panel))
+
+        header.set_cursor_from_name("move")
+        move = Gtk.GestureDrag()
+        move.set_button(1)
+        state = {}
+
+        def move_begin(gesture, x, y):
+            overlay = container.get_parent()
+            if overlay is None:
+                return
+            self._anchor_here(panel)
+            state["start"] = (container.get_margin_start(), container.get_margin_top())
+            state["local"] = (x, y)
+            state["pointer"] = self._in_overlay(header, overlay, x, y)
+
+        def move_update(gesture, dx, dy):
+            overlay = container.get_parent()
+            if overlay is None or "start" not in state:
+                return
+            px, py = self._in_overlay(header, overlay, state["local"][0] + dx, state["local"][1] + dy)
+            self._move_card(
+                panel,
+                state["start"][0] + px - state["pointer"][0],
+                state["start"][1] + py - state["pointer"][1],
+            )
+
+        rsimgv.ui.connect(move, "drag-begin", move_begin)
+        rsimgv.ui.connect(move, "drag-update", move_update)
+        rsimgv.ui.connect(move, "drag-end", lambda *_: self._save_layout(panel))
+        header.add_controller(move)
+
+        # A double click puts the card back in its corner at its first size.
+        reset = Gtk.GestureClick()
+        reset.set_button(1)
+        rsimgv.ui.connect(
+            reset, "pressed", lambda g, presses, x, y: self._reset_card(panel) if presses == 2 else None
+        )
+        header.add_controller(reset)
+
+        resize = Gtk.GestureDrag()
+        resize.set_button(1)
+        size = {}
+
+        def resize_begin(gesture, x, y):
+            overlay = container.get_parent()
+            if overlay is None:
+                return
+            self._anchor_here(panel)
+            size["start"] = (container.get_width(), container.get_height())
+            size["local"] = (x, y)
+            size["pointer"] = self._in_overlay(handle, overlay, x, y)
+
+        def resize_update(gesture, dx, dy):
+            overlay = container.get_parent()
+            if overlay is None or "start" not in size:
+                return
+            px, py = self._in_overlay(handle, overlay, size["local"][0] + dx, size["local"][1] + dy)
+            left, top = container.get_margin_start(), container.get_margin_top()
+            width = size["start"][0] + px - size["pointer"][0]
+            height = size["start"][1] + py - size["pointer"][1]
+            width = max(CARD_MIN[0], min(width, overlay.get_width() - left))
+            height = max(CARD_MIN[1], min(height, overlay.get_height() - top))
+            container.set_size_request(int(width), int(height))
+
+        rsimgv.ui.connect(resize, "drag-begin", resize_begin)
+        rsimgv.ui.connect(resize, "drag-update", resize_update)
+        rsimgv.ui.connect(resize, "drag-end", lambda *_: self._save_layout(panel))
+        handle.add_controller(resize)
+
+    @staticmethod
+    def _in_overlay(widget, overlay, x, y):
+        """A point of `widget`, in the coordinates of `overlay`, which does not move while the card does."""
+        point = Graphene.Point()
+        point.init(x, y)
+        ok, result = widget.compute_point(overlay, point)
+        return (result.x, result.y) if ok else (x, y)
+
+    def _anchor(self, panel, x, y):
+        container = panel.container
+        container.set_halign(Gtk.Align.START)
+        container.set_valign(Gtk.Align.START)
+        container.set_margin_start(int(x))
+        container.set_margin_top(int(y))
+        container.set_margin_end(0)
+        container.set_margin_bottom(0)
+        panel.anchored = True
+
+    def _anchor_here(self, panel):
+        """Places the card by margins from the top left, where it is now, so it can be moved freely."""
+        if panel.anchored:
+            return
+        container = panel.container
+        overlay = container.get_parent()
+        x, y = self._in_overlay(container, overlay, 0, 0) if overlay is not None else (12, 12)
+        width, height = container.get_width(), container.get_height()
+        self._anchor(panel, x, y)
+        container.set_size_request(max(CARD_MIN[0], width), max(CARD_MIN[1], height))
+
+    def _move_card(self, panel, x, y):
+        container, overlay = panel.container, panel.container.get_parent()
+        if overlay is not None:
+            x = min(x, overlay.get_width() - container.get_width())
+            y = min(y, overlay.get_height() - container.get_height())
+        container.set_margin_start(int(max(0, x)))
+        container.set_margin_top(int(max(0, y)))
+
+    def _clamp_card(self, panel):
+        if panel.anchored and panel.container is not None and panel.container.get_parent() is not None:
+            self._move_card(panel, panel.container.get_margin_start(), panel.container.get_margin_top())
+
+    def _reset_card(self, panel):
+        container = panel.container
+        container.set_halign(Gtk.Align.END)
+        container.set_valign(Gtk.Align.START)
+        for margin in ("start", "top", "end", "bottom"):
+            getattr(container, f"set_margin_{margin}")(12)
+        container.set_size_request(*CARD_SIZE)
+        panel.anchored = False
+        try:
+            os.remove(self._layout_path)
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            rsimgv.notify(f"{NAME}: cannot reset the chat's place: {exc}", level="warning", seconds=6)
+
+    def _load_layout(self):
+        try:
+            with open(self._layout_path, "r", encoding="utf-8") as file:
+                loaded = json.load(file)
+        except (OSError, ValueError):
+            return {}
+        if not isinstance(loaded, dict):
+            return {}
+        return {
+            key: int(value)
+            for key, value in loaded.items()
+            if key in ("x", "y", "w", "h") and isinstance(value, (int, float))
+        }
+
+    def _save_layout(self, panel):
+        container = panel.container
+        layout = {
+            "x": container.get_margin_start(),
+            "y": container.get_margin_top(),
+            "w": container.get_size_request()[0],
+            "h": container.get_size_request()[1],
+        }
+        try:
+            os.makedirs(os.path.dirname(self._layout_path), exist_ok=True)
+            with open(self._layout_path, "w", encoding="utf-8") as file:
+                json.dump(layout, file)
+        except OSError as exc:
+            rsimgv.notify(f"{NAME}: cannot save the chat's place: {exc}", level="warning", seconds=6)
+
+    # -- following new messages ------------------------------------------
+
+    def _scrolled(self, panel, adjustment):
+        distance = adjustment.get_upper() - adjustment.get_value() - adjustment.get_page_size()
+        panel.follow = distance <= FOLLOW_SLACK
+
+    def _grew(self, panel, adjustment):
+        if panel.follow:
+            adjustment.set_value(adjustment.get_upper() - adjustment.get_page_size())
+
+    def _scroll_down(self, panel):
+        """Follows the log to its end, as when the reader has just sent a message."""
+        panel.follow = True
+        adjustment = panel.scroll.get_vadjustment()
+        adjustment.set_value(adjustment.get_upper() - adjustment.get_page_size())
 
     # -- sending ---------------------------------------------------------
 
@@ -304,17 +787,29 @@ class Plugin:
 
         self._stop_speech()
         context, filename, image = self._gather_context()
-        self._history.append({"role": "user", "text": text, "file": filename, "context": context})
+        message = {
+            "id": uuid.uuid4().hex,
+            "role": "user",
+            "text": text,
+            "file": filename,
+            "context": context,
+        }
+        self._history.append(message)
         self._trim_history()
         self._save_history()
+        self._last_image = (message["id"], image)
         for panel in self._panels.values():
             self._add_bubble(panel, "user", text, filename)
+            self._scroll_down(panel)
+        self._begin_request(image)
+        return True
 
+    def _begin_request(self, image):
+        """Starts a request for the conversation as it stands, which ends with a user message."""
         request = Request()
         self._request = request
         for panel in self._panels.values():
-            panel.streaming = self._add_bubble(panel, "assistant", "…", None)
-            self._scroll_down(panel)
+            panel.streaming = self._add_bubble(panel, "assistant", "", None, live=True)
         self._refresh_controls()
         self._set_status("Waiting for the reply…")
 
@@ -325,7 +820,33 @@ class Plugin:
             args=(self._generation, request, api_key, messages),
             daemon=True,
         ).start()
-        return True
+
+    def _regenerate(self):
+        """Asks again for the last reply, or for one that failed, about the same message."""
+        if self._request is not None:
+            return
+        if self._history and self._history[-1]["role"] == "assistant":
+            self._history.pop()
+            self._save_history()
+        if not self._history or self._history[-1]["role"] != "user":
+            return
+
+        self._stop_speech()
+        for panel in self._panels.values():
+            if panel.bubbles and panel.bubbles[-1].role == "assistant":
+                panel.log.remove(panel.bubbles.pop().box)
+            self._scroll_down(panel)
+
+        user = self._history[-1]
+        image = None
+        if self._last_image and self._last_image[0] == user.get("id"):
+            image = self._last_image[1]
+        elif self._config["send_image"]:
+            # The picture was not kept, so use the one on screen if it is still the file asked about.
+            _, filename, current = self._gather_context()
+            if filename == user.get("file"):
+                image = current
+        self._begin_request(image)
 
     def _gather_context(self):
         """The text, filename and screenshot for the item the viewer shows, on the main thread."""
@@ -418,12 +939,11 @@ class Plugin:
             return
         request.cancel.set()
         self._request = None
-        text = "".join(request.parts)
-        self._finish_bubbles(text + ("\n\n(stopped)" if text else "(stopped)"))
-        if text:
-            self._history.append({"role": "assistant", "text": text})
-            self._trim_history()
-            self._save_history()
+        request.finish()
+        thinking, reply = request.texts()
+        self._finish_bubbles(thinking, reply + ("\n\n(stopped)" if reply else "(stopped)"))
+        if reply.strip():
+            self._remember_reply(thinking, reply)
         self._set_status("")
         self._refresh_controls()
 
@@ -448,13 +968,13 @@ class Plugin:
                 if config["stream"]:
                     self._read_stream(generation, request, response)
                 else:
-                    text = self._read_reply(json.loads(response.read().decode("utf-8", "replace")))
-                    request.parts.append(text)
+                    self._read_reply(request, json.loads(response.read().decode("utf-8", "replace")))
                     self._post_partial(generation, request)
             error = None
         except Exception as exc:
             error = str(exc)
 
+        request.finish()
         rsimgv.ui.idle_add(lambda: self._chat_done(generation, request, error))
 
     def _read_stream(self, generation, request, response):
@@ -471,76 +991,111 @@ class Plugin:
                 chunk = json.loads(payload)
             except ValueError:
                 continue
-            if isinstance(chunk, dict) and chunk.get("error"):
+            if not isinstance(chunk, dict):
+                continue
+            if chunk.get("error"):
                 raise RuntimeError(self._error_message(chunk["error"]))
-            for choice in (chunk.get("choices") or []) if isinstance(chunk, dict) else []:
-                piece = (choice.get("delta") or {}).get("content")
+            changed = False
+            for choice in chunk.get("choices") or []:
+                delta = choice.get("delta") or {}
+                changed |= self._take_reasoning(request, delta)
+                piece = delta.get("content")
                 if isinstance(piece, str) and piece:
-                    request.parts.append(piece)
-                    self._post_partial(generation, request)
-
-    def _post_partial(self, generation, request):
-        text = "".join(request.parts)
-        rsimgv.ui.idle_add(lambda: self._partial(generation, request, text))
+                    request.feed(piece)
+                    changed = True
+            if changed:
+                self._post_partial(generation, request)
 
     @staticmethod
-    def _read_reply(value):
+    def _take_reasoning(request, message):
+        """Takes the reasoning a server reports apart from the reply. Returns whether there was any."""
+        for key in ("reasoning_content", "reasoning"):
+            piece = message.get(key)
+            if isinstance(piece, str) and piece:
+                request.add(True, piece)
+                return True
+        return False
+
+    def _read_reply(self, request, value):
+        """Takes the reply and reasoning out of a response that was not streamed."""
         if isinstance(value, dict) and value.get("error"):
-            raise RuntimeError(Plugin._error_message(value["error"]))
+            raise RuntimeError(self._error_message(value["error"]))
         choices = value.get("choices") or []
         if not choices:
             raise RuntimeError("the response has no choices")
-        content = choices[0].get("message", {}).get("content")
-        if isinstance(content, str):
-            return content
+        message = choices[0].get("message", {})
+        self._take_reasoning(request, message)
+        content = message.get("content")
         if isinstance(content, list):
-            parts = [part.get("text", "") for part in content if isinstance(part, dict)]
-            return "\n".join(part for part in parts if part)
-        raise RuntimeError("the response has no text")
+            content = "\n".join(
+                part.get("text", "") for part in content if isinstance(part, dict) and part.get("text")
+            )
+        if content is None and request.thinking:
+            return
+        if not isinstance(content, str):
+            raise RuntimeError("the response has no text")
+        request.feed(content)
 
-    def _partial(self, generation, request, text):
+    def _post_partial(self, generation, request):
+        thinking, reply = request.texts()
+        rsimgv.ui.idle_add(lambda: self._partial(generation, request, thinking, reply))
+
+    def _partial(self, generation, request, thinking, reply):
         if not self._current(generation) or self._request is not request:
             return
         for panel in self._panels.values():
             if panel.streaming is not None:
-                panel.streaming.set_text(text)
-                self._scroll_down(panel)
-        self._set_status("")
+                panel.streaming.show(thinking, reply)
+        self._set_status("" if reply else ("Thinking…" if thinking else "Waiting for the reply…"))
 
     def _chat_done(self, generation, request, error):
         if not self._current(generation) or self._request is not request:
             return
         self._request = None
-        text = "".join(request.parts).strip()
+        thinking, reply = request.texts()
+        thinking, reply = thinking.strip(), reply.strip()
 
-        if error is not None and not text:
-            self._finish_bubbles(error, failed=True)
+        if error is not None and not reply:
+            self._finish_bubbles(thinking, error, failed=True)
             rsimgv.notify(f"{NAME}: {error}", level="error", seconds=10)
-        elif not text:
-            self._finish_bubbles("(the model returned an empty reply)", failed=True)
+        elif not reply:
+            self._finish_bubbles(thinking, "(the model returned an empty reply)", failed=True)
         else:
-            self._finish_bubbles(text)
-            self._history.append({"role": "assistant", "text": text})
-            self._trim_history()
-            self._save_history()
+            self._finish_bubbles(thinking, reply)
+            self._remember_reply(thinking, reply)
             if error is not None:
                 rsimgv.notify(f"{NAME}: the reply was cut short: {error}", level="warning", seconds=8)
             elif self._speak:
-                self._speak_text(text)
+                self._speak_text(reply)
 
         self._set_status("")
         self._refresh_controls()
 
-    def _finish_bubbles(self, text, failed=False):
+    def _remember_reply(self, thinking, reply):
+        message = {"id": uuid.uuid4().hex, "role": "assistant", "text": reply.strip()}
+        if thinking.strip():
+            message["thinking"] = thinking.strip()
+        self._history.append(message)
+        self._trim_history()
+        self._save_history()
+
+    def _finish_bubbles(self, thinking, text, failed=False):
         for panel in self._panels.values():
-            label = panel.streaming
+            bubble = panel.streaming
             panel.streaming = None
-            if label is None:
-                continue
-            label.set_text(text)
-            if failed:
-                label.add_css_class("error")
-            self._scroll_down(panel)
+            if bubble is not None:
+                bubble.show(thinking, text, final=True, failed=failed)
+
+    # -- replaying -------------------------------------------------------
+
+    def _replay(self, bubble):
+        if bubble.failed or not bubble.text.strip():
+            return
+        if self._config["tts_backend"] == "off":
+            rsimgv.notify(f"{NAME}: choose a speech backend in the plugin settings.", seconds=4)
+            return
+        self._stop_speech()
+        self._speak_text(bubble.text)
 
     # -- voice input -----------------------------------------------------
 
@@ -691,7 +1246,7 @@ class Plugin:
         """Shows or hides the chat over the viewer's picture. The sidebar chat is not affected."""
         self._chat_shown = not self._chat_shown
         for panel in self._panels.values():
-            if panel.key[0] == "viewer-chat":
+            if panel.in_viewer:
                 panel.container.set_visible(self._chat_shown)
                 if self._chat_shown:
                     panel.entry.grab_focus()
@@ -706,7 +1261,7 @@ class Plugin:
         self._refresh_controls()
 
     def _speak_text(self, text):
-        text = self._plain(text)[:MAX_SPOKEN]
+        text = spoken_text(text)[:MAX_SPOKEN]
         if not text:
             return
         speech = Speech()
@@ -795,16 +1350,6 @@ class Plugin:
             rsimgv.notify(f"{NAME}: {error}", level="error", seconds=8)
         self._refresh_controls()
 
-    @staticmethod
-    def _plain(text):
-        """Markdown reduced to what reads well aloud."""
-        text = re.sub(r"```.*?```", " ", text, flags=re.S)
-        text = re.sub(r"!?\[([^\]]*)\]\([^)]*\)", r"\1", text)
-        text = re.sub(r"`([^`]*)`", r"\1", text)
-        text = re.sub(r"^\s{0,3}#{1,6}\s*", "", text, flags=re.M)
-        text = re.sub(r"[*_~]{1,3}", "", text)
-        return re.sub(r"\n{3,}", "\n\n", text).strip()
-
     # -- shared helpers --------------------------------------------------
 
     def _current(self, generation):
@@ -846,37 +1391,12 @@ class Plugin:
 
     # -- panel updates ---------------------------------------------------
 
-    def _add_bubble(self, panel, role, text, filename):
-        """Appends a message to a panel's log and returns its text label."""
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
-        box.set_margin_start(6)
-        box.set_margin_end(6)
-
-        caption = Gtk.Label(label="You" if role == "user" else "Assistant", xalign=0.0)
-        caption.add_css_class("caption-heading")
-        if role == "user":
-            caption.add_css_class("accent")
-            if filename:
-                caption.set_label(f"You · {filename}")
-                caption.set_ellipsize(Pango.EllipsizeMode.MIDDLE)
-
-        label = Gtk.Label(label=text, xalign=0.0, hexpand=True)
-        label.set_wrap(True)
-        label.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
-        label.set_selectable(True)
-
-        box.append(caption)
-        box.append(label)
-        panel.log.append(box)
-        return label
-
-    def _scroll_down(self, panel):
-        def scroll():
-            adjustment = panel.scroll.get_vadjustment()
-            adjustment.set_value(adjustment.get_upper() - adjustment.get_page_size())
-
-        # The log has not been laid out yet, so wait for the next pass.
-        rsimgv.ui.idle_add(scroll)
+    def _add_bubble(self, panel, role, text, filename, thinking="", live=False):
+        """Appends a message to a panel's log and returns it."""
+        bubble = Bubble(role, text, thinking, filename, self._replay, self._regenerate, live)
+        panel.log.append(bubble.box)
+        panel.bubbles.append(bubble)
+        return bubble
 
     def _show_file(self, filename):
         for panel in self._panels.values():
@@ -891,6 +1411,7 @@ class Plugin:
         busy = self._request is not None
         recording = self._recorder is not None
         speaking = self._speech is not None
+        can_speak = self._config["tts_backend"] != "off"
         for panel in self._panels.values():
             panel.entry.set_sensitive(not recording and not self._transcribing)
             panel.send_button.set_icon_name(
@@ -913,17 +1434,25 @@ class Plugin:
             )
             panel.stop_speaking_button.set_visible(speaking)
 
+            # Only the last reply can be asked for again, and only while nothing is pending.
+            last = panel.bubbles[-1] if panel.bubbles else None
+            for bubble in panel.bubbles:
+                if bubble.role != "assistant":
+                    continue
+                finished = bubble is not panel.streaming
+                bubble.replay_button.set_visible(finished and can_speak and not bubble.failed)
+                bubble.regenerate_button.set_visible(finished and not busy and bubble is last)
+
     def _clear(self):
         self._cancel_request()
         self._stop_speech()
         self._history = []
+        self._last_image = None
         self._save_history()
         for panel in self._panels.values():
-            child = panel.log.get_first_child()
-            while child is not None:
-                following = child.get_next_sibling()
-                panel.log.remove(child)
-                child = following
+            for bubble in panel.bubbles:
+                panel.log.remove(bubble.box)
+            panel.bubbles = []
             panel.streaming = None
 
     # -- storage ---------------------------------------------------------
@@ -951,6 +1480,7 @@ class Plugin:
                 and message.get("role") in ("user", "assistant")
                 and isinstance(message.get("text"), str)
             ):
+                message.setdefault("id", uuid.uuid4().hex)
                 history.append(message)
         return history
 
