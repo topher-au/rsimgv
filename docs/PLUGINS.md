@@ -148,6 +148,13 @@ selected picture and keeps the result in rsimgv's data folder, where the viewer 
 original. Press `Ctrl+Alt+U` or choose **Upscale picture** from the main menu, and `U` in the viewer to switch
 between the original and the upscaled copy, or `Shift+U` to compare them either side of a draggable divider. See the plugin's README for requirements and settings.
 
+## Bundled LLM Chat plugin
+
+`au.topher.llm-chat` adds a persistent chat to the sidebar. Each message is sent to an OpenAI-compatible
+vision model with the viewer's current picture or frame, its filename and its metadata. Voice input and
+spoken replies can use an HTTP endpoint or a local program such as `whisper-cli` or `piper`. See the
+plugin's README for settings.
+
 ## Limits
 
 - Hot reload re-imports Python modules; C extensions and GObject types from earlier generations stay
