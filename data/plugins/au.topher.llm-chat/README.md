@@ -129,7 +129,9 @@ left out of what is spoken, and so are code blocks and web addresses.
 The chat scrolls to the end when you send a message and when a response starts, and follows the response while
 you stay at the bottom. Scroll up to read earlier messages and it stays where you are until the next response.
 
-Outside the viewer the chat is in the sidebar, under the folder tree, and shares the sidebar's height with it.
+Outside the viewer the chat is in a sidebar of its own on the right, outside the playlist's. Drag its edge to
+change its width; the width is kept. `Ctrl+Alt+C` shows or hides the chat, the sidebar in the browse view and
+the card in the viewer, each remembered separately for the next start.
 
 ## The viewer card
 

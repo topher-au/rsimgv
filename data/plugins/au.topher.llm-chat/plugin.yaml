@@ -12,9 +12,9 @@ events: [viewer.item_changed]
 contributes:
   actions:
     - id: toggle-chat
-      label: Show or hide chat in the viewer
-      description: Show or hide the chat panel over the picture.
-      scope: view
+      label: Show or hide chat
+      description: Show or hide the chat, over the picture in the viewer or in the sidebar otherwise.
+      scope: global
       default_keys: [ctrl+alt+c]
     - id: voice-mode
       label: Start or stop a voice conversation
@@ -35,15 +35,14 @@ contributes:
       scope: global
   menus:
     - menu: main
-      label: Show or hide viewer chat
+      label: Show or hide chat
       action: toggle-chat
     - menu: main
       label: Clear chat
       action: clear-chat
   panels:
     - id: chat
-      slot: sidebar.bottom
-      title: LLM Chat
+      slot: browse.sidebar
     - id: viewer-chat
       slot: viewer.overlay
       position: top-right
@@ -240,5 +239,10 @@ contributes:
     - key: barge_in
       label: Interrupt replies by speaking
       description: Keep listening while a reply is read aloud, and stop reading when you speak. Use headphones or an echo-cancelled microphone, or the speakers' sound may interrupt it.
+      kind: bool
+      default: true
+    - key: chat_sidebar
+      label: Show the chat sidebar
+      description: Whether the chat sidebar is open when you are not in the viewer. The show or hide chat action changes this too.
       kind: bool
       default: true

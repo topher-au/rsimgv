@@ -60,8 +60,10 @@ contributes:
 - `api` must be `1`.
 - Plugin ids may contain lowercase letters, digits, dots and hyphens.
 - Action names become `plugin.<id>.<action>` and can be bound in the keybinding editor.
-- Panel slots: `sidebar.bottom`, `browse.header`, `viewer.overlay`, `preferences.plugins`. Only `sidebar.bottom`
-  and `viewer.overlay` are built so far. A `viewer.overlay` panel is a card over the viewer's picture, in the
+- Panel slots: `sidebar.bottom`, `browse.sidebar`, `browse.header`, `viewer.overlay`, `preferences.plugins`. Only
+  `sidebar.bottom`, `browse.sidebar` and `viewer.overlay` are built so far. A `browse.sidebar` panel is in a
+  sidebar on the right of the browse view, outside the playlist's, whose width can be dragged. The sidebar is
+  open while a panel in it is shown, so a plugin shows or hides its panel with `container.set_visible`. A `viewer.overlay` panel is a card over the viewer's picture, in the
   corner given by `position` (`top-left`, `top-right`, `bottom-left` or `bottom-right`; `top-right` by default).
   The plugin sizes it and can hide it with `container.set_visible`.
 - Setting kinds: `string`, `text`, `int`, `bool`, `choice`. Settings are written to the plugin's own

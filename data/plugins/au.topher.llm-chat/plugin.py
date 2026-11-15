@@ -127,6 +127,7 @@ DEFAULTS = {
     "memory": True,
     "memory_limit": 100,
     "barge_in": True,
+    "chat_sidebar": True,
 }
 
 LIMITS = {
@@ -934,8 +935,11 @@ class Plugin:
             header.set_margin_top(CORNER_SIZE)
             row.set_margin_bottom(CORNER_SIZE)
         else:
-            # In the sidebar the chat takes its share of the height, rather than a strip under the folder tree.
+            # The chat sidebar is open or closed with its panel, and the panel fills its height.
             container.set_vexpand(True)
+            container.set_visible(config["chat_sidebar"])
+            for margin in ("top", "bottom", "start", "end"):
+                getattr(container, f"set_margin_{margin}")(8)
 
         self._panels[panel.key] = panel
         self._refresh_memory()
@@ -2137,13 +2141,25 @@ class Plugin:
     # -- spoken replies --------------------------------------------------
 
     def _toggle_chat(self):
-        """Shows or hides the chat over the viewer's picture. The sidebar chat is not affected."""
-        self._chat_shown = not self._chat_shown
-        for panel in self._panels.values():
-            if panel.in_viewer:
-                panel.container.set_visible(self._chat_shown)
-                if self._chat_shown:
-                    panel.entry.grab_focus()
+        """Shows or hides the chat where you are: over the picture in the viewer, or in the sidebar otherwise."""
+        try:
+            rsimgv.host.call("view.info")
+            in_viewer = True
+        except Exception:
+            in_viewer = False
+        targets = [panel for panel in self._panels.values() if panel.in_viewer == in_viewer]
+        if not targets:
+            return
+        # Judged by what is on screen, since the sidebar can also be closed from outside the plugin.
+        show = not any(panel.container.get_visible() for panel in targets)
+        for panel in targets:
+            panel.container.set_visible(show)
+            if show:
+                panel.entry.grab_focus()
+        if in_viewer:
+            self._chat_shown = show
+        else:
+            self._save_setting("chat_sidebar", show)
 
     def _toggle_speak(self):
         if self._config["tts_backend"] == "off":
