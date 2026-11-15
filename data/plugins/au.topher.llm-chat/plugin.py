@@ -675,6 +675,12 @@ class Panel:
         self.streaming = None
         # Whether new messages scroll into view. It is off while the reader is scrolled up.
         self.follow = True
+        # The log's size when its scrollbar last changed, to tell the reader scrolling from the log growing.
+        self.upper = 0.0
+        self.page = 0.0
+        # Frames still to pin the log to its end, and whether a frame callback is running for that.
+        self.settle = 0
+        self.ticking = False
         # Whether the viewer card is placed by margins from the top left rather than by the host's corner.
         self.anchored = False
 
@@ -1147,24 +1153,57 @@ class Plugin:
     # -- following new messages ------------------------------------------
 
     def _scrolled(self, panel, adjustment):
-        distance = adjustment.get_upper() - adjustment.get_value() - adjustment.get_page_size()
-        panel.follow = distance <= FOLLOW_SLACK
+        """The reader scrolled, or the log changed under the scrollbar. Only the reader's scrolling counts."""
+        upper, page = adjustment.get_upper(), adjustment.get_page_size()
+        if upper != panel.upper or page != panel.page:
+            # A message grew or the panel was resized, which moves the scrollbar without the reader's doing.
+            panel.upper, panel.page = upper, page
+            return
+        panel.follow = upper - adjustment.get_value() - page <= FOLLOW_SLACK
 
     def _grew(self, panel, adjustment):
+        panel.upper, panel.page = adjustment.get_upper(), adjustment.get_page_size()
         if panel.follow:
-            adjustment.set_value(adjustment.get_upper() - adjustment.get_page_size())
+            adjustment.set_value(panel.upper - panel.page)
 
     def _scroll_down(self, panel):
         """Follows the log to its end, as when the reader has just sent a message or a reply has started."""
         panel.follow = True
         self._follow_now(panel)
-        # The new message is not laid out yet, so go to the end again once it is.
-        rsimgv.ui.idle_add(lambda: self._follow_now(panel))
+        self._keep_following(panel)
 
     def _follow_now(self, panel):
         if panel.follow and panel.key in self._panels:
             adjustment = panel.scroll.get_vadjustment()
             adjustment.set_value(adjustment.get_upper() - adjustment.get_page_size())
+
+    def _keep_following(self, panel):
+        """Pins the log to its end on every frame for a little while.
+
+        A message is laid out over a frame or two after it changes, so the end it
+        should scroll to is not known at once. Going to the end again on each
+        frame, until the log has stopped changing, does not depend on when the
+        scrollbar reports the new size. It runs while a reply is being written.
+        """
+        panel.settle = 12
+        if panel.ticking:
+            return
+        panel.ticking = True
+
+        def tick(widget, clock):
+            if panel.key not in self._panels:
+                panel.ticking = False
+                return False
+            self._follow_now(panel)
+            if panel.streaming is not None:
+                panel.settle = 12
+            panel.settle -= 1
+            if panel.settle <= 0:
+                panel.ticking = False
+                return False
+            return True
+
+        panel.scroll.add_tick_callback(tick)
 
     # -- sending ---------------------------------------------------------
 
@@ -1482,7 +1521,7 @@ class Plugin:
                 if first:
                     self._scroll_down(panel)
                 else:
-                    rsimgv.ui.idle_add(lambda panel=panel: self._follow_now(panel))
+                    self._keep_following(panel)
         self._set_status("" if reply else ("Thinking…" if thinking else "Waiting for the reply…"))
 
     def _chat_done(self, generation, request, error):
@@ -1529,7 +1568,7 @@ class Plugin:
             if bubble is not None:
                 bubble.message_id = message_id
                 bubble.show(thinking, text, final=True, failed=failed)
-                rsimgv.ui.idle_add(lambda panel=panel: self._follow_now(panel))
+                self._keep_following(panel)
 
     # -- memory ----------------------------------------------------------
 
