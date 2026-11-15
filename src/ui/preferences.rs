@@ -681,6 +681,7 @@ impl PreferencesDialog {
                     let widget = adw::EntryRow::builder()
                         .title(&setting.label)
                         .text(current.as_str().unwrap_or_default())
+                        .show_apply_button(true)
                         .build();
                     if !setting.description.is_empty() {
                         widget.set_tooltip_text(Some(&setting.description));
