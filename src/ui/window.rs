@@ -576,6 +576,11 @@ impl Window {
         self.imp().current_path.borrow().clone()
     }
 
+    /// The overlay over the viewer's picture, where plugin panels in the `viewer.overlay` slot are added.
+    pub fn viewer_overlay(&self) -> gtk::Overlay {
+        self.imp().viewer.overlay()
+    }
+
     /// The box at the bottom of the sidebar where plugin panels are added.
     pub fn plugin_panel_host(&self) -> gtk::Box {
         self.imp().plugin_panels.clone()

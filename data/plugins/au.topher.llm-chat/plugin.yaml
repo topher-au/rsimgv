@@ -11,6 +11,11 @@ events: [viewer.item_changed]
 
 contributes:
   actions:
+    - id: toggle-chat
+      label: Show or hide chat in the viewer
+      description: Show or hide the chat panel over the picture.
+      scope: view
+      default_keys: [ctrl+alt+c]
     - id: speak-toggle
       label: Speak chat replies
       description: Turn spoken replies on or off.
@@ -19,10 +24,17 @@ contributes:
       label: Stop speaking
       description: Stop the reply being read aloud.
       scope: global
+  menus:
+    - menu: main
+      label: Show or hide viewer chat
+      action: toggle-chat
   panels:
     - id: chat
       slot: sidebar.bottom
       title: LLM Chat
+    - id: viewer-chat
+      slot: viewer.overlay
+      position: top-right
   settings:
     - key: base_url
       label: API base URL

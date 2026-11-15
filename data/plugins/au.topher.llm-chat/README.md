@@ -1,6 +1,7 @@
 # LLM Chat — Python
 
-A persistent chat in the sidebar. Every message you send goes to an
+A persistent chat in the sidebar, and in a card over the picture while the viewer is open
+(`Ctrl+Alt+C`, or **Show or hide viewer chat** in the main menu, shows or hides that card). Both show the same conversation. Every message you send goes to an
 OpenAI-compatible chat model together with the picture or video frame the viewer
 is showing, its filename and its metadata. The conversation is kept across
 sessions in `history.json` beside the plugin's `config.json`

@@ -110,6 +110,7 @@ class Panel:
 
     def __init__(self, panel_id, instance_id):
         self.key = (panel_id, instance_id)
+        self.container = None
         self.file_label = None
         self.scroll = None
         self.log = None
@@ -137,6 +138,7 @@ class Plugin:
         self._record_dir = None
         self._record_panel = None
         self._transcribing = False
+        self._chat_shown = True
 
     def activate(self, host):
         self._active = True
@@ -161,7 +163,9 @@ class Plugin:
     # -- host callbacks --------------------------------------------------
 
     def invoke_action(self, action, context):
-        if action == "speak-toggle":
+        if action == "toggle-chat":
+            self._toggle_chat()
+        elif action == "speak-toggle":
             self._toggle_speak()
         elif action == "stop-speaking":
             self._stop_speech()
@@ -176,11 +180,13 @@ class Plugin:
         self._show_file(os.path.basename(path) if path else "")
 
     def create_panel(self, panel_id, instance_id, container, context):
-        if panel_id != "chat":
+        if panel_id not in ("chat", "viewer-chat"):
             return
 
         panel = Panel(panel_id, instance_id)
+        panel.container = container
         config = self._config
+        in_viewer = panel_id == "viewer-chat"
 
         panel.file_label = Gtk.Label(xalign=0.0, hexpand=True)
         panel.file_label.set_ellipsize(Pango.EllipsizeMode.MIDDLE)
@@ -212,7 +218,7 @@ class Plugin:
 
         panel.scroll = Gtk.ScrolledWindow(vexpand=True)
         panel.scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-        panel.scroll.set_min_content_height(260)
+        panel.scroll.set_min_content_height(320 if in_viewer else 260)
         panel.scroll.set_child(panel.log)
 
         panel.status = Gtk.Label(xalign=0.0)
@@ -240,6 +246,15 @@ class Plugin:
         container.append(panel.scroll)
         container.append(panel.status)
         container.append(row)
+        if in_viewer:
+            # The host draws this panel as a card over the picture, so it is given a width and padding.
+            container.set_size_request(380, -1)
+            container.set_visible(self._chat_shown)
+            for child in (header, panel.scroll, panel.status, row):
+                child.set_margin_start(8)
+                child.set_margin_end(8)
+            header.set_margin_top(8)
+            row.set_margin_bottom(8)
 
         rsimgv.ui.connect(panel.send_button, "clicked", lambda *_: self._send_or_stop(panel))
         rsimgv.ui.connect(panel.entry, "activate", lambda *_: self._send_from(panel))
@@ -671,6 +686,15 @@ class Plugin:
             panel.entry.grab_focus()
 
     # -- spoken replies --------------------------------------------------
+
+    def _toggle_chat(self):
+        """Shows or hides the chat over the viewer's picture. The sidebar chat is not affected."""
+        self._chat_shown = not self._chat_shown
+        for panel in self._panels.values():
+            if panel.key[0] == "viewer-chat":
+                panel.container.set_visible(self._chat_shown)
+                if self._chat_shown:
+                    panel.entry.grab_focus()
 
     def _toggle_speak(self):
         if self._config["tts_backend"] == "off":

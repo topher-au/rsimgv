@@ -36,6 +36,13 @@ struct Panel {
     panel_id: String,
     instance_id: u64,
     container: gtk::Box,
+    /// The viewer's overlay, for a panel in the `viewer.overlay` slot; a sidebar panel has none.
+    overlay: Option<gtk::Overlay>,
+}
+
+/// Whether the window has a place for panels in `slot`. The other slots are accepted in a manifest but not built yet.
+fn builds_slot(slot: &str) -> bool {
+    matches!(slot, "sidebar.bottom" | "viewer.overlay")
 }
 
 struct Entry {
@@ -304,7 +311,7 @@ fn add_panels(window: &Window, only: Option<usize>) {
                         && entry.enabled
                         && entry.error.is_none()
                         && entry.python.is_none()
-                        && entry.manifest.contributes.panels.iter().any(|panel| panel.slot == "sidebar.bottom")
+                        && entry.manifest.contributes.panels.iter().any(|panel| builds_slot(&panel.slot))
                 })
                 .map(|(index, _)| index)
                 .collect()
@@ -320,15 +327,15 @@ fn add_panels(window: &Window, only: Option<usize>) {
                 if only.is_some_and(|wanted| wanted != index) || manager.entries[index].python.is_none() {
                     continue;
                 }
-                let panels: Vec<(String, String)> = manager.entries[index]
+                let panels: Vec<(String, String, String, String)> = manager.entries[index]
                     .manifest
                     .contributes
                     .panels
                     .iter()
-                    .filter(|panel| panel.slot == "sidebar.bottom")
-                    .map(|panel| (panel.id.clone(), panel.title.clone()))
+                    .filter(|panel| builds_slot(&panel.slot))
+                    .map(|panel| (panel.id.clone(), panel.title.clone(), panel.slot.clone(), panel.position.clone()))
                     .collect();
-                for (panel_id, title) in panels {
+                for (panel_id, title, slot, position) in panels {
                     let instance_id = manager.next_instance;
                     manager.next_instance += 1;
                     let container = gtk::Box::new(gtk::Orientation::Vertical, 4);
@@ -339,12 +346,36 @@ fn add_panels(window: &Window, only: Option<usize>) {
                         label.add_css_class("caption-heading");
                         container.append(&label);
                     }
-                    window.plugin_panel_host().append(&container);
+                    let overlay = if slot == "viewer.overlay" {
+                        // Over the picture, in the corner the manifest names (the top right by default). The viewer
+                        // clips the overlay to the item, so the panel stays within it.
+                        let overlay = window.viewer_overlay();
+                        container.add_css_class("card");
+                        container.add_css_class("background");
+                        container.set_margin_top(12);
+                        container.set_margin_bottom(12);
+                        container.set_margin_start(12);
+                        container.set_margin_end(12);
+                        let (horizontal, vertical) = match position.as_str() {
+                            "top-left" => (gtk::Align::Start, gtk::Align::Start),
+                            "bottom-left" => (gtk::Align::Start, gtk::Align::End),
+                            "bottom-right" => (gtk::Align::End, gtk::Align::End),
+                            _ => (gtk::Align::End, gtk::Align::Start),
+                        };
+                        container.set_halign(horizontal);
+                        container.set_valign(vertical);
+                        overlay.add_overlay(&container);
+                        Some(overlay)
+                    } else {
+                        window.plugin_panel_host().append(&container);
+                        None
+                    };
                     manager.entries[index].panels.push(Panel {
                         window: window.downgrade(),
                         panel_id: panel_id.clone(),
                         instance_id,
                         container: container.clone(),
+                        overlay,
                     });
                     work.push((index, panel_id, instance_id, container));
                 }
@@ -726,7 +757,7 @@ pub fn set_enabled(id: &str, enabled: bool, settings: &Settings) -> Result<(), S
     let (was_enabled, needs_loading) = MANAGER.with(|manager| {
         let manager = manager.borrow();
         let entry = &manager.entries[index];
-        let has_panel = entry.manifest.contributes.panels.iter().any(|panel| panel.slot == "sidebar.bottom");
+        let has_panel = entry.manifest.contributes.panels.iter().any(|panel| builds_slot(&panel.slot));
         (entry.enabled, entry.manifest.startup == manifest::Startup::Always || has_panel)
     });
     if was_enabled == enabled {
@@ -817,7 +848,10 @@ fn remove_panels(index: usize) {
                 let _ = python::panel_destroyed(&instance, &panel.panel_id, panel.instance_id);
             }
         }
-        panel.container.unparent();
+        match &panel.overlay {
+            Some(overlay) => overlay.remove_overlay(&panel.container),
+            None => panel.container.unparent(),
+        }
         let _ = panel.window;
     }
 }

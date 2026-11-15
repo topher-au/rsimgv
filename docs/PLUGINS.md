@@ -60,7 +60,10 @@ contributes:
 - `api` must be `1`.
 - Plugin ids may contain lowercase letters, digits, dots and hyphens.
 - Action names become `plugin.<id>.<action>` and can be bound in the keybinding editor.
-- Panel slots: `sidebar.bottom`, `browse.header`, `viewer.overlay`, `preferences.plugins`.
+- Panel slots: `sidebar.bottom`, `browse.header`, `viewer.overlay`, `preferences.plugins`. Only `sidebar.bottom`
+  and `viewer.overlay` are built so far. A `viewer.overlay` panel is a card over the viewer's picture, in the
+  corner given by `position` (`top-left`, `top-right`, `bottom-left` or `bottom-right`; `top-right` by default).
+  The plugin sizes it and can hide it with `container.set_visible`.
 - Setting kinds: `string`, `text`, `int`, `bool`, `choice`. Settings are written to the plugin's own
   `config.json` and shown on the Plugins page. `choice` settings also take `choices`; `int` settings can
   take `min` and `max`.
@@ -150,7 +153,7 @@ between the original and the upscaled copy, or `Shift+U` to compare them either 
 
 ## Bundled LLM Chat plugin
 
-`au.topher.llm-chat` adds a persistent chat to the sidebar. Each message is sent to an OpenAI-compatible
+`au.topher.llm-chat` adds a persistent chat to the sidebar, and over the picture in the viewer (`Ctrl+Alt+C` shows or hides it). Each message is sent to an OpenAI-compatible
 vision model with the viewer's current picture or frame, its filename and its metadata. Voice input and
 spoken replies can use an HTTP endpoint or a local program such as `whisper-cli` or `piper`. See the
 plugin's README for settings.
