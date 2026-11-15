@@ -109,9 +109,14 @@ are kept, dropping the oldest.
 
 ## Messages
 
-Your messages are on the right and the model's on the left. A message you send has a small picture of what
-was sent beside it; click it to open that file in the viewer. Each message has a delete button, which also
-deletes the reply to a message of yours. **Clear chat** is in the header and the main menu.
+Your messages are on the right, in the accent colour and labelled with your name, and the model's are on the
+left. Set **Your name in the chat** in the settings; it shows User until you do. The picture that was sent with
+a message of yours is shown inside its bubble; click it to open that file in the viewer.
+
+Move the pointer over a message and its actions appear just below it: read it aloud again, regenerate (on the
+last reply), and delete. Deleting a message of yours also deletes the reply to it. The actions have their own
+row, which is only faded in and out, so messages do not move when you hover. **Clear chat** is in the header and
+the main menu.
 
 ## Voice conversation
 
@@ -146,6 +151,8 @@ left out of what is spoken, and so are code blocks and web addresses.
 
 The chat scrolls to the end when you send a message and when a response starts, and follows the response while
 you stay at the bottom. Scroll up to read earlier messages and it stays where you are until the next response.
+
+While the chat is scrolled away from the latest message, a button over its bottom edge takes you back.
 
 If the chat does not stay at the bottom, start rsimgv with `RSIMGV_CHAT_DEBUG=1` to log each time it moves
 or stops following, with the content and window heights it measured.

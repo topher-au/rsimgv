@@ -77,8 +77,8 @@ CORNERS = {
 }
 CORNER_SIZE = 12
 
-# The longest side of the picture kept beside each message you send.
-THUMB_SIZE = 96
+# The longest side of the picture kept with each message you send, and shown in its bubble.
+THUMB_SIZE = 256
 
 DEFAULTS = {
     "base_url": "https://api.openai.com/v1",
@@ -131,6 +131,7 @@ DEFAULTS = {
     "memory_limit": 100,
     "barge_in": True,
     "chat_sidebar": True,
+    "user_name": "",
     "tools": True,
     "tool_viewer": True,
     "tool_rounds": 5,
@@ -686,10 +687,20 @@ class Listener:
 
 
 class Bubble:
-    """One message in a panel's log, drawn as a speech bubble: yours on the right, the model's on the left."""
+    """One message in a panel's log, drawn as a speech bubble: yours on the right, the model's on the left.
+
+    Under the bubble is a row of actions, shown while the pointer is over the
+    message. The row always has its height and is only faded, and the bubble's
+    text wraps at a fixed number of characters, so nothing about a message
+    changes size when the pointer moves or a reply finishes.
+    """
+
+    ACTIONS_HEIGHT = 26
+    # The text wraps at about this many characters, or at the panel's width if that is narrower.
+    MAX_CHARS = 60
 
     def __init__(
-        self, role, text, thinking, filename, plugin, live=False, message_id=None, thumb=None, path=None, notes=None
+        self, role, text, thinking, name, plugin, live=False, message_id=None, thumb=None, path=None, notes=None
     ):
         self.role = role
         self.message_id = message_id
@@ -702,52 +713,50 @@ class Bubble:
         self._thinking_shown = False
         self._collapsed = False
         user = role == "user"
+        side = Gtk.Align.END if user else Gtk.Align.START
 
-        # The row holds the bubble and, for a message you sent, the picture it was about.
-        self.box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        self.box.set_halign(Gtk.Align.END if user else Gtk.Align.START)
-        self.box.set_margin_start(32 if user else 6)
-        self.box.set_margin_end(6 if user else 32)
+        # The whole message: who it is from, the bubble, and its actions. It fills the panel's width.
+        self.box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        self.box.set_margin_start(36 if user else 6)
+        self.box.set_margin_end(6 if user else 36)
+        motion = Gtk.EventControllerMotion()
+        motion.connect("enter", lambda controller, x, y: self.set_hover(True))
+        motion.connect("leave", lambda controller: self.set_hover(False))
+        self.box.add_controller(motion)
 
-        bubble = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        self.caption = Gtk.Label(label=name, xalign=1.0 if user else 0.0)
+        self.caption.add_css_class("caption")
+        self.caption.set_opacity(0.7)
+        self.caption.set_ellipsize(Pango.EllipsizeMode.END)
+        self.caption.set_margin_start(8)
+        self.caption.set_margin_end(8)
+
+        bubble = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        bubble.set_halign(side)
         bubble.add_css_class("llm-bubble")
         bubble.add_css_class("llm-bubble-user" if user else "llm-bubble-assistant")
 
-        self.caption = Gtk.Label(label=(filename or "") if user else "Assistant", xalign=0.0, hexpand=True)
-        self.caption.add_css_class("caption")
-        self.caption.set_opacity(0.7)
-        self.caption.set_ellipsize(Pango.EllipsizeMode.MIDDLE)
-        self.caption.set_visible(bool(self.caption.get_label()))
-
-        head = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2)
-        head.append(self.caption)
-        self.replay_button = Gtk.Button.new_from_icon_name("audio-volume-high-symbolic")
-        self.regenerate_button = Gtk.Button.new_from_icon_name("view-refresh-symbolic")
-        self.delete_button = Gtk.Button.new_from_icon_name("user-trash-symbolic")
-        buttons = [
-            (self.replay_button, "Read aloud", lambda *_: plugin._replay(self), not user),
-            (self.regenerate_button, "Regenerate", lambda *_: plugin._regenerate(), not user),
-            (
-                self.delete_button,
-                "Delete this message and its reply" if user else "Delete this reply",
-                lambda *_: plugin._delete(self),
-                True,
-            ),
-        ]
-        for button, tip, callback, shown in buttons:
-            button.add_css_class("flat")
-            button.add_css_class("circular")
-            button.set_tooltip_text(tip)
-            button.connect("clicked", callback)
-            if shown:
-                head.append(button)
-        # The buttons always take their room and are only faded out. Showing and hiding them would change the
-        # height of every message at once, which the log's scrolling cannot follow.
-        self.set_actions()
+        # The picture that was sent with a message of yours, which opens in the viewer when clicked.
+        texture = thumbnail_texture(thumb) if user and thumb else None
+        if texture is not None:
+            picture = Gtk.Picture.new_for_paintable(texture)
+            picture.set_halign(Gtk.Align.START)
+            picture.set_can_shrink(False)
+            picture.set_overflow(Gtk.Overflow.HIDDEN)
+            picture.add_css_class("llm-thumb")
+            if path:
+                picture.set_cursor_from_name("pointer")
+                picture.set_tooltip_text(f"Open {os.path.basename(path)} in the viewer")
+                click = Gtk.GestureClick()
+                click.set_button(1)
+                click.connect("released", lambda gesture, presses, x, y: plugin._open_in_viewer(path))
+                picture.add_controller(click)
+            bubble.append(picture)
 
         self.think_label = Gtk.Label(xalign=0.0)
         self.think_label.set_wrap(True)
         self.think_label.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
+        self.think_label.set_max_width_chars(self.MAX_CHARS)
         self.think_label.set_selectable(True)
         self.think_label.set_opacity(0.7)
         self.expander = Gtk.Expander(label="Thinking…")
@@ -762,43 +771,55 @@ class Bubble:
         self.body = Gtk.Label(xalign=0.0)
         self.body.set_wrap(True)
         self.body.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
+        self.body.set_max_width_chars(self.MAX_CHARS)
         self.body.set_selectable(True)
 
-        bubble.append(head)
         bubble.append(self.expander)
         bubble.append(self.notes_box)
         bubble.append(self.body)
-        self.box.append(bubble)
 
-        texture = thumbnail_texture(thumb) if user and thumb else None
-        if texture is not None and path:
-            picture = Gtk.Picture.new_for_paintable(texture)
-            picture.set_size_request(44, 44)
-            picture.set_can_shrink(True)
-            picture.set_content_fit(Gtk.ContentFit.COVER)
-            picture.set_overflow(Gtk.Overflow.HIDDEN)
-            picture.add_css_class("llm-thumb")
-            button = Gtk.Button()
-            button.set_child(picture)
+        self.replay_button = Gtk.Button.new_from_icon_name("audio-volume-high-symbolic")
+        self.regenerate_button = Gtk.Button.new_from_icon_name("view-refresh-symbolic")
+        self.delete_button = Gtk.Button.new_from_icon_name("user-trash-symbolic")
+        self.actions = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2)
+        self.actions.set_halign(side)
+        self.actions.set_size_request(-1, self.ACTIONS_HEIGHT)
+        self.actions.set_opacity(0.0)
+        for button, tip, callback, shown in (
+            (self.replay_button, "Read aloud", lambda *_: plugin._replay(self), not user),
+            (self.regenerate_button, "Regenerate", lambda *_: plugin._regenerate(), not user),
+            (
+                self.delete_button,
+                "Delete this message and its reply" if user else "Delete this reply",
+                lambda *_: plugin._delete(self),
+                True,
+            ),
+        ):
             button.add_css_class("flat")
-            button.add_css_class("llm-thumb")
-            button.set_valign(Gtk.Align.START)
-            button.set_tooltip_text(f"Open {os.path.basename(path)} in the viewer")
-            button.connect("clicked", lambda *_: plugin._open_in_viewer(path))
-            self.box.append(button)
+            button.add_css_class("circular")
+            button.add_css_class("llm-action")
+            button.set_valign(Gtk.Align.CENTER)
+            button.set_focusable(False)
+            button.set_tooltip_text(tip)
+            button.connect("clicked", callback)
+            if shown:
+                self.actions.append(button)
+        self.set_actions()
 
+        self.box.append(self.caption)
+        self.box.append(bubble)
+        self.box.append(self.actions)
         self.show(thinking, text, final=True)
 
+    def set_hover(self, hovered):
+        """Fades the actions in while the pointer is over the message. Their room is always kept."""
+        self.actions.set_opacity(1.0 if hovered else 0.0)
+
     def set_actions(self, replay=False, regenerate=False, delete=False):
-        """Shows or hides the message's buttons without changing its size."""
-        for button, on in (
-            (self.replay_button, replay),
-            (self.regenerate_button, regenerate),
-            (self.delete_button, delete),
-        ):
-            button.set_opacity(1.0 if on else 0.0)
-            button.set_can_target(on)
-            button.set_can_focus(on)
+        """Chooses which actions the message has. The row keeps its height whichever there are."""
+        self.replay_button.set_visible(replay)
+        self.regenerate_button.set_visible(regenerate)
+        self.delete_button.set_visible(delete)
 
     def add_note(self, text):
         label = Gtk.Label(label=f"⚙ {text}", xalign=0.0)
@@ -867,6 +888,8 @@ class Panel:
         # The log's size when its scrollbar last changed, to tell the reader scrolling from the log growing.
         self.upper = 0.0
         self.page = 0.0
+        # The button over the log that goes to the latest message, shown while the log is not at its end.
+        self.to_bottom = None
         # Frames still to pin the log to its end, and whether a frame callback is running for that.
         self.settle = 0
         self.ticking = False
@@ -1086,7 +1109,19 @@ class Plugin:
 
         content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         content.append(header)
-        content.append(panel.scroll)
+        # A button over the log goes to the latest message while the log is scrolled away from it.
+        panel.to_bottom = Gtk.Button.new_from_icon_name("go-down-symbolic")
+        panel.to_bottom.add_css_class("circular")
+        panel.to_bottom.add_css_class("osd")
+        panel.to_bottom.set_halign(Gtk.Align.CENTER)
+        panel.to_bottom.set_valign(Gtk.Align.END)
+        panel.to_bottom.set_margin_bottom(10)
+        panel.to_bottom.set_tooltip_text("Go to the latest message")
+        panel.to_bottom.set_visible(False)
+        scroll_area = Gtk.Overlay(vexpand=True)
+        scroll_area.set_child(panel.scroll)
+        scroll_area.add_overlay(panel.to_bottom)
+        content.append(scroll_area)
         content.append(footer)
         content.append(row)
 
@@ -1115,6 +1150,7 @@ class Plugin:
         rsimgv.ui.connect(panel.thinking_button, "clicked", lambda *_: self._toggle_thinking())
         rsimgv.ui.connect(panel.stop_speaking_button, "clicked", lambda *_: self._stop_speech())
         rsimgv.ui.connect(clear_button, "clicked", lambda *_: self._clear())
+        rsimgv.ui.connect(panel.to_bottom, "clicked", lambda *_: self._scroll_down(panel))
         rsimgv.ui.connect(memory_add, "clicked", lambda *_: self._add_memory_from(panel))
         rsimgv.ui.connect(panel.memory_entry, "activate", lambda *_: self._add_memory_from(panel))
 
@@ -1125,13 +1161,14 @@ class Plugin:
         # A size change is also reported as a property change, which does not depend on how the size was set.
         rsimgv.ui.connect(adjustment, "notify::upper", lambda a, _spec: self._grew(panel, a))
         rsimgv.ui.connect(adjustment, "notify::page-size", lambda a, _spec: self._grew(panel, a))
+        rsimgv.ui.timeout_add(150, lambda: self._watch(panel))
 
         if panel.in_viewer:
             container.add_css_class("llm-chat-card")
             self._place_card(panel, header, corners)
             container.set_visible(self._chat_shown)
             # Room round the content, so the corner handles are not over its buttons.
-            for child in (header, panel.scroll, footer, row):
+            for child in (header, scroll_area, footer, row):
                 child.set_margin_start(CORNER_SIZE)
                 child.set_margin_end(CORNER_SIZE)
             header.set_margin_top(CORNER_SIZE)
@@ -1363,6 +1400,8 @@ class Plugin:
                 f"(content {upper:.0f}, window {page:.0f})",
             )
         panel.follow = follow
+        if panel.to_bottom is not None:
+            panel.to_bottom.set_visible(not follow)
 
     def _grew(self, panel, adjustment):
         panel.upper, panel.page = adjustment.get_upper(), adjustment.get_page_size()
@@ -1372,8 +1411,19 @@ class Plugin:
     def _scroll_down(self, panel):
         """Follows the log to its end, as when the reader has just sent a message or a reply has started."""
         panel.follow = True
+        if panel.to_bottom is not None:
+            panel.to_bottom.set_visible(False)
         self._follow_now(panel)
         self._keep_following(panel)
+
+    def _watch(self, panel):
+        """Measures the log again a few times a second while it is shown, so its scroll range cannot stay out of date."""
+        if panel.key not in self._panels:
+            return False
+        if panel.scroll.get_mapped():
+            panel.log.queue_resize()
+            self._follow_now(panel)
+        return True
 
     def _follow_now(self, panel):
         if panel.follow and panel.key in self._panels:
@@ -2506,8 +2556,8 @@ class Plugin:
             .llm-bubble {{ border-radius: 14px; padding: 6px 10px; }}
             .llm-bubble-user {{ background-color: @accent_bg_color; color: @accent_fg_color; }}
             .llm-bubble-assistant {{ background-color: alpha(currentColor, 0.1); }}
-            button.llm-thumb {{ padding: 0; min-width: 0; min-height: 0; border-radius: 8px; }}
             picture.llm-thumb {{ border-radius: 8px; }}
+            button.llm-action {{ min-width: 22px; min-height: 22px; padding: 2px; }}
             """
         )
         Gtk.StyleContext.add_provider_for_display(display, provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
@@ -2851,8 +2901,9 @@ class Plugin:
     def _add_bubble(self, panel, role, text, filename, thinking="", live=False, message=None):
         """Appends a message to a panel's log and returns it. `message` is its entry in the history."""
         message = message or {}
+        name = (self._config["user_name"].strip() or "User") if role == "user" else "Assistant"
         bubble = Bubble(
-            role, text, thinking, filename, self, live, message.get("id"), message.get("thumb"), message.get("path"),
+            role, text, thinking, name, self, live, message.get("id"), message.get("thumb"), message.get("path"),
             message.get("notes"),
         )
         panel.log.append(bubble.box)
