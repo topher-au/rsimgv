@@ -17,6 +17,7 @@ GTK main thread.
 """
 
 import array
+import base64
 import collections
 import copy
 import json
@@ -40,9 +41,10 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Gdk", "4.0")
+gi.require_version("GdkPixbuf", "2.0")
 gi.require_version("Pango", "1.0")
 gi.require_version("Graphene", "1.0")
-from gi.repository import Gdk, Graphene, Gtk, Pango
+from gi.repository import Gdk, GdkPixbuf, GLib, Graphene, Gtk, Pango
 
 import rsimgv
 
@@ -61,6 +63,9 @@ FOLLOW_SLACK = 24
 # The viewer card's size when it has not been resized, and the smallest it can be made.
 CARD_SIZE = (380, 480)
 CARD_MIN = (280, 220)
+
+# The longest side of the picture kept beside each message you send.
+THUMB_SIZE = 96
 
 DEFAULTS = {
     "base_url": "https://api.openai.com/v1",
@@ -136,6 +141,39 @@ def deep_merge(target, source):
             deep_merge(target[key], value)
         else:
             target[key] = copy.deepcopy(value)
+
+
+def make_thumbnail(png_base64):
+    """A small JPEG of a base64 PNG, as base64, or None when the picture cannot be read."""
+    loader = GdkPixbuf.PixbufLoader()
+
+    def fit(loader, width, height):
+        scale = min(1.0, THUMB_SIZE / max(width, height))
+        loader.set_size(max(1, round(width * scale)), max(1, round(height * scale)))
+
+    loader.connect("size-prepared", fit)
+    failed = False
+    try:
+        loader.write(base64.b64decode(png_base64))
+    except Exception:
+        failed = True
+    # The loader must always be closed, even after it failed.
+    try:
+        loader.close()
+    except GLib.Error:
+        failed = True
+    pixbuf = None if failed else loader.get_pixbuf()
+    if pixbuf is None:
+        return None
+    ok, data = pixbuf.save_to_bufferv("jpeg", ["quality"], ["80"])
+    return base64.b64encode(data).decode("ascii") if ok else None
+
+
+def thumbnail_texture(data):
+    try:
+        return Gdk.Texture.new_from_bytes(GLib.Bytes.new(base64.b64decode(data)))
+    except Exception:
+        return None
 
 
 def escape(text):
@@ -446,10 +484,11 @@ class Listener:
 
 
 class Bubble:
-    """One message in a panel's log."""
+    """One message in a panel's log, drawn as a speech bubble: yours on the right, the model's on the left."""
 
-    def __init__(self, role, text, thinking, filename, replay, regenerate, live=False):
+    def __init__(self, role, text, thinking, filename, plugin, live=False, message_id=None, thumb=None, path=None):
         self.role = role
+        self.message_id = message_id
         # A live bubble is being written now, so it can say how long the model thought.
         self._live = live
         self.text = text
@@ -458,52 +497,84 @@ class Bubble:
         self._started = time.monotonic()
         self._thinking_shown = False
         self._collapsed = False
+        user = role == "user"
 
-        self.box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
-        self.box.set_margin_start(6)
-        self.box.set_margin_end(6)
+        # The row holds the bubble and, for a message you sent, the picture it was about.
+        self.box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        self.box.set_halign(Gtk.Align.END if user else Gtk.Align.START)
+        self.box.set_margin_start(32 if user else 6)
+        self.box.set_margin_end(6 if user else 32)
 
-        self.caption = Gtk.Label(label="You" if role == "user" else "Assistant", xalign=0.0, hexpand=True)
-        self.caption.add_css_class("caption-heading")
+        bubble = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        bubble.add_css_class("llm-bubble")
+        bubble.add_css_class("llm-bubble-user" if user else "llm-bubble-assistant")
+
+        self.caption = Gtk.Label(label=(filename or "") if user else "Assistant", xalign=0.0, hexpand=True)
+        self.caption.add_css_class("caption")
+        self.caption.set_opacity(0.7)
         self.caption.set_ellipsize(Pango.EllipsizeMode.MIDDLE)
-        if role == "user":
-            self.caption.add_css_class("accent")
-            if filename:
-                self.caption.set_label(f"You · {filename}")
+        self.caption.set_visible(bool(self.caption.get_label()))
 
         head = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2)
         head.append(self.caption)
         self.replay_button = Gtk.Button.new_from_icon_name("audio-volume-high-symbolic")
         self.regenerate_button = Gtk.Button.new_from_icon_name("view-refresh-symbolic")
-        for button, tip, callback in (
-            (self.replay_button, "Read aloud", lambda *_: replay(self)),
-            (self.regenerate_button, "Regenerate", lambda *_: regenerate()),
-        ):
+        self.delete_button = Gtk.Button.new_from_icon_name("user-trash-symbolic")
+        buttons = [
+            (self.replay_button, "Read aloud", lambda *_: plugin._replay(self), not user),
+            (self.regenerate_button, "Regenerate", lambda *_: plugin._regenerate(), not user),
+            (
+                self.delete_button,
+                "Delete this message and its reply" if user else "Delete this reply",
+                lambda *_: plugin._delete(self),
+                True,
+            ),
+        ]
+        for button, tip, callback, shown in buttons:
             button.add_css_class("flat")
             button.add_css_class("circular")
             button.set_tooltip_text(tip)
             button.set_visible(False)
             button.connect("clicked", callback)
-            if role == "assistant":
+            if shown:
                 head.append(button)
 
-        self.think_label = Gtk.Label(xalign=0.0, hexpand=True)
+        self.think_label = Gtk.Label(xalign=0.0)
         self.think_label.set_wrap(True)
         self.think_label.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
         self.think_label.set_selectable(True)
-        self.think_label.add_css_class("dim-label")
+        self.think_label.set_opacity(0.7)
         self.expander = Gtk.Expander(label="Thinking…")
         self.expander.set_child(self.think_label)
         self.expander.set_visible(False)
 
-        self.body = Gtk.Label(xalign=0.0, hexpand=True)
+        self.body = Gtk.Label(xalign=0.0)
         self.body.set_wrap(True)
         self.body.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
         self.body.set_selectable(True)
 
-        self.box.append(head)
-        self.box.append(self.expander)
-        self.box.append(self.body)
+        bubble.append(head)
+        bubble.append(self.expander)
+        bubble.append(self.body)
+        self.box.append(bubble)
+
+        texture = thumbnail_texture(thumb) if user and thumb else None
+        if texture is not None and path:
+            picture = Gtk.Picture.new_for_paintable(texture)
+            picture.set_size_request(44, 44)
+            picture.set_can_shrink(True)
+            picture.set_content_fit(Gtk.ContentFit.COVER)
+            picture.set_overflow(Gtk.Overflow.HIDDEN)
+            picture.add_css_class("llm-thumb")
+            button = Gtk.Button()
+            button.set_child(picture)
+            button.add_css_class("flat")
+            button.add_css_class("llm-thumb")
+            button.set_valign(Gtk.Align.START)
+            button.set_tooltip_text(f"Open {os.path.basename(path)} in the viewer")
+            button.connect("clicked", lambda *_: plugin._open_in_viewer(path))
+            self.box.append(button)
+
         self.show(thinking, text, final=True)
 
     def show(self, thinking, reply, final=False, failed=False):
@@ -626,6 +697,8 @@ class Plugin:
     def invoke_action(self, action, context):
         if action == "toggle-chat":
             self._toggle_chat()
+        elif action == "clear-chat":
+            self._clear()
         elif action == "voice-mode":
             self._toggle_voice()
         elif action == "speak-toggle":
@@ -649,6 +722,7 @@ class Plugin:
         panel = Panel(panel_id, instance_id)
         panel.container = container
         config = self._config
+        self._ensure_style()
 
         panel.file_label = Gtk.Label(xalign=0.0, hexpand=True)
         panel.file_label.set_ellipsize(Pango.EllipsizeMode.MIDDLE)
@@ -675,7 +749,7 @@ class Plugin:
 
         clear_button = Gtk.Button.new_from_icon_name("edit-clear-all-symbolic")
         clear_button.add_css_class("flat")
-        clear_button.set_tooltip_text("Clear the conversation")
+        clear_button.set_tooltip_text("Clear the chat")
 
         header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2)
         header.append(panel.file_label)
@@ -745,7 +819,7 @@ class Plugin:
         rsimgv.ui.connect(adjustment, "changed", lambda a: self._grew(panel, a))
 
         if panel.in_viewer:
-            self._apply_card_style(container)
+            container.add_css_class("llm-chat-card")
             self._place_card(panel, header, handle)
             container.set_visible(self._chat_shown)
             for child in (header, panel.scroll, footer, row):
@@ -757,7 +831,8 @@ class Plugin:
         self._panels[panel.key] = panel
         for message in self._history:
             self._add_bubble(
-                panel, message["role"], message["text"], message.get("file"), message.get("thinking", "")
+                panel, message["role"], message["text"], message.get("file"), message.get("thinking", ""),
+                message=message,
             )
         self._refresh_controls()
 
@@ -977,7 +1052,7 @@ class Plugin:
             return False
 
         self._stop_speech()
-        context, filename, image = self._gather_context()
+        context, filename, image, path = self._gather_context()
         message = {
             "id": uuid.uuid4().hex,
             "role": "user",
@@ -985,12 +1060,16 @@ class Plugin:
             "file": filename,
             "context": context,
         }
+        thumb = self._thumbnail(image, path)
+        if path and thumb:
+            message["path"] = path
+            message["thumb"] = thumb
         self._history.append(message)
         self._trim_history()
         self._save_history()
         self._last_image = (message["id"], image)
         for panel in self._panels.values():
-            self._add_bubble(panel, "user", text, filename)
+            self._add_bubble(panel, "user", text, filename, message=message)
             self._scroll_down(panel)
         self._begin_request(image)
         return True
@@ -1034,7 +1113,7 @@ class Plugin:
             image = self._last_image[1]
         elif self._config["send_image"]:
             # The picture was not kept, so use the one on screen if it is still the file asked about.
-            _, filename, current = self._gather_context()
+            _, filename, current, _ = self._gather_context()
             if filename == user.get("file"):
                 image = current
         self._begin_request(image)
@@ -1045,7 +1124,7 @@ class Plugin:
         try:
             info = rsimgv.host.call("view.info")
         except Exception:
-            return "No picture or video is open in the viewer.", "", None
+            return "No picture or video is open in the viewer.", "", None, ""
 
         filename = info.get("filename") or ""
         directory = info.get("directory") or ""
@@ -1088,7 +1167,7 @@ class Plugin:
                     lines.append("The picture is too large to send.")
                 else:
                     image = data
-        return "\n".join(lines), filename, image
+        return "\n".join(lines), filename, image, os.path.join(directory, filename) if filename else ""
 
     def _build_messages(self, image):
         """The chat completions messages: the system prompt, recent history, and the picture with the last message."""
@@ -1135,9 +1214,12 @@ class Plugin:
         self._request = None
         request.finish()
         thinking, reply = request.texts()
-        self._finish_bubbles(thinking, reply + ("\n\n(stopped)" if reply else "(stopped)"))
-        if reply.strip():
-            self._remember_reply(thinking, reply)
+        message = self._remember_reply(thinking, reply) if reply.strip() else None
+        self._finish_bubbles(
+            thinking,
+            reply + ("\n\n(stopped)" if reply else "(stopped)"),
+            message_id=message["id"] if message else None,
+        )
         self._set_status("")
         self._refresh_controls()
 
@@ -1265,8 +1347,8 @@ class Plugin:
         elif not reply:
             self._finish_bubbles(thinking, "(the model returned an empty reply)", failed=True)
         else:
-            self._finish_bubbles(thinking, reply)
-            self._remember_reply(thinking, reply)
+            message = self._remember_reply(thinking, reply)
+            self._finish_bubbles(thinking, reply, message_id=message["id"])
             if error is not None:
                 rsimgv.notify(f"{NAME}: the reply was cut short: {error}", level="warning", seconds=8)
             elif (self._speak or self._listener is not None) and self._config["tts_backend"] != "off":
@@ -1282,13 +1364,92 @@ class Plugin:
         self._history.append(message)
         self._trim_history()
         self._save_history()
+        return message
 
-    def _finish_bubbles(self, thinking, text, failed=False):
+    def _finish_bubbles(self, thinking, text, failed=False, message_id=None):
         for panel in self._panels.values():
             bubble = panel.streaming
             panel.streaming = None
             if bubble is not None:
+                bubble.message_id = message_id
                 bubble.show(thinking, text, final=True, failed=failed)
+
+    # -- messages --------------------------------------------------------
+
+    def _thumbnail(self, image, path):
+        """A small picture to keep beside a message: the frame that was sent, or else the file's own thumbnail."""
+        thumb = make_thumbnail(image) if image else None
+        if thumb or not path:
+            return thumb
+        try:
+            result = rsimgv.host.call("thumbnails.get", {"paths": [path], "max_size": THUMB_SIZE * 2})
+            data = ((result.get("thumbnails") or [{}])[0]).get("data")
+        except Exception:
+            return None
+        return make_thumbnail(data) if data else None
+
+    def _delete(self, bubble):
+        """Deletes a message. Deleting one you sent deletes the reply to it too, since the reply has no question."""
+        if self._request is not None:
+            return
+        doomed = set()
+        if bubble.message_id:
+            for index, message in enumerate(self._history):
+                if message["id"] != bubble.message_id:
+                    continue
+                doomed.add(message["id"])
+                following = self._history[index + 1] if index + 1 < len(self._history) else None
+                if message["role"] == "user" and following and following["role"] == "assistant":
+                    doomed.add(following["id"])
+            self._history = [message for message in self._history if message["id"] not in doomed]
+            self._save_history()
+
+        for panel in self._panels.values():
+            for other in list(panel.bubbles):
+                if other is bubble or (other.message_id and other.message_id in doomed):
+                    panel.log.remove(other.box)
+                    panel.bubbles.remove(other)
+        self._refresh_controls()
+
+    def _open_in_viewer(self, path):
+        """Shows a picture or video in the viewer, going to its folder first if it is elsewhere."""
+        if not os.path.isfile(path):
+            rsimgv.notify(f"{NAME}: {os.path.basename(path)} is no longer there.", level="warning", seconds=5)
+            return
+        folder, name = os.path.split(path)
+        try:
+            info = rsimgv.host.call("view.info")
+        except Exception:
+            info = None
+        if info and info.get("directory") == folder and info.get("filename") == name:
+            return
+        try:
+            if info:
+                # Back to the browse view, so the folder can change under it.
+                rsimgv.host.call("actions.run", {"name": "win.toggle-viewer"})
+            if rsimgv.host.call("window.info").get("current_path") != folder:
+                rsimgv.host.call("navigate.to", {"path": folder})
+        except Exception as exc:
+            rsimgv.notify(f"{NAME}: cannot open {name}: {exc}", level="error", seconds=6)
+            return
+        self._select_and_open(self._generation, folder, name, 40)
+
+    def _select_and_open(self, generation, folder, name, attempts):
+        """Selects the file once its folder has loaded, then shows it. Retries a while, since folders load in the background."""
+        if not self._current(generation):
+            return
+        try:
+            loaded = rsimgv.host.call("window.info").get("current_path") == folder
+            if loaded:
+                rsimgv.host.call("files.select", {"file": name})
+                rsimgv.host.call("actions.run", {"name": "win.toggle-viewer"})
+                return
+        except Exception:
+            pass
+        if attempts > 0:
+            rsimgv.ui.idle_add(lambda: self._select_and_open(generation, folder, name, attempts - 1))
+        else:
+            rsimgv.notify(f"{NAME}: cannot find {name} in its folder.", level="warning", seconds=6)
 
     # -- replaying -------------------------------------------------------
 
@@ -1509,25 +1670,31 @@ class Plugin:
         except (OSError, ValueError) as exc:
             rsimgv.notify(f"{NAME}: cannot save the setting: {exc}", level="warning", seconds=8)
 
-    # -- the viewer card's background ------------------------------------
+    # -- styling ----------------------------------------------------------
 
-    def _apply_card_style(self, container):
-        """Gives the viewer card the background opacity from the settings.
+    def _ensure_style(self):
+        """Adds the plugin's CSS for the display: the speech bubbles, and the viewer card's opacity.
 
         Only the card's own background is made see-through, not its text, so a
-        rule for one class is added for the display rather than fading the widget.
+        rule for one class is used rather than fading the whole widget.
         """
-        container.add_css_class("llm-chat-card")
         if self._card_style is not None:
+            return
+        display = Gdk.Display.get_default()
+        if display is None:
             return
         opacity = self._config["card_opacity"] / 100
         provider = Gtk.CssProvider()
         provider.load_from_string(
-            f".llm-chat-card {{ background-color: alpha(@window_bg_color, {opacity:.2f}); }}"
+            f"""
+            .llm-chat-card {{ background-color: alpha(@window_bg_color, {opacity:.2f}); }}
+            .llm-bubble {{ border-radius: 14px; padding: 6px 10px; }}
+            .llm-bubble-user {{ background-color: @accent_bg_color; color: @accent_fg_color; }}
+            .llm-bubble-assistant {{ background-color: alpha(currentColor, 0.1); }}
+            button.llm-thumb {{ padding: 0; min-width: 0; min-height: 0; border-radius: 8px; }}
+            picture.llm-thumb {{ border-radius: 8px; }}
+            """
         )
-        display = Gdk.Display.get_default()
-        if display is None:
-            return
         Gtk.StyleContext.add_provider_for_display(display, provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
         self._card_style = (display, provider)
 
@@ -1825,9 +1992,12 @@ class Plugin:
 
     # -- panel updates ---------------------------------------------------
 
-    def _add_bubble(self, panel, role, text, filename, thinking="", live=False):
-        """Appends a message to a panel's log and returns it."""
-        bubble = Bubble(role, text, thinking, filename, self._replay, self._regenerate, live)
+    def _add_bubble(self, panel, role, text, filename, thinking="", live=False, message=None):
+        """Appends a message to a panel's log and returns it. `message` is its entry in the history."""
+        message = message or {}
+        bubble = Bubble(
+            role, text, thinking, filename, self, live, message.get("id"), message.get("thumb"), message.get("path")
+        )
         panel.log.append(bubble.box)
         panel.bubbles.append(bubble)
         return bubble
@@ -1885,9 +2055,10 @@ class Plugin:
             # Only the last reply can be asked for again, and only while nothing is pending.
             last = panel.bubbles[-1] if panel.bubbles else None
             for bubble in panel.bubbles:
+                finished = bubble is not panel.streaming
+                bubble.delete_button.set_visible(finished and not busy)
                 if bubble.role != "assistant":
                     continue
-                finished = bubble is not panel.streaming
                 bubble.replay_button.set_visible(finished and can_speak and not bubble.failed)
                 bubble.regenerate_button.set_visible(finished and not busy and bubble is last)
         self._update_voice()

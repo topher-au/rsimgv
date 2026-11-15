@@ -21,6 +21,10 @@ contributes:
       description: Listen for speech, send it to the model, and read the replies aloud.
       scope: view
       default_keys: [ctrl+alt+v]
+    - id: clear-chat
+      label: Clear chat
+      description: Delete every message of the chat. Memories are kept.
+      scope: global
     - id: speak-toggle
       label: Speak chat replies
       description: Turn spoken replies on or off.
@@ -33,6 +37,9 @@ contributes:
     - menu: main
       label: Show or hide viewer chat
       action: toggle-chat
+    - menu: main
+      label: Clear chat
+      action: clear-chat
   panels:
     - id: chat
       slot: sidebar.bottom
