@@ -154,8 +154,9 @@ between the original and the upscaled copy, or `Shift+U` to compare them either 
 ## Bundled LLM Chat plugin
 
 `au.topher.llm-chat` adds a persistent chat to the sidebar, and over the picture in the viewer (`Ctrl+Alt+C` shows or hides it). Each message is sent to an OpenAI-compatible
-vision model with the viewer's current picture or frame, its filename and its metadata. Voice input and
-spoken replies can use an HTTP endpoint or a local program such as `whisper-cli` or `piper`. See the
+vision model with the viewer's current picture or frame, its filename and its metadata. Replies are shown as markdown with the model's reasoning, and can be read aloud. Voice input and
+spoken replies can use an HTTP endpoint or a local program such as `whisper-cli` or `piper`, and a hands-free
+voice conversation listens for speech, sends it and speaks the reply (`Ctrl+Alt+V`). See the
 plugin's README for settings.
 
 ## Limits

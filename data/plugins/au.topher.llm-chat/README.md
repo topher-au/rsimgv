@@ -55,10 +55,45 @@ or the *Stop speaking* action, silences it. Recording also silences it.
 `play_command` plays the result, with `{input}` replaced by the audio file.
 Markdown is stripped before speaking and code blocks are skipped.
 
+## Voice conversation
+
+The headset button (or `Ctrl+Alt+V` in the viewer) starts a hands-free conversation. It needs a voice input
+backend, and a speech backend if the replies are to be heard.
+
+- The plugin listens to the microphone through `vad_record_command`, which writes raw 16 kHz mono 16-bit
+  audio to standard output. Sound counts as speech when it is louder than **Speech loudness threshold** and
+  a few times the room's own noise level, which is tracked as it changes. When you pause for **Pause that
+  ends a message**, the speech is transcribed and sent, with the picture as for any message.
+- The reply is read aloud, and listening starts again when it ends. Listening is paused while the model
+  replies and while it speaks, so it does not hear itself. That also means you cannot interrupt it by
+  speaking; press the stop button next to the speaker instead.
+- While a voice conversation is on, **Voice conversation prompt** is added to the system prompt. It tells
+  the model that its reply will be spoken, so it should answer briefly and in plain text.
+- A transcript that is only a marker such as `[BLANK_AUDIO]` is ignored. If background noise starts
+  messages, raise the threshold.
+- Every reply has a button to read it aloud again, and the last one a button to ask for it again.
+
+## Reasoning and markdown
+
+Replies are shown as markdown. A model's reasoning is shown while it works, taken from the
+`reasoning_content` or `reasoning` field of a reply, or from `<think>` tags in it, and collapses when the
+answer starts. It is kept with the conversation, never sent back to the model, and never spoken. Markdown is
+left out of what is spoken, and so are code blocks and web addresses.
+
+The chat follows new messages while it is scrolled to the bottom. Scroll up to read earlier ones and it stays
+where you are.
+
+## The viewer card
+
+Drag the card by its top bar to move it, and its bottom right corner to resize it. Double-click the top bar to
+put it back. Its place is kept in `layout.json` beside the config.
+
 ## Limits
 
 - The speaker button only lasts until the plugin reloads; set `auto_speak` to
   keep it on.
+- Voice detection is by loudness, not by recognising speech, so steady loud noise can start a message.
+- A reasoning block that starts without an opening `<think>` tag is shown as part of the reply.
 - A reply being streamed stops when you press the stop button, but the
   connection closes only when the server next sends a line or times out.
 - Settings are read when the plugin loads.

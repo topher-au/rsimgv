@@ -16,7 +16,10 @@ their results are posted back with ``rsimgv.ui.idle_add``, which runs on the
 GTK main thread.
 """
 
+import array
+import collections
 import json
+import math
 import os
 import re
 import shlex
@@ -29,6 +32,7 @@ import time
 import urllib.error
 import urllib.request
 import uuid
+import wave
 import xml.etree.ElementTree as ElementTree
 
 import gi
@@ -84,12 +88,26 @@ DEFAULTS = {
     "tts_command": "",
     "play_command": "ffplay -nodisp -autoexit -loglevel quiet {input}",
     "auto_speak": False,
+    "voice_prompt": (
+        "This is a spoken conversation. The user's messages are transcribed from "
+        "speech, so they may contain mistakes; if one makes no sense, ask briefly "
+        "what they meant. Your reply will be read aloud by a text-to-speech voice, "
+        "so answer the way a person talks: short, natural sentences, usually one "
+        "to three. Use plain text only, with no markdown, lists, tables, code, "
+        "emoji or web addresses, and spell out anything that would be awkward to "
+        "hear. Refer to the picture naturally, as if you can both see it."
+    ),
+    "vad_record_command": "parecord --raw --format=s16le --rate=16000 --channels=1 --latency-msec=30",
+    "vad_threshold": 400,
+    "vad_silence_ms": 1000,
 }
 
 LIMITS = {
     "history_messages": (1, 200),
     "max_tokens": (1, 32768),
     "timeout_seconds": (5, 600),
+    "vad_threshold": (50, 8000),
+    "vad_silence_ms": (200, 5000),
 }
 
 BACKENDS = ("off", "http", "command")
@@ -286,6 +304,125 @@ class Speech:
                 self.proc.terminate()
 
 
+class Listener:
+    """Listens to the microphone and reports each stretch of speech once the speaker pauses.
+
+    The microphone program writes raw 16 kHz mono 16-bit audio to its standard
+    output. Sound counts as speech when it is louder than both the configured
+    threshold and a few times the room's own noise level, which is tracked as it
+    changes. Listening happens only while ``gate`` is set, and the gate is closed
+    when speech is reported, so the reply and its spoken version are not heard.
+    """
+
+    RATE = 16000
+    FRAME_MS = 30
+    FRAME_BYTES = RATE * FRAME_MS // 1000 * 2
+    # Frames of sound in a row before it counts as speech.
+    START_FRAMES = 4
+    # Frames kept from before the start, so the first word is not clipped.
+    PREROLL_FRAMES = 10
+    # Frames of the pause kept after the last word.
+    TAIL_FRAMES = 6
+    # Less speech than this is a click or a cough, not a message.
+    MIN_VOICED_MS = 300
+    MAX_MS = 30000
+    # Seconds ignored after listening resumes, so the end of a spoken reply is not heard.
+    HOLDOFF = 0.5
+
+    def __init__(self, args, threshold, silence_ms, on_hearing, on_speech, on_ended):
+        self.threshold = threshold
+        self.silence_ms = silence_ms
+        self.on_hearing = on_hearing
+        self.on_speech = on_speech
+        self.on_ended = on_ended
+        self.gate = threading.Event()
+        self.stopped = threading.Event()
+        self.proc = subprocess.Popen(
+            args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
+        )
+        threading.Thread(target=self._run, daemon=True).start()
+
+    def stop(self):
+        self.stopped.set()
+        self.gate.clear()
+        if self.proc.poll() is None:
+            self.proc.terminate()
+
+    @staticmethod
+    def level(frame):
+        samples = array.array("h", frame)
+        return math.sqrt(sum(sample * sample for sample in samples) / len(samples))
+
+    def _run(self):
+        stream = self.proc.stdout
+        floor = 150.0
+        preroll = collections.deque(maxlen=self.PREROLL_FRAMES)
+        speech = None
+        loud = voiced = silent = 0
+        was_open = False
+        resume = 0.0
+        try:
+            while not self.stopped.is_set():
+                frame = stream.read(self.FRAME_BYTES)
+                if len(frame) < self.FRAME_BYTES:
+                    break
+
+                if not self.gate.is_set():
+                    was_open, speech, loud = False, None, 0
+                    preroll.clear()
+                    continue
+                now = time.monotonic()
+                if not was_open:
+                    was_open = True
+                    resume = now + self.HOLDOFF
+                if now < resume:
+                    continue
+
+                level = self.level(frame)
+                threshold = max(self.threshold, floor * 3)
+                if speech is None:
+                    preroll.append(frame)
+                    if level >= threshold:
+                        loud += 1
+                    else:
+                        loud = 0
+                        floor = min(2000.0, max(20.0, floor * 0.98 + level * 0.02))
+                    if loud >= self.START_FRAMES:
+                        speech, voiced, silent = list(preroll), loud, 0
+                        self.on_hearing(True)
+                    continue
+
+                speech.append(frame)
+                if level >= threshold * 0.6:
+                    voiced += 1
+                    silent = 0
+                else:
+                    silent += 1
+                if silent * self.FRAME_MS < self.silence_ms and len(speech) * self.FRAME_MS < self.MAX_MS:
+                    continue
+
+                end = len(speech) - max(0, silent - self.TAIL_FRAMES)
+                pcm = b"".join(speech[:end])
+                enough = voiced * self.FRAME_MS >= self.MIN_VOICED_MS
+                speech, loud = None, 0
+                preroll.clear()
+                if enough:
+                    # Nothing more is heard until the reply has been given and spoken.
+                    self.gate.clear()
+                    self.on_speech(pcm)
+                else:
+                    self.on_hearing(False)
+        finally:
+            if self.proc.poll() is None:
+                self.proc.terminate()
+            try:
+                self.proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
+            if not self.stopped.is_set():
+                self.on_ended()
+
+
 # -- widgets -------------------------------------------------------------
 
 
@@ -396,6 +533,7 @@ class Panel:
         self.send_button = None
         self.mic_button = None
         self.speak_button = None
+        self.voice_button = None
         self.stop_speaking_button = None
         self.bubbles = []
         self.streaming = None
@@ -423,6 +561,10 @@ class Plugin:
         self._record_panel = None
         self._transcribing = False
         self._chat_shown = True
+        # The listener exists while a voice conversation is on.
+        self._listener = None
+        self._voice_busy = False
+        self._hearing = False
 
     def activate(self, host):
         self._active = True
@@ -444,6 +586,7 @@ class Plugin:
             self._request = None
         self._stop_speech()
         self._abandon_recording()
+        self._end_voice()
         self._panels = {}
 
     # -- host callbacks --------------------------------------------------
@@ -451,6 +594,8 @@ class Plugin:
     def invoke_action(self, action, context):
         if action == "toggle-chat":
             self._toggle_chat()
+        elif action == "voice-mode":
+            self._toggle_voice()
         elif action == "speak-toggle":
             self._toggle_speak()
         elif action == "stop-speaking":
@@ -482,6 +627,10 @@ class Plugin:
         panel.speak_button.add_css_class("flat")
         panel.speak_button.set_visible(config["tts_backend"] != "off")
 
+        panel.voice_button = Gtk.Button.new_from_icon_name("audio-headset-symbolic")
+        panel.voice_button.add_css_class("flat")
+        panel.voice_button.set_visible(config["asr_backend"] != "off")
+
         panel.stop_speaking_button = Gtk.Button.new_from_icon_name("media-playback-stop-symbolic")
         panel.stop_speaking_button.add_css_class("flat")
         panel.stop_speaking_button.set_tooltip_text("Stop speaking")
@@ -494,6 +643,7 @@ class Plugin:
         header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2)
         header.append(panel.file_label)
         header.append(panel.stop_speaking_button)
+        header.append(panel.voice_button)
         header.append(panel.speak_button)
         header.append(clear_button)
 
@@ -546,6 +696,7 @@ class Plugin:
         rsimgv.ui.connect(panel.entry, "activate", lambda *_: self._send_from(panel))
         rsimgv.ui.connect(panel.mic_button, "clicked", lambda *_: self._toggle_record(panel))
         rsimgv.ui.connect(panel.speak_button, "clicked", lambda *_: self._toggle_speak())
+        rsimgv.ui.connect(panel.voice_button, "clicked", lambda *_: self._toggle_voice())
         rsimgv.ui.connect(panel.stop_speaking_button, "clicked", lambda *_: self._stop_speech())
         rsimgv.ui.connect(clear_button, "clicked", lambda *_: self._clear())
 
@@ -907,6 +1058,9 @@ class Plugin:
 
         messages = []
         system = self._config["system_prompt"].strip()
+        if self._listener is not None:
+            # One system message, since not every server accepts two.
+            system = f"{system}\n\n{self._config['voice_prompt'].strip()}".strip()
         if system:
             messages.append({"role": "system", "content": system})
 
@@ -1065,7 +1219,7 @@ class Plugin:
             self._remember_reply(thinking, reply)
             if error is not None:
                 rsimgv.notify(f"{NAME}: the reply was cut short: {error}", level="warning", seconds=8)
-            elif self._speak:
+            elif (self._speak or self._listener is not None) and self._config["tts_backend"] != "off":
                 self._speak_text(reply)
 
         self._set_status("")
@@ -1111,6 +1265,9 @@ class Plugin:
             return
         if self._transcribing:
             rsimgv.notify(f"{NAME}: still transcribing.", seconds=2)
+            return
+        if self._listener is not None:
+            rsimgv.notify(f"{NAME}: a voice conversation is already listening.", seconds=2)
             return
 
         # Speaking over the microphone would be recorded, so silence it first.
@@ -1239,6 +1396,144 @@ class Plugin:
         elif panel is not None:
             panel.entry.set_text(text)
             panel.entry.grab_focus()
+
+    # -- voice conversation ----------------------------------------------
+
+    def _toggle_voice(self):
+        if self._listener is not None:
+            self._end_voice()
+            self._set_status("")
+            self._refresh_controls()
+            return
+        if self._config["asr_backend"] == "off":
+            rsimgv.notify(f"{NAME}: choose a voice input backend in the plugin settings.", seconds=4)
+            return
+        if self._recorder is not None or self._transcribing:
+            rsimgv.notify(f"{NAME}: finish the recording first.", seconds=2)
+            return
+
+        generation = self._generation
+        try:
+            args = self._command(self._config["vad_record_command"])
+            listener = Listener(
+                args,
+                self._config["vad_threshold"],
+                self._config["vad_silence_ms"],
+                lambda hearing: rsimgv.ui.idle_add(lambda: self._voice_hearing(generation, hearing)),
+                lambda pcm: self._voice_speech(generation, pcm),
+                lambda: rsimgv.ui.idle_add(lambda: self._voice_ended(generation)),
+            )
+        except Exception as exc:
+            rsimgv.notify(f"{NAME}: cannot listen: {exc}", level="error", seconds=8)
+            return
+
+        self._stop_speech()
+        self._listener = listener
+        self._voice_busy = False
+        self._hearing = False
+        if self._config["tts_backend"] == "off":
+            rsimgv.notify(
+                f"{NAME}: listening, but replies will not be spoken until a speech backend is set.",
+                level="warning",
+                seconds=6,
+            )
+        self._refresh_controls()
+
+    def _end_voice(self):
+        listener, self._listener = self._listener, None
+        self._voice_busy = False
+        self._hearing = False
+        if listener is not None:
+            listener.stop()
+
+    def _voice_hearing(self, generation, hearing):
+        if not self._current(generation) or self._listener is None:
+            return
+        self._hearing = hearing
+        self._refresh_controls()
+
+    def _voice_speech(self, generation, pcm):
+        """Called on the listener's thread when a stretch of speech ends."""
+        self._voice_busy = True
+        self._hearing = False
+        threading.Thread(
+            target=self._voice_worker, args=(generation, self._listener, pcm), daemon=True
+        ).start()
+
+    def _voice_worker(self, generation, listener, pcm):
+        text, error = "", None
+        directory = tempfile.mkdtemp(prefix="rsimgv-chat-")
+        try:
+            path = os.path.join(directory, "speech.wav")
+            with wave.open(path, "wb") as file:
+                file.setnchannels(1)
+                file.setsampwidth(2)
+                file.setframerate(Listener.RATE)
+                file.writeframes(pcm)
+            text = self._transcribe(path)
+        except Exception as exc:
+            error = str(exc)
+        finally:
+            shutil.rmtree(directory, ignore_errors=True)
+        rsimgv.ui.idle_add(lambda: self._voice_heard(generation, listener, text, error))
+
+    def _voice_heard(self, generation, listener, text, error):
+        if not self._current(generation) or listener is None or listener is not self._listener:
+            return
+        self._voice_busy = False
+        if error is not None:
+            rsimgv.notify(f"{NAME}: {error}", level="error", seconds=8)
+        elif self._is_speech(text):
+            self._send(text)
+        self._refresh_controls()
+
+    def _voice_ended(self, generation):
+        if not self._current(generation) or self._listener is None:
+            return
+        self._end_voice()
+        self._set_status("")
+        self._refresh_controls()
+        rsimgv.notify(
+            f"{NAME}: the microphone program stopped, so the voice conversation ended.",
+            level="warning",
+            seconds=8,
+        )
+
+    @staticmethod
+    def _is_speech(text):
+        """Whether a transcript is words, not the marker a recogniser gives for silence or noise."""
+        text = text.strip()
+        if not re.search(r"\w", text):
+            return False
+        return not re.fullmatch(r"[\[(*♪].*[\])*♪]", text)
+
+    def _update_voice(self):
+        """Opens the listener's gate when nothing else is going on, and says what the conversation is doing."""
+        listener = self._listener
+        if listener is None:
+            return
+        idle = (
+            self._request is None
+            and self._speech is None
+            and not self._voice_busy
+            and not self._transcribing
+            and self._recorder is None
+        )
+        if idle:
+            listener.gate.set()
+        else:
+            listener.gate.clear()
+
+        if self._request is not None:
+            return
+        if self._voice_busy:
+            self._set_status("Transcribing…")
+        elif self._speech is not None:
+            self._set_status("Speaking…")
+        elif self._hearing:
+            self._set_status("Hearing you…")
+        elif idle:
+            self._set_status("Listening…")
 
     # -- spoken replies --------------------------------------------------
 
@@ -1418,7 +1713,7 @@ class Plugin:
                 "media-playback-stop-symbolic" if busy else "mail-send-symbolic"
             )
             panel.send_button.set_tooltip_text("Stop" if busy else "Send")
-            panel.mic_button.set_sensitive(not busy and not self._transcribing)
+            panel.mic_button.set_sensitive(not busy and not self._transcribing and self._listener is None)
             panel.mic_button.set_icon_name(
                 "media-record-symbolic" if recording else "audio-input-microphone-symbolic"
             )
@@ -1433,6 +1728,13 @@ class Plugin:
                 "Spoken replies are on" if self._speak else "Spoken replies are off"
             )
             panel.stop_speaking_button.set_visible(speaking)
+            panel.voice_button.set_tooltip_text(
+                "End the voice conversation" if self._listener else "Start a voice conversation"
+            )
+            if self._listener:
+                panel.voice_button.add_css_class("suggested-action")
+            else:
+                panel.voice_button.remove_css_class("suggested-action")
 
             # Only the last reply can be asked for again, and only while nothing is pending.
             last = panel.bubbles[-1] if panel.bubbles else None
@@ -1442,6 +1744,7 @@ class Plugin:
                 finished = bubble is not panel.streaming
                 bubble.replay_button.set_visible(finished and can_speak and not bubble.failed)
                 bubble.regenerate_button.set_visible(finished and not busy and bubble is last)
+        self._update_voice()
 
     def _clear(self):
         self._cancel_request()

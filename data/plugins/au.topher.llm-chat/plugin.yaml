@@ -16,6 +16,11 @@ contributes:
       description: Show or hide the chat panel over the picture.
       scope: view
       default_keys: [ctrl+alt+c]
+    - id: voice-mode
+      label: Start or stop a voice conversation
+      description: Listen for speech, send it to the model, and read the replies aloud.
+      scope: view
+      default_keys: [ctrl+alt+v]
     - id: speak-toggle
       label: Speak chat replies
       description: Turn spoken replies on or off.
@@ -92,8 +97,8 @@ contributes:
       label: Voice input
       description: "http posts the recording to an OpenAI-compatible /audio/transcriptions endpoint. command runs the program below."
       kind: choice
-      choices: [off, http, command]
-      default: off
+      choices: ["off", "http", "command"]
+      default: "off"
     - key: asr_url
       label: Transcription base URL
       description: Empty uses the API base URL.
@@ -122,8 +127,8 @@ contributes:
       label: Spoken replies
       description: "http posts the reply to an OpenAI-compatible /audio/speech endpoint. command runs the program below."
       kind: choice
-      choices: [off, http, command]
-      default: off
+      choices: ["off", "http", "command"]
+      default: "off"
     - key: tts_url
       label: Speech base URL
       description: Empty uses the API base URL.
@@ -152,3 +157,27 @@ contributes:
       description: Read each reply aloud when it finishes. The speaker button in the panel turns it on or off until the plugin reloads.
       kind: bool
       default: false
+    - key: voice_prompt
+      label: Voice conversation prompt
+      description: Added to the system prompt while a voice conversation is on, to tell the model its reply will be spoken.
+      kind: text
+      default: "This is a spoken conversation. The user's messages are transcribed from speech, so they may contain mistakes; if one makes no sense, ask briefly what they meant. Your reply will be read aloud by a text-to-speech voice, so answer the way a person talks: short, natural sentences, usually one to three. Use plain text only, with no markdown, lists, tables, code, emoji or web addresses, and spell out anything that would be awkward to hear. Refer to the picture naturally, as if you can both see it."
+    - key: vad_record_command
+      label: Listening command
+      description: Writes raw 16 kHz mono 16-bit little-endian audio to standard output until it is ended.
+      kind: string
+      default: parecord --raw --format=s16le --rate=16000 --channels=1 --latency-msec=30
+    - key: vad_threshold
+      label: Speech loudness threshold
+      description: How loud a sound must be to count as speech, as the RMS of 16-bit samples. The room's noise level is also tracked, so this is a floor. Raise it if background noise starts messages.
+      kind: int
+      default: 400
+      min: 50
+      max: 8000
+    - key: vad_silence_ms
+      label: Pause that ends a message (ms)
+      description: How long you stop talking before the message is sent.
+      kind: int
+      default: 1000
+      min: 200
+      max: 5000
