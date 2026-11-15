@@ -141,6 +141,12 @@ The API key is read from the environment variable named by `api_key_env`; it is 
 file. Open a picture or video in the viewer and press `Ctrl+Alt+L`, or choose **Analyze with LLM** from the
 main menu. The description appears in a persistent overlay notification and the sidebar panel.
 
+## Bundled AI Upscale plugin
+
+`au.topher.upscale` runs an ncnn/Vulkan upscaler (`upscayl-bin` or `realesrgan-ncnn-vulkan`) on the viewed or
+selected picture and saves the result beside it. Press `Ctrl+Alt+U` or choose **Upscale picture** from the main
+menu. See the plugin's README for requirements and settings.
+
 ## Limits
 
 - Hot reload re-imports Python modules; C extensions and GObject types from earlier generations stay
