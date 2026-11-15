@@ -738,10 +738,12 @@ class Bubble:
             button.add_css_class("flat")
             button.add_css_class("circular")
             button.set_tooltip_text(tip)
-            button.set_visible(False)
             button.connect("clicked", callback)
             if shown:
                 head.append(button)
+        # The buttons always take their room and are only faded out. Showing and hiding them would change the
+        # height of every message at once, which the log's scrolling cannot follow.
+        self.set_actions()
 
         self.think_label = Gtk.Label(xalign=0.0)
         self.think_label.set_wrap(True)
@@ -786,6 +788,17 @@ class Bubble:
             self.box.append(button)
 
         self.show(thinking, text, final=True)
+
+    def set_actions(self, replay=False, regenerate=False, delete=False):
+        """Shows or hides the message's buttons without changing its size."""
+        for button, on in (
+            (self.replay_button, replay),
+            (self.regenerate_button, regenerate),
+            (self.delete_button, delete),
+        ):
+            button.set_opacity(1.0 if on else 0.0)
+            button.set_can_target(on)
+            button.set_can_focus(on)
 
     def add_note(self, text):
         label = Gtk.Label(label=f"⚙ {text}", xalign=0.0)
@@ -1049,7 +1062,8 @@ class Plugin:
         panel.status = Gtk.Label(xalign=0.0, hexpand=True)
         panel.status.add_css_class("dim-label")
         panel.status.add_css_class("caption")
-        panel.status.set_visible(False)
+        # The line is always there, empty when there is nothing to say, so it appearing does not resize the log.
+        panel.status.set_text(" ")
 
         panel.mic_button = Gtk.Button.new_from_icon_name("audio-input-microphone-symbolic")
         panel.mic_button.set_tooltip_text("Speak a message")
@@ -2851,8 +2865,7 @@ class Plugin:
 
     def _set_status(self, text):
         for panel in self._panels.values():
-            panel.status.set_text(text)
-            panel.status.set_visible(bool(text))
+            panel.status.set_text(text or " ")
 
     def _refresh_controls(self):
         busy = self._request is not None
@@ -2899,11 +2912,12 @@ class Plugin:
             last = panel.bubbles[-1] if panel.bubbles else None
             for bubble in panel.bubbles:
                 finished = bubble is not panel.streaming
-                bubble.delete_button.set_visible(finished and not busy)
-                if bubble.role != "assistant":
-                    continue
-                bubble.replay_button.set_visible(finished and can_speak and not bubble.failed)
-                bubble.regenerate_button.set_visible(finished and not busy and bubble is last)
+                assistant = bubble.role == "assistant"
+                bubble.set_actions(
+                    replay=assistant and finished and can_speak and not bubble.failed,
+                    regenerate=assistant and finished and not busy and bubble is last,
+                    delete=finished and not busy,
+                )
         self._update_voice()
 
     def _clear(self):
