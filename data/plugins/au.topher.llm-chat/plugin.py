@@ -57,6 +57,10 @@ DEBUG = bool(os.environ.get("RSIMGV_CHAT_DEBUG"))
 
 # The API rejects very large requests, and a base64 PNG grows quickly.
 MAX_BASE64 = 20_000_000
+# The picture sent to the model is shrunk until neither side is longer than this, never enlarged, and sent as a JPEG
+# of this quality.
+SENT_IMAGE_SIZE = 768
+SENT_IMAGE_QUALITY = 80
 # The most messages kept on disk. Older ones are dropped.
 MAX_STORED = 500
 # OpenAI's speech endpoint takes at most 4096 characters.
@@ -167,18 +171,46 @@ def deep_merge(target, source):
             target[key] = copy.deepcopy(value)
 
 
-def make_thumbnail(png_base64):
-    """A small JPEG of a base64 PNG, as base64, or None when the picture cannot be read."""
+def drop_alpha(pixbuf):
+    """The picture with no alpha channel, its transparent parts filled with white.
+
+    The JPEG saver loses the colour of a picture that has an alpha channel, even a fully opaque one, so the
+    channel has to be taken out and not only flattened.
+    """
+    width, height = pixbuf.get_width(), pixbuf.get_height()
+    flat = pixbuf.composite_color_simple(
+        width, height, GdkPixbuf.InterpType.BILINEAR, 255, 16, 0xFFFFFFFF, 0xFFFFFFFF
+    )
+    stride, pixels = flat.get_rowstride(), flat.get_pixels()
+    rgb = bytearray(width * height * 3)
+    for y in range(height):
+        row = pixels[y * stride : y * stride + width * 4]
+        base = y * width * 3
+        end = base + width * 3
+        rgb[base:end:3] = row[0::4]
+        rgb[base + 1 : end : 3] = row[1::4]
+        rgb[base + 2 : end : 3] = row[2::4]
+    return GdkPixbuf.Pixbuf.new_from_bytes(
+        GLib.Bytes.new(bytes(rgb)), GdkPixbuf.Colorspace.RGB, False, 8, width, height, width * 3
+    )
+
+
+def scaled_jpeg(image_base64, longest_side, quality):
+    """A base64 picture of any format as a base64 JPEG no longer than `longest_side` either way, or None if unreadable.
+
+    A picture that is smaller already is not enlarged. Transparent parts are filled with white, which a JPEG
+    cannot hold.
+    """
     loader = GdkPixbuf.PixbufLoader()
 
     def fit(loader, width, height):
-        scale = min(1.0, THUMB_SIZE / max(width, height))
+        scale = min(1.0, longest_side / max(width, height))
         loader.set_size(max(1, round(width * scale)), max(1, round(height * scale)))
 
     loader.connect("size-prepared", fit)
     failed = False
     try:
-        loader.write(base64.b64decode(png_base64))
+        loader.write(base64.b64decode(image_base64))
     except Exception:
         failed = True
     # The loader must always be closed, even after it failed.
@@ -189,8 +221,15 @@ def make_thumbnail(png_base64):
     pixbuf = None if failed else loader.get_pixbuf()
     if pixbuf is None:
         return None
-    ok, data = pixbuf.save_to_bufferv("jpeg", ["quality"], ["80"])
+    if pixbuf.get_has_alpha():
+        pixbuf = drop_alpha(pixbuf)
+    ok, data = pixbuf.save_to_bufferv("jpeg", ["quality"], [str(quality)])
     return base64.b64encode(data).decode("ascii") if ok else None
+
+
+def make_thumbnail(image_base64):
+    """The small JPEG kept with a message you sent, as base64, or None when the picture cannot be read."""
+    return scaled_jpeg(image_base64, THUMB_SIZE, 80)
 
 
 def thumbnail_texture(data):
@@ -1735,10 +1774,14 @@ class Plugin:
                 lines.append(f"The picture could not be captured: {exc}")
                 data = None
             if isinstance(data, str) and data:
-                if len(data) > MAX_BASE64:
+                jpeg = scaled_jpeg(data, SENT_IMAGE_SIZE, SENT_IMAGE_QUALITY)
+                if jpeg is None:
+                    lines.append("The picture could not be converted to send.")
+                elif len(jpeg) > MAX_BASE64:
                     lines.append("The picture is too large to send.")
                 else:
-                    image = data
+                    # Kept as a complete data URL, so everything that sends it names its format correctly.
+                    image = f"data:image/jpeg;base64,{jpeg}"
         return "\n".join(lines), filename, image, os.path.join(directory, filename) if filename else ""
 
     def _build_messages(self, image):
@@ -1778,7 +1821,7 @@ class Plugin:
                 if image:
                     content = [
                         {"type": "text", "text": text},
-                        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{image}"}},
+                        {"type": "image_url", "image_url": {"url": image}},
                     ]
                 else:
                     content = text
@@ -2060,7 +2103,7 @@ class Plugin:
                     "role": "user",
                     "content": [
                         {"type": "text", "text": f"[Viewer]\n{details}\n[End of viewer]\nThis is what the viewer shows now."},
-                        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{image}"}},
+                        {"type": "image_url", "image_url": {"url": image}},
                     ],
                 }
             )
@@ -2455,7 +2498,7 @@ class Plugin:
 
     def _thumbnail(self, image, path):
         """A small picture to keep beside a message: the frame that was sent, or else the file's own thumbnail."""
-        thumb = make_thumbnail(image) if image else None
+        thumb = make_thumbnail(image.split(",", 1)[1]) if image else None
         if thumb or not path:
             return thumb
         try:

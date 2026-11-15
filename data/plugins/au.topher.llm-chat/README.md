@@ -19,7 +19,8 @@ sessions in `history.json` beside the plugin's `config.json`
 
 ## What is sent
 
-- The latest message carries the viewer's screenshot (PNG), the filename, the
+- The latest message carries the viewer's picture, shrunk so neither side is longer than 768 pixels (a smaller
+  one is not enlarged) and sent as a JPEG at quality 80, the filename, the
   folder, the displayed size, the type, the playback position for a video, and
   the file's metadata from `metadata.get`.
 - Earlier messages are sent as text, each marked with the file it was about.
