@@ -52,6 +52,9 @@ import rsimgv
 
 NAME = "LLM Chat"
 
+# Set RSIMGV_CHAT_DEBUG=1 to log the chat's scrolling to the terminal rsimgv was started from.
+DEBUG = bool(os.environ.get("RSIMGV_CHAT_DEBUG"))
+
 # The API rejects very large requests, and a base64 PNG grows quickly.
 MAX_BASE64 = 20_000_000
 # The most messages kept on disk. Older ones are dropped.
@@ -1036,7 +1039,10 @@ class Plugin:
         panel.log.set_margin_bottom(4)
 
         panel.scroll = Gtk.ScrolledWindow(vexpand=True)
-        panel.scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        # The scrollbar is always there. With one that comes and goes, its arrival narrows the log, the wrapped
+        # messages re-wrap and grow, and the height measured a moment before is too small, so the last of the log
+        # stays out of reach until something makes it measure again.
+        panel.scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.ALWAYS)
         panel.scroll.set_min_content_height(80 if panel.in_viewer else 260)
         panel.scroll.set_child(panel.log)
 
@@ -1102,6 +1108,9 @@ class Plugin:
         adjustment = panel.scroll.get_vadjustment()
         rsimgv.ui.connect(adjustment, "value-changed", lambda a: self._scrolled(panel, a))
         rsimgv.ui.connect(adjustment, "changed", lambda a: self._grew(panel, a))
+        # A size change is also reported as a property change, which does not depend on how the size was set.
+        rsimgv.ui.connect(adjustment, "notify::upper", lambda a, _spec: self._grew(panel, a))
+        rsimgv.ui.connect(adjustment, "notify::page-size", lambda a, _spec: self._grew(panel, a))
 
         if panel.in_viewer:
             container.add_css_class("llm-chat-card")
@@ -1332,7 +1341,14 @@ class Plugin:
             # A message grew or the panel was resized, which moves the scrollbar without the reader's doing.
             panel.upper, panel.page = upper, page
             return
-        panel.follow = upper - adjustment.get_value() - page <= FOLLOW_SLACK
+        follow = upper - adjustment.get_value() - page <= FOLLOW_SLACK
+        if DEBUG and follow != panel.follow:
+            rsimgv.host.log(
+                "debug",
+                f"chat scroll: following {'on' if follow else 'off'} at {adjustment.get_value():.0f} "
+                f"(content {upper:.0f}, window {page:.0f})",
+            )
+        panel.follow = follow
 
     def _grew(self, panel, adjustment):
         panel.upper, panel.page = adjustment.get_upper(), adjustment.get_page_size()
@@ -1348,7 +1364,14 @@ class Plugin:
     def _follow_now(self, panel):
         if panel.follow and panel.key in self._panels:
             adjustment = panel.scroll.get_vadjustment()
-            adjustment.set_value(adjustment.get_upper() - adjustment.get_page_size())
+            end = adjustment.get_upper() - adjustment.get_page_size()
+            if DEBUG and abs(adjustment.get_value() - end) > 0.5:
+                rsimgv.host.log(
+                    "debug",
+                    f"chat scroll: moving {adjustment.get_value():.0f} to {end:.0f} "
+                    f"(content {adjustment.get_upper():.0f}, window {adjustment.get_page_size():.0f})",
+                )
+            adjustment.set_value(end)
 
     def _keep_following(self, panel):
         """Pins the log to its end on every frame for a little while.
@@ -1367,6 +1390,8 @@ class Plugin:
             if panel.key not in self._panels:
                 panel.ticking = False
                 return False
+            # Measure the log again, so the end it scrolls to is its real one and not an earlier measurement.
+            panel.log.queue_resize()
             self._follow_now(panel)
             if panel.streaming is not None:
                 panel.settle = 12
