@@ -246,3 +246,20 @@ contributes:
       description: Whether the chat sidebar is open when you are not in the viewer. The show or hide chat action changes this too.
       kind: bool
       default: true
+    - key: tools
+      label: Tools
+      description: Let the model call tools, which needs a server that supports function calling. They save memories and control the viewer. Turn off for a server that rejects the tools field; memory then uses tags in the reply.
+      kind: bool
+      default: true
+    - key: tool_viewer
+      label: Viewer tools
+      description: Let the model move between items, zoom, pan, rotate, play, pause, seek, and change speed and volume. Only needs Tools to be on.
+      kind: bool
+      default: true
+    - key: tool_rounds
+      label: Most rounds of tool calls
+      description: How many times the model may call tools for one message before it has to answer.
+      kind: int
+      default: 5
+      min: 1
+      max: 10

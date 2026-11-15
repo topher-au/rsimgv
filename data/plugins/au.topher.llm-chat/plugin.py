@@ -128,6 +128,9 @@ DEFAULTS = {
     "memory_limit": 100,
     "barge_in": True,
     "chat_sidebar": True,
+    "tools": True,
+    "tool_viewer": True,
+    "tool_rounds": 5,
 }
 
 LIMITS = {
@@ -138,6 +141,7 @@ LIMITS = {
     "vad_silence_ms": (200, 5000),
     "card_opacity": (20, 100),
     "memory_limit": (1, 1000),
+    "tool_rounds": (1, 10),
 }
 
 BACKENDS = ("off", "http", "command")
@@ -308,6 +312,148 @@ def strip_memory_tags(text):
     return re.sub(r"\n{3,}", "\n\n", text).strip()
 
 
+# -- tools ---------------------------------------------------------------
+
+
+def tool(name, description, properties=None, required=None):
+    return {
+        "type": "function",
+        "function": {
+            "name": name,
+            "description": description,
+            "parameters": {"type": "object", "properties": properties or {}, "required": required or []},
+        },
+    }
+
+
+def steps_property(what):
+    return {"type": "integer", "minimum": 1, "maximum": 10, "description": f"How many {what}. One by default."}
+
+
+MEMORY_TOOLS = [
+    tool(
+        "remember",
+        "Save a fact in your persistent memory, which every conversation shares. Use it for what is worth keeping "
+        "for later: the user's name, preferences, people, projects, or anything they ask you to remember. One "
+        "short, complete fact each; never save what is already saved.",
+        {"text": {"type": "string", "description": "The fact to remember."}},
+        ["text"],
+    ),
+    tool(
+        "forget",
+        "Delete a saved memory, by its number in the list of memories.",
+        {"number": {"type": "integer", "description": "The memory's number."}},
+        ["number"],
+    ),
+    tool(
+        "update_memory",
+        "Replace the text of a saved memory, by its number in the list of memories.",
+        {
+            "number": {"type": "integer", "description": "The memory's number."},
+            "text": {"type": "string", "description": "What it should say now."},
+        },
+        ["number", "text"],
+    ),
+    tool("list_memories", "List the saved memories with their numbers."),
+]
+
+VIEWER_TOOLS = [
+    tool(
+        "look",
+        "Take a fresh look at what the viewer shows. It returns the item's details and gives you the picture, or "
+        "the video's current frame, in the next message. Use it after changing the item or the video's position.",
+    ),
+    tool(
+        "navigate",
+        "Show another picture or video from the same folder or playlist.",
+        {"to": {"type": "string", "enum": ["next", "previous", "first", "last"]}},
+        ["to"],
+    ),
+    tool(
+        "zoom",
+        "Zoom the picture on the user's screen, or choose how it fits the window. This changes what the user sees; "
+        "the picture you receive is always the whole frame, so you will not see the zoom.",
+        {
+            "action": {
+                "type": "string",
+                "enum": ["in", "out", "fit_window", "fit_width", "fit_height", "fill", "original_size"],
+            },
+            "steps": steps_property("zoom steps, for in and out"),
+        },
+        ["action"],
+    ),
+    tool(
+        "pan",
+        "Move the zoomed picture within the window on the user's screen. You will not see this.",
+        {
+            "direction": {"type": "string", "enum": ["up", "down", "left", "right"]},
+            "steps": steps_property("steps"),
+        },
+        ["direction"],
+    ),
+    tool(
+        "rotate",
+        "Rotate the picture or video on screen to an angle, clockwise from how the file has it.",
+        {"degrees": {"type": "integer", "enum": [0, 90, 180, 270]}},
+        ["degrees"],
+    ),
+    tool(
+        "flip",
+        "Mirror the picture or video on screen.",
+        {"direction": {"type": "string", "enum": ["horizontal", "vertical"]}},
+        ["direction"],
+    ),
+    tool(
+        "playback",
+        "Play a video that is paused, or pause one that is playing. It toggles, so use look afterwards if you need "
+        "to know which it is now.",
+    ),
+    tool(
+        "seek",
+        "Move a video's position. Give seconds, or frames to step by, as a negative number to go back.",
+        {
+            "seconds": {"type": "number", "description": "Seconds to move by."},
+            "frames": {"type": "integer", "description": "Frames to step by."},
+        },
+    ),
+    tool(
+        "speed",
+        "Set a video's playback speed, such as 2 for double speed or 0.5 for half. 1 is normal.",
+        {"speed": {"type": "number"}},
+        ["speed"],
+    ),
+    tool(
+        "volume",
+        "Change a video's volume by a percentage, which is negative to turn it down, or mute or unmute it.",
+        {
+            "change_percent": {"type": "number", "description": "How much to change the volume by, in percent."},
+            "toggle_mute": {"type": "boolean", "description": "Mute the sound, or unmute it."},
+        },
+    ),
+    tool("fullscreen", "Switch the window between fullscreen and windowed."),
+]
+
+ZOOM_LABELS = {
+    "in": "Zoom in",
+    "out": "Zoom out",
+    "fit_window": "Fit to window",
+    "fit_width": "Fit to width",
+    "fit_height": "Fit to height",
+    "fill": "Fill the window",
+    "original_size": "Original size",
+}
+ZOOM_ACTIONS = {
+    "in": "image.zoom-in",
+    "out": "image.zoom-out",
+    "fit_window": "image.fit-window",
+    "fit_width": "image.fit-width",
+    "fit_height": "image.fit-height",
+    "fill": "image.fit-fill",
+    "original_size": "image.fit-original",
+}
+NAVIGATE_ACTIONS = {"next": "view.next", "previous": "view.previous", "first": "view.first", "last": "view.last"}
+
+
 # -- reasoning -----------------------------------------------------------
 
 
@@ -362,6 +508,17 @@ class Request:
         self.splitter = ThinkSplitter()
         # Whether any of the response has been shown yet.
         self.arrived = False
+        # The conversation sent so far, which each round of tool calls adds to.
+        self.messages = []
+        # The tool calls of the round being read, by their index, as they arrive.
+        self.calls = {}
+        # What the tools did, for the chat to show.
+        self.notes = []
+        self.rounds = 0
+        # Where the reply of the round now being read starts, in `reply`.
+        self.round_start = 0
+        # A picture to show the model after the round's tool results: (viewer details, base64 PNG).
+        self.look = None
 
     def add(self, is_thinking, text):
         (self.thinking if is_thinking else self.reply).append(text)
@@ -528,7 +685,9 @@ class Listener:
 class Bubble:
     """One message in a panel's log, drawn as a speech bubble: yours on the right, the model's on the left."""
 
-    def __init__(self, role, text, thinking, filename, plugin, live=False, message_id=None, thumb=None, path=None):
+    def __init__(
+        self, role, text, thinking, filename, plugin, live=False, message_id=None, thumb=None, path=None, notes=None
+    ):
         self.role = role
         self.message_id = message_id
         # A live bubble is being written now, so it can say how long the model thought.
@@ -590,6 +749,11 @@ class Bubble:
         self.expander.set_child(self.think_label)
         self.expander.set_visible(False)
 
+        # What the model did with its tools, such as zooming or saving a memory.
+        self.notes_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1)
+        for note in notes or []:
+            self.add_note(note)
+
         self.body = Gtk.Label(xalign=0.0)
         self.body.set_wrap(True)
         self.body.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
@@ -597,6 +761,7 @@ class Bubble:
 
         bubble.append(head)
         bubble.append(self.expander)
+        bubble.append(self.notes_box)
         bubble.append(self.body)
         self.box.append(bubble)
 
@@ -618,6 +783,14 @@ class Bubble:
             self.box.append(button)
 
         self.show(thinking, text, final=True)
+
+    def add_note(self, text):
+        label = Gtk.Label(label=f"⚙ {text}", xalign=0.0)
+        label.set_wrap(True)
+        label.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
+        label.set_opacity(0.7)
+        label.add_css_class("caption")
+        self.notes_box.append(label)
 
     def show(self, thinking, reply, final=False, failed=False):
         """Shows the reasoning and the reply so far. The reasoning collapses when the reply starts."""
@@ -1262,8 +1435,14 @@ class Plugin:
         self._refresh_controls()
         self._set_status("Waiting for the reply…")
 
+        request.messages = self._build_messages(image)
+        self._start_round(request)
+
+    def _start_round(self, request):
+        """Sends the conversation so far. A request is several rounds while the model uses tools."""
+        request.calls = {}
         api_key = os.environ.get(self._config["api_key_env"], "").strip()
-        body = self._request_body(self._build_messages(image))
+        body = self._request_body(request.messages, tools=request.rounds < self._config["tool_rounds"])
         threading.Thread(
             target=self._chat_worker,
             args=(self._generation, request, api_key, body),
@@ -1361,6 +1540,13 @@ class Plugin:
             system = f"{system}\n\n{self._config['voice_prompt'].strip()}".strip()
         if self._config["memory"]:
             system = f"{system}\n\n{self._memory_prompt()}".strip()
+        if self._config["tools"] and self._config["tool_viewer"]:
+            system = (
+                f"{system}\n\nYou can control the viewer with tools: move between items, zoom, pan, rotate, play, "
+                "pause, seek, and change speed and volume. Use them when the user asks, and then say briefly what "
+                "you did. You do not see zoom or pan; after changing the item or a video's position, use look to "
+                "see the result."
+            ).strip()
         if system:
             messages.append({"role": "system", "content": system})
 
@@ -1396,7 +1582,7 @@ class Plugin:
         request.finish()
         thinking, reply = request.texts()
         reply = strip_memory_tags(reply)
-        message = self._remember_reply(thinking, reply) if reply.strip() else None
+        message = self._remember_reply(thinking, reply, request.notes) if reply.strip() else None
         self._finish_bubbles(
             thinking,
             reply + ("\n\n(stopped)" if reply else "(stopped)"),
@@ -1405,7 +1591,7 @@ class Plugin:
         self._set_status("")
         self._refresh_controls()
 
-    def _request_body(self, messages):
+    def _request_body(self, messages, tools=True):
         """The chat completions request: the settings' parameters, then the thinking choice, then the messages."""
         config = self._config
         body = {"model": config["model"], "max_tokens": config["max_tokens"]}
@@ -1421,6 +1607,10 @@ class Plugin:
             body["stream"] = True
         else:
             body.pop("stream", None)
+        # The last round has no tools, so the model has to answer.
+        specs = self._tool_specs() if tools else []
+        if specs:
+            body["tools"] = specs
         return body
 
     def _chat_worker(self, generation, request, api_key, body):
@@ -1443,7 +1633,7 @@ class Plugin:
             error = str(exc)
 
         request.finish()
-        rsimgv.ui.idle_add(lambda: self._chat_done(generation, request, error))
+        rsimgv.ui.idle_add(lambda: self._round_done(generation, request, error))
 
     def _read_stream(self, generation, request, response):
         for raw in response:
@@ -1471,8 +1661,27 @@ class Plugin:
                 if isinstance(piece, str) and piece:
                     request.feed(piece)
                     changed = True
+                self._take_tool_calls(request, delta)
             if changed:
                 self._post_partial(generation, request)
+
+    @staticmethod
+    def _take_tool_calls(request, message):
+        """Collects the tool calls a server reports, which a stream sends in pieces."""
+        for position, call in enumerate(message.get("tool_calls") or []):
+            if not isinstance(call, dict):
+                continue
+            entry = request.calls.setdefault(call.get("index", position), {"id": "", "name": "", "arguments": ""})
+            if call.get("id"):
+                entry["id"] = call["id"]
+            function = call.get("function") or {}
+            if function.get("name") and not entry["name"]:
+                entry["name"] = function["name"]
+            arguments = function.get("arguments")
+            if isinstance(arguments, dict):
+                entry["arguments"] = json.dumps(arguments)
+            elif isinstance(arguments, str):
+                entry["arguments"] += arguments
 
     @staticmethod
     def _take_reasoning(request, message):
@@ -1493,12 +1702,13 @@ class Plugin:
             raise RuntimeError("the response has no choices")
         message = choices[0].get("message", {})
         self._take_reasoning(request, message)
+        self._take_tool_calls(request, message)
         content = message.get("content")
         if isinstance(content, list):
             content = "\n".join(
                 part.get("text", "") for part in content if isinstance(part, dict) and part.get("text")
             )
-        if content is None and request.thinking:
+        if content is None and (request.thinking or request.calls):
             return
         if not isinstance(content, str):
             raise RuntimeError("the response has no text")
@@ -1524,6 +1734,72 @@ class Plugin:
                     self._keep_following(panel)
         self._set_status("" if reply else ("Thinking…" if thinking else "Waiting for the reply…"))
 
+    def _round_done(self, generation, request, error):
+        """A round has been read: run the tools it asked for and go on, or finish if it answered."""
+        if not self._current(generation) or self._request is not request:
+            return
+        calls = [request.calls[index] for index in sorted(request.calls) if request.calls[index]["name"]]
+        if calls and error is None:
+            self._run_tools(request, calls)
+        else:
+            self._chat_done(generation, request, error)
+
+    def _run_tools(self, request, calls):
+        """Runs a round's tool calls, adds them and their results to the conversation, and asks again."""
+        round_text = strip_memory_tags("".join(request.reply[request.round_start:]))
+        for call in calls:
+            call["id"] = call["id"] or f"call_{uuid.uuid4().hex[:12]}"
+        request.messages.append(
+            {
+                "role": "assistant",
+                "content": round_text,
+                "tool_calls": [
+                    {
+                        "id": call["id"],
+                        "type": "function",
+                        "function": {"name": call["name"], "arguments": call["arguments"] or "{}"},
+                    }
+                    for call in calls
+                ],
+            }
+        )
+
+        self._set_status("Using tools…")
+        for call in calls:
+            try:
+                arguments = json.loads(call["arguments"] or "{}")
+                if not isinstance(arguments, dict):
+                    raise ValueError("not an object")
+            except ValueError:
+                result, note = "Error: the arguments were not a valid JSON object.", f"{call['name']}: bad arguments"
+            else:
+                result, note = self._execute_tool(request, call["name"], arguments)
+            request.messages.append({"role": "tool", "tool_call_id": call["id"], "content": result})
+            request.notes.append(note)
+            for panel in self._panels.values():
+                if panel.streaming is not None:
+                    panel.streaming.add_note(note)
+
+        if request.look is not None:
+            details, image = request.look
+            request.look = None
+            request.messages.append(
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": f"[Viewer]\n{details}\n[End of viewer]\nThis is what the viewer shows now."},
+                        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{image}"}},
+                    ],
+                }
+            )
+
+        request.rounds += 1
+        if request.reply:
+            request.reply.append("\n\n")
+        request.round_start = len(request.reply)
+        self._set_status("Waiting for the reply…")
+        self._start_round(request)
+
     def _chat_done(self, generation, request, error):
         if not self._current(generation) or self._request is not request:
             return
@@ -1531,18 +1807,18 @@ class Plugin:
         thinking, raw = request.texts()
         thinking, raw = thinking.strip(), raw.strip()
         reply = strip_memory_tags(raw)
-        changed = self._apply_memory_actions(raw)
+        acted = self._apply_memory_actions(raw) or bool(request.notes)
 
-        if error is not None and not reply and not changed:
+        if error is not None and not reply and not acted:
             self._finish_bubbles(thinking, error, failed=True)
             rsimgv.notify(f"{NAME}: {error}", level="error", seconds=10)
-        elif not reply and not changed:
+        elif not reply and not acted:
             self._finish_bubbles(thinking, "(the model returned an empty reply)", failed=True)
         else:
-            # A reply that only saved a memory has nothing to say, so nothing is spoken.
+            # A reply that only used tools or saved a memory has nothing to say, so nothing is spoken.
             speakable = bool(reply)
-            reply = reply or "(memory updated)"
-            message = self._remember_reply(thinking, reply)
+            reply = reply or ("(done)" if request.notes else "(memory updated)")
+            message = self._remember_reply(thinking, reply, request.notes)
             self._finish_bubbles(thinking, reply, message_id=message["id"])
             if error is not None:
                 rsimgv.notify(f"{NAME}: the reply was cut short: {error}", level="warning", seconds=8)
@@ -1552,10 +1828,12 @@ class Plugin:
         self._set_status("")
         self._refresh_controls()
 
-    def _remember_reply(self, thinking, reply):
+    def _remember_reply(self, thinking, reply, notes=None):
         message = {"id": uuid.uuid4().hex, "role": "assistant", "text": reply.strip()}
         if thinking.strip():
             message["thinking"] = thinking.strip()
+        if notes:
+            message["notes"] = list(notes)
         self._history.append(message)
         self._trim_history()
         self._save_history()
@@ -1570,6 +1848,176 @@ class Plugin:
                 bubble.show(thinking, text, final=True, failed=failed)
                 self._keep_following(panel)
 
+    # -- tools -----------------------------------------------------------
+
+    def _tool_specs(self):
+        """The tools sent to the model: memory ones when memory is on, viewer ones when the viewer may be controlled."""
+        config = self._config
+        specs = []
+        if config["tools"]:
+            if config["memory"]:
+                specs += MEMORY_TOOLS
+            if config["tool_viewer"]:
+                specs += VIEWER_TOOLS
+        return specs
+
+    def _execute_tool(self, request, name, args):
+        """Runs one tool call on the main thread. Returns (what the model is told, a note for the chat)."""
+        if name not in {spec["function"]["name"] for spec in self._tool_specs()}:
+            return f"Error: there is no tool called {name}.", f"Unknown tool: {name}"
+        try:
+            return getattr(self, f"_tool_{name}")(request, args)
+        except Exception as exc:
+            return f"Error: {exc}", f"{name} failed: {exc}"
+
+    @staticmethod
+    def _number(args, key):
+        try:
+            return float(args[key])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(f"{key} must be a number") from exc
+
+    @staticmethod
+    def _steps(args):
+        try:
+            return max(1, min(10, int(args.get("steps", 1))))
+        except (TypeError, ValueError):
+            return 1
+
+    @staticmethod
+    def _action(name, value=None):
+        """Runs one of the application's actions, as a keybinding would."""
+        params = {"name": name}
+        if value is not None:
+            params["value"] = value
+        try:
+            rsimgv.host.call("actions.run", params)
+        except Exception as exc:
+            raise RuntimeError(f"{exc}. The viewer may not be showing a suitable item.") from exc
+
+    def _memory_at(self, args):
+        number = int(self._number(args, "number"))
+        if not 1 <= number <= len(self._memories):
+            raise ValueError(f"there is no memory {number}; there are {len(self._memories)}")
+        return number, self._memories[number - 1]
+
+    def _tool_remember(self, request, args):
+        text = " ".join(str(args.get("text", "")).split())
+        if not text:
+            raise ValueError("text is empty")
+        if self._remember(text):
+            return f"Saved as memory {len(self._memories)}.", f"Remembered: {text}"
+        return "That is already remembered.", f"Already remembered: {text}"
+
+    def _tool_forget(self, request, args):
+        number, memory = self._memory_at(args)
+        self._forget(memory["id"])
+        return f"Forgot memory {number}: {memory['text']}", f"Forgot: {memory['text']}"
+
+    def _tool_update_memory(self, request, args):
+        number, memory = self._memory_at(args)
+        text = " ".join(str(args.get("text", "")).split())
+        if not text:
+            raise ValueError("text is empty")
+        self._update_memory(memory["id"], text)
+        return f"Memory {number} now says: {text}", f"Updated memory: {text}"
+
+    def _tool_list_memories(self, request, args):
+        if not self._memories:
+            return "No memories are saved.", "Listed the memories"
+        listing = "\n".join(f"[{number}] {memory['text']}" for number, memory in enumerate(self._memories, 1))
+        return listing, "Listed the memories"
+
+    def _tool_look(self, request, args):
+        context, filename, image, _ = self._gather_context()
+        if image:
+            request.look = (context, image)
+        result = context + ("\nThe picture is attached in the next message." if image else "")
+        return result.strip() or "Nothing is shown.", f"Looked at {filename}" if filename else "Looked at the viewer"
+
+    def _tool_navigate(self, request, args):
+        direction = args.get("to")
+        if direction not in NAVIGATE_ACTIONS:
+            raise ValueError("to must be next, previous, first or last")
+        self._action(NAVIGATE_ACTIONS[direction])
+        return f"Moved to the {direction} item. Use look to see it.", f"{direction.capitalize()} item"
+
+    def _tool_zoom(self, request, args):
+        choice = args.get("action")
+        if choice not in ZOOM_ACTIONS:
+            raise ValueError(f"action must be one of {', '.join(ZOOM_ACTIONS)}")
+        steps = self._steps(args) if choice in ("in", "out") else 1
+        for _ in range(steps):
+            self._action(ZOOM_ACTIONS[choice])
+        note = ZOOM_LABELS[choice] + (f" ×{steps}" if steps > 1 else "")
+        return f"Done: {note.lower()}.", note
+
+    def _tool_pan(self, request, args):
+        direction = args.get("direction")
+        if direction not in ("up", "down", "left", "right"):
+            raise ValueError("direction must be up, down, left or right")
+        steps = self._steps(args)
+        for _ in range(steps):
+            self._action(f"image.pan-{direction}")
+        note = f"Pan {direction}" + (f" ×{steps}" if steps > 1 else "")
+        return f"Done: {note.lower()}.", note
+
+    def _tool_rotate(self, request, args):
+        degrees = int(self._number(args, "degrees"))
+        if degrees not in (0, 90, 180, 270):
+            raise ValueError("degrees must be 0, 90, 180 or 270")
+        self._action("view.set-rotation", degrees)
+        return f"Rotated to {degrees} degrees.", f"Rotate to {degrees}°"
+
+    def _tool_flip(self, request, args):
+        direction = args.get("direction")
+        if direction not in ("horizontal", "vertical"):
+            raise ValueError("direction must be horizontal or vertical")
+        self._action(f"view.flip-{direction}")
+        return f"Flipped {direction}ly.", f"Flip {direction}"
+
+    def _tool_playback(self, request, args):
+        try:
+            position = rsimgv.host.call("view.info").get("position")
+        except Exception:
+            position = None
+        self._action("video.play-pause")
+        where = f" (the video was at {position:.1f} s)" if isinstance(position, (int, float)) else ""
+        return f"Toggled playback{where}. Use look to check whether it is playing.", "Play or pause"
+
+    def _tool_seek(self, request, args):
+        if args.get("frames") is not None:
+            frames = int(self._number(args, "frames"))
+            self._action("video.frame-seek", frames)
+            return f"Stepped {frames:+d} frames.", f"Step {frames:+d} frames"
+        seconds = self._number(args, "seconds")
+        self._action("video.seek", seconds)
+        return f"Moved {seconds:+g} seconds. Use look to see the frame.", f"Seek {seconds:+g} s"
+
+    def _tool_speed(self, request, args):
+        speed = self._number(args, "speed")
+        self._action("video.set-speed", speed)
+        return f"Playback speed is now {speed:g}.", f"Speed ×{speed:g}"
+
+    def _tool_volume(self, request, args):
+        done, notes = [], []
+        if args.get("change_percent") is not None:
+            change = self._number(args, "change_percent")
+            self._action("video.volume", change)
+            done.append(f"changed the volume by {change:+g}%")
+            notes.append(f"Volume {change:+g}%")
+        if args.get("toggle_mute"):
+            self._action("video.mute")
+            done.append("toggled mute")
+            notes.append("Mute or unmute")
+        if not done:
+            raise ValueError("give change_percent, or toggle_mute")
+        return f"Done: {' and '.join(done)}.", ", ".join(notes)
+
+    def _tool_fullscreen(self, request, args):
+        self._action("win.toggle-fullscreen")
+        return "Toggled fullscreen.", "Fullscreen"
+
     # -- memory ----------------------------------------------------------
 
     def _memory_prompt(self):
@@ -1581,6 +2029,14 @@ class Plugin:
             )
         else:
             saved = "No memories are saved yet."
+        if self._config["tools"]:
+            return (
+                "You have a persistent memory that is shared by every conversation. "
+                f"{saved}\n"
+                "When the user tells you something worth keeping for later, save it with the remember tool; "
+                "change or delete a memory with update_memory or forget, by its number. Save sparingly, and never "
+                "save what is already saved."
+            )
         return (
             "You have a persistent memory that is shared by every conversation. "
             f"{saved}\n"
@@ -1625,6 +2081,15 @@ class Plugin:
                 self._refresh_memory()
                 if announce:
                     rsimgv.notify(f"Forgot: {memory['text']}", seconds=3)
+                return True
+        return False
+
+    def _update_memory(self, memory_id, text):
+        for memory in self._memories:
+            if memory["id"] == memory_id:
+                memory["text"] = text[:500]
+                self._save_memories()
+                self._refresh_memory()
                 return True
         return False
 
@@ -2348,7 +2813,8 @@ class Plugin:
         """Appends a message to a panel's log and returns it. `message` is its entry in the history."""
         message = message or {}
         bubble = Bubble(
-            role, text, thinking, filename, self, live, message.get("id"), message.get("thumb"), message.get("path")
+            role, text, thinking, filename, self, live, message.get("id"), message.get("thumb"), message.get("path"),
+            message.get("notes"),
         )
         panel.log.append(bubble.box)
         panel.bubbles.append(bubble)

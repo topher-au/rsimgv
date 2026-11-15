@@ -77,12 +77,30 @@ The model's reasoning is still shown when it thinks; turning thinking off only a
 **Viewer card opacity** sets how opaque the card's background is, from 20 to 100 percent. Only the background
 fades, so the text stays clear over the picture.
 
+## Tools
+
+The model can call tools (OpenAI-style function calling), so the server must support it; turn **Tools** off
+in the settings for one that rejects the `tools` field. Each tool run is shown as a small note in the reply,
+and a request may take up to **Most rounds of tool calls** rounds before the model has to answer.
+
+- **Memory:** `remember`, `forget`, `update_memory` and `list_memories`. Memories are numbered in the prompt and
+  in `list_memories`. With Tools off, memory falls back to the tags described below.
+- **Viewer** (switched by **Viewer tools**): `look`, `navigate` (next, previous, first, last), `zoom` (in, out, and
+  the fit modes), `pan`, `rotate`, `flip`, `playback`, `seek` (seconds or frames), `speed`, `volume` and
+  `fullscreen`. They run the same actions as the keybindings.
+- `look` gives the model a fresh picture, or the video's current frame, with the item's details. Use it after
+  navigating or seeking.
+
+Limits to know: the picture the model receives is the whole frame, so it cannot see zoom or pan, which change
+only what you see. `playback` toggles, since the viewer does not report whether a video is playing. The tools
+only control the viewer and the memories; none of them changes, moves or deletes a file.
+
 ## Memory
 
 The model keeps notes that are shared by every chat, in `memory.json` beside the config. They are sent with
-each request, numbered, together with an instruction to save something worth keeping by writing
-`<memory>a short fact</memory>` in its reply, and to forget one with `<forget>its number</forget>`. This needs
-no tool calling from the server. The tags are removed from what is shown, stored and spoken, and a small
+each request, numbered. With Tools on it saves and forgets them with the memory tools. Without, it is told to
+write `<memory>a short fact</memory>` in its reply and `<forget>its number</forget>`, which needs no tool
+calling from the server. The tags are removed from what is shown, stored and spoken, and a small
 notice says what was remembered or forgotten.
 
 The bookmark button in the chat header lists the memories, lets you add one, and forgets any. Clearing the chat
