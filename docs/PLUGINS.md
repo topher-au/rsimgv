@@ -146,7 +146,7 @@ main menu. The description appears in a persistent overlay notification and the 
 `au.topher.upscale` runs an ncnn/Vulkan upscaler (`upscayl-bin` or `realesrgan-ncnn-vulkan`) on the viewed or
 selected picture and keeps the result in rsimgv's data folder, where the viewer shows it in place of the
 original. Press `Ctrl+Alt+U` or choose **Upscale picture** from the main menu, and `U` in the viewer to switch
-between the original and the upscaled copy. See the plugin's README for requirements and settings.
+between the original and the upscaled copy, or `Shift+U` to compare them either side of a draggable divider. See the plugin's README for requirements and settings.
 
 ## Limits
 

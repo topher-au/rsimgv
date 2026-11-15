@@ -667,6 +667,9 @@ pub const ACTIONS: &[ActionInfo] = &[
         name: "image.toggle-upscaled", description: "Switch between the picture and its upscaled copy.", icon: "image-x-generic-symbolic", label: "Toggle Upscaled", defaults: &["u"],
     },
     ActionInfo {
+        name: "image.compare-upscaled", description: "Show the upscaled picture beside its original, with a divider to drag between them.", icon: "view-dual-symbolic", label: "Compare Upscaled", defaults: &["shift+u"],
+    },
+    ActionInfo {
         name: "image.pan-up", description: "Move the picture up within the window.", icon: "go-up-symbolic", label: "Pan Up", defaults: &["up"],
     },
     ActionInfo {

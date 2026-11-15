@@ -6,7 +6,10 @@ the original's content, so it is still found after the original is moved or rena
 never changed, and nothing is written to its folder.
 
 The viewer shows the upscaled copy in place of the original whenever one exists. Press `U` (the
-`image.toggle-upscaled` action) to switch between the two. Upscaling a picture again replaces its copy.
+`image.toggle-upscaled` action) to switch between the two. Press `Shift+U` (`image.compare-upscaled`) to see both
+at once: the original on the left of a divider and the upscaled copy on the right, over the same area. Drag the
+divider to move it; zooming and panning apply to both. Press `Shift+U` again to end the comparison. Upscaling a
+picture again replaces its copy.
 
 ## Requirements
 

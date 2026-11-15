@@ -1350,6 +1350,7 @@ impl Window {
         bound_action(&image, &weak, "fit-fill", |window| window.imp().viewer.set_fit(Fit::Fill));
         bound_action(&image, &weak, "fit-original", |window| window.imp().viewer.set_fit(Fit::Original));
         bound_action(&image, &weak, "toggle-upscaled", |window| window.toggle_upscaled());
+        bound_action(&image, &weak, "compare-upscaled", |window| window.compare_upscaled());
         bound_action(&image, &weak, "pan-up", |window| window.imp().viewer.pan(0.0, -PAN_STEP));
         bound_action(&image, &weak, "pan-down", |window| window.imp().viewer.pan(0.0, PAN_STEP));
         bound_action(&image, &weak, "pan-left", |window| window.imp().viewer.pan(-PAN_STEP, 0.0));
@@ -2928,6 +2929,16 @@ impl Window {
         let text = match self.imp().viewer.toggle_upscaled() {
             Some(true) => "Showing the upscaled picture",
             Some(false) => "Showing the original picture",
+            None => "This picture has no upscaled copy",
+        };
+        self.messages().show(Message::notification(text));
+    }
+
+    /// Starts or ends showing the upscaled picture beside its original, and says which.
+    fn compare_upscaled(&self) {
+        let text = match self.imp().viewer.toggle_compare() {
+            Some(true) => "Comparing: original on the left, upscaled on the right. Drag the divider.",
+            Some(false) => "Comparison ended",
             None => "This picture has no upscaled copy",
         };
         self.messages().show(Message::notification(text));

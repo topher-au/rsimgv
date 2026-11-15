@@ -506,6 +506,8 @@ mod imp {
         pub(super) prefer_original: Cell<bool>,
         /// Whether the picture shown is an upscaled copy.
         pub(super) upscaled_shown: Cell<bool>,
+        /// Whether an upscaled copy is shown beside its original, either side of a divider, for every picture that has one.
+        pub(super) comparing: Cell<bool>,
         /// The settings kept for the item shown: a picture's zoom and pan, a video's position and speed. They are
         /// saved when it is left.
         pub(super) file_settings: RefCell<Option<FileSettings>>,
@@ -1606,8 +1608,34 @@ impl MediaViewer {
         let path = imp.paths.borrow().get(imp.index.get()).cloned()?;
         crate::storage::upscaled::find(&path)?;
         imp.prefer_original.set(!imp.prefer_original.get());
+        // Switching pictures is a choice of one of them, so it ends a comparison of the two.
+        imp.comparing.set(false);
         self.reload();
         Some(!imp.prefer_original.get())
+    }
+
+    /// Starts or ends showing an upscaled copy beside its original, with a divider to drag between them. It applies to
+    /// each picture that has a copy until it is ended. Returns whether it is now on, or `None` when the item shown has no
+    /// copy to compare with.
+    pub fn toggle_compare(&self) -> Option<bool> {
+        let imp = self.imp();
+        if imp.media.borrow().is_some() {
+            return None;
+        }
+        let path = imp.paths.borrow().get(imp.index.get()).cloned()?;
+        crate::storage::upscaled::find(&path)?;
+        let on = !imp.comparing.get();
+        imp.comparing.set(on);
+        if !on {
+            imp.canvas.set_compare(None);
+        } else if imp.upscaled_shown.get() {
+            self.show_comparison();
+        } else {
+            // The copy is not the picture shown, so it is shown, and the comparison follows it.
+            imp.prefer_original.set(false);
+            self.reload();
+        }
+        Some(on)
     }
 
     /// Whether the picture shown is an upscaled copy.
@@ -3023,8 +3051,28 @@ impl MediaViewer {
         if let Some(placement) = placement {
             imp.canvas.restore(placement);
         }
+        if imp.comparing.get() && upscaled {
+            self.show_comparison();
+        }
         self.update_zoom_indicator();
         self.begin_watch_session();
+    }
+
+    /// Decodes the original of the upscaled picture shown, and puts it on the canvas beside the copy.
+    fn show_comparison(&self) {
+        let imp = self.imp();
+        let index = imp.index.get();
+        let Some(path) = imp.paths.borrow().get(index).cloned() else { return };
+        let weak = self.downgrade();
+        glib::spawn_future_local(async move {
+            let Some((pixels, _)) = decode_picture(path, false).await else { return };
+            let Some(viewer) = weak.upgrade() else { return };
+            let imp = viewer.imp();
+            // Not shown if the picture has changed, or the comparison was turned off, while it was decoded.
+            if imp.index.get() == index && imp.comparing.get() && imp.upscaled_shown.get() && imp.media.borrow().is_none() {
+                imp.canvas.set_compare(Some(pixels.texture()));
+            }
+        });
     }
 
     /// Decodes the pictures either side of the item at `index`, so that stepping to them shows them at once.
