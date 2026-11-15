@@ -664,6 +664,9 @@ pub const ACTIONS: &[ActionInfo] = &[
         name: "image.fit-original", description: "Show the picture at its own size.", icon: "zoom-original-symbolic", label: "Original Size", defaults: &["4"],
     },
     ActionInfo {
+        name: "image.toggle-upscaled", description: "Switch between the picture and its upscaled copy.", icon: "image-x-generic-symbolic", label: "Toggle Upscaled", defaults: &["u"],
+    },
+    ActionInfo {
         name: "image.pan-up", description: "Move the picture up within the window.", icon: "go-up-symbolic", label: "Pan Up", defaults: &["up"],
     },
     ActionInfo {

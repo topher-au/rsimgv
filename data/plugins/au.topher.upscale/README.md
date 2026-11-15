@@ -1,8 +1,12 @@
 # AI Upscale — Python
 
 Upscales the picture in the viewer, or the selected picture when the viewer is closed, with an ncnn/Vulkan
-upscaler. The result is saved beside the original as `name_x4.png`; an existing file is never replaced, and
-the original is never changed.
+upscaler. The result is kept in rsimgv's data folder (`~/.local/share/rsimgv/upscaled/`), named by a hash of
+the original's content, so it is still found after the original is moved or renamed. The original file is
+never changed, and nothing is written to its folder.
+
+The viewer shows the upscaled copy in place of the original whenever one exists. Press `U` (the
+`image.toggle-upscaled` action) to switch between the two. Upscaling a picture again replaces its copy.
 
 ## Requirements
 
@@ -19,7 +23,7 @@ has its own licence, so check it before redistributing a model.
 ## Use
 
 Press `Ctrl+Alt+U` or choose **Upscale picture** from the main menu. Only one upscale runs at a time, and only
-jpg, png and webp pictures are accepted. One picture is upscaled per run; a multi-item selection is not used.
+jpg, png and webp pictures are accepted. Copies are PNG files. One picture is upscaled per run; a multi-item selection is not used.
 
 ## Configure
 
@@ -33,7 +37,6 @@ Use **Preferences → Integration → Plugins → AI Upscale**. The values are s
 | `model` | Passed as `-n`, for example `realesrgan-x4plus`. |
 | `model_scale` | Passed as `-z`, the scale the model was trained for. |
 | `output_scale` | Passed as `-s`. A value below the model scale resamples the result. |
-| `format` | `png`, `jpg` or `webp`. |
 | `tile_size` | Passed as `-t`. 0 is automatic; lower it if the GPU runs out of memory. |
 | `gpu` | Passed as `-g`, an index or `auto`. |
 | `timeout_seconds` | The program is stopped after this long. |

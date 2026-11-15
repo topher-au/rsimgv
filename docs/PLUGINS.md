@@ -144,8 +144,9 @@ main menu. The description appears in a persistent overlay notification and the 
 ## Bundled AI Upscale plugin
 
 `au.topher.upscale` runs an ncnn/Vulkan upscaler (`upscayl-bin` or `realesrgan-ncnn-vulkan`) on the viewed or
-selected picture and saves the result beside it. Press `Ctrl+Alt+U` or choose **Upscale picture** from the main
-menu. See the plugin's README for requirements and settings.
+selected picture and keeps the result in rsimgv's data folder, where the viewer shows it in place of the
+original. Press `Ctrl+Alt+U` or choose **Upscale picture** from the main menu, and `U` in the viewer to switch
+between the original and the upscaled copy. See the plugin's README for requirements and settings.
 
 ## Limits
 

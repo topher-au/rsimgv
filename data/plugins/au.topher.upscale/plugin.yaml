@@ -11,7 +11,7 @@ contributes:
   actions:
     - id: upscale
       label: Upscale picture
-      description: Upscale the viewed or selected picture and save the result beside it.
+      description: Upscale the viewed or selected picture and keep the result for the viewer to show.
       scope: global
       default_keys: [ctrl+alt+u]
   menus:
@@ -46,11 +46,6 @@ contributes:
       kind: choice
       choices: ["2", "3", "4"]
       default: "4"
-    - key: format
-      label: Output format
-      kind: choice
-      choices: [png, jpg, webp]
-      default: png
     - key: tile_size
       label: Tile size
       description: 0 picks one automatically. Use 32 or more, and lower it if the GPU runs out of memory.

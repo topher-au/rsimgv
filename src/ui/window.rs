@@ -1349,6 +1349,7 @@ impl Window {
         bound_action(&image, &weak, "fit-height", |window| window.imp().viewer.set_fit(Fit::Height));
         bound_action(&image, &weak, "fit-fill", |window| window.imp().viewer.set_fit(Fit::Fill));
         bound_action(&image, &weak, "fit-original", |window| window.imp().viewer.set_fit(Fit::Original));
+        bound_action(&image, &weak, "toggle-upscaled", |window| window.toggle_upscaled());
         bound_action(&image, &weak, "pan-up", |window| window.imp().viewer.pan(0.0, -PAN_STEP));
         bound_action(&image, &weak, "pan-down", |window| window.imp().viewer.pan(0.0, PAN_STEP));
         bound_action(&image, &weak, "pan-left", |window| window.imp().viewer.pan(-PAN_STEP, 0.0));
@@ -2920,6 +2921,23 @@ impl Window {
             return None;
         }
         self.imp().viewer.shown_item()
+    }
+
+    /// Switches the picture between its original and its upscaled copy, and says which is shown.
+    fn toggle_upscaled(&self) {
+        let text = match self.imp().viewer.toggle_upscaled() {
+            Some(true) => "Showing the upscaled picture",
+            Some(false) => "Showing the original picture",
+            None => "This picture has no upscaled copy",
+        };
+        self.messages().show(Message::notification(text));
+    }
+
+    /// Shows the viewer's picture again, so that a copy made since it was shown is picked up.
+    pub fn reload_viewer(&self) {
+        if self.viewer_is_open() {
+            self.imp().viewer.reload();
+        }
     }
 
     /// The overlay that shows messages over the window.

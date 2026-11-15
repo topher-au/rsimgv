@@ -2,7 +2,9 @@
 
 The plugin runs ``upscayl-bin`` (or the compatible ``realesrgan-ncnn-vulkan``)
 as a separate program, so none of its code is linked into rsimgv. The result is
-written beside the original as ``name_x4.png`` and the original is never touched.
+stored in rsimgv's data folder, in the place the host names for the original
+with ``upscaled.path``. The viewer shows it in place of the original and can
+switch back. The original file is never touched.
 
 The program runs on a worker thread. Its result is posted back to the GTK main
 thread with ``rsimgv.ui.idle_add``.
@@ -25,7 +27,6 @@ DEFAULTS = {
     "model": "realesrgan-x4plus",
     "model_scale": "4",
     "output_scale": "4",
-    "format": "png",
     "tile_size": 0,
     "gpu": "auto",
     "timeout_seconds": 600,
@@ -74,15 +75,22 @@ class Plugin:
             self._fail(f"{self._config['binary']} was not found. Set its path on the Plugins page.")
             return
 
-        target = self._target(source)
-        command = self._command(program, source, target)
+        try:
+            target = rsimgv.host.call("upscaled.path", {"path": source})["path"]
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+        except Exception as exc:
+            self._fail(str(exc))
+            return
+        # The program writes here first, so a failed run does not replace an earlier copy.
+        partial = os.path.splitext(target)[0] + ".part.png"
+        command = self._command(program, source, partial)
 
         self._busy = True
         generation = self._generation
         rsimgv.notify(f"{NAME}: upscaling {os.path.basename(source)}...", seconds=3)
         threading.Thread(
             target=self._run,
-            args=(generation, command, target),
+            args=(generation, command, partial, target),
             daemon=True,
         ).start()
 
@@ -98,17 +106,6 @@ class Plugin:
             return os.path.join(folder, name)
         return None
 
-    def _target(self, source):
-        """A new file beside the source that never replaces an existing one."""
-        stem = os.path.splitext(source)[0]
-        base = f"{stem}_x{self._config['output_scale']}"
-        extension = f".{self._config['format']}"
-        target, number = base + extension, 2
-        while os.path.exists(target):
-            target = f"{base}_{number}{extension}"
-            number += 1
-        return target
-
     def _command(self, program, source, target):
         config = self._config
         command = [
@@ -118,7 +115,7 @@ class Plugin:
             "-n", config["model"],
             "-z", config["model_scale"],
             "-s", config["output_scale"],
-            "-f", config["format"],
+            "-f", "png",
             "-t", str(config["tile_size"]),
             "-g", config["gpu"],
         ]
@@ -128,7 +125,7 @@ class Plugin:
 
     # -- worker ----------------------------------------------------------
 
-    def _run(self, generation, command, target):
+    def _run(self, generation, command, partial, target):
         error = None
         try:
             result = subprocess.run(
@@ -142,8 +139,10 @@ class Plugin:
                 # The program reports its problems on stderr.
                 detail = (result.stderr or result.stdout).strip().splitlines()
                 error = detail[-1] if detail else f"exit status {result.returncode}"
-            elif not os.path.exists(target):
+            elif not os.path.exists(partial):
                 error = "the program finished but wrote no file"
+            else:
+                os.replace(partial, target)
         except subprocess.TimeoutExpired:
             error = f"timed out after {self._config['timeout_seconds']} seconds"
         except OSError as exc:
@@ -152,11 +151,11 @@ class Plugin:
         if error is not None:
             # Do not leave a half-written file behind.
             try:
-                os.remove(target)
+                os.remove(partial)
             except FileNotFoundError:
                 pass
             except OSError as exc:
-                rsimgv.host.log("warning", f"cannot remove {target}: {exc}")
+                rsimgv.host.log("warning", f"cannot remove {partial}: {exc}")
 
         rsimgv.ui.idle_add(lambda: self._finish(generation, target, error))
 
@@ -167,7 +166,12 @@ class Plugin:
         if error is not None:
             self._fail(error)
             return
-        rsimgv.notify(f"{NAME}: saved {os.path.basename(target)}", seconds=5)
+        # The viewer picks the copy up, when it is showing the picture.
+        try:
+            rsimgv.host.call("view.reload")
+        except Exception as exc:
+            rsimgv.host.log("warning", f"cannot reload the viewer: {exc}")
+        rsimgv.notify(f"{NAME}: done. Press U to switch between the original and the upscaled picture.", seconds=6)
         rsimgv.action_done({"result": target})
 
     @staticmethod
@@ -190,10 +194,8 @@ class Plugin:
         except Exception as exc:
             rsimgv.notify(f"{NAME}: cannot read {path}: {exc}", level="warning", seconds=8)
 
-        for key in ("binary", "models_dir", "model", "model_scale", "output_scale", "format", "gpu"):
+        for key in ("binary", "models_dir", "model", "model_scale", "output_scale", "gpu"):
             config[key] = str(config[key])
-        if config["format"] not in ("png", "jpg", "webp"):
-            config["format"] = DEFAULTS["format"]
         for key in ("model_scale", "output_scale"):
             if config[key] not in ("2", "3", "4"):
                 config[key] = DEFAULTS[key]
