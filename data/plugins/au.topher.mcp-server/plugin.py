@@ -19,6 +19,7 @@ import rsimgv
 PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
 CALL_TIMEOUT = 130  # a little over the host's 120 s wait for plugin actions
 MAX_BODY = 1_000_000
+MAX_THUMBNAILS = 12
 LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
 DEFAULTS = {"port": 8765, "bind_address": "127.0.0.1", "token": "", "read_only": False}
 
@@ -39,13 +40,35 @@ def _obj(properties=None, required=()):
 _STR = {"type": "string"}
 _INT = {"type": "integer"}
 _STRS = {"type": "array", "items": {"type": "string"}}
+_FORMAT = {"type": "string", "enum": ["png", "jpeg", "webp"], "default": "png",
+           "description": "Image format. jpeg and webp are much smaller than png."}
+_QUALITY = {"type": "integer", "minimum": 1, "maximum": 100, "default": 85,
+            "description": "Quality for jpeg and webp; ignored for png."}
+_MAX_SIZE = {"type": "integer", "minimum": 1, "maximum": 8192,
+             "description": "Longest side in pixels. Larger pictures are shrunk, smaller ones are not enlarged."}
+_CROP = {"type": "object", "description": "Region to keep, as fractions from 0 to 1 of the full picture, "
+         "measured from its top left. Applied before max_size.",
+         "properties": {"x": {"type": "number", "minimum": 0, "exclusiveMaximum": 1},
+                        "y": {"type": "number", "minimum": 0, "exclusiveMaximum": 1},
+                        "width": {"type": "number", "exclusiveMinimum": 0, "maximum": 1},
+                        "height": {"type": "number", "exclusiveMinimum": 0, "maximum": 1}},
+         "required": ["x", "y", "width", "height"]}
 
 # name -> (description, input schema, host method, optional param builder)
 TOOLS = {
     "view_info": ("Describe the picture or video in the viewer: filename, size, position, duration, fps.",
                   _obj(), "view.info"),
-    "view_screenshot": ("Capture the picture or video frame the viewer shows, as an image.",
-                        _obj(), "view.screenshot"),
+    "view_screenshot": ("Capture the picture or video frame the viewer shows, as an image. Use max_size to keep it "
+                        "small and crop to look closely at one region.",
+                        _obj({"format": _FORMAT, "quality": _QUALITY, "max_size": _MAX_SIZE, "crop": _CROP}),
+                        "view.screenshot"),
+    "get_thumbnails": ("Get the thumbnail images rsimgv has already made for files. A file without one is "
+                       "reported as missing; open its folder in rsimgv so thumbnails are made. The size is the "
+                       "largest cached thumbnail not above max_size.",
+                       _obj({"paths": {"type": "array", "items": _STR, "maxItems": MAX_THUMBNAILS},
+                             "max_size": {"type": "integer", "minimum": 1, "maximum": 2048, "default": 256},
+                             "format": _FORMAT, "quality": _QUALITY}, ["paths"]),
+                       "thumbnails.get"),
     "window_info": ("Get the current folder, selected file and sidebar state.", _obj(), "window.info"),
     "list_tabs": ("List the open tabs.", _obj(), "tabs.list"),
     "open_tab": ("Open a folder in a new tab.",
@@ -262,15 +285,30 @@ class Plugin:
             method, params = arguments.get("method"), arguments.get("params") or {}
         else:
             method, params = spec[2], arguments
+            if name == "get_thumbnails" and len(arguments.get("paths") or []) > MAX_THUMBNAILS:
+                raise ValueError(f"at most {MAX_THUMBNAILS} paths per call")
         try:
             result = self._host_call(method, params)
         except _ToolError as exc:
             return {"content": [{"type": "text", "text": str(exc)}], "isError": True}
         if method == "view.screenshot" and isinstance(result, dict) and result.get("data"):
             return {"content": [
-                {"type": "image", "data": result["data"], "mimeType": "image/png"},
-                {"type": "text", "text": f"{result.get('width')}x{result.get('height')} PNG"},
+                {"type": "image", "data": result["data"], "mimeType": result.get("mime_type", "image/png")},
+                {"type": "text", "text": json.dumps(
+                    {key: result.get(key) for key in ("format", "width", "height", "source_width", "source_height")})},
             ]}
+        if method == "thumbnails.get" and isinstance(result, dict):
+            content, found, missing = [], [], []
+            for item in result.get("thumbnails", []):
+                if item.get("data"):
+                    content.append({"type": "image", "data": item["data"],
+                                    "mimeType": item.get("mime_type", "image/png")})
+                    found.append({key: item.get(key) for key in ("path", "size", "width", "height", "format")})
+                else:
+                    missing.append(item.get("path"))
+            # The text lists the images in the order they follow it.
+            content.insert(0, {"type": "text", "text": json.dumps({"images": found, "missing": missing}, indent=2)})
+            return {"content": content}
         return {"content": [{"type": "text", "text": json.dumps(result, indent=2)}]}
 
     def _host_call(self, method, params):

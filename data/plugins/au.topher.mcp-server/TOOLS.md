@@ -26,7 +26,7 @@ Source material: the host methods in `src/services/remote.rs` (about 45), the 15
 | Current tool | Host method | Verdict |
 | --- | --- | --- |
 | `view_info` | `view.info` | **Keep.** Extend host to report paused, volume, mute, zoom, rotation (see gaps). |
-| `view_screenshot` | `view.screenshot` | **Keep**, add `max_size` and JPEG option: full-size PNGs are costly in tokens. |
+| `view_screenshot` | `view.screenshot` | **Keep.** Now takes format, quality, max_size and crop (done). |
 | `window_info` | `window.info` | **Merge** into `get_status`. |
 | `selected_file` | `files.selected` | **Merge** into `get_status`. |
 | `list_tabs` | `tabs.list` | **Keep.** |
@@ -61,8 +61,8 @@ R = read-only, W = changes state, D = destructive.
 | --- | --- | --- | --- | --- |
 | `get_status` | none | `{folder, selected_file, selected_index, viewer_open, tab:{id,index}, sidebar, item?:{filename, mime_type, width, height, position, duration, fps, speed}}` | One call that orients the model. Replaces `window_info`, `selected_file`, most `view_info` use. Built from `window.info`, `files.selected`, `tabs.current`, `view.info`. | R |
 | `view_info` | none | the `view.info` object | Detail on the viewed item. Kept for when `get_status` is more than needed. | R |
-| `view_screenshot` | `max_size?: int` (default 1024), `format?: png\|jpeg` | image block + `{width,height}` text | See what the viewer shows. | R |
-| `get_thumbnails` | `paths: string[]` (max 12), `max_size?: int` (default 256) | one image block per file with a thumbnail, plus `{path, missing}` for the rest | Let a model look at a folder without opening each file. | R |
+| `view_screenshot` | `format?: png\|jpeg\|webp` (default png), `quality?: 1-100` (default 85), `max_size?: int` (longest side, never enlarges), `crop?: {x,y,width,height}` (fractions 0-1 of the full picture, applied before `max_size`) | image block + `{format,width,height,source_width,source_height}` text | See what the viewer shows, or zoom on a region. **Implemented** (host does the work). | R |
+| `get_thumbnails` | `paths: string[]` (max 12), `max_size?: int` (default 256, max 2048), `format?`, `quality?` | text `{images:[{path,size,width,height,format}], missing:[path]}` followed by one image block per found file, in that order | Let a model look at a folder without opening each file. Size is the largest cached thumbnail not above `max_size`. **Implemented.** | R |
 | `get_file_info` (was `file_metadata`) | `paths: string[]` (max 50) | `{files:[{path,name,is_dir,size,modified,mime_type,media,media_pending}]}` | Size, type, dimensions, codec. `media_pending` means "ask again shortly". | R |
 | `get_file_state` | `path` | `{path, hash, values}` | Saved per-file state such as the resume position. | R |
 
@@ -175,8 +175,9 @@ Without these the model can act but cannot confirm the result:
 3. **Marked items** in the browse view: needed before marking actions are worth exposing.
 4. **Search**: a `files.search` method over `src/search`, instead of each client re-implementing it (the
    Open WebUI tool does it client-side today).
-5. **Screenshot size**: a `max_size` parameter on `view.screenshot`, so downscaling happens in the host;
-   the plugin has no image library.
+5. ~~**Screenshot size**~~ Done: `view.screenshot` and `thumbnails.get` take format, quality and size
+   (`view.screenshot` also takes a crop); the host encodes with gdk-pixbuf. WebP needs gdk-pixbuf's WebP
+   loader, and the call fails with `unsupported_format` where it is missing.
 6. **Action metadata**: `actions.list` should say whether an action takes a value or a target, and give
    `value_info`'s range, so `run_action` and `list_actions` can validate and describe them.
 
