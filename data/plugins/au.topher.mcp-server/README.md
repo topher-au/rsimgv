@@ -42,12 +42,13 @@ Open WebUI calls the server from its backend, so the model needs no access to yo
 
 ## Tools
 
-35 tools, each with MCP annotations (`readOnlyHint`, `destructiveHint`, ...); `TOOLS.md` lists them with their
+38 tools, each with MCP annotations (`readOnlyHint`, `destructiveHint`, ...); `TOOLS.md` lists them with their
 arguments, and what is deliberately left out.
 
 - **Look:** `get_status` (start here), `view_info`, `view_screenshot` and `get_thumbnails` (images; `format`
-  png or jpeg, `quality`, `max_size`, and for screenshots a fractional `crop` and `info` to include `view_info`'s result), `get_file_info`, `get_file_state`.
-- **Browse:** `list_files` (paged, filterable), `open_folder`, `navigate`, `step_folder`, `select_file`,
+  png or jpeg, `quality`, `max_size`, and for screenshots a fractional `crop` and `info` to include `view_info`'s result), `get_file_info`, `get_file_state`, `get_playlist`, `get_marked_files`. `view_info` reports
+  state too: playing, volume, mute, repeat, slideshow, rotation, zoom and fit.
+- **Browse:** `list_files` (paged, filterable), `search_files` (the search bar's query language), `open_folder`, `navigate`, `step_folder`, `select_file`,
   `open_item`, `close_viewer`, tabs and bookmarks.
 - **Viewer:** `viewer_navigate`, `image_view`, `transform_view`, `video_playback`, `video_view`, `slideshow`,
   `playlist_control`, `playlist_toggle_item`.

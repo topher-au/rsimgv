@@ -275,8 +275,9 @@ def get_status(args):
 
 
 @tool("view_info", "Describe the viewed item",
-      "Describe the picture or video in the viewer: filename, size, position, duration, fps, speed. Fails when the "
-      "viewer is not open.", read_only=True)
+      "Describe the picture or video in the viewer: filename, size, and its state: playing, position, duration, fps, "
+      "speed, volume (percent), muted, repeat, slideshow, rotation, mirrored, zoom, fit. Fields that do not apply "
+      "are null. Fails when the viewer is not open.", read_only=True)
 def view_info(args):
     return host_call("view.info")
 
@@ -362,6 +363,32 @@ def list_files(args):
              if query in name.lower() and (not media_only or (not info.get("is_dir") and _is_media(name)))]
     return {"path": path or _current_path(), "total": len(files), "offset": offset,
             "files": files[offset:offset + limit]}
+
+
+@tool("search_files", "Search files",
+      "Find files by name or attribute in a folder (the one shown by default). The query is the search bar's: "
+      "keywords match part of a name, \"quotes\" match a whole name or type, and comparisons look like size>10M, "
+      "modified>=2024-01-31, type=video/mp4, width>=1920, height<1080, fps=30, duration>1:30. All must match. "
+      "width, height, fps and duration are known only for files rsimgv has read; metadata_pending counts the "
+      "others, so repeat the search shortly if it is above 0.",
+      {"query": _STR, "path": _STR, "recursive": {"type": "boolean", "default": False},
+       "limit": {"type": "integer", "minimum": 1, "maximum": 1000, "default": 100}}, ["query"], read_only=True)
+def search_files(args):
+    params = {"query": _string(args, "query"), "recursive": _boolean(args, "recursive")}
+    path = _string(args, "path", required=False)
+    if path:
+        params["path"] = path
+    limit = _integer(args, "limit", None, 1, 1000)
+    if limit:
+        params["limit"] = limit
+    return host_call("files.search", params)
+
+
+@tool("get_marked_files", "Get marked files",
+      "The items marked in the current tab's browse view, for actions that apply to the marked items.",
+      read_only=True)
+def get_marked_files(args):
+    return host_call("files.marked")
 
 
 @tool("open_folder", "Open a folder", "Browse a folder in the current tab.", {"path": _STR}, ["path"],
@@ -574,6 +601,17 @@ def playlist_control(args):
     return run_action(f"win.playlist-{_choice(args, 'command', PLAYLIST_COMMANDS)}")
 
 
+@tool("get_playlist", "Get the playlist",
+      "The playlist in the order it plays in, with the position of the item it is on (current, from 0).",
+      {"limit": {"type": "integer", "minimum": 1, "maximum": 500, "default": 100}, "offset": _OFFSET},
+      read_only=True)
+def get_playlist(args):
+    limit = _integer(args, "limit", 100, 1, 500)
+    offset = _integer(args, "offset", 0, 0)
+    playlist = host_call("playlist.get")
+    return {**playlist, "offset": offset, "items": playlist.get("items", [])[offset:offset + limit]}
+
+
 @tool("playlist_toggle_item", "Add or remove from the playlist",
       "Add the item the viewer shows (or, while browsing, the marked items or the one under the cursor) to the "
       "playlist, or remove it if it is there.")
@@ -635,7 +673,8 @@ SCOPES = ("global", "browse", "view", "image", "video", "playlist", "tree")
 
 @tool("list_actions", "Find actions",
       "Find actions for run_action by text in the name, label or description, optionally limited to a scope. "
-      "Includes plugin actions. Most things have a dedicated tool; use this for the rest.",
+      "Includes plugin actions. value and target are null unless the action takes one: value gives its unit "
+      "and range, target its choices. Most things have a dedicated tool; use this for the rest.",
       {"query": _STR, "scope": _enum(SCOPES), "limit": {"type": "integer", "minimum": 1, "maximum": 200,
                                                           "default": 50}}, read_only=True)
 def list_actions(args):
@@ -651,7 +690,7 @@ def list_actions(args):
             continue
         if query and not any(query in (action.get(key) or "").lower() for key in ("name", "label", "description")):
             continue
-        actions.append({key: action.get(key) for key in ("name", "label", "description", "scope")})
+        actions.append({key: action.get(key) for key in ("name", "label", "description", "scope", "value", "target")})
     return {"total": len(actions), "actions": actions[:limit]}
 
 
@@ -660,7 +699,32 @@ def list_actions(args):
       "actions that take them. Plugin actions can take up to two minutes.",
       {"name": _STR, "value": {"type": "number"}, "target": _STR}, ["name"])
 def run_action_tool(args):
-    return run_action(_string(args, "name"), _number(args, "value"), _string(args, "target", required=False))
+    name = _string(args, "name")
+    value, target = _number(args, "value"), _string(args, "target", required=False)
+    if value is not None or target is not None:
+        _check_argument(name, value, target)
+    return run_action(name, value, target)
+
+
+def _check_argument(name, value, target):
+    """Rejects a value or target the action does not take, or that is outside what it takes."""
+    action = next((action for action in host_call("actions.list").get("actions", [])
+                   if action.get("name") == name), None)
+    if action is None:
+        return  # the host reports an unknown action
+    info = action.get("value")
+    if value is not None:
+        if not info:
+            raise _ToolError(f"{name} does not take a value")
+        if not info["min"] <= value <= info["max"]:
+            raise _ToolError(f"value for {name} must be between {info['min']} and {info['max']} ({info['unit']})")
+    choices = action.get("target")
+    if target is not None:
+        if not choices:
+            raise _ToolError(f"{name} does not take a target")
+        names = [choice["name"] for choice in choices["choices"]]
+        if target not in names:
+            raise _ToolError(f"target for {name} must be one of: {', '.join(names)}")
 
 
 @tool("list_plugins", "List plugins", "List the plugins rsimgv has loaded.", read_only=True)

@@ -4,10 +4,8 @@ What the MCP Server plugin exposes and what it leaves out, and why.
 
 ## Implementation status
 
-Everything below marked as plugin-side is implemented in `plugin.py` (35 tools, 13 of them read-only). These
-need host changes first and are **not** implemented: `get_playlist`, `search_files`, viewer state readback
-(paused, volume, zoom, rotation), marked items, and action metadata. Differences from the first draft of
-this list:
+Everything below is implemented in `plugin.py` (38 tools, 16 of them read-only), on top of the host changes
+under "Host gaps". Differences from the first draft of this list:
 
 - `slideshow` only has `toggle` and `toggle_shuffle`: the host cannot say whether a slideshow is running, so
   start and stop cannot be separate commands.
@@ -181,21 +179,24 @@ Everything else (about 90 actions: viewer navigation, zoom/fit/pan, rotate/flip,
 aspect, crop toggles, SVP, backdrop, timeline settings, browse display toggles, playlist navigation, plugin
 actions) stays reachable through `run_action`.
 
-## Host gaps (Rust changes in `src/services/remote.rs`)
+## Host gaps (done)
 
-Without these the model can act but cannot confirm the result:
+These were missing from `src/services/remote.rs`; each is now there:
 
-1. **Viewer state readback**: paused, volume, mute, zoom, fit mode, rotation, flip, repeat, slideshow
-   running. Add to `view.info`.
-2. **Playlist state**: `playlist.get` returning items, current index and shuffle. Perhaps `playlist.add`,
-   `playlist.remove`, `playlist.clear` without a dialog.
-3. **Marked items** in the browse view: needed before marking actions are worth exposing.
-4. **Search**: a `files.search` method over `src/search`, instead of each client re-implementing it (the
-   Open WebUI tool does it client-side today).
-5. ~~**Screenshot size**~~ Done: `view.screenshot` and `thumbnails.get` take format, quality and size
-   (`view.screenshot` also takes a crop); the host encodes with gdk-pixbuf. WebP is deliberately not supported.
-6. **Action metadata**: `actions.list` should say whether an action takes a value or a target, and give
-   `value_info`'s range, so `run_action` and `list_actions` can validate and describe them.
+1. **Viewer state readback**: `view.info` also reports `playing`, `volume` (percent), `muted`, `repeat`,
+   `slideshow`, `rotation`, `mirrored`, `zoom` (videos), and `fit` and `scale` (pictures); fields that do
+   not apply are null.
+2. **Playlist state**: `playlist.get`. Changing the playlist still goes through actions
+   (`win.playlist-toggle` and so on); there are no add or remove methods, because the playlist panel
+   follows the window's own handlers.
+3. **Marked items**: `files.marked`. Marking itself stays unexposed.
+4. **Search**: `files.search`, over the search bar's query language. Width, height, fps and duration match
+   only for files whose metadata rsimgv has already read; the rest are queued and counted in
+   `metadata_pending`. It scans at most 20,000 items, on the window's thread.
+5. **Screenshot and thumbnail encoding**: `view.screenshot` and `thumbnails.get` take format, quality and
+   size, and `view.screenshot` takes a crop. WebP is deliberately not supported.
+6. **Action metadata**: `actions.list` reports each action's `value` (unit, range, default) and `target`
+   (choices). `list_actions` shows them and `run_action` checks against them.
 
 ## Open questions
 
