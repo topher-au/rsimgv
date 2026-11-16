@@ -30,8 +30,13 @@
 //!   files.select    {"file"}                 -> {"selected": name}   in the selected tab
 //!   files.select_index {"index"}             -> {"selected": name}   negative counts from the end
 //!   files.selected  {}                       -> {"name", "index"}   of the selected tab; null when nothing is selected
-//!   view.screenshot {}                       -> {"format": "png", "width", "height", "data"}
-//!                   The picture or video frame the viewer shows, at its own size, as base64-encoded PNG.
+//!   view.screenshot {"format"?, "quality"?, "max_size"?, "crop"?}
+//!                                            -> {"format", "mime_type", "width", "height", "source_width", "source_height", "data"}
+//!                   The picture or video frame the viewer shows, as base64-encoded PNG at its own size unless asked
+//!                   otherwise. format is png, jpeg or webp; quality (1 to 100, 85 by default) applies to jpeg and
+//!                   webp; max_size limits the longest side, never enlarging; crop is {"x", "y", "width", "height"}
+//!                   as fractions (0 to 1) of the full picture, made before max_size. width and height are those of
+//!                   the result and source_width and source_height those of the picture before cropping.
 //!   view.info       {}                       -> {"directory", "filename", "position", "duration", "width", "height",
 //!                                                "fps", "speed", "mime_type"}
 //!                   The item the viewer shows, at its own size in pixels. position and duration are in seconds,
@@ -46,8 +51,10 @@
 //!                   which a persistent message has unless it is false.
 //!   messages.update {"id", "text"}           -> {}   changes the text of a message still up
 //!   messages.dismiss {"id"}                  -> {}   takes a message down; with no id, every message
-//!   thumbnails.get {"paths", "max_size"?}   -> {"thumbnails": [{"path", "size", "format", "data"}, ...]}
-//!                   The still thumbnail of each file, as base64-encoded PNG, from the thumbnails rsimgv has
+//!   thumbnails.get {"paths", "max_size"?, "format"?, "quality"?}
+//!                                            -> {"thumbnails": [{"path", "size", "format", "mime_type", "width", "height", "data"}, ...]}
+//!                   The still thumbnail of each file, as base64-encoded PNG unless format (png, jpeg or webp) and
+//!                   quality (1 to 100) say otherwise, from the thumbnails rsimgv has
 //!                   already made for it: the largest at most max_size pixels across (default 256).
 //!                   "size" is the pixels of the thumbnail given. "data" is null for a file with no thumbnail yet,
 //!                   which the window makes when it shows the file. The thumbnails are read from the disk cache,
@@ -91,6 +98,7 @@ use crate::fs::thumbnail;
 use crate::settings::{app_settings, Settings};
 use crate::storage::bookmarks;
 use crate::storage::file_settings::FileSettings;
+use crate::services::image_encode::{self, Options};
 use crate::services::ipc::Error;
 use crate::keybindings::actions::{all, find, target_info, DEFAULT_NOTIFICATION_SECONDS, NOTIFICATION_LEVELS};
 use crate::ui::{Level, Message, Window};
@@ -176,15 +184,20 @@ pub fn handle(window: &Window, method: &str, params: &Value) -> Result<Value, Er
             }))
         }
         "view.screenshot" => {
+            let options = Options::from_params(params)?;
             let Some(texture) = window.viewer_screenshot() else {
                 return Err(Error::new("no_media", "the viewer is not showing a picture or a video frame"));
             };
             let png = texture.save_to_png_bytes();
+            let picture = image_encode::transcode(&png, &options)?;
             Ok(json!({
-                "format": "png",
-                "width": texture.width(),
-                "height": texture.height(),
-                "data": glib::base64_encode(&png).as_str(),
+                "format": picture.format.name(),
+                "mime_type": picture.format.mime_type(),
+                "width": picture.width,
+                "height": picture.height,
+                "source_width": texture.width(),
+                "source_height": texture.height(),
+                "data": glib::base64_encode(&picture.bytes).as_str(),
             }))
         }
         "upscaled.path" => {
@@ -211,18 +224,28 @@ pub fn handle(window: &Window, method: &str, params: &Value) -> Result<Value, Er
                     .filter(|size| (1..=2048).contains(size))
                     .ok_or_else(|| Error::new("invalid_params", "the parameter max_size must be a whole number from 1 to 2048"))?,
             };
-            let thumbnails: Vec<Value> = path_list_param(params)?
+            let options = Options::from_params(&json!({
+                "format": params.get("format"),
+                "quality": params.get("quality"),
+            }))?;
+            let thumbnails = path_list_param(params)?
                 .into_iter()
                 .map(|path| match thumbnail::cached_still_png(Path::new(path), size as i32) {
-                    Some((pixels, png)) => json!({
-                        "path": path,
-                        "size": pixels,
-                        "format": "png",
-                        "data": glib::base64_encode(&png).as_str(),
-                    }),
-                    None => json!({"path": path, "data": null}),
+                    Some((pixels, png)) => {
+                        let picture = image_encode::transcode(&png, &options)?;
+                        Ok(json!({
+                            "path": path,
+                            "size": pixels,
+                            "format": picture.format.name(),
+                            "mime_type": picture.format.mime_type(),
+                            "width": picture.width,
+                            "height": picture.height,
+                            "data": glib::base64_encode(&picture.bytes).as_str(),
+                        }))
+                    }
+                    None => Ok(json!({"path": path, "data": null})),
                 })
-                .collect();
+                .collect::<Result<Vec<Value>, Error>>()?;
             Ok(json!({"thumbnails": thumbnails}))
         }
         "metadata.get" => {
