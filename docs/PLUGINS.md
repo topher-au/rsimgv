@@ -8,6 +8,90 @@ The bundled **LLM Screenshot** plugin is installed with the application. It send
 picture or video frame to an OpenAI-compatible vision model and shows the description in an overlay
 notification. Configure it on **Preferences → Integration → Plugins**.
 
+## Writing your first plugin
+
+This builds a plugin that shows a notification naming the picture or video in the viewer, and logs each item
+the viewer changes to. The reference sections below explain each part.
+
+1. **Make a plugin directory** and point rsimgv at its parent while you develop:
+
+   ```sh
+   mkdir -p ~/dev/plugins/com.example.hello
+   export RSIMGV_PLUGINS=~/dev/plugins
+   ```
+
+2. **Write the manifest**, `~/dev/plugins/com.example.hello/plugin.yaml`:
+
+   ```yaml
+   api: 1
+   id: com.example.hello
+   name: Hello
+   version: 0.1.0
+   runtime: python
+   entry: plugin.py
+   startup: on-demand
+
+   events: [viewer.item_changed]
+
+   contributes:
+     actions:
+       - id: greet
+         label: Greet
+         description: Say which item the viewer shows.
+         scope: view
+         default_keys: [ctrl+alt+g]
+   ```
+
+   `scope` says where the key works: `global`, `browse`, `view`, `image`, `video`, `playlist` or `tree`.
+
+3. **Write the plugin**, `~/dev/plugins/com.example.hello/plugin.py`:
+
+   ```python
+   import rsimgv
+
+
+   class Plugin:
+       def activate(self, host):
+           rsimgv.host.log("info", "Hello plugin active")
+
+       def deactivate(self):
+           pass
+
+       def invoke_action(self, action, context):
+           if action != "greet":
+               return
+           try:
+               info = rsimgv.host.call("view.info")
+           except Exception as exc:
+               rsimgv.notify(f"Hello: {exc}", level="error")
+               return
+           rsimgv.notify(f"Viewing {info.get('filename') or 'nothing'}")
+
+       def on_event(self, name, data):
+           if name == "viewer.item_changed":
+               rsimgv.host.log("info", f"Viewer moved to {data['path']}")
+   ```
+
+4. **Run it.** Start `rsimgv` from the shell where you set `RSIMGV_PLUGINS`, with `--verbose` to see the log.
+   Open **Preferences → Integration → Plugins**: Hello is listed there. Open a picture and press <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>G</kbd>. The key can be changed in the
+   keybinding editor, where the action is named `plugin.com.example.hello.greet`.
+
+5. **Edit and reload.** Change the notification text and save. The plugin reloads on its own (unless
+   `plugins.auto-reload` is off), or send `plugins.reload` over the remote control server. A plugin action
+   that raises an error is reported as a window notification.
+
+From here:
+
+- `rsimgv.host.call(method, params)` runs the same methods as the remote control server, such as `view.info`,
+  `view.screenshot`, `files.list` and `settings.get`. The methods are listed at the top of `src/services/remote.rs`.
+- Add `contributes.settings` to the manifest for options. Read them from the `config.json` beside
+  `rsimgv.host.config_path()`, as the bundled plugins do.
+- Add `contributes.panels` and `create_panel` for a widget in the sidebar or over the viewer.
+- Do slow work, such as network requests, on a thread, and return to the GTK main thread with
+  `rsimgv.ui.idle_add`. A plugin that blocks stalls the whole window.
+- Use `rsimgv.action_done(result)` if a script driving the app over IPC should wait for the action's result.
+- The bundled plugins in `data/plugins/` are complete examples: LLM Screenshot is the smallest.
+
 ## Discovery
 
 Plugins are directories containing `plugin.yaml`. They are looked for in:
