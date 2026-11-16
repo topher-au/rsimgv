@@ -416,6 +416,16 @@ impl FolderEnd {
     }
 }
 
+/// Every index below `len` but `skip`, in a random order. `below` gives a random number below its argument.
+fn shuffled_others(len: usize, skip: usize, mut below: impl FnMut(usize) -> usize) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..len).filter(|&index| index != skip).collect();
+    // Fisher-Yates: each place takes one of the items not yet placed.
+    for place in (1..order.len()).rev() {
+        order.swap(place, below(place + 1));
+    }
+    order
+}
+
 /// The item a step moves to in the folder: its neighbour or, when looping, the item at the other end.
 fn step_index(index: usize, len: usize, forward: bool, end: FolderEnd) -> Option<usize> {
     neighbour(index, len, forward).or_else(|| (end == FolderEnd::Loop && len > 1).then(|| if forward { 0 } else { len - 1 }))
@@ -548,6 +558,10 @@ mod imp {
         pub(super) slideshow_delay: Cell<u32>,
         /// The wait before auto-advance moves on from the picture shown.
         pub(super) slideshow_timer: RefCell<Option<glib::SourceId>>,
+        /// Whether the slideshow goes through the items in a random order, and the items it has still to show in this pass
+        /// through them, so each is shown once before any is shown again.
+        pub(super) slideshow_shuffle: Cell<bool>,
+        pub(super) shuffle_left: RefCell<Vec<usize>>,
         /// When the wait to move on from the picture shown began.
         pub(super) slideshow_started: Cell<Option<std::time::Instant>>,
         /// What stepping past the first or last item does.
@@ -912,6 +926,7 @@ impl MediaViewer {
         imp.resume_playing.set(false);
         imp.thumbnail_bar.set_paths(&paths);
         imp.paths.replace(paths);
+        imp.shuffle_left.take();
         imp.prefetched.borrow_mut().clear();
         self.load(index);
     }
@@ -1096,6 +1111,8 @@ impl MediaViewer {
         let found = current.as_ref().and_then(|current| paths.iter().position(|path| path == current));
         imp.thumbnail_bar.set_paths(&paths);
         imp.paths.replace(paths);
+        // The places of the items have changed, so the pass through them starts over.
+        imp.shuffle_left.take();
         match found {
             Some(index) => {
                 imp.index.set(index);
@@ -1381,6 +1398,42 @@ impl MediaViewer {
         Some((remaining / total, remaining.ceil() as u32))
     }
 
+    /// Sets whether the slideshow shows the items in a random order.
+    pub fn set_slideshow_shuffle(&self, shuffle: bool) {
+        let imp = self.imp();
+        if imp.slideshow_shuffle.replace(shuffle) != shuffle {
+            imp.shuffle_left.take();
+        }
+    }
+
+    /// Moves the slideshow on: to the next item, or with shuffle on to a random one that has not been shown in this pass
+    /// through the folder. Once every item has been shown, a new pass begins, so the slideshow goes on for as long as it runs.
+    fn advance_slideshow(&self) {
+        let imp = self.imp();
+        if !imp.slideshow_shuffle.get() {
+            self.step(true);
+            return;
+        }
+        let len = imp.paths.borrow().len();
+        let current = imp.index.get();
+        if len < 2 {
+            return;
+        }
+        let next = {
+            let mut left = imp.shuffle_left.borrow_mut();
+            // What was left of the pass may have been shown by stepping since, or no longer be there.
+            left.retain(|&index| index != current && index < len);
+            if left.is_empty() {
+                *left = shuffled_others(len, current, |bound| glib::random_int_range(0, bound as i32) as usize);
+            }
+            left.pop()
+        };
+        if let Some(next) = next {
+            self.delay_next_video();
+            self.load(next);
+        }
+    }
+
     /// Sets how long a picture stays up, in seconds, while a slideshow runs.
     pub fn set_slideshow_delay(&self, seconds: i32) {
         // Every viewer setting is applied again when one changes, so a wait is not restarted unless its length is.
@@ -1412,7 +1465,7 @@ impl MediaViewer {
             let Some(viewer) = weak.upgrade() else { return };
             viewer.imp().slideshow_timer.take();
             viewer.imp().slideshow_started.set(None);
-            viewer.step(true);
+            viewer.advance_slideshow();
         });
         imp.slideshow_timer.replace(Some(source));
         imp.slideshow_started.set(Some(std::time::Instant::now()));
@@ -3035,7 +3088,7 @@ impl MediaViewer {
                     if !media.is_ended() || viewer.imp().repeat.get() || !viewer.imp().auto_advance.get() {
                         return;
                     }
-                    glib::idle_add_local_once(move || viewer.step(true));
+                    glib::idle_add_local_once(move || viewer.advance_slideshow());
                 }
             });
             media.set_loop(imp.repeat.get());
@@ -3487,5 +3540,21 @@ pub(crate) mod tests {
         assert_eq!(nearest_side(500.0, 590.0, 1000, 600), gtk::PositionType::Bottom);
         // 100px from the left of 1000 is nearer, as a share, than 100px from the bottom of 600.
         assert_eq!(nearest_side(100.0, 500.0, 1000, 600), gtk::PositionType::Left);
+    }
+
+    #[test]
+    fn a_shuffled_pass_shows_every_other_item_once() {
+        // Whatever the random numbers are, every item but the one skipped comes up once.
+        for seed in 0..20usize {
+            let mut state = seed;
+            let order = shuffled_others(6, 2, |bound| {
+                state = state.wrapping_mul(31).wrapping_add(7);
+                state % bound
+            });
+            let mut sorted = order.clone();
+            sorted.sort_unstable();
+            assert_eq!(sorted, [0, 1, 3, 4, 5]);
+        }
+        assert!(shuffled_others(1, 0, |_| 0).is_empty());
     }
 }

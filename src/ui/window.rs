@@ -1122,6 +1122,7 @@ impl Window {
         viewer.set_zoom_step(settings.int("image.zoom-step"));
         viewer.set_video_start_delay(settings.int("video.start-delay"));
         viewer.set_slideshow_delay(settings.int("viewer.slideshow-delay"));
+        viewer.set_slideshow_shuffle(settings.boolean("viewer.slideshow-shuffle"));
         viewer.set_expand_limit(settings.int("image.expand-up-to-factor"));
         viewer.set_keep_fit(settings.boolean("image.keep-fit"));
         viewer.set_original_focus(OriginalFocus::from_name(&settings.string("image.original-focus")));
@@ -1366,6 +1367,7 @@ impl Window {
         bound_action(&view, &weak, "pin", |window| window.imp().viewer.toggle_pinned());
         bound_action(&view, &weak, "toggle-thumbnail-bar", |window| window.toggle_setting("viewer.thumbnail-bar.shown"));
         bound_action(&view, &weak, "toggle-slideshow", |window| window.imp().viewer.toggle_auto_advance());
+        bound_action(&view, &weak, "toggle-slideshow-shuffle", |window| window.toggle_setting("viewer.slideshow-shuffle"));
         bound_action(&view, &weak, "toggle-status-bar", |window| window.toggle_setting("viewer.status-bar.shown"));
         bound_action(&view, &weak, "rotate-clockwise", |window| window.imp().viewer.reorient(Orientation::rotated_clockwise));
         bound_action(&view, &weak, "rotate-counter-clockwise", |window| window.imp().viewer.reorient(Orientation::rotated_counter_clockwise));
@@ -3987,7 +3989,7 @@ const WHEEL_VOLUME_STEP: f64 = 5.0;
 const WHEEL_SEEK_STEP: f64 = 5.0;
 
 /// The settings the viewer and the window title are set from, applied again whenever one changes.
-const VIEWER_SETTINGS: [&str; 68] = [
+const VIEWER_SETTINGS: [&str; 69] = [
     "video.crop.enabled",
     "video.crop.method",
     "video.crop.trim",
@@ -4029,6 +4031,7 @@ const VIEWER_SETTINGS: [&str; 68] = [
     "video.seek-overlay.always",
     "viewer.folder-end",
     "viewer.slideshow-delay",
+    "viewer.slideshow-shuffle",
     "image.original-focus",
     "image.unlock-minimum-zoom",
     "image.zoom-step",

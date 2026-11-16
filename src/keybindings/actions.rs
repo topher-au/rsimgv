@@ -619,6 +619,9 @@ pub const ACTIONS: &[ActionInfo] = &[
         name: "view.toggle-slideshow", description: "Run a slideshow, or stop it: show the next item in the folder or the playlist when a video ends or a picture has been up for the slideshow delay.", icon: "media-skip-forward-symbolic", label: "Toggle Slideshow", defaults: &["n"],
     },
     ActionInfo {
+        name: "view.toggle-slideshow-shuffle", description: "Have the slideshow show the items in a random order, each once before any comes round again, or in order again.", icon: "media-playlist-shuffle-symbolic", label: "Toggle Slideshow Shuffle", defaults: &[],
+    },
+    ActionInfo {
         name: "view.toggle-status-bar", description: "Show or hide the status bar under the viewer's item.", icon: "view-continuous-symbolic", label: "Toggle Status Bar", defaults: &[],
     },
     ActionInfo {

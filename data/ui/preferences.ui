@@ -744,6 +744,12 @@
                                     </property>
                                   </object>
                                 </child>
+                                <child>
+                                  <object class="AdwSwitchRow" id="slideshow_shuffle_row">
+                                    <property name="title">Shuffle slideshow</property>
+                                    <property name="subtitle">Shows the folder's items in a random order, each once before any comes round again</property>
+                                  </object>
+                                </child>
                               </object>
                             </child>
                           </object>

@@ -134,6 +134,8 @@ mod imp {
         #[template_child]
         pub slideshow_delay_row: TemplateChild<adw::SpinRow>,
         #[template_child]
+        pub slideshow_shuffle_row: TemplateChild<adw::SwitchRow>,
+        #[template_child]
         pub remember_folder_sort_row: TemplateChild<adw::SwitchRow>,
         #[template_child]
         pub playlist_fetch_row: TemplateChild<adw::SwitchRow>,
@@ -944,6 +946,7 @@ fn bind_switches(settings: &Settings, imp: &imp::PreferencesDialog) {
         ("history.images", &imp.history_images_row),
         ("history.videos", &imp.history_videos_row),
         ("history.count-paused", &imp.history_count_paused_row),
+        ("viewer.slideshow-shuffle", &imp.slideshow_shuffle_row),
         ("history.show-stats", &imp.history_show_stats_row),
     ];
     for (key, row) in switches {
