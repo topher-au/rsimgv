@@ -31,13 +31,17 @@ chmod +x linuxdeploy-x86_64.AppImage linuxdeploy-plugin-gtk.sh
 export APPIMAGE_EXTRACT_AND_RUN=1
 export PATH="$work/tools:$PATH"
 export DEPLOY_GTK_VERSION=4
-# linuxdeploy's bundled strip is too old to read the RELR relocations in current Arch libraries.
-export NO_STRIP=1
 export ARCH=x86_64
 export VERSION=$version
 export LINUXDEPLOY_OUTPUT_VERSION=$version
 
-./linuxdeploy-x86_64.AppImage \
+# linuxdeploy bundles patchelf 0.15 and an old strip, which cannot handle the RELR relocations in current Arch
+# libraries: strip fails on them, and patchelf corrupts them so that the loader segfaults. Swap in the system tools.
+./linuxdeploy-x86_64.AppImage --appimage-extract > /dev/null
+ln -sf "$(command -v patchelf)" squashfs-root/usr/bin/patchelf
+ln -sf "$(command -v strip)" squashfs-root/usr/bin/strip
+
+squashfs-root/AppRun \
   --appdir "$work/AppDir" \
   --plugin gtk \
   --desktop-file "$work/AppDir/usr/share/applications/au.topher.rsimgv.desktop" \
