@@ -30,6 +30,7 @@ use crate::mpv::framing::{CropRect, Framing};
 use super::backdrop::Backdrop;
 use super::media_overlay::{clock, fraction, Frame, MediaOverlay};
 use crate::overlay::{Layout, Trigger, TRIGGERS};
+use super::slideshow_countdown::{Countdown, Style as CountdownStyle};
 use super::thumbnail_bar::ThumbnailBar;
 
 mod timed_settings;
@@ -193,6 +194,8 @@ const BAR_BUFFER: f64 = 32.0;
 
 /// How long, in milliseconds, the thumbnail bar waits after the pointer moves away before it hides.
 const BAR_HIDE_MS: u64 = 2000;
+/// How often the slideshow's countdown is drawn again.
+const COUNTDOWN_TICK_MS: u64 = 50;
 
 /// How long, in milliseconds, the thumbnail bar slides in or out.
 const BAR_SLIDE_MS: u32 = 250;
@@ -548,6 +551,12 @@ mod imp {
         pub(super) slideshow_delay: Cell<u32>,
         /// The wait before auto-advance moves on from the picture shown.
         pub(super) slideshow_timer: RefCell<Option<glib::SourceId>>,
+        /// When the wait to move on from the picture shown began.
+        pub(super) slideshow_started: Cell<Option<std::time::Instant>>,
+        /// Draws the wait's countdown, while it is asked for.
+        pub(super) countdown: Countdown,
+        /// Redraws the countdown as the wait goes on.
+        pub(super) countdown_tick: RefCell<Option<glib::SourceId>>,
         /// What stepping past the first or last item does.
         pub(super) folder_end: Cell<FolderEnd>,
         /// Whether videos are played by libmpv rather than GTK's own media backend.
@@ -801,6 +810,7 @@ mod imp {
             self.bar_revealer.set_transition_duration(BAR_SLIDE_MS);
             self.bar_dock.set_transition_duration(BAR_SLIDE_MS);
             self.overlay.add_overlay(&self.bar_revealer);
+            self.overlay.add_overlay(self.countdown.widget());
             self.pin_button.connect_toggled({
                 let weak = weak.clone();
                 move |button| {
@@ -1109,6 +1119,10 @@ impl MediaViewer {
 
     /// Stops any video and drops the items, so the viewer holds nothing once it is hidden.
     pub fn close(&self) {
+        // Closing the viewer ends the slideshow, so opening it again shows a picture that stays.
+        if self.imp().auto_advance.replace(false) {
+            self.imp().controls.set_auto_advance(false);
+        }
         self.imp().suspended.set(false);
         self.imp().resume_playing.set(false);
         self.release();
@@ -1119,10 +1133,6 @@ impl MediaViewer {
     /// Calls `callback` with the path of a file dropped on the viewer.
     pub fn connect_file_dropped<F: Fn(&Self, &Path) + 'static>(&self, callback: F) -> glib::SignalHandlerId {
         self.connect_local("file-dropped", false, move |values| {
-        // Closing the viewer ends the slideshow, so opening it again shows a picture that stays.
-        if self.imp().auto_advance.replace(false) {
-            self.imp().controls.set_auto_advance(false);
-        }
             let viewer = values[0].get::<MediaViewer>().expect("viewer argument");
             let path = values[1].get::<String>().expect("path argument");
             callback(&viewer, Path::new(&path));
@@ -1381,6 +1391,42 @@ impl MediaViewer {
         if let Some(source) = self.imp().slideshow_timer.take() {
             source.remove();
         }
+        self.imp().slideshow_started.set(None);
+        self.sync_countdown();
+    }
+
+    /// Sets how the time left before the slideshow moves on is shown, if at all.
+    pub fn set_slideshow_countdown(&self, name: &str) {
+        self.imp().countdown.set_style(CountdownStyle::from_name(name));
+        self.sync_countdown();
+    }
+
+    /// Shows the time left in the wait that is running, and keeps it up to date, or hides it when there is no wait or no
+    /// countdown is asked for.
+    fn sync_countdown(&self) {
+        let imp = self.imp();
+        if let Some(source) = imp.countdown_tick.take() {
+            source.remove();
+        }
+        let running = imp.slideshow_started.get().is_some() && imp.countdown.style() != CountdownStyle::None;
+        if !running {
+            imp.countdown.set_wait(None);
+            return;
+        }
+        self.update_countdown();
+        let weak = self.downgrade();
+        let source = glib::timeout_add_local(std::time::Duration::from_millis(COUNTDOWN_TICK_MS), move || {
+            let Some(viewer) = weak.upgrade() else { return glib::ControlFlow::Break };
+            viewer.update_countdown();
+            glib::ControlFlow::Continue
+        });
+        imp.countdown_tick.replace(Some(source));
+    }
+
+    fn update_countdown(&self) {
+        let imp = self.imp();
+        let wait = imp.slideshow_started.get().map(|started| (started.elapsed().as_secs_f64(), f64::from(imp.slideshow_delay.get().max(1))));
+        imp.countdown.set_wait(wait);
     }
 
     /// Starts the wait to move on from the picture shown, over again, if a slideshow runs and a picture is up. A video
@@ -1393,12 +1439,17 @@ impl MediaViewer {
             return;
         }
         let weak = self.downgrade();
-        let source = glib::timeout_add_seconds_local_once(imp.slideshow_delay.get().max(1), move || {
+        let wait = std::time::Duration::from_secs(u64::from(imp.slideshow_delay.get().max(1)));
+        let source = glib::timeout_add_local_once(wait, move || {
             let Some(viewer) = weak.upgrade() else { return };
             viewer.imp().slideshow_timer.take();
+            viewer.imp().slideshow_started.set(None);
+            viewer.sync_countdown();
             viewer.step(true);
         });
         imp.slideshow_timer.replace(Some(source));
+        imp.slideshow_started.set(Some(std::time::Instant::now()));
+        self.sync_countdown();
     }
 
     /// Keeps the controls and the title shown, or lets them hide again.

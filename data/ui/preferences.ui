@@ -744,6 +744,22 @@
                                     </property>
                                   </object>
                                 </child>
+                                <child>
+                                  <object class="AdwComboRow" id="slideshow_countdown_row">
+                                    <property name="title">Slideshow countdown</property>
+                                    <property name="subtitle">How the time left before the slideshow moves on from a picture is shown over it</property>
+                                    <property name="model">
+                                      <object class="GtkStringList">
+                                        <items>
+                                          <item>Not shown</item>
+                                          <item>Bar</item>
+                                          <item>Circle</item>
+                                          <item>Text</item>
+                                        </items>
+                                      </object>
+                                    </property>
+                                  </object>
+                                </child>
                               </object>
                             </child>
                           </object>

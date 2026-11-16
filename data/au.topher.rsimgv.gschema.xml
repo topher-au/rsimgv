@@ -358,6 +358,16 @@
       <default>5</default>
       <summary>How long a picture stays up before the slideshow (auto-advance) moves to the next item, in seconds</summary>
     </key>
+    <key name="slideshow-countdown" type="s">
+      <choices>
+        <choice value="none"/>
+        <choice value="bar"/>
+        <choice value="circle"/>
+        <choice value="text"/>
+      </choices>
+      <default>'none'</default>
+      <summary>How the time left before the slideshow moves on from a picture is shown over it: not at all, as a bar along the bottom, as a circle that empties, or as the seconds left</summary>
+    </key>
   </schema>
   <schema id="au.topher.rsimgv.viewer.status-bar" path="/au/topher/rsimgv/viewer/status-bar/">
     <key name="shown" type="b">
