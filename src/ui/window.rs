@@ -1365,6 +1365,7 @@ impl Window {
         bound_action(&view, &weak, "close", Window::close_viewer);
         bound_action(&view, &weak, "pin", |window| window.imp().viewer.toggle_pinned());
         bound_action(&view, &weak, "toggle-thumbnail-bar", |window| window.toggle_setting("viewer.thumbnail-bar.shown"));
+        bound_action(&view, &weak, "toggle-slideshow", |window| window.imp().viewer.toggle_auto_advance());
         bound_action(&view, &weak, "toggle-status-bar", |window| window.toggle_setting("viewer.status-bar.shown"));
         bound_action(&view, &weak, "rotate-clockwise", |window| window.imp().viewer.reorient(Orientation::rotated_clockwise));
         bound_action(&view, &weak, "rotate-counter-clockwise", |window| window.imp().viewer.reorient(Orientation::rotated_counter_clockwise));
@@ -1409,7 +1410,6 @@ impl Window {
         bound_action(&video, &weak, "timeline-next", |window| window.imp().viewer.timeline_seek(true));
         bound_action(&video, &weak, "set-thumbnail-frame", |window| window.imp().viewer.set_thumbnail_frame());
         bound_action(&video, &weak, "repeat", |window| window.imp().viewer.toggle_repeat());
-        bound_action(&video, &weak, "auto-advance", |window| window.imp().viewer.toggle_auto_advance());
         self.insert_action_group("video", Some(&video));
 
         let image = gio::SimpleActionGroup::new();
