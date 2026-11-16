@@ -52,9 +52,11 @@ deploy_args=(
   --desktop-file "$work/AppDir/usr/share/applications/au.topher.rsimgv.desktop"
   --icon-file "$root/data/icons/hicolor/256x256/apps/au.topher.rsimgv.png"
 )
-# The GTK plugin copies <libdir>/gtk-4.0 unconditionally, but on Arch that
-# directory only exists when a package such as ibus installs modules into it.
-mkdir -p "$(pkg-config --variable=libdir gtk4)/gtk-4.0"
+# The GTK plugin copies these module directories unconditionally, but on Arch
+# they only exist when other packages (ibus, webp-pixbuf-loader, ...) install
+# modules into them, so a bare build container lacks them.
+mkdir -p "$(pkg-config --variable=libdir gtk4)/gtk-4.0" \
+  "$(pkg-config --variable=gdk_pixbuf_moduledir gdk-pixbuf-2.0)"
 squashfs-root/AppRun "${deploy_args[@]}" --plugin gtk
 
 # The plugin's AppRun hook forces GTK_THEME, which makes GTK load its plain Adwaita theme instead of libadwaita's
