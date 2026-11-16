@@ -1,4 +1,4 @@
-# Maintainer: Topher Sheridan <topher@topher.au>
+# Maintainer: Topher Sheridan <topher-au@users.noreply.github.com>
 #
 # Build from the source archive that scripts/dist.sh writes beside this file:
 #   scripts/dist.sh && cd packaging/arch && makepkg -si
