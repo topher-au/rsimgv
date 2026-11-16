@@ -300,6 +300,8 @@ struct CropEdit {
     framing: Framing,
     locked: bool,
     crop: Option<CropRect>,
+    /// The zoom the video had, which is let go while the crop is dragged over the whole picture.
+    zoom: crate::media::zoom::Zoom,
 }
 
 /// The settings changes that save how `orientation` turns and mirrors what is shown.
@@ -1173,7 +1175,8 @@ impl MediaViewer {
             return;
         };
         let initial = stream.crop().map(|rect| CropFraction::from_rect(rect, source)).unwrap_or_else(CropFraction::full);
-        imp.crop_edit.set(Some(CropEdit { framing: imp.framing.get(), locked: stream.crop_locked(), crop: stream.crop() }));
+        imp.crop_edit.set(Some(CropEdit { framing: imp.framing.get(), locked: stream.crop_locked(), crop: stream.crop(), zoom: stream.zoom() }));
+        stream.set_zoom(Default::default());
         self.pause();
         stream.begin_uncrop_preview();
         stream.unlock_crop();
@@ -1224,6 +1227,7 @@ impl MediaViewer {
         let Some(stream) = stream else { return };
         stream.unlock_crop();
         stream.set_framing(state.framing);
+        stream.set_zoom(state.zoom);
         match crop {
             Some(crop) => {
                 let Some(source) = stream.source_size() else { return };

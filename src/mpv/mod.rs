@@ -524,39 +524,35 @@ impl Player {
 
     /// Turns and mirrors the video as `orientation` says, after the upright filter, which has made it upright.
     pub fn set_orientation(&self, orientation: Orientation) {
-        let before = self.orientation.replace(orientation);
-        if before == orientation {
+        if self.orientation.replace(orientation) == orientation {
             return;
         }
-        if before.filter_graph().is_some() {
-            if let Err(err) = self.command(&["vf", "remove", ORIENTATION_FILTER_LABEL]) {
-                eprintln!("rsimgv: mpv: could not remove the orientation filter: {err}");
-            }
-        }
-        if let Some(graph) = orientation.filter_graph() {
-            if let Err(err) = self.command(&["vf", "add", &format!("{ORIENTATION_FILTER_LABEL}:lavfi=[{graph}]")]) {
-                eprintln!("rsimgv: mpv: could not add the orientation filter: {err}");
-            }
-        }
-        // The frame shown already passed the filters, and a paused video would stay that way, so it is decoded again.
-        let _ = self.command(&["seek", "0", "relative+exact"]);
+        self.rebuild_back_filters();
     }
 
-    /// Zooms in on the video as `zoom` says, or shows all of it again.
+    /// Zooms in on the video as `zoom` says, or shows all of it again. The zoom is of the picture as it is shown, so it
+    /// comes after the crop, the aspect and the turn.
     pub fn set_zoom(&self, zoom: Zoom) {
         let zoom = zoom.clamped();
-        let before = self.zoom.replace(zoom);
-        if before == zoom {
+        if self.zoom.replace(zoom) == zoom {
             return;
         }
-        if before.filter_graph().is_some() {
-            if let Err(err) = self.command(&["vf", "remove", ZOOM_FILTER_LABEL]) {
-                eprintln!("rsimgv: mpv: could not remove the zoom filter: {err}");
-            }
+        self.rebuild_back_filters();
+    }
+
+    /// Puts the orientation filter, then the zoom filter, after the crop and the aspect filter that `rebuild_front_filters`
+    /// puts first, in place of any before. Both are put back whenever either changes, so the zoom always comes last of them
+    /// and its window is of the picture as turned.
+    fn rebuild_back_filters(&self) {
+        let labels = [ORIENTATION_FILTER_LABEL, ZOOM_FILTER_LABEL].join(",");
+        if let Err(err) = self.command(&["vf", "remove", &labels]) {
+            eprintln!("rsimgv: mpv: could not remove {labels}: {err}");
         }
-        if let Some(graph) = zoom.filter_graph() {
-            if let Err(err) = self.command(&["vf", "add", &format!("{ZOOM_FILTER_LABEL}:lavfi=[{graph}]")]) {
-                eprintln!("rsimgv: mpv: could not add the zoom filter: {err}");
+        let filters = [(ORIENTATION_FILTER_LABEL, self.orientation.get().filter_graph()), (ZOOM_FILTER_LABEL, self.zoom.get().filter_graph())];
+        for (label, graph) in filters {
+            let Some(graph) = graph else { continue };
+            if let Err(err) = self.command(&["vf", "add", &format!("{label}:lavfi=[{graph}]")]) {
+                eprintln!("rsimgv: mpv: could not add {label}: {err}");
             }
         }
         // The frame shown already passed the filters, and a paused video would stay that way, so it is decoded again.
