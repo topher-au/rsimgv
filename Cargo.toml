@@ -19,7 +19,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 serde_yaml_ng = "0.10"
 futures-channel = "0.3"
-opencv = { version = "0.101", default-features = false, features = ["imgproc"] }
+opencv = { version = "0.102", default-features = false, features = ["imgproc"] }
 rusqlite = "0.41"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 pyo3 = { version = "0.30", features = ["auto-initialize"], optional = true }
