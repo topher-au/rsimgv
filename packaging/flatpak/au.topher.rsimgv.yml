@@ -29,6 +29,10 @@ modules:
   - name: opencv
     buildsystem: cmake-ninja
     builddir: true
+    build-options:
+      env:
+        # OpenCV 4.11's pkg-config helper script declares a CMake minimum that CMake 4 no longer accepts.
+        CMAKE_POLICY_VERSION_MINIMUM: '3.5'
     config-opts:
       - -DCMAKE_BUILD_TYPE=Release
       - -DBUILD_LIST=core,imgproc
