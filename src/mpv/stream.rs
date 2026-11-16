@@ -21,6 +21,7 @@ use super::framing::{self, Backdrop, CropMethod, CropRect, Framing};
 use super::render::FrameImage;
 use super::{config_generation, gl, Event, Player, RenderedFrame};
 use crate::media::orientation::Orientation;
+use crate::media::zoom::Zoom;
 
 /// The ids observed properties are reported under.
 const DURATION: u64 = 1;
@@ -203,6 +204,8 @@ mod imp {
         pub(super) slot: Cell<super::Slot>,
         /// The turn and mirror the user gave the video. The player is shared, so each load sets it again.
         pub(super) orientation: Cell<Orientation>,
+        /// How far the video is zoomed in, and where. The player is shared, so each load sets it again.
+        pub(super) zoom: Cell<Zoom>,
         /// Whether the player has loaded this stream's file, so events from the file before it are ignored.
         pub(super) loaded: Cell<bool>,
         /// The volume the player is given, as a fraction of full, when it is above what the stream's own volume allows.
@@ -913,6 +916,20 @@ impl MpvStream {
         self.imp().orientation.get()
     }
 
+    /// Zooms in on the video as `zoom` says, or shows all of it again.
+    pub fn set_zoom(&self, zoom: Zoom) {
+        let zoom = zoom.clamped();
+        self.imp().zoom.set(zoom);
+        if let Some(player) = self.imp().player.borrow().as_ref() {
+            player.set_zoom(zoom);
+        }
+    }
+
+    /// How far the video is zoomed in, and where.
+    pub fn zoom(&self) -> Zoom {
+        self.imp().zoom.get()
+    }
+
     /// The current frame at the video's own size, captured by mpv, if it is playing for this stream.
     pub fn screenshot(&self) -> Option<gdk::Texture> {
         let player = self.imp().player.borrow().clone()?;
@@ -953,6 +970,7 @@ impl MpvStream {
             let rotation = player.get_i64("video-dec-params/rotate").or_else(|| player.get_i64("current-tracks/video/demux-rotation"));
             player.set_rotation(rotation.unwrap_or(0));
             player.set_orientation(self.imp().orientation.get());
+            player.set_zoom(self.zoom());
         }
     }
 
