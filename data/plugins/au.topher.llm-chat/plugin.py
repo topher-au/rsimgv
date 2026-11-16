@@ -1371,25 +1371,22 @@ class Plugin:
 
         def move_begin(gesture, x, y):
             state.clear()
-            overlay = container.get_parent()
-            if overlay is not None:
-                state["local"] = (x, y)
-                state["pointer"] = self._in_overlay(header, overlay, x, y)
+            pointer = self._pointer_in_overlay(gesture, container.get_parent())
+            if pointer is not None:
+                state["pointer"] = pointer
 
         def move_update(gesture, dx, dy):
-            overlay = container.get_parent()
-            if overlay is None or "pointer" not in state:
+            now = self._pointer_in_overlay(gesture, container.get_parent())
+            if now is None or "pointer" not in state:
                 return
             if "start" not in state:
                 # Anchored on the first movement, so a click that does not drag changes nothing.
                 self._anchor_here(panel)
                 state["start"] = (panel.want["x"], panel.want["y"])
-            px, py = self._in_overlay(header, overlay, state["local"][0] + dx, state["local"][1] + dy)
+            px, py = now
             panel.want["x"] = state["start"][0] + px - state["pointer"][0]
             panel.want["y"] = state["start"][1] + py - state["pointer"][1]
             self._fit_card(panel)
-            # What is shown is the wanted place fitted to the player, which is what the card is dropped at.
-            panel.want["x"], panel.want["y"] = container.get_margin_start(), container.get_margin_top()
 
         def move_end(gesture, dx, dy):
             if "start" in state:
@@ -1421,20 +1418,20 @@ class Plugin:
 
         def begin(gesture, x, y):
             state.clear()
-            overlay = container.get_parent()
-            if overlay is not None:
-                state["local"] = (x, y)
-                state["pointer"] = self._in_overlay(corner, overlay, x, y)
+            pointer = self._pointer_in_overlay(gesture, container.get_parent())
+            if pointer is not None:
+                state["pointer"] = pointer
 
         def update(gesture, dx, dy):
             overlay = container.get_parent()
-            if overlay is None or "pointer" not in state:
+            now = self._pointer_in_overlay(gesture, overlay)
+            if now is None or "pointer" not in state:
                 return
             if "origin" not in state:
                 self._anchor_here(panel)
                 state["origin"] = (panel.want["x"], panel.want["y"])
                 state["size"] = (panel.want["w"], panel.want["h"])
-            px, py = self._in_overlay(corner, overlay, state["local"][0] + dx, state["local"][1] + dy)
+            px, py = now
             moved_x, moved_y = px - state["pointer"][0], py - state["pointer"][1]
             x0, y0 = state["origin"]
             w0, h0 = state["size"]
@@ -1465,11 +1462,33 @@ class Plugin:
 
     @staticmethod
     def _in_overlay(widget, overlay, x, y):
-        """A point of `widget`, in the coordinates of `overlay`, which does not move while the card does."""
+        """A point of `widget`, in the coordinates of `overlay`."""
         point = Graphene.Point()
         point.init(x, y)
         ok, result = widget.compute_point(overlay, point)
         return (result.x, result.y) if ok else (x, y)
+
+    @staticmethod
+    def _pointer_in_overlay(gesture, overlay):
+        """Where the pointer is in the coordinates of `overlay`, or None when that is not known.
+
+        The offsets a drag gesture reports are in the dragged widget's own coordinates, so they change as the card
+        moves under the pointer. The pointer's place in the window does not, and the overlay does not move in it.
+        """
+        if overlay is None:
+            return None
+        native = overlay.get_native()
+        event = gesture.get_last_event(gesture.get_last_updated_sequence())
+        if native is None or event is None:
+            return None
+        ok, x, y = event.get_position()
+        if not ok:
+            return None
+        offset_x, offset_y = native.get_surface_transform()
+        point = Graphene.Point()
+        point.init(x - offset_x, y - offset_y)
+        ok, result = native.compute_point(overlay, point)
+        return (result.x, result.y) if ok else None
 
     def _anchor(self, panel, x, y):
         container = panel.container
@@ -1568,6 +1587,10 @@ class Plugin:
         want = panel.want
         if not want or "x" not in want:
             return
+        # The pointer may have been dragged past an edge; the card is dropped where it is shown, inside the player.
+        container = panel.container
+        width, height = container.get_size_request()
+        want.update(x=container.get_margin_start(), y=container.get_margin_top(), w=width, h=height)
         layout = {key: int(want[key]) for key in ("x", "y", "w", "h")}
         temporary = f"{self._layout_path}.tmp"
         try:
