@@ -1,8 +1,8 @@
 //! Crops, shrinks and re-encodes the pictures the IPC methods return (viewer screenshots and thumbnails).
 //!
 //! The parameters, all optional:
-//!   format     "png" (the default), "jpeg" or "webp"
-//!   quality    1 to 100, 85 by default; ignored for png
+//!   format     "png" (the default) or "jpeg"
+//!   quality    1 to 100, 85 by default; applies to jpeg only
 //!   max_size   the longest side in pixels, from 1 to 8192; a picture already smaller is not enlarged
 //!   crop       {"x", "y", "width", "height"}, each a fraction from 0 to 1 of the picture's full size, measured from
 //!              its top left; the crop is made before the picture is shrunk
@@ -20,7 +20,6 @@ const MAX_DIMENSION: i64 = 8192;
 pub enum Format {
     Png,
     Jpeg,
-    Webp,
 }
 
 impl Format {
@@ -28,7 +27,6 @@ impl Format {
         match self {
             Format::Png => "png",
             Format::Jpeg => "jpeg",
-            Format::Webp => "webp",
         }
     }
 
@@ -36,7 +34,6 @@ impl Format {
         match self {
             Format::Png => "image/png",
             Format::Jpeg => "image/jpeg",
-            Format::Webp => "image/webp",
         }
     }
 }
@@ -77,8 +74,7 @@ impl Options {
             Some(value) => match value.as_str() {
                 Some("png") => Format::Png,
                 Some("jpeg" | "jpg") => Format::Jpeg,
-                Some("webp") => Format::Webp,
-                _ => return Err(invalid("the parameter format must be png, jpeg or webp")),
+                _ => return Err(invalid("the parameter format must be png or jpeg")),
             },
         };
         let quality = match params.get("quality").filter(|value| !value.is_null()) {
@@ -103,19 +99,6 @@ impl Options {
             Some(value) => Some(Crop::from_value(value)?),
         };
         Ok(Self { format, quality, max_size, crop })
-    }
-
-    /// Whether `format` can be written here. WebP needs gdk-pixbuf's WebP loader, which not every system has.
-    fn check_writable(&self) -> Result<(), Error> {
-        let name = self.format.name();
-        let writable = Pixbuf::formats()
-            .iter()
-            .any(|format| format.name().is_some_and(|candidate| candidate == name) && format.is_writable());
-        if writable {
-            Ok(())
-        } else {
-            Err(Error::new("unsupported_format", format!("this system cannot write {name} pictures")))
-        }
     }
 }
 
@@ -157,7 +140,6 @@ pub fn decode(png: &[u8]) -> Result<Pixbuf, Error> {
 
 /// Crops, shrinks and encodes the picture in `png` as `options` ask. A png that needs no change is returned as it is.
 pub fn transcode(png: &[u8], options: &Options) -> Result<Encoded, Error> {
-    options.check_writable()?;
     let mut pixbuf = decode(png)?;
     let mut changed = false;
 
@@ -194,7 +176,6 @@ fn encode(pixbuf: &Pixbuf, options: &Options) -> Result<Vec<u8>, Error> {
     let failed = |err: glib::Error| Error::new("encode_failed", format!("cannot write the {} picture: {err}", options.format.name()));
     match options.format {
         Format::Png => pixbuf.save_to_bufferv("png", &[]).map_err(failed),
-        Format::Webp => pixbuf.save_to_bufferv("webp", &[("quality", quality.as_str())]).map_err(failed),
         Format::Jpeg => flatten(pixbuf)?.save_to_bufferv("jpeg", &[("quality", quality.as_str())]).map_err(failed),
     }
 }

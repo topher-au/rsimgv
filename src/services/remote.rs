@@ -33,8 +33,7 @@
 //!   view.screenshot {"format"?, "quality"?, "max_size"?, "crop"?}
 //!                                            -> {"format", "mime_type", "width", "height", "source_width", "source_height", "data"}
 //!                   The picture or video frame the viewer shows, as base64-encoded PNG at its own size unless asked
-//!                   otherwise. format is png, jpeg or webp; quality (1 to 100, 85 by default) applies to jpeg and
-//!                   webp; max_size limits the longest side, never enlarging; crop is {"x", "y", "width", "height"}
+//!                   otherwise. format is png or jpeg; quality (1 to 100, 85 by default) applies to jpeg; max_size limits the longest side, never enlarging; crop is {"x", "y", "width", "height"}
 //!                   as fractions (0 to 1) of the full picture, made before max_size. width and height are those of
 //!                   the result and source_width and source_height those of the picture before cropping.
 //!   view.info       {}                       -> {"directory", "filename", "position", "duration", "width", "height",
@@ -53,7 +52,7 @@
 //!   messages.dismiss {"id"}                  -> {}   takes a message down; with no id, every message
 //!   thumbnails.get {"paths", "max_size"?, "format"?, "quality"?}
 //!                                            -> {"thumbnails": [{"path", "size", "format", "mime_type", "width", "height", "data"}, ...]}
-//!                   The still thumbnail of each file, as base64-encoded PNG unless format (png, jpeg or webp) and
+//!                   The still thumbnail of each file, as base64-encoded PNG unless format (png or jpeg) and
 //!                   quality (1 to 100) say otherwise, from the thumbnails rsimgv has
 //!                   already made for it: the largest at most max_size pixels across (default 256).
 //!                   "size" is the pixels of the thumbnail given. "data" is null for a file with no thumbnail yet,

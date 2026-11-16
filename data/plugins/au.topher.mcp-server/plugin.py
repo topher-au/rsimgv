@@ -40,10 +40,10 @@ def _obj(properties=None, required=()):
 _STR = {"type": "string"}
 _INT = {"type": "integer"}
 _STRS = {"type": "array", "items": {"type": "string"}}
-_FORMAT = {"type": "string", "enum": ["png", "jpeg", "webp"], "default": "png",
-           "description": "Image format. jpeg and webp are much smaller than png."}
+_FORMAT = {"type": "string", "enum": ["png", "jpeg"], "default": "png",
+           "description": "Image format. jpeg is much smaller than png."}
 _QUALITY = {"type": "integer", "minimum": 1, "maximum": 100, "default": 85,
-            "description": "Quality for jpeg and webp; ignored for png."}
+            "description": "Quality for jpeg; ignored for png."}
 _MAX_SIZE = {"type": "integer", "minimum": 1, "maximum": 8192,
              "description": "Longest side in pixels. Larger pictures are shrunk, smaller ones are not enlarged."}
 _CROP = {"type": "object", "description": "Region to keep, as fractions from 0 to 1 of the full picture, "

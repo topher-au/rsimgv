@@ -41,7 +41,7 @@ Open WebUI calls the server from its backend, so the model needs no access to yo
 
 ## Tools
 
-Most tools map to one host method: `view_info`, `view_screenshot` and `get_thumbnails` (returned as images; both take `format` png, jpeg or webp, `quality`, and `max_size`, and screenshots also take a fractional `crop`), `list_files`,
+Most tools map to one host method: `view_info`, `view_screenshot` and `get_thumbnails` (returned as images; both take `format` png or jpeg, `quality`, and `max_size`, and screenshots also take a fractional `crop`), `list_files`,
 `select_file`, `navigate_*`, `open_tab`, `file_metadata`, `show_message`, `get_setting`, `set_setting` and so on.
 `list_actions` and `run_action` reach every keybound action, such as zoom and playback, and `call_method`
 calls any method listed in `src/services/remote.rs`.
