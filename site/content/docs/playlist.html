@@ -1,0 +1,51 @@
+title: The playlist
+desc: Build a playlist from anywhere in rsimgv, reorder it, shuffle it, save and load M3U, PLS and XSPF files, and play it in the viewer.
+---
+<p class="lead">The playlist is one list of pictures and videos from anywhere, in your own order, kept between runs and shared by the windows. Playing it leaves the folder you are browsing, and the item selected there, as they were.</p>
+
+{{shot playlist-panel "The playlist panel beside the browse view"}}
+
+<h2>Adding and removing items</h2>
+<p>Items in the playlist have a line around them in the browse view. To add or remove them:</p>
+<ul>
+  <li>press <kbd>I</kbd> on the item under the cursor, on the marked items, or in the viewer on the item it shows; pressing it again takes them off</li>
+  <li>right-click an item or folder and choose <strong>Add to Playlist</strong> or <strong>Remove from Playlist</strong></li>
+  <li>drag files onto the playlist panel, or use the remove button on a row there</li>
+</ul>
+<p>A folder stands for the pictures and videos in it and in the folders under it. A file appears once, however many times it is added. Web addresses and files that are not pictures or videos are left out, and you are told how many. The panel's <em>Add</em> menu can also add the current item, choose files, or add a directory.</p>
+
+<h2>Playing it</h2>
+<table>
+<thead><tr><th>Key</th><th>Action</th></tr></thead>
+<tbody>
+<tr><td><kbd>Ctrl</kbd>+<kbd>P</kbd></td><td>Show the playlist in the viewer, from the item it was left on.</td></tr>
+<tr><td><kbd>]</kbd> and <kbd>[</kbd></td><td>Next and previous item, going round the ends. Pressed elsewhere, they show the playlist from the item it was left on.</td></tr>
+<tr><td><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>P</kbd></td><td>Show or hide the playlist panel, on the right opposite the sidebar.</td></tr>
+</tbody>
+</table>
+<p>These can all be rebound, and first item, last item, load, save, clear, shuffle and detach can be given keys, in the keybinding editor. While the viewer shows the playlist, its own previous and next keys, the thumbnail bar and auto-advance go through the playlist too. They stop at its ends, whatever <code>viewer.folder-end</code> says.</p>
+
+<h2>The panel</h2>
+<p>The panel sits beside the browse view on the right, opposite the sidebar, and shows each item's position, name, length and filename in columns you can show, hide, resize and sort by. Drag a column header to sort, or drag rows to reorder them. Right-click a row for Play, Remove, Edit title, Delete from disk, Copy path, Reveal in browser, Open with one of your scripts, and the column toggles.</p>
+<ul>
+  <li><strong>Search</strong> (<kbd>Ctrl</kbd>+<kbd>F</kbd> in the playlist) filters the rows by name.</li>
+  <li><strong>Select several rows</strong> with <kbd>Ctrl</kbd>-click or <kbd>Shift</kbd>-click, and move them together with <kbd>Ctrl</kbd>+<kbd>↑</kbd>, <kbd>Ctrl</kbd>+<kbd>↓</kbd>, <kbd>Ctrl</kbd>+<kbd>Home</kbd> and <kbd>Ctrl</kbd>+<kbd>End</kbd>.</li>
+  <li><strong>Repeat</strong> goes back to the first item after the last, and the other way round (<code>playlist.repeat</code>).</li>
+  <li><strong>Read playlist lengths in the background</strong> (<code>playlist.fetch-in-background</code>) reads each item's duration before it is first played, rather than when it starts.</li>
+  <li>The <strong>detach button</strong> takes the panel out into a window of its own, which keeps working with the playlist and its keys. Its button puts it back, and closing that window does the same. The window's header can be full, compact or none.</li>
+</ul>
+
+<h2>Shuffle and order</h2>
+<p>The shuffle button plays the playlist in a random order, with the item shown first so it keeps playing. The order the items were made in is kept beside it: turning shuffle off goes back to that order, and moving items while shuffled changes only the shuffled order. Adding and removing change both.</p>
+<p>Items that have been played are marked, so the list shows where it has been. Saved playlist files keep the made order, the shuffled order too, which items have been played, and the item shown, in comments and extensions that other players ignore. Exporting a file keeps as much of that state as the format holds: XSPF lists the made order with each item's place in the shuffle, and the other formats write the order the panel shows.</p>
+
+<h2>Files and URLs</h2>
+<p>The panel's buttons load and save M3U and M3U8 (<code>.m3u</code>, <code>.m3u8</code>), PLS (<code>.pls</code>) and XSPF (<code>.xspf</code>) files, and XSPF is the default when a name has no extension. Saved files use absolute paths. Each item keeps its title, and its duration where it is known, in whatever the format holds.</p>
+<p>Loading into a playlist that has items asks whether to replace them or add to the end. Loading from a URL fetches the playlist file and keeps the pictures and videos on this computer; web addresses and other entries are left out. A file listed twice is kept once.</p>
+<p>The playlist is kept as XSPF in <code>playlist.xspf</code> beside the settings file; an older <code>playlist.m3u8</code> is read and moved over the first time the playlist is loaded. See <a href="files.html">Files and folders</a>.</p>
+
+<h2>From another program</h2>
+<p>Other programs can drive the playlist with the <code>win.playlist-*</code> actions over the <a href="remote-control.html#actions">remote control server</a>, and can read or write the playlist file itself. The <code>actions.list</code> method names every playlist action.</p>
+
+<h2>Settings</h2>
+<p>See the <a href="settings.html#playlist">Playlist section of the settings reference</a> for the columns, widths, window header and repeat options.</p>

@@ -1,0 +1,74 @@
+title: Files and folders
+desc: Where rsimgv keeps its configuration, bookmarks, playlist, per-file settings, viewing history, metadata index, thumbnail cache and sockets.
+---
+<p class="lead">rsimgv keeps its data in ordinary files in standard places. Everything it writes is plain text you can read, back up and edit, apart from the SQLite index and the thumbnail cache.</p>
+
+<h2>Configuration: <code>~/.config/rsimgv/</code></h2>
+<p>This is <code>$XDG_CONFIG_HOME/rsimgv</code> if that is set. The settings file can be moved with <code>RSIMGV_CONFIG</code>, and the files below sit beside it.</p>
+<table>
+<thead><tr><th>File</th><th>Holds</th></tr></thead>
+<tbody>
+<tr><td><code>rsimgv.conf</code></td><td>Your <a href="settings.html">settings</a>, as YAML. It also records the folder and file that were open when you last closed the window.</td></tr>
+<tr><td><code>keybindings.yaml</code></td><td>The keys that differ from the defaults. See <a href="keybindings.html#the-bindings-file">the bindings file</a>.</td></tr>
+<tr><td><code>bookmarks.yaml</code></td><td>Your <a href="navigation.html#bookmarks">bookmarked folders</a>, each with a name and a path.</td></tr>
+<tr><td><code>folder_sort.yaml</code></td><td>The sort chosen for each folder, while <em>Remember folder sort settings</em> is on.</td></tr>
+<tr><td><code>playlist.xspf</code></td><td>The <a href="playlist.html">playlist</a>, with its items, their titles and lengths, the made and shuffled orders, which have been played and which was shown. An older <code>playlist.m3u8</code> is read and moved over the first time the playlist is loaded.</td></tr>
+<tr><td><code>file_settings/</code></td><td>Settings for each media file; see below.</td></tr>
+<tr><td><code>mpv/</code></td><td>mpv's own config directory for rsimgv's player: <code>mpv.conf</code> and any scripts. See <a href="video.html#configuring-mpv">Configuring mpv</a>.</td></tr>
+<tr><td><code>plugins/&lt;id&gt;/config.json</code></td><td>The values of the settings a <a href="plugins.html">plugin</a> declares, written by the Plugins page. A plugin can also read a <code>config.yaml</code> in the same folder through <code>rsimgv.host.config_path()</code>.</td></tr>
+</tbody>
+</table>
+<p>The files are written atomically, so a crash or a power cut does not leave a half-written file.</p>
+
+<h3>Folder sorts</h3>
+<pre><code>/home/me/Pictures:
+  by: modified
+  order: descending</code></pre>
+
+<h3 id="per-file-settings">Per-file settings</h3>
+<p>The viewer can keep what you did to a media file: a video's play position, speed, volume and mute state, output aspect ratio, and a picture's or video's turn and mirror, fit mode, zoom and pan. <em>Remembered → File settings</em> chooses which. They are found by the file's <strong>contents</strong>, not its path, so they follow a file that is moved or renamed.</p>
+<p>A file is known by its <em>content hash</em>, 32 lowercase hexadecimal digits made with XXH3-128 over its size, every 64-bit little-endian word in its first and last 64 KiB, and up to eight 64 KiB samples drawn from its middle. Files too small to hold a middle sample are hashed from the first and last chunks alone. Its settings are one YAML file, <code>file_settings/&lt;first character&gt;/&lt;hash&gt;.yaml</code>, with every value at its root:</p>
+<pre><code>position: 93.5
+speed: 1.25
+volume: 0.8
+muted: false
+aspect: "16:9"
+rotation: 90
+mirrored: false</code></pre>
+<p>To forget everything remembered about your files, delete the <code>file_settings</code> folder.</p>
+
+<h2>Data: <code>~/.local/share/rsimgv/</code></h2>
+<p>This is <code>$XDG_DATA_HOME/rsimgv</code> if that is set. <code>RSIMGV_DATA</code> overrides the folder.</p>
+<table>
+<thead><tr><th>File</th><th>Holds</th></tr></thead>
+<tbody>
+<tr><td><code>media-index.sqlite3</code></td><td>The metadata index and the <a href="history.html">viewing history</a>. The index holds each picture's and video's path, modification time, size, content hash, type and the metadata read from it, as linked rows that can be searched across files. The history is a table of its own, keyed by content hash, so clearing the metadata leaves it as it is.</td></tr>
+</tbody>
+</table>
+<p>The database uses SQLite's write-ahead log, so <code>media-index.sqlite3-wal</code> and <code>-shm</code> may sit beside it while rsimgv runs. The index is a cache and can be rebuilt; the viewing history is not, and is lost with the file.</p>
+
+<h2>Thumbnail cache: <code>~/.cache/rsimgv/</code></h2>
+<p>Thumbnails are PNG files in a folder per size (32, 64, 128, 256, 512, 1024 and 2048), filed under the first two characters of their name so no folder holds very many files. Video preview frames are in a <code>frames</code> folder beside them. Thumbnails that have not been made for ninety days are removed in the background when rsimgv starts; one that is needed again is simply made again. The whole folder is safe to delete. To stop using it, turn off <em>Enable thumbnail cache</em> in <em>Performance</em>, and thumbnails then last only as long as they are in memory.</p>
+
+<h2>Sockets</h2>
+<table>
+<thead><tr><th>Path</th><th>What</th></tr></thead>
+<tbody>
+<tr><td><code>$XDG_RUNTIME_DIR/rsimgv.sock</code></td><td>The <a href="remote-control.html">remote control</a> Unix socket, when enabled. Its path can be changed in the preferences.</td></tr>
+<tr><td><code>/tmp/rsimgv-mpv-&lt;pid in hex&gt;</code></td><td>mpv's JSON IPC for the running player. Appears once a video has been opened.</td></tr>
+<tr><td><code>/tmp/com.svpteam.svp</code></td><td>The SVP manager socket that rsimgv serves while <a href="svp.html">SVP</a> is on.</td></tr>
+</tbody>
+</table>
+
+<h2>Installed files</h2>
+<table>
+<thead><tr><th>File</th><th>Installed to</th></tr></thead>
+<tbody>
+<tr><td>The program</td><td><code>&lt;prefix&gt;/bin/rsimgv</code></td></tr>
+<tr><td>GSettings schema</td><td><code>&lt;prefix&gt;/share/glib-2.0/schemas/au.topher.rsimgv.gschema.xml</code></td></tr>
+<tr><td>Desktop entry</td><td><code>&lt;prefix&gt;/share/applications/au.topher.rsimgv.desktop</code></td></tr>
+<tr><td>Icons</td><td><code>&lt;prefix&gt;/share/icons/hicolor/…</code></td></tr>
+<tr><td>Bundled plugins</td><td><code>&lt;prefix&gt;/share/rsimgv/plugins/…</code></td></tr>
+</tbody>
+</table>
+<p>The program embeds its interface, stylesheets and icons in a GResource bundle, so it does not need them installed separately.</p>

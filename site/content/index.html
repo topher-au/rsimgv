@@ -1,0 +1,117 @@
+title: rsimgv
+desc: An integrated file explorer and media viewer for GNOME, written in Rust with GTK 4 and libadwaita.
+layout: home
+---
+<section class="hero">
+  <div class="wrap">
+    <span class="badge">Version 0.1.0 · early development</span>
+    <h1>Browse a library of pictures and videos<br>without leaving the window.</h1>
+    <p class="lead">rsimgv is a file explorer and media viewer for GNOME. A folder tree, a thumbnail grid, a full viewer and a playlist live in one window, steered by keys you can rebind and by a remote control interface you can script.</p>
+    <div class="cta">
+      <a class="btn primary" href="download.html">Get rsimgv</a>
+      <a class="btn" href="docs/index.html">Read the documentation</a>
+    </div>
+    <figure class="shot hero-shot">
+      <a href="assets/screenshots/viewer-image.webp" data-lightbox><img src="assets/screenshots/viewer-image.webp" width="1280" height="800" alt="rsimgv showing a picture with its thumbnail bar and status bar"></a>
+    </figure>
+  </div>
+</section>
+
+<section class="block">
+  <div class="wrap">
+    <h2>One window, the whole library</h2>
+    <p class="sub">Pictures and videos are the point, so the interface is built around moving through them quickly.</p>
+    <div class="cards">
+      <div class="card"><h3>Folder tree and browse grid</h3><p>A tree rooted at <code>/</code> or home expands on demand. The grid shows the current folder as thumbnails, folders first, in natural name order.</p><a class="more" href="docs/browsing.html">Browsing and searching →</a></div>
+      <div class="card"><h3>Search that follows you down</h3><p>Filter a folder by name, size, modified time or type, or search every folder under it with the Subfolders switch.</p><a class="more" href="docs/browsing.html#searching">Searching →</a></div>
+      <div class="card"><h3>A viewer for pictures</h3><p>Fit to window, width, height or fill; zoom, pan, rotate and mirror; bicubic and sharpened scaling made by OpenCV.</p><a class="more" href="docs/viewer.html">The picture viewer →</a></div>
+      <div class="card"><h3>Video with libmpv</h3><p>Playback by libmpv or GStreamer, crop and aspect ratio, a blurred backdrop, a seek display, and positions remembered per file even if you move it.</p><a class="more" href="docs/video.html">Playing video →</a></div>
+      <div class="card"><h3>A playlist from anywhere</h3><p>Collect items from any folder, shuffle and reorder them, save M3U, PLS or XSPF, and detach the panel into its own window.</p><a class="more" href="docs/playlist.html">The playlist →</a></div>
+      <div class="card"><h3>Keybindings in contexts</h3><p>Over 150 actions, each bindable globally or only while browsing, viewing, looking at a picture, watching a video, in the playlist or in the tree. Press F1 to see what is bound where you are.</p><a class="more" href="docs/keybindings.html">Keybindings and mouse →</a></div>
+      <div class="card"><h3>Tabs, bookmarks and history</h3><p>Open folders in tabs, bookmark the places you return to, long-press back or forward to list the history, and see what you have viewed.</p><a class="more" href="docs/navigation.html">Navigation →</a></div>
+      <div class="card"><h3>Plugins</h3><p>Python plugins add actions, menus, events, panels and settings. Bundled plugins describe what the viewer shows, upscale pictures and chat about them.</p><a class="more" href="docs/plugins.html">Plugins →</a></div>
+      <div class="card"><h3>Remote control</h3><p>A JSON interface over a Unix socket, TCP or HTTP lets other programs run actions, read metadata and thumbnails, change settings, and post messages.</p><a class="more" href="docs/remote-control.html">Remote control →</a></div>
+    </div>
+  </div>
+</section>
+
+<section class="block alt">
+  <div class="wrap">
+    <div class="split">
+      <div>
+        <h3>Folders that show what is inside</h3>
+        <p>Turn on folder previews and each folder's icon carries a cascade of its first pictures and videos. Videos play a strip of frames, or an embedded player, while the pointer is over them.</p>
+        <ul>
+          <li>Item size, names and the info line are adjustable</li>
+          <li>Thumbnails are made by a small pool of threads and cached on disk</li>
+          <li>Sort by name, time, size or type, remembered per folder if you like</li>
+        </ul>
+      </div>
+      {{shot folder-previews "Folder previews cascade the pictures inside each folder"}}
+    </div>
+    <div class="split flip">
+      <div>
+        <h3>The viewer stays out of the way</h3>
+        <p>A thumbnail bar floats over the picture from any edge, a status bar shows its position, resolution and size, and the neighbouring pictures are preloaded so stepping is instant.</p>
+        <ul>
+          <li>Step past the end of a folder: stop, loop, or go on to the next folder with media</li>
+          <li>Fit modes, a zoom step you choose, one-to-one focus on the centre, top or pointer</li>
+          <li>A blurred copy of the picture can fill the space around it</li>
+          <li>Turn and mirror a picture without changing the file</li>
+          <li>Run a slideshow, in order or shuffled, with a countdown you can place and style</li>
+        </ul>
+      </div>
+      {{shot viewer-zoom "Zoomed in with the thumbnail bar and status bar showing"}}
+    </div>
+    <div class="split">
+      <div>
+        <h3>Smooth video, if you want it</h3>
+        <p>Skip through a video and a progress bar and the time appear over it. For playback that looks as fluid as it can, rsimgv can interpolate frames with SVP's VapourSynth plugins, built and embedded so SVP itself need not be installed.</p>
+        <ul>
+          <li>Speed, volume, mute, repeat and the slideshow are all actions you can bind</li>
+          <li>Crop black bars or a blurred backdrop, and set an output aspect ratio</li>
+          <li>The overlay's elements, places and styling are settings</li>
+        </ul>
+      </div>
+      {{shot video-viewer "Skipping through a video shows the seek display"}}
+    </div>
+    <div class="split flip">
+      <div>
+        <h3>A playlist that remembers</h3>
+        <p>Collect pictures and videos from anywhere into one list. The made order, the shuffled order, what has been played and where you left off are all kept, in the playlist file and in the formats you export.</p>
+        <ul>
+          <li>Load and save M3U, M3U8, PLS and XSPF</li>
+          <li>Load a playlist from a URL, keeping the files on this computer</li>
+          <li>Detach the panel into its own window</li>
+        </ul>
+      </div>
+      {{shot playlist-panel "The playlist panel beside the browse view"}}
+    </div>
+  </div>
+</section>
+
+<section class="block">
+  <div class="wrap">
+    <h2>Make it yours</h2>
+    <p class="sub">Settings apply the moment you change them, whether from the preferences dialog or from the config file.</p>
+    <div class="gallery">
+      {{shot prefs-viewer "Viewer preferences"}}
+      {{shot prefs-keybindings "The keybinding editor"}}
+      {{shot prefs-overlay "The Overlay page"}}
+    </div>
+    <p><a href="features.html">See every feature with screenshots →</a></p>
+  </div>
+</section>
+
+<section class="block alt">
+  <div class="wrap">
+    <h2>Install</h2>
+    <p class="sub">rsimgv is built from source. Meson drives the build, and an Arch package recipe is included.</p>
+<pre><code>git clone https://git.topher.au/topher/rsimgv.git
+cd rsimgv
+meson setup builddir --prefix=/usr/local
+meson compile -C builddir
+meson install -C builddir</code></pre>
+    <p>You need Rust, Meson, GTK 4.22+, libadwaita 1.9+, libmpv and OpenCV. Python plugin support is built when its dependencies are found, and the SVP plugins are built from source. <a href="docs/getting-started.html">The full list and other ways to build are in Getting started →</a></p>
+  </div>
+</section>
