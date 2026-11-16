@@ -664,6 +664,12 @@ pub const ACTIONS: &[ActionInfo] = &[
         name: "image.fit-original", description: "Show the picture at its own size.", icon: "zoom-original-symbolic", label: "Original Size", defaults: &["4"],
     },
     ActionInfo {
+        name: "image.toggle-upscaled", description: "Switch between the picture and its upscaled copy.", icon: "image-x-generic-symbolic", label: "Toggle Upscaled", defaults: &["u"],
+    },
+    ActionInfo {
+        name: "image.compare-upscaled", description: "Show the upscaled picture beside its original, with a divider to drag between them.", icon: "view-dual-symbolic", label: "Compare Upscaled", defaults: &["shift+u"],
+    },
+    ActionInfo {
         name: "image.pan-up", description: "Move the picture up within the window.", icon: "go-up-symbolic", label: "Pan Up", defaults: &["up"],
     },
     ActionInfo {
@@ -731,6 +737,42 @@ pub const ACTIONS: &[ActionInfo] = &[
     },
     ActionInfo {
         name: "video.lock-crop", description: "Hold the crop the video has now so it stops being detected, or let it be found again.", icon: "changes-prevent-symbolic", label: "Lock Crop", defaults: &[],
+    },
+    ActionInfo {
+        name: "video.zoom-in", description: "Zoom in on the video.", icon: "zoom-in-symbolic", label: "Zoom In Video", defaults: &["shift+equal", "equal"],
+    },
+    ActionInfo {
+        name: "video.zoom-out", description: "Zoom out from the video.", icon: "zoom-out-symbolic", label: "Zoom Out Video", defaults: &["minus"],
+    },
+    ActionInfo {
+        name: "video.zoom-reset", description: "Show all of the video again.", icon: "zoom-fit-best-symbolic", label: "Reset Video Zoom", defaults: &["0"],
+    },
+    ActionInfo {
+        name: "video.pan-left", description: "Move the zoomed part of the video to the left.", icon: "go-previous-symbolic", label: "Pan Video Left", defaults: &["ctrl+shift+left"],
+    },
+    ActionInfo {
+        name: "video.pan-right", description: "Move the zoomed part of the video to the right.", icon: "go-next-symbolic", label: "Pan Video Right", defaults: &["ctrl+shift+right"],
+    },
+    ActionInfo {
+        name: "video.pan-up", description: "Move the zoomed part of the video up.", icon: "go-up-symbolic", label: "Pan Video Up", defaults: &["ctrl+shift+up"],
+    },
+    ActionInfo {
+        name: "video.pan-down", description: "Move the zoomed part of the video down.", icon: "go-down-symbolic", label: "Pan Video Down", defaults: &["ctrl+shift+down"],
+    },
+    ActionInfo {
+        name: "video.timeline-set", description: "From the position on, apply the video's turn, mirror, zoom, crop and speed as they are now, in place of any set for about here.", icon: "document-edit-symbolic", label: "Apply Settings From Here", defaults: &["k"],
+    },
+    ActionInfo {
+        name: "video.timeline-remove", description: "Take away the settings that apply at the position, so the ones before them hold again.", icon: "edit-delete-symbolic", label: "Remove Settings Here", defaults: &["shift+k"],
+    },
+    ActionInfo {
+        name: "video.timeline-clear", description: "Take away every setting set to apply from a time on in the video.", icon: "edit-clear-all-symbolic", label: "Clear Timed Settings", defaults: &["ctrl+shift+k"],
+    },
+    ActionInfo {
+        name: "video.timeline-previous", description: "Skip to the previous time settings apply from.", icon: "media-skip-backward-symbolic", label: "Previous Timed Settings", defaults: &["j"],
+    },
+    ActionInfo {
+        name: "video.timeline-next", description: "Skip to the next time settings apply from.", icon: "media-skip-forward-symbolic", label: "Next Timed Settings", defaults: &["l"],
     },
     ActionInfo {
         name: "video.set-thumbnail-frame", description: "Make the frame the video shows now the one its thumbnail is made from.", icon: "view-grid-symbolic", label: "Set Thumbnail Frame", defaults: &[],

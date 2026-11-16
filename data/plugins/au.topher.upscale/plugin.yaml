@@ -1,0 +1,66 @@
+api: 1
+id: au.topher.upscale
+name: AI Upscale
+version: 0.1.0
+description: Upscale the current picture with an ncnn/Vulkan upscaler such as upscayl-bin.
+runtime: python
+entry: plugin.py
+startup: on-demand
+
+contributes:
+  actions:
+    - id: upscale
+      label: Upscale picture
+      description: Upscale the viewed or selected picture and keep the result for the viewer to show.
+      scope: global
+      default_keys: [ctrl+alt+u]
+  menus:
+    - menu: main
+      label: Upscale picture
+      action: upscale
+  settings:
+    - key: binary
+      label: Upscaler program
+      description: upscayl-bin or realesrgan-ncnn-vulkan, as a name on PATH or a full path.
+      kind: string
+      default: upscayl-bin
+    - key: models_dir
+      label: Models folder
+      description: The folder holding the model .param and .bin files. Empty uses the program's own.
+      kind: string
+      default: ""
+    - key: model
+      label: Model
+      description: The model name, without .param or .bin.
+      kind: string
+      default: realesrgan-x4plus
+    - key: model_scale
+      label: Model scale
+      description: The scale the model was trained for.
+      kind: choice
+      choices: ["2", "3", "4"]
+      default: "4"
+    - key: output_scale
+      label: Output scale
+      description: The final scale. A smaller value than the model scale resamples the result.
+      kind: choice
+      choices: ["2", "3", "4"]
+      default: "4"
+    - key: tile_size
+      label: Tile size
+      description: 0 picks one automatically. Use 32 or more, and lower it if the GPU runs out of memory.
+      kind: int
+      default: 0
+      min: 0
+      max: 4096
+    - key: gpu
+      label: GPU
+      description: A GPU index, or auto.
+      kind: string
+      default: auto
+    - key: timeout_seconds
+      label: Timeout (seconds)
+      kind: int
+      default: 600
+      min: 10
+      max: 7200

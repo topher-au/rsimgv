@@ -18,6 +18,7 @@ use super::image_canvas::{Fit, OriginalFocus, Scaling, PAN_STEP};
 use super::media_controls::SEEK_STEP;
 use super::media_viewer::{side_from_name, FolderEnd, ZoomIndicator, VOLUME_STEP};
 use super::key_handler::ActionKeyHandler;
+use super::menus;
 use super::fs_tree::TreeSnapshot;
 use super::path_bar::OpenTarget;
 use super::{BrowseSearch, BrowseView, FsTree, HeaderBar, MediaViewer, MessageOverlay, NavigationBar, OverlaySplitView, PathBar, PreferencesDialog, ShownItem};
@@ -25,6 +26,7 @@ use super::{CursorMove, Level, Message};
 use super::message_overlay::MessageId;
 use super::keybinds_overlay::KeybindsOverlay;
 use super::playlist_panel::{stamp, PlaylistPanel, SortColumn};
+use crate::media::zoom::ZOOM_STEP;
 use crate::media::orientation::Orientation;
 use crate::fs::metadata::MediaInfo;
 
@@ -67,6 +69,12 @@ mod imp {
         pub bookmarks_list: TemplateChild<gtk::ListBox>,
         #[template_child]
         pub playlist_split: TemplateChild<OverlaySplitView>,
+        /// The sidebar on the end side that holds a plugin's chat, outside the playlist's.
+        #[template_child]
+        pub chat_split: TemplateChild<OverlaySplitView>,
+        /// Where plugin panels in the `browse.sidebar` slot are added.
+        #[template_child]
+        pub chat_panels: TemplateChild<gtk::Box>,
         /// The window the playlist is in while it is taken out of the window, if it is.
         pub(super) playlist_window: RefCell<Option<adw::Window>>,
         /// The header of that window, which its header style setting changes.
@@ -81,6 +89,9 @@ mod imp {
         /// The header's main menu, which gets a section for plugin menu items.
         #[template_child]
         pub menu_button: TemplateChild<gtk::MenuButton>,
+        /// The browse view's sort and view options menu.
+        #[template_child]
+        pub sort_button: TemplateChild<gtk::MenuButton>,
         /// The position of that section, so a reload can remove it before adding a new one.
         pub(super) plugin_menu_section: Cell<Option<u32>>,
         #[template_child]
@@ -346,6 +357,12 @@ impl Window {
         window.add_tab_actions();
         window.add_binding_actions();
         window.add_playlist_actions(settings);
+        // The menus in the template show the shortcuts of their actions, and are rebuilt when the bindings change.
+        for button in [&window.imp().menu_button, &window.imp().sort_button] {
+            if let Some(menu) = button.menu_model().and_then(|model| model.downcast::<gio::Menu>().ok()) {
+                menus::track(&menu);
+            }
+        }
         let keys = ActionKeyHandler::install(&window);
         let _ = window.imp().key_handler.set(keys);
         window.connect_sources();
@@ -353,6 +370,7 @@ impl Window {
         let panel = PlaylistPanel::new(settings);
         let _ = window.imp().playlist_panel.set(panel);
         window.setup_playlist_splits(settings);
+        window.setup_chat_split(settings);
         GtkWindowExt::connect_focus_widget_notify(&window, |window| window.update_context_highlights());
         if settings.boolean("playlist.detached") {
             window.detach_playlist(settings);
@@ -566,9 +584,61 @@ impl Window {
         self.imp().current_path.borrow().clone()
     }
 
+    /// The overlay over the viewer's picture, where plugin panels in the `viewer.overlay` slot are added.
+    pub fn viewer_overlay(&self) -> gtk::Overlay {
+        self.imp().viewer.overlay()
+    }
+
     /// The box at the bottom of the sidebar where plugin panels are added.
     pub fn plugin_panel_host(&self) -> gtk::Box {
         self.imp().plugin_panels.clone()
+    }
+
+    /// The box in the chat sidebar, where plugin panels in the `browse.sidebar` slot are added.
+    pub fn browse_sidebar_host(&self) -> gtk::Box {
+        self.imp().chat_panels.clone()
+    }
+
+    /// Opens the chat sidebar while a panel in it is shown, and closes it when none is, so a plugin that hides its
+    /// panel does not leave an empty sidebar.
+    pub fn update_chat_sidebar(&self) {
+        let imp = self.imp();
+        let mut child = imp.chat_panels.first_child();
+        let mut any = false;
+        while let Some(panel) = child {
+            any |= panel.is_visible();
+            child = panel.next_sibling();
+        }
+        imp.chat_split.set_show_sidebar(any);
+    }
+
+    /// Sets up the chat sidebar: on the end side, wide enough to hold a conversation, and as wide as it was last left.
+    /// Closing it, as clicking outside it does when the window is narrow, hides the panels in it.
+    fn setup_chat_split(&self, settings: &Settings) {
+        let imp = self.imp();
+        let split = (*imp.chat_split).clone();
+        split.set_sidebar_position(gtk::PackType::End);
+        split.set_min_sidebar_width(300);
+        split.set_max_sidebar_width(800);
+        split.set_enable_show_gesture(false);
+        split.set_enable_hide_gesture(false);
+        let width = settings.int("window.chat-width");
+        split.set_user_sidebar_width((width > 0).then_some(width));
+        split.set_show_sidebar(false);
+        split.connect_show_sidebar_changed({
+            let weak = self.downgrade();
+            move |_, shown| {
+                if shown {
+                    return;
+                }
+                let Some(window) = weak.upgrade() else { return };
+                let mut child = window.imp().chat_panels.first_child();
+                while let Some(panel) = child {
+                    panel.set_visible(false);
+                    child = panel.next_sibling();
+                }
+            }
+        });
     }
 
     /// The window's main menu, which plugin items are appended to.
@@ -766,14 +836,10 @@ impl Window {
         let targets = self.context_targets(path);
         let details = gio::Menu::new();
         details.append_item(&item("Copy Path", "win.copy-path"));
-        let properties = gio::MenuItem::new(Some("Properties"), None);
-        properties.set_action_and_target_value(Some("win.show-properties-of"), Some(&targets.to_variant()));
-        details.append_item(&properties);
+        details.append_item(&menus::targeted("Properties", "win.show-properties-of", &targets.to_variant()));
         let playlist_section = gio::Menu::new();
         for (label, action) in playlist_menu_items(path, is_dir, targets.len()) {
-            let item = gio::MenuItem::new(Some(label), None);
-            item.set_action_and_target_value(Some(action), Some(&targets.to_variant()));
-            playlist_section.append_item(&item);
+            playlist_section.append_item(&menus::targeted(label, action, &targets.to_variant()));
         }
         if playlist_section.n_items() > 0 {
             menu.append_section(None, &playlist_section);
@@ -1087,6 +1153,7 @@ impl Window {
             videos: settings.boolean("history.videos"),
             video_seconds: settings.int("history.video-seconds"),
             video_percent: settings.int("history.video-percent"),
+            count_paused: settings.boolean("history.count-paused"),
             show_stats: settings.boolean("history.show-stats"),
         });
         let crop_method = crate::mpv::framing::CropMethod::from_name(&settings.string("video.crop.method"));
@@ -1327,6 +1394,18 @@ impl Window {
         bound_action(&video, &weak, "cycle-aspect", |window| window.cycle_video_aspect());
         bound_action(&video, &weak, "edit-crop", |window| window.imp().viewer.toggle_manual_crop());
         bound_action(&video, &weak, "lock-crop", |window| window.imp().viewer.toggle_crop_lock());
+        bound_action(&video, &weak, "zoom-in", |window| window.imp().viewer.zoom_video(ZOOM_STEP));
+        bound_action(&video, &weak, "zoom-out", |window| window.imp().viewer.zoom_video(1.0 / ZOOM_STEP));
+        bound_action(&video, &weak, "zoom-reset", |window| window.imp().viewer.reset_video_zoom());
+        bound_action(&video, &weak, "pan-left", |window| window.imp().viewer.pan_video(-1.0, 0.0));
+        bound_action(&video, &weak, "pan-right", |window| window.imp().viewer.pan_video(1.0, 0.0));
+        bound_action(&video, &weak, "pan-up", |window| window.imp().viewer.pan_video(0.0, -1.0));
+        bound_action(&video, &weak, "pan-down", |window| window.imp().viewer.pan_video(0.0, 1.0));
+        bound_action(&video, &weak, "timeline-set", |window| window.imp().viewer.timeline_set());
+        bound_action(&video, &weak, "timeline-remove", |window| window.imp().viewer.timeline_remove());
+        bound_action(&video, &weak, "timeline-clear", |window| window.imp().viewer.timeline_clear());
+        bound_action(&video, &weak, "timeline-previous", |window| window.imp().viewer.timeline_seek(false));
+        bound_action(&video, &weak, "timeline-next", |window| window.imp().viewer.timeline_seek(true));
         bound_action(&video, &weak, "set-thumbnail-frame", |window| window.imp().viewer.set_thumbnail_frame());
         bound_action(&video, &weak, "repeat", |window| window.imp().viewer.toggle_repeat());
         bound_action(&video, &weak, "auto-advance", |window| window.imp().viewer.toggle_auto_advance());
@@ -1343,6 +1422,8 @@ impl Window {
         bound_action(&image, &weak, "fit-height", |window| window.imp().viewer.set_fit(Fit::Height));
         bound_action(&image, &weak, "fit-fill", |window| window.imp().viewer.set_fit(Fit::Fill));
         bound_action(&image, &weak, "fit-original", |window| window.imp().viewer.set_fit(Fit::Original));
+        bound_action(&image, &weak, "toggle-upscaled", |window| window.toggle_upscaled());
+        bound_action(&image, &weak, "compare-upscaled", |window| window.compare_upscaled());
         bound_action(&image, &weak, "pan-up", |window| window.imp().viewer.pan(0.0, -PAN_STEP));
         bound_action(&image, &weak, "pan-down", |window| window.imp().viewer.pan(0.0, PAN_STEP));
         bound_action(&image, &weak, "pan-left", |window| window.imp().viewer.pan(-PAN_STEP, 0.0));
@@ -2916,6 +2997,33 @@ impl Window {
         self.imp().viewer.shown_item()
     }
 
+    /// Switches the picture between its original and its upscaled copy, and says which is shown.
+    fn toggle_upscaled(&self) {
+        let text = match self.imp().viewer.toggle_upscaled() {
+            Some(true) => "Showing the upscaled picture",
+            Some(false) => "Showing the original picture",
+            None => "This picture has no upscaled copy",
+        };
+        self.messages().show(Message::notification(text));
+    }
+
+    /// Starts or ends showing the upscaled picture beside its original, and says which.
+    fn compare_upscaled(&self) {
+        let text = match self.imp().viewer.toggle_compare() {
+            Some(true) => "Comparing: original on the left, upscaled on the right. Drag the divider.",
+            Some(false) => "Comparison ended",
+            None => "This picture has no upscaled copy",
+        };
+        self.messages().show(Message::notification(text));
+    }
+
+    /// Shows the viewer's picture again, so that a copy made since it was shown is picked up.
+    pub fn reload_viewer(&self) {
+        if self.viewer_is_open() {
+            self.imp().viewer.reload();
+        }
+    }
+
     /// The overlay that shows messages over the window.
     pub fn messages(&self) -> &MessageOverlay {
         self.imp().messages.get_or_init(|| MessageOverlay::new(&self.imp().message_layer))
@@ -3601,11 +3709,7 @@ impl Window {
             tab_menu.remove_all();
             let Some(id) = page.and_then(tab_id) else { return };
             let target = id.to_variant();
-            let item = |label: &str, action: &str| {
-                let item = gio::MenuItem::new(Some(label), None);
-                item.set_action_and_target_value(Some(action), Some(&target));
-                item
-            };
+            let item = |label: &str, action: &str| menus::targeted(label, action, &target);
             tab_menu.append_item(&item("_Duplicate Tab", "win.tab-duplicate"));
             tab_menu.append_item(&item("Open in New _Window", "win.tab-new-window"));
             tab_menu.append_item(&item("Copy _Path", "win.tab-copy-path"));
@@ -3882,7 +3986,7 @@ const WHEEL_VOLUME_STEP: f64 = 5.0;
 const WHEEL_SEEK_STEP: f64 = 5.0;
 
 /// The settings the viewer and the window title are set from, applied again whenever one changes.
-const VIEWER_SETTINGS: [&str; 66] = [
+const VIEWER_SETTINGS: [&str; 67] = [
     "video.crop.enabled",
     "video.crop.method",
     "video.crop.trim",
@@ -3905,6 +4009,7 @@ const VIEWER_SETTINGS: [&str; 66] = [
     "history.videos",
     "history.video-seconds",
     "history.video-percent",
+    "history.count-paused",
     "history.show-stats",
     "window.sidebar.animations",
     "window.sidebar.animation-ms",
@@ -4052,6 +4157,9 @@ fn save_window_state(window: &Window, settings: &Settings) {
         let _ = settings.set_int("window.height", window.height());
     }
     save_playlist_layout(window, settings);
+    if let Some(width) = window.imp().chat_split.user_sidebar_width() {
+        let _ = settings.set_int("window.chat-width", width);
+    }
 }
 
 /// Saves the playlist's layout: whether it is shown and how wide it is beside the page, and whether it is in a window of
@@ -4836,9 +4944,7 @@ fn valued_action(map: &impl IsA<gio::ActionMap>, window: &glib::WeakRef<Window>,
 /// Adds an action named `name` to `map` that runs `run` on the window, if the window still exists.
 /// A menu item that runs `action` on `path`.
 fn path_menu_item(label: &str, action: &str, path: &Path) -> gio::MenuItem {
-    let item = gio::MenuItem::new(Some(label), None);
-    item.set_action_and_target_value(Some(action), Some(&path.to_string_lossy().into_owned().to_variant()));
-    item
+    menus::targeted(label, action, &path.to_string_lossy().into_owned().to_variant())
 }
 
 /// Pops up `menu` at (`x`, `y`) within `parent`.

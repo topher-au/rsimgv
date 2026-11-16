@@ -89,6 +89,14 @@ impl BindingTable {
         self.bindings(name).iter().map(|binding| binding.chord.clone()).collect()
     }
 
+    /// The binding a menu shows beside `name`: its binding in the action's own context if it has one, else its first.
+    /// `None` if the action is not bound.
+    pub fn shortcut(&self, name: &str) -> Option<&Binding> {
+        let home = all().iter().find(|action| action.name == name).map(|action| action.default_context());
+        let bindings = self.bindings(name);
+        bindings.iter().find(|binding| Some(binding.context) == home).or(bindings.first())
+    }
+
     /// Binds `chord` to `name` in `context`, passing `value`, if the action can be bound in that context, the chord
     /// is valid, and the chord is not already bound to the action. Returns whether it was added.
     #[cfg(test)]
@@ -336,6 +344,15 @@ impl BindingTable {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_menu_shows_the_first_binding_of_its_action() {
+        let table = BindingTable::defaults();
+        assert_eq!(table.shortcut("video.play-pause").map(|binding| binding.chord.as_str()), Some("space"));
+        assert_eq!(table.shortcut("browse.cursor-up").map(|binding| binding.chord.as_str()), Some("up"));
+        assert!(table.shortcut("browse.show-tooltip").is_none(), "an action with no chords shows none");
+        assert!(table.shortcut("no.such-action").is_none());
+    }
 
     #[test]
     fn the_deepest_scope_wins_a_chord() {

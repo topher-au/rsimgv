@@ -200,6 +200,10 @@
       <default>false</default>
       <summary>Whether the window was maximized when it was last closed</summary>
     </key>
+    <key name="chat-width" type="i">
+      <default>-1</default>
+      <summary>Width of a plugin's chat sidebar chosen by dragging, in pixels; -1 uses the default width</summary>
+    </key>
   </schema>
   <schema id="au.topher.rsimgv.window.sidebar" path="/au/topher/rsimgv/window/sidebar/">
     <key name="width" type="i">
@@ -748,6 +752,10 @@
       <range min="1" max="100"/>
       <default>10</default>
       <summary>How much of a video has to play, in the current playback, before it counts as viewed, as a percentage of its length; either this or the seconds below is enough</summary>
+    </key>
+    <key name="count-paused" type="b">
+      <default>true</default>
+      <summary>Keep counting the time watched while a video is paused, as long as the window still has focus</summary>
     </key>
     <key name="show-stats" type="b">
       <default>true</default>

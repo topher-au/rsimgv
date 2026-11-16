@@ -17,6 +17,7 @@ mod keybind_label;
 mod keybinds_overlay;
 mod media_controls;
 mod media_viewer;
+mod menus;
 pub mod message_overlay;
 mod media_overlay;
 mod overlay_editor;

@@ -1,0 +1,275 @@
+api: 1
+id: au.topher.llm-chat
+name: LLM Chat
+version: 0.1.0
+description: A persistent chat in the sidebar that sends the viewed picture or frame, its filename and metadata with every message, with optional voice input and spoken replies.
+runtime: python
+entry: plugin.py
+startup: on-demand
+
+events: [viewer.item_changed]
+
+contributes:
+  actions:
+    - id: toggle-chat
+      label: Show or hide chat
+      description: Show or hide the chat, over the picture in the viewer or in the sidebar otherwise.
+      scope: global
+      default_keys: [ctrl+alt+c]
+    - id: voice-mode
+      label: Start or stop a voice conversation
+      description: Listen for speech, send it to the model, and read the replies aloud.
+      scope: view
+      default_keys: [ctrl+alt+v]
+    - id: clear-chat
+      label: Clear chat
+      description: Delete every message of the chat. Memories are kept.
+      scope: global
+    - id: speak-toggle
+      label: Speak chat replies
+      description: Turn spoken replies on or off.
+      scope: global
+    - id: stop-speaking
+      label: Stop speaking
+      description: Stop the reply being read aloud.
+      scope: global
+  menus:
+    - menu: main
+      label: Show or hide chat
+      action: toggle-chat
+    - menu: main
+      label: Clear chat
+      action: clear-chat
+  panels:
+    - id: chat
+      slot: browse.sidebar
+    - id: viewer-chat
+      slot: viewer.overlay
+      position: top-right
+  settings:
+    - key: base_url
+      label: API base URL
+      description: An OpenAI-compatible endpoint, such as OpenAI, Open WebUI (…/api) or a local server.
+      kind: string
+      default: https://api.openai.com/v1
+    - key: model
+      label: Model
+      description: A vision-capable chat completions model.
+      kind: string
+      default: gpt-4o-mini
+    - key: api_key_env
+      label: API key environment variable
+      description: The variable the key is read from. Leave the variable unset for a server that needs no key.
+      kind: string
+      default: OPENAI_API_KEY
+    - key: system_prompt
+      label: System prompt
+      kind: text
+      default: You are a helpful assistant inside an image and video viewer. Each message comes with the item the user is looking at, its filename and its metadata. Answer about what is shown.
+    - key: send_image
+      label: Send the current picture or frame
+      description: Attach the viewer's picture or video frame to every message.
+      kind: bool
+      default: true
+    - key: send_metadata
+      label: Send the filename and metadata
+      kind: bool
+      default: true
+    - key: stream
+      label: Stream replies
+      description: Show the reply as it arrives. Turn off for a server that does not support streaming.
+      kind: bool
+      default: true
+    - key: history_messages
+      label: Messages kept in context
+      description: How many of the latest messages are sent with each request. Earlier pictures are never resent.
+      kind: int
+      default: 20
+      min: 1
+      max: 200
+    - key: max_tokens
+      label: Maximum response tokens
+      kind: int
+      default: 1000
+      min: 1
+      max: 32768
+    - key: timeout_seconds
+      label: Timeout (seconds)
+      kind: int
+      default: 120
+      min: 5
+      max: 600
+    - key: asr_backend
+      label: Voice input
+      description: "http posts the recording to an OpenAI-compatible /audio/transcriptions endpoint. command runs the program below."
+      kind: choice
+      choices: ["off", "http", "command"]
+      default: "off"
+    - key: asr_url
+      label: Transcription base URL
+      description: Empty uses the API base URL.
+      kind: string
+      default: ""
+    - key: asr_model
+      label: Transcription model
+      kind: string
+      default: whisper-1
+    - key: asr_command
+      label: Transcription command
+      description: "Reads {input}, a 16 kHz mono WAV, and prints the text. For whisper.cpp add -m with a model path."
+      kind: string
+      default: whisper-cli --no-timestamps --no-prints -f {input}
+    - key: record_command
+      label: Recording command
+      description: Records to {output} as WAV until it receives SIGINT.
+      kind: string
+      default: parecord --rate=16000 --channels=1 --file-format=wav {output}
+    - key: auto_send_voice
+      label: Send voice input at once
+      description: Send the transcript as soon as it is ready, rather than leaving it in the message box.
+      kind: bool
+      default: true
+    - key: tts_backend
+      label: Spoken replies
+      description: "http posts the reply to an OpenAI-compatible /audio/speech endpoint. command runs the program below."
+      kind: choice
+      choices: ["off", "http", "command"]
+      default: "off"
+    - key: tts_url
+      label: Speech base URL
+      description: Empty uses the API base URL.
+      kind: string
+      default: ""
+    - key: tts_model
+      label: Speech model
+      kind: string
+      default: tts-1
+    - key: tts_voice
+      label: Voice
+      kind: string
+      default: alloy
+    - key: tts_command
+      label: Speech command
+      description: "Reads the text on standard input and writes audio to {output}. For example: piper --model voice.onnx --output_file {output}"
+      kind: string
+      default: ""
+    - key: play_command
+      label: Playback command
+      description: Plays the audio file {input}.
+      kind: string
+      default: ffplay -nodisp -autoexit -loglevel quiet {input}
+    - key: auto_speak
+      label: Speak every reply
+      description: Read each reply aloud when it finishes. The speaker button in the panel turns it on or off until the plugin reloads.
+      kind: bool
+      default: false
+    - key: voice_prompt
+      label: Voice conversation prompt
+      description: Added to the system prompt while a voice conversation is on, to tell the model its reply will be spoken.
+      kind: text
+      default: "This is a spoken conversation. The user's messages are transcribed from speech, so they may contain mistakes; if one makes no sense, ask briefly what they meant. Your reply will be read aloud by a text-to-speech voice, so answer the way a person talks: short, natural sentences, usually one to three. Use plain text only, with no markdown, lists, tables, code, emoji or web addresses, and spell out anything that would be awkward to hear. Refer to the picture naturally, as if you can both see it."
+    - key: vad_record_command
+      label: Listening command
+      description: Writes raw 16 kHz mono 16-bit little-endian audio to standard output until it is ended.
+      kind: string
+      default: parecord --raw --format=s16le --rate=16000 --channels=1 --latency-msec=30
+    - key: vad_threshold
+      label: Speech loudness threshold
+      description: How loud a sound must be to count as speech, as the RMS of 16-bit samples. The room's noise level is also tracked, so this is a floor. Raise it if background noise starts messages.
+      kind: int
+      default: 400
+      min: 50
+      max: 8000
+    - key: vad_silence_ms
+      label: Pause that ends a message (ms)
+      description: How long you stop talking before the message is sent.
+      kind: int
+      default: 1000
+      min: 200
+      max: 5000
+    - key: temperature
+      label: Temperature
+      description: Sent as temperature. Leave empty to use the server's own.
+      kind: string
+      default: ""
+    - key: top_p
+      label: Top p
+      description: Sent as top_p. Leave empty to use the server's own.
+      kind: string
+      default: ""
+    - key: extra_params
+      label: Extra request parameters
+      description: 'A JSON object merged into every request, for anything else the server takes, such as {"top_k": 40, "seed": 1, "stop": ["###"]}.'
+      kind: text
+      default: ""
+    - key: thinking
+      label: Thinking
+      description: Whether the model may think before it answers. The Think button in the chat changes this too. It matters only when the parameters below are set.
+      kind: bool
+      default: true
+    - key: thinking_on_params
+      label: Parameters for thinking on
+      description: 'A JSON object merged into the request while thinking is on. For example {"reasoning_effort": "high"}, or empty to send nothing.'
+      kind: text
+      default: ""
+    - key: thinking_off_params
+      label: Parameters for thinking off
+      description: 'A JSON object merged into the request while thinking is off. The default suits Qwen3 on vLLM and llama.cpp; OpenAI models take {"reasoning_effort": "low"}.'
+      kind: text
+      default: '{"chat_template_kwargs": {"enable_thinking": false}}'
+    - key: card_opacity
+      label: Viewer card opacity (%)
+      description: How opaque the chat card over the picture is. Only its background changes; the text stays clear.
+      kind: int
+      default: 100
+      min: 20
+      max: 100
+    - key: memory
+      label: Memory
+      description: Let the model keep notes that are shared by every chat. They are sent with each request, and the model saves or forgets one by writing a tag in its reply, which is never shown or spoken.
+      kind: bool
+      default: true
+    - key: memory_limit
+      label: Memories kept
+      description: How many memories are kept. The oldest are dropped when there are more.
+      kind: int
+      default: 100
+      min: 1
+      max: 1000
+    - key: barge_in
+      label: Interrupt replies by speaking
+      description: Keep listening while a reply is read aloud, and stop reading when you speak. Use headphones or an echo-cancelled microphone, or the speakers' sound may interrupt it.
+      kind: bool
+      default: true
+    - key: chat_sidebar
+      label: Show the chat sidebar
+      description: Whether the chat sidebar is open when you are not in the viewer. The show or hide chat action changes this too.
+      kind: bool
+      default: true
+    - key: tools
+      label: Tools
+      description: Let the model call tools, which needs a server that supports function calling. They save memories and control the viewer. Turn off for a server that rejects the tools field; memory then uses tags in the reply.
+      kind: bool
+      default: true
+    - key: tool_viewer
+      label: Viewer tools
+      description: Let the model move between items, zoom, pan, rotate, play, pause, seek, and change speed and volume. Only needs Tools to be on.
+      kind: bool
+      default: true
+    - key: tool_rounds
+      label: Most rounds of tool calls
+      description: How many times the model may call tools for one message before it has to answer.
+      kind: int
+      default: 5
+      min: 1
+      max: 10
+    - key: user_name
+      label: Your name in the chat
+      description: Shown above your messages. Empty shows User.
+      kind: string
+      default: ""
+    - key: quick_commands
+      label: Quick commands
+      description: Do a message that is only a short command, such as next image, show previous, pause, or zoom in, at once without asking the model. Needs Viewer tools.
+      kind: bool
+      default: true

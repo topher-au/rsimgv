@@ -22,6 +22,11 @@ pub fn with_table<R>(f: impl FnOnce(&mut BindingTable) -> R) -> R {
     TABLE.with(|table| f(&mut table.borrow_mut()))
 }
 
+/// The chord a menu shows beside the action `name`, if the action is bound. See `BindingTable::shortcut`.
+pub fn shortcut(name: &str) -> Option<String> {
+    with_table(|table| table.shortcut(name).map(|binding| binding.chord.clone()))
+}
+
 /// The bindings file: `keybindings.yaml` beside the settings file.
 pub fn path() -> PathBuf {
     config_path().with_file_name("keybindings.yaml")

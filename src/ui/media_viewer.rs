@@ -32,6 +32,8 @@ use super::media_overlay::{clock, fraction, Frame, MediaOverlay};
 use crate::overlay::{Layout, Trigger, TRIGGERS};
 use super::thumbnail_bar::ThumbnailBar;
 
+mod timed_settings;
+
 const MICROS: f64 = 1_000_000.0;
 
 /// When the zoom level is shown: always, never, or only once the user has zoomed the picture.
@@ -144,11 +146,25 @@ const DEFAULT_VIDEO_START_DELAY: u64 = 150;
 const PREFETCHED: usize = 2;
 
 /// Decodes the picture at `path` on a worker thread, so the window stays responsive. `None` if it cannot be read.
-async fn decode_picture(path: PathBuf) -> Option<Pixels> {
+/// With `prefer_upscaled`, an upscaled copy of the picture is decoded instead, if there is one. The flag returned is
+/// whether it is the copy that was decoded.
+async fn decode_picture(path: PathBuf, prefer_upscaled: bool) -> Option<(Pixels, bool)> {
     let work = path.clone();
-    let decoded = gio::spawn_blocking(move || Pixels::from_file(&work)).await.ok()?;
+    let decoded = gio::spawn_blocking(move || {
+        if prefer_upscaled {
+            if let Some(copy) = crate::storage::upscaled::find(&work) {
+                match Pixels::from_file(&copy) {
+                    Ok(pixels) => return Ok((pixels, true)),
+                    Err(err) => eprintln!("rsimgv: could not open {}: {err}", copy.display()),
+                }
+            }
+        }
+        Pixels::from_file(&work).map(|pixels| (pixels, false))
+    })
+    .await
+    .ok()?;
     match decoded {
-        Ok(pixels) => Some(pixels),
+        Ok(decoded) => Some(decoded),
         Err(err) => {
             eprintln!("rsimgv: could not open {}: {err}", path.display());
             None
@@ -237,6 +253,8 @@ pub struct HistorySettings {
     pub videos: bool,
     pub video_seconds: i32,
     pub video_percent: i32,
+    /// Whether a paused video keeps adding to its watch time while the window has focus.
+    pub count_paused: bool,
     /// Whether the views and time watched for the item shown are shown in the status bar and overlays.
     pub show_stats: bool,
 }
@@ -250,6 +268,7 @@ impl Default for HistorySettings {
             videos: true,
             video_seconds: 20,
             video_percent: 10,
+            count_paused: true,
             show_stats: true,
         }
     }
@@ -284,6 +303,8 @@ struct CropEdit {
     framing: Framing,
     locked: bool,
     crop: Option<CropRect>,
+    /// The zoom the video had, which is let go while the crop is dragged over the whole picture.
+    zoom: crate::media::zoom::Zoom,
 }
 
 /// The settings changes that save how `orientation` turns and mirrors what is shown.
@@ -486,8 +507,14 @@ mod imp {
         pub(super) index: Cell<usize>,
         /// Whether the pictures either side of the item shown are decoded ahead of time.
         pub(super) preloading: Cell<bool>,
-        /// Pictures decoded ahead of the item shown, with the paths they are of.
-        pub(super) prefetched: RefCell<Vec<(PathBuf, Pixels)>>,
+        /// Pictures decoded ahead of the item shown, with the paths they are of and whether each is an upscaled copy.
+        pub(super) prefetched: RefCell<Vec<(PathBuf, Pixels, bool)>>,
+        /// Whether pictures are shown as they are in their files, though an upscaled copy of them exists.
+        pub(super) prefer_original: Cell<bool>,
+        /// Whether the picture shown is an upscaled copy.
+        pub(super) upscaled_shown: Cell<bool>,
+        /// Whether an upscaled copy is shown beside its original, either side of a divider, for every picture that has one.
+        pub(super) comparing: Cell<bool>,
         /// The settings kept for the item shown: a picture's zoom and pan, a video's position and speed. They are
         /// saved when it is left.
         pub(super) file_settings: RefCell<Option<FileSettings>>,
@@ -579,6 +606,9 @@ mod imp {
         pub(super) seek_landing: Cell<Option<(i64, std::time::Instant)>>,
         /// Whether the last skip went forward.
         pub(super) seek_forward: Cell<bool>,
+        /// The settings the video shown has from set times on, and the time of the one applied last.
+        pub(super) timeline: RefCell<crate::media::timeline::Timeline>,
+        pub(super) timeline_applied: Cell<Option<i64>>,
         /// When the video was last skipped through, for the elements that show for a while after a skip.
         pub(super) changed_at: Cell<[Option<std::time::Instant>; TRIGGERS]>,
         /// What each change an element waits for last read, to tell when it changes, and until when a picture's zoom is
@@ -1148,7 +1178,8 @@ impl MediaViewer {
             return;
         };
         let initial = stream.crop().map(|rect| CropFraction::from_rect(rect, source)).unwrap_or_else(CropFraction::full);
-        imp.crop_edit.set(Some(CropEdit { framing: imp.framing.get(), locked: stream.crop_locked(), crop: stream.crop() }));
+        imp.crop_edit.set(Some(CropEdit { framing: imp.framing.get(), locked: stream.crop_locked(), crop: stream.crop(), zoom: stream.zoom() }));
+        stream.set_zoom(Default::default());
         self.pause();
         stream.begin_uncrop_preview();
         stream.unlock_crop();
@@ -1199,6 +1230,7 @@ impl MediaViewer {
         let Some(stream) = stream else { return };
         stream.unlock_crop();
         stream.set_framing(state.framing);
+        stream.set_zoom(state.zoom);
         match crop {
             Some(crop) => {
                 let Some(source) = stream.source_size() else { return };
@@ -1567,6 +1599,60 @@ impl MediaViewer {
 
     pub fn zoom_out(&self) {
         self.imp().canvas.zoom_out();
+    }
+
+    /// Shows the picture again, so that an upscaled copy made since it was shown is picked up.
+    pub fn reload(&self) {
+        let imp = self.imp();
+        if imp.media.borrow().is_none() {
+            imp.prefetched.borrow_mut().clear();
+            self.load(imp.index.get());
+        }
+    }
+
+    /// Switches between the picture and its upscaled copy, for this and every picture until it is switched back.
+    /// Returns whether the upscaled copy is now the one shown, or `None` when the item shown has no copy to switch to.
+    pub fn toggle_upscaled(&self) -> Option<bool> {
+        let imp = self.imp();
+        if imp.media.borrow().is_some() {
+            return None;
+        }
+        let path = imp.paths.borrow().get(imp.index.get()).cloned()?;
+        crate::storage::upscaled::find(&path)?;
+        imp.prefer_original.set(!imp.prefer_original.get());
+        // Switching pictures is a choice of one of them, so it ends a comparison of the two.
+        imp.comparing.set(false);
+        self.reload();
+        Some(!imp.prefer_original.get())
+    }
+
+    /// Starts or ends showing an upscaled copy beside its original, with a divider to drag between them. It applies to
+    /// each picture that has a copy until it is ended. Returns whether it is now on, or `None` when the item shown has no
+    /// copy to compare with.
+    pub fn toggle_compare(&self) -> Option<bool> {
+        let imp = self.imp();
+        if imp.media.borrow().is_some() {
+            return None;
+        }
+        let path = imp.paths.borrow().get(imp.index.get()).cloned()?;
+        crate::storage::upscaled::find(&path)?;
+        let on = !imp.comparing.get();
+        imp.comparing.set(on);
+        if !on {
+            imp.canvas.set_compare(None);
+        } else if imp.upscaled_shown.get() {
+            self.show_comparison();
+        } else {
+            // The copy is not the picture shown, so it is shown, and the comparison follows it.
+            imp.prefer_original.set(false);
+            self.reload();
+        }
+        Some(on)
+    }
+
+    /// Whether the picture shown is an upscaled copy.
+    pub fn shows_upscaled(&self) -> bool {
+        self.imp().upscaled_shown.get()
     }
 
     /// Fits the picture shown in a fit mode.
@@ -2478,7 +2564,13 @@ impl MediaViewer {
                     return;
                 }
                 let position = media.timestamp() as f64 / MICROS;
-                if media.is_playing() {
+                let playing = media.is_playing();
+                // A paused video only counts while the window has focus, so one left open behind other windows does
+                // not keep adding time.
+                if !playing && settings.count_paused && self.window_has_focus() {
+                    session.seconds += delta;
+                }
+                if playing {
                     session.seconds += delta;
                     // Only the part that played counts, not a jump made by seeking.
                     if let Some(last) = session.last_position {
@@ -2513,6 +2605,11 @@ impl MediaViewer {
         }
         imp.watch_session.set(session);
         self.refresh_watch_stats();
+    }
+
+    /// Whether the window the viewer is in is the one with focus.
+    fn window_has_focus(&self) -> bool {
+        self.root().and_downcast::<gtk::Window>().is_some_and(|window| window.is_active())
     }
 
     /// Marks the item shown as viewed, as a video that has reached its end is, whatever part of it was watched.
@@ -2822,6 +2919,16 @@ impl MediaViewer {
                     stream.set_speed(speed);
                     stream.set_framing(imp.framing.get());
                     stream.set_aspect(output_aspect);
+                    self.load_timeline(settings.as_ref());
+                    // The keyframe the video has reached applies as it plays or is skipped to.
+                    stream.connect_notify_local(Some("timestamp"), {
+                        let weak = self.downgrade();
+                        move |_, _| {
+                            if let Some(viewer) = weak.upgrade() {
+                                viewer.follow_timeline();
+                            }
+                        }
+                    });
                     if let Some(crop) = settings.as_ref().and_then(saved_crop) {
                         if let Some(crops) = VideoCrops::shared() {
                             let _ = crops.set(&path, crop);
@@ -2945,26 +3052,28 @@ impl MediaViewer {
         let imp = self.imp();
         let ahead = {
             let mut prefetched = imp.prefetched.borrow_mut();
-            prefetched.iter().position(|(ahead, _)| ahead == path).map(|position| prefetched.remove(position).1)
+            prefetched.iter().position(|(ahead, _, _)| ahead == path).map(|position| prefetched.remove(position))
         };
-        if let Some(pixels) = ahead {
-            self.set_picture(&pixels, placement, orientation);
+        if let Some((_, pixels, upscaled)) = ahead {
+            self.set_picture(&pixels, upscaled, placement, orientation);
             return;
         }
+        let prefer_upscaled = !imp.prefer_original.get();
         let weak = self.downgrade();
         let path = path.to_path_buf();
         glib::spawn_future_local(async move {
-            let Some(pixels) = decode_picture(path).await else { return };
+            let Some((pixels, upscaled)) = decode_picture(path, prefer_upscaled).await else { return };
             let Some(viewer) = weak.upgrade() else { return };
             if viewer.imp().index.get() == index && viewer.imp().media.borrow().is_none() {
-                viewer.set_picture(&pixels, placement, orientation);
+                viewer.set_picture(&pixels, upscaled, placement, orientation);
             }
         });
     }
 
     /// Puts the decoded picture on the canvas, at the placement it was left at.
-    fn set_picture(&self, pixels: &Pixels, placement: Option<Placement>, orientation: Option<Orientation>) {
+    fn set_picture(&self, pixels: &Pixels, upscaled: bool, placement: Option<Placement>, orientation: Option<Orientation>) {
         let imp = self.imp();
+        imp.upscaled_shown.set(upscaled);
         imp.canvas.set_texture(Some(pixels.texture()));
         // The zoom settles as the picture is first laid out, which is no change of the user's.
         imp.zoom_settles.set(Some(std::time::Instant::now() + std::time::Duration::from_millis(500)));
@@ -2975,8 +3084,28 @@ impl MediaViewer {
         if let Some(placement) = placement {
             imp.canvas.restore(placement);
         }
+        if imp.comparing.get() && upscaled {
+            self.show_comparison();
+        }
         self.update_zoom_indicator();
         self.begin_watch_session();
+    }
+
+    /// Decodes the original of the upscaled picture shown, and puts it on the canvas beside the copy.
+    fn show_comparison(&self) {
+        let imp = self.imp();
+        let index = imp.index.get();
+        let Some(path) = imp.paths.borrow().get(index).cloned() else { return };
+        let weak = self.downgrade();
+        glib::spawn_future_local(async move {
+            let Some((pixels, _)) = decode_picture(path, false).await else { return };
+            let Some(viewer) = weak.upgrade() else { return };
+            let imp = viewer.imp();
+            // Not shown if the picture has changed, or the comparison was turned off, while it was decoded.
+            if imp.index.get() == index && imp.comparing.get() && imp.upscaled_shown.get() && imp.media.borrow().is_none() {
+                imp.canvas.set_compare(Some(pixels.texture()));
+            }
+        });
     }
 
     /// Decodes the pictures either side of the item at `index`, so that stepping to them shows them at once.
@@ -2995,10 +3124,11 @@ impl MediaViewer {
             .filter(|path| !is_video(path))
             .collect();
         drop(paths);
+        let prefer_upscaled = !imp.prefer_original.get();
         for path in ahead {
             let weak = self.downgrade();
             glib::spawn_future_local(async move {
-                let Some(pixels) = decode_picture(path.clone()).await else { return };
+                let Some((pixels, upscaled)) = decode_picture(path.clone(), prefer_upscaled).await else { return };
                 let Some(viewer) = weak.upgrade() else { return };
                 // Turned off while this was being decoded.
                 if !viewer.imp().preloading.get() {
@@ -3008,7 +3138,7 @@ impl MediaViewer {
                 if prefetched.len() >= PREFETCHED {
                     prefetched.remove(0);
                 }
-                prefetched.push((path, pixels));
+                prefetched.push((path, pixels, upscaled));
             });
         }
     }

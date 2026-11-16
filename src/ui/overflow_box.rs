@@ -11,6 +11,8 @@ use gtk::gsk;
 use gtk::prelude::*;
 use gtk::subclass::prelude::*;
 
+use super::menus;
+
 /// A button in the box, with its width when it was last measured and its entry in the overflow menu.
 struct Item {
     widget: gtk::Widget,
@@ -73,6 +75,7 @@ mod imp {
             let obj = self.obj();
 
             let menu = gio::Menu::new();
+            menus::track(&menu);
             let overflow = gtk::MenuButton::new();
             overflow.set_icon_name("view-more-symbolic");
             overflow.set_tooltip_text(Some("More actions"));
@@ -209,7 +212,7 @@ impl OverflowBox {
                 if label.is_empty() { "Action".to_owned() } else { label }
             });
         let entry = match button.action_name() {
-            Some(action) => gio::MenuItem::new(Some(&label), Some(&action)),
+            Some(action) => menus::item(&label, &action),
             None => self.click_entry(label, button.clone().upcast()),
         };
         self.add_item(button, entry);

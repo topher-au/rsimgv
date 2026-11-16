@@ -60,7 +60,12 @@ contributes:
 - `api` must be `1`.
 - Plugin ids may contain lowercase letters, digits, dots and hyphens.
 - Action names become `plugin.<id>.<action>` and can be bound in the keybinding editor.
-- Panel slots: `sidebar.bottom`, `browse.header`, `viewer.overlay`, `preferences.plugins`.
+- Panel slots: `sidebar.bottom`, `browse.sidebar`, `browse.header`, `viewer.overlay`, `preferences.plugins`. Only
+  `sidebar.bottom`, `browse.sidebar` and `viewer.overlay` are built so far. A `browse.sidebar` panel is in a
+  sidebar on the right of the browse view, outside the playlist's, whose width can be dragged. The sidebar is
+  open while a panel in it is shown, so a plugin shows or hides its panel with `container.set_visible`. A `viewer.overlay` panel is a card over the viewer's picture, in the
+  corner given by `position` (`top-left`, `top-right`, `bottom-left` or `bottom-right`; `top-right` by default).
+  The plugin sizes it and can hide it with `container.set_visible`.
 - Setting kinds: `string`, `text`, `int`, `bool`, `choice`. Settings are written to the plugin's own
   `config.json` and shown on the Plugins page. `choice` settings also take `choices`; `int` settings can
   take `min` and `max`.
@@ -140,6 +145,22 @@ Configuration is on the Plugins page or in
 The API key is read from the environment variable named by `api_key_env`; it is never stored in the config
 file. Open a picture or video in the viewer and press `Ctrl+Alt+L`, or choose **Analyze with LLM** from the
 main menu. The description appears in a persistent overlay notification and the sidebar panel.
+
+## Bundled AI Upscale plugin
+
+`au.topher.upscale` runs an ncnn/Vulkan upscaler (`upscayl-bin` or `realesrgan-ncnn-vulkan`) on the viewed or
+selected picture and keeps the result in rsimgv's data folder, where the viewer shows it in place of the
+original. Press `Ctrl+Alt+U` or choose **Upscale picture** from the main menu, and `U` in the viewer to switch
+between the original and the upscaled copy, or `Shift+U` to compare them either side of a draggable divider. See the plugin's README for requirements and settings.
+
+## Bundled LLM Chat plugin
+
+`au.topher.llm-chat` adds a persistent chat to the sidebar, and over the picture in the viewer (`Ctrl+Alt+C` shows or hides it). Each message is sent to an OpenAI-compatible
+vision model with the viewer's current picture or frame, its filename and its metadata. Replies are shown as markdown with the model's reasoning, and can be read aloud. The model can use tools to keep
+memories and to control the viewer (zoom, next and previous, play and pause). Voice input and
+spoken replies can use an HTTP endpoint or a local program such as `whisper-cli` or `piper`, and a hands-free
+voice conversation listens for speech, sends it and speaks the reply (`Ctrl+Alt+V`). See the
+plugin's README for settings.
 
 ## Limits
 

@@ -187,6 +187,22 @@ pub fn handle(window: &Window, method: &str, params: &Value) -> Result<Value, Er
                 "data": glib::base64_encode(&png).as_str(),
             }))
         }
+        "upscaled.path" => {
+            let original = match optional_text(params, "path")? {
+                Some(path) => PathBuf::from(path),
+                None => window
+                    .viewer_item()
+                    .map(|item| item.path)
+                    .ok_or_else(|| Error::new("no_media", "the viewer is not open"))?,
+            };
+            let copy = crate::storage::upscaled::path_for(&original)
+                .map_err(|err| Error::new("unreadable", format!("cannot read {}: {err}", original.display())))?;
+            Ok(json!({"path": copy.to_string_lossy(), "exists": copy.is_file()}))
+        }
+        "view.reload" => {
+            window.reload_viewer();
+            Ok(json!({}))
+        }
         "thumbnails.get" => {
             let size = match params.get("max_size").filter(|size| !size.is_null()) {
                 None => 256,

@@ -28,6 +28,7 @@ use gtk::gio;
 use gtk::gio::prelude::*;
 
 use crate::media::orientation::Orientation;
+use crate::media::zoom::Zoom;
 use render::{RenderGate, RenderThread};
 
 /// An event from the player, as `Player::next_event` reports it.
@@ -256,6 +257,9 @@ const UPRIGHT_FILTER_LABEL: &str = "@rsimgv-upright";
 /// The label of the filter that turns and mirrors the video as the user asked.
 const ORIENTATION_FILTER_LABEL: &str = "@rsimgv-orientation";
 
+/// The label of the filter that crops a window of the video out to zoom in on it.
+const ZOOM_FILTER_LABEL: &str = "@rsimgv-zoom";
+
 /// The filter that turns upright a video stored `rotation` degrees clockwise of how it should be shown, if it needs
 /// one.
 fn upright_filter(rotation: i64) -> Option<String> {
@@ -381,6 +385,8 @@ pub struct Player {
     rotation: Cell<i64>,
     /// The turn and mirror the user gave the video, which the orientation filter applies.
     orientation: Cell<Orientation>,
+    /// How far the video is zoomed in, and where, which the zoom filter applies.
+    zoom: Cell<Zoom>,
     /// The filter that `set_interpolation_filter` last put in the chain.
     interpolation: std::cell::RefCell<Option<String>>,
     /// The crop filter and the detector that finds where to crop, and the aspect filter after the crop, that
@@ -418,7 +424,7 @@ impl Player {
             if handle.is_null() {
                 return Err("could not create the mpv player".to_owned());
             }
-            let mut player = Self { id: NEXT_PLAYER_ID.fetch_add(1, Ordering::Relaxed), handle, render: std::ptr::null_mut(), gl, gl_backdrop: RefCell::default(), renderer: None, wakeup: None, rotation: Cell::new(0), orientation: Cell::new(Orientation::default()), interpolation: Default::default(), crop: Cell::new(None), detector: Cell::new(false), aspect: RefCell::default(), gate: Arc::default(), rotation_checks: Cell::new(0), ipc };
+            let mut player = Self { id: NEXT_PLAYER_ID.fetch_add(1, Ordering::Relaxed), handle, render: std::ptr::null_mut(), gl, gl_backdrop: RefCell::default(), renderer: None, wakeup: None, rotation: Cell::new(0), orientation: Cell::new(Orientation::default()), zoom: Cell::new(Zoom::default()), interpolation: Default::default(), crop: Cell::new(None), detector: Cell::new(false), aspect: RefCell::default(), gate: Arc::default(), rotation_checks: Cell::new(0), ipc };
             for (name, value) in [
                 ("vo", "libmpv"),
                 // The software renderer has no way to share a hardware decoder's surfaces, and the turn, crop and interpolation
@@ -518,18 +524,35 @@ impl Player {
 
     /// Turns and mirrors the video as `orientation` says, after the upright filter, which has made it upright.
     pub fn set_orientation(&self, orientation: Orientation) {
-        let before = self.orientation.replace(orientation);
-        if before == orientation {
+        if self.orientation.replace(orientation) == orientation {
             return;
         }
-        if before.filter_graph().is_some() {
-            if let Err(err) = self.command(&["vf", "remove", ORIENTATION_FILTER_LABEL]) {
-                eprintln!("rsimgv: mpv: could not remove the orientation filter: {err}");
-            }
+        self.rebuild_back_filters();
+    }
+
+    /// Zooms in on the video as `zoom` says, or shows all of it again. The zoom is of the picture as it is shown, so it
+    /// comes after the crop, the aspect and the turn.
+    pub fn set_zoom(&self, zoom: Zoom) {
+        let zoom = zoom.clamped();
+        if self.zoom.replace(zoom) == zoom {
+            return;
         }
-        if let Some(graph) = orientation.filter_graph() {
-            if let Err(err) = self.command(&["vf", "add", &format!("{ORIENTATION_FILTER_LABEL}:lavfi=[{graph}]")]) {
-                eprintln!("rsimgv: mpv: could not add the orientation filter: {err}");
+        self.rebuild_back_filters();
+    }
+
+    /// Puts the orientation filter, then the zoom filter, after the crop and the aspect filter that `rebuild_front_filters`
+    /// puts first, in place of any before. Both are put back whenever either changes, so the zoom always comes last of them
+    /// and its window is of the picture as turned.
+    fn rebuild_back_filters(&self) {
+        let labels = [ORIENTATION_FILTER_LABEL, ZOOM_FILTER_LABEL].join(",");
+        if let Err(err) = self.command(&["vf", "remove", &labels]) {
+            eprintln!("rsimgv: mpv: could not remove {labels}: {err}");
+        }
+        let filters = [(ORIENTATION_FILTER_LABEL, self.orientation.get().filter_graph()), (ZOOM_FILTER_LABEL, self.zoom.get().filter_graph())];
+        for (label, graph) in filters {
+            let Some(graph) = graph else { continue };
+            if let Err(err) = self.command(&["vf", "add", &format!("{label}:lavfi=[{graph}]")]) {
+                eprintln!("rsimgv: mpv: could not add {label}: {err}");
             }
         }
         // The frame shown already passed the filters, and a paused video would stay that way, so it is decoded again.

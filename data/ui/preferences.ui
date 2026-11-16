@@ -235,6 +235,12 @@
                                   </object>
                                 </child>
                                 <child>
+                                  <object class="AdwSwitchRow" id="history_count_paused_row">
+                                    <property name="title">Count paused videos</property>
+                                    <property name="subtitle">Keeps adding to a video's watch time while it is paused, as long as the window has focus</property>
+                                  </object>
+                                </child>
+                                <child>
                                   <object class="AdwSwitchRow" id="history_show_stats_row">
                                     <property name="title">Show views and watch time</property>
                                     <property name="subtitle">In the viewer's status bar and overlays</property>

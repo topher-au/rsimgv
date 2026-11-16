@@ -12,6 +12,9 @@ use gtk::{gdk, gio, glib, graphene, gsk};
 use crate::media::orientation::Orientation;
 use crate::media::resample::{self, Picture, Quality};
 
+/// How near, in pixels, a drag must start to the comparison's divider to move it.
+const DIVIDER_GRAB: f64 = 16.0;
+
 /// How much one zoom step changes the scale.
 const DEFAULT_ZOOM_STEP: f64 = 1.25;
 /// The smallest and largest scale the zoom reaches, relative to the picture's own size.
@@ -247,6 +250,15 @@ mod imp {
         pub(super) smooth_upscaling: Cell<bool>,
         /// Whether zooming and panning ease to their new place, rather than jumping there.
         pub(super) smooth_scrolling: Cell<bool>,
+        /// A second picture of the same scene, as the file has it, that is drawn on the left of a divider in place of
+        /// the picture, and the same turned and mirrored as the picture is.
+        pub(super) compare_original: RefCell<Option<gdk::Texture>>,
+        pub(super) compare: RefCell<Option<gdk::Texture>>,
+        /// Where the divider is across the view, from 0 at its left edge to 1 at its right.
+        pub(super) split: Cell<f64>,
+        /// Whether the drag under way moves the divider rather than the picture, and where the divider was when it began.
+        pub(super) dragging_split: Cell<bool>,
+        pub(super) split_drag_start: Cell<f64>,
     }
 
     #[glib::object_subclass]
@@ -275,14 +287,23 @@ mod imp {
             // A zoomed or panned picture is drawn past the canvas, so clip it to keep it off its neighbours.
             self.obj().set_overflow(gtk::Overflow::Hidden);
             self.zoom.set(1.0);
+            self.split.set(0.5);
             let obj = self.obj();
             let drag = gtk::GestureDrag::new();
             drag.connect_drag_begin({
                 let weak = obj.downgrade();
-                move |_, _, _| {
+                move |_, start_x, _| {
                     if let Some(canvas) = weak.upgrade() {
-                        canvas.imp().drag_start.set(canvas.imp().offset.get());
-                        canvas.imp().dragging.set(true);
+                        let imp = canvas.imp();
+                        // A drag that starts on the divider moves it, and any other moves the picture as usual.
+                        let divider = imp.split.get() * canvas.view_size().0;
+                        if imp.compare.borrow().is_some() && (start_x - divider).abs() <= DIVIDER_GRAB {
+                            imp.dragging_split.set(true);
+                            imp.split_drag_start.set(divider);
+                            return;
+                        }
+                        imp.drag_start.set(imp.offset.get());
+                        imp.dragging.set(true);
                     }
                 }
             });
@@ -290,6 +311,12 @@ mod imp {
                 let weak = obj.downgrade();
                 move |_, dx, dy| {
                     if let Some(canvas) = weak.upgrade() {
+                        if canvas.imp().dragging_split.get() {
+                            let width = canvas.view_size().0.max(1.0);
+                            canvas.imp().split.set(((canvas.imp().split_drag_start.get() + dx) / width).clamp(0.0, 1.0));
+                            canvas.queue_draw();
+                            return;
+                        }
                         let (x, y) = canvas.imp().drag_start.get();
                         // A drag follows the pointer exactly, so it is not eased.
                         canvas.imp().offset.set((x + dx, y + dy));
@@ -301,6 +328,7 @@ mod imp {
                 let weak = obj.downgrade();
                 move |_, _, _| {
                     if let Some(canvas) = weak.upgrade() {
+                        canvas.imp().dragging_split.set(false);
                         canvas.imp().dragging.set(false);
                         canvas.queue_draw();
                     }
@@ -366,6 +394,11 @@ mod imp {
                 canvas.ease();
             }
             let Some((x, y, width, height)) = canvas.placed(view) else { return };
+            let compare = self.compare.borrow().clone();
+            if let Some(compare) = compare {
+                canvas.draw_compared(snapshot, &texture, &compare, (x, y, width, height), view.scale);
+                return;
+            }
             if canvas.draw_resampled(snapshot, view, view == target) {
                 return;
             }
@@ -373,6 +406,17 @@ mod imp {
             snapshot.append_scaled_texture(&texture, filter, &graphene::Rect::new(x as f32, y as f32, width as f32, height as f32));
         }
     }
+}
+
+/// `texture` turned and mirrored as `orientation` says.
+fn oriented_texture(texture: &gdk::Texture, orientation: Orientation) -> gdk::Texture {
+    if orientation.is_identity() {
+        return texture.clone();
+    }
+    let picture = texture_picture(texture);
+    let (width, height) = orientation.oriented_size(picture.width, picture.height);
+    let bytes = glib::Bytes::from_owned(orientation.apply(&picture.pixels, picture.width, picture.height));
+    gdk::MemoryTexture::new(width, height, gdk::MemoryFormat::R8g8b8a8Premultiplied, &bytes, width as usize * 4).upcast()
 }
 
 /// The pixels of `texture`, as premultiplied RGBA with no padding between rows.
@@ -412,6 +456,8 @@ impl ImageCanvas {
         let fit = if imp.keep_fit.get() { imp.last_fit.get().unwrap_or(default) } else { default };
         imp.fit.set(Some(fit));
         imp.original.replace(texture.clone());
+        imp.compare_original.take();
+        imp.compare.take();
         imp.orientation.set(Orientation::default());
         imp.texture.replace(texture);
         imp.serial.set(imp.serial.get() + 1);
@@ -429,20 +475,26 @@ impl ImageCanvas {
         if imp.orientation.replace(orientation) == orientation {
             return;
         }
-        let texture = if orientation.is_identity() {
-            original
-        } else {
-            let picture = texture_picture(&original);
-            let (width, height) = orientation.oriented_size(picture.width, picture.height);
-            let bytes = glib::Bytes::from_owned(orientation.apply(&picture.pixels, picture.width, picture.height));
-            gdk::MemoryTexture::new(width, height, gdk::MemoryFormat::R8g8b8a8Premultiplied, &bytes, width as usize * 4).upcast()
-        };
-        imp.texture.replace(Some(texture));
+        imp.texture.replace(Some(oriented_texture(&original, orientation)));
+        let compare = imp.compare_original.borrow().clone();
+        imp.compare.replace(compare.map(|compare| oriented_texture(&compare, orientation)));
         imp.serial.set(imp.serial.get() + 1);
         imp.source.take();
         imp.resampled.take();
         imp.offset.set(imp.fit.get().map_or((0.0, 0.0), |fit| self.fit_offset(fit, None)));
         self.snap();
+    }
+
+    /// Shows `texture`, a picture of the same scene, on the left of a divider in place of the picture, which stays on
+    /// the right. It is drawn over the same area, so the two line up whatever their sizes. `None` ends the comparison.
+    /// A new picture ends it too.
+    pub fn set_compare(&self, texture: Option<gdk::Texture>) {
+        let imp = self.imp();
+        let oriented = texture.as_ref().map(|texture| oriented_texture(texture, imp.orientation.get()));
+        imp.compare_original.replace(texture);
+        imp.compare.replace(oriented);
+        imp.dragging_split.set(false);
+        self.queue_draw();
     }
 
     /// The turn and mirror the picture is shown with.
@@ -872,6 +924,44 @@ impl ImageCanvas {
             }
             canvas.queue_draw();
         });
+    }
+
+    /// Draws `compare` on the left of the divider and `texture` on the right, both over `area`, the picture's place, with
+    /// the divider between them. Both are drawn with GTK's filters, so neither has more done to it than the other.
+    fn draw_compared(&self, snapshot: &gtk::Snapshot, texture: &gdk::Texture, compare: &gdk::Texture, area: (f64, f64, f64, f64), scale: f64) {
+        let (x, y, width, height) = area;
+        let (view_width, view_height) = self.view_size();
+        let divider = (self.imp().split.get() * view_width).clamp(0.0, view_width);
+        let rect = graphene::Rect::new(x as f32, y as f32, width as f32, height as f32);
+        let compare_scale = width / f64::from(compare.width().max(1));
+
+        snapshot.push_clip(&graphene::Rect::new(0.0, 0.0, divider as f32, view_height as f32));
+        snapshot.append_scaled_texture(compare, self.scaling_filter(compare_scale), &rect);
+        snapshot.pop();
+        snapshot.push_clip(&graphene::Rect::new(divider as f32, 0.0, (view_width - divider) as f32, view_height as f32));
+        snapshot.append_scaled_texture(texture, self.scaling_filter(scale), &rect);
+        snapshot.pop();
+
+        // The divider: a line the height of the picture's visible part, with a grip in the middle to take hold of.
+        let (top, bottom) = (y.max(0.0), (y + height).min(view_height));
+        if bottom <= top {
+            return;
+        }
+        let light = gdk::RGBA::new(1.0, 1.0, 1.0, 0.9);
+        let shade = gdk::RGBA::new(0.0, 0.0, 0.0, 0.35);
+        snapshot.append_color(&shade, &graphene::Rect::new(divider as f32 - 2.0, top as f32, 4.0, (bottom - top) as f32));
+        snapshot.append_color(&light, &graphene::Rect::new(divider as f32 - 1.0, top as f32, 2.0, (bottom - top) as f32));
+        let middle = ((top + bottom) / 2.0) as f32;
+        let grip = gsk::RoundedRect::new(
+            graphene::Rect::new(divider as f32 - 5.0, middle - 20.0, 10.0, 40.0),
+            graphene::Size::new(5.0, 5.0),
+            graphene::Size::new(5.0, 5.0),
+            graphene::Size::new(5.0, 5.0),
+            graphene::Size::new(5.0, 5.0),
+        );
+        snapshot.push_rounded_clip(&grip);
+        snapshot.append_color(&light, grip.bounds());
+        snapshot.pop();
     }
 
     /// Draws the picture cropped to cover the whole view, blurred, and dimmed, so it fills the background.
