@@ -26,6 +26,7 @@ use super::{CursorMove, Level, Message};
 use super::message_overlay::MessageId;
 use super::keybinds_overlay::KeybindsOverlay;
 use super::playlist_panel::{stamp, PlaylistPanel, SortColumn};
+use crate::media::zoom::ZOOM_STEP;
 use crate::media::orientation::Orientation;
 use crate::fs::metadata::MediaInfo;
 
@@ -1392,6 +1393,18 @@ impl Window {
         bound_action(&video, &weak, "cycle-aspect", |window| window.cycle_video_aspect());
         bound_action(&video, &weak, "edit-crop", |window| window.imp().viewer.toggle_manual_crop());
         bound_action(&video, &weak, "lock-crop", |window| window.imp().viewer.toggle_crop_lock());
+        bound_action(&video, &weak, "zoom-in", |window| window.imp().viewer.zoom_video(ZOOM_STEP));
+        bound_action(&video, &weak, "zoom-out", |window| window.imp().viewer.zoom_video(1.0 / ZOOM_STEP));
+        bound_action(&video, &weak, "zoom-reset", |window| window.imp().viewer.reset_video_zoom());
+        bound_action(&video, &weak, "pan-left", |window| window.imp().viewer.pan_video(-1.0, 0.0));
+        bound_action(&video, &weak, "pan-right", |window| window.imp().viewer.pan_video(1.0, 0.0));
+        bound_action(&video, &weak, "pan-up", |window| window.imp().viewer.pan_video(0.0, -1.0));
+        bound_action(&video, &weak, "pan-down", |window| window.imp().viewer.pan_video(0.0, 1.0));
+        bound_action(&video, &weak, "timeline-set", |window| window.imp().viewer.timeline_set());
+        bound_action(&video, &weak, "timeline-remove", |window| window.imp().viewer.timeline_remove());
+        bound_action(&video, &weak, "timeline-clear", |window| window.imp().viewer.timeline_clear());
+        bound_action(&video, &weak, "timeline-previous", |window| window.imp().viewer.timeline_seek(false));
+        bound_action(&video, &weak, "timeline-next", |window| window.imp().viewer.timeline_seek(true));
         bound_action(&video, &weak, "set-thumbnail-frame", |window| window.imp().viewer.set_thumbnail_frame());
         bound_action(&video, &weak, "repeat", |window| window.imp().viewer.toggle_repeat());
         bound_action(&video, &weak, "auto-advance", |window| window.imp().viewer.toggle_auto_advance());

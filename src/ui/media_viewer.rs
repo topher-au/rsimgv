@@ -32,6 +32,8 @@ use super::media_overlay::{clock, fraction, Frame, MediaOverlay};
 use crate::overlay::{Layout, Trigger, TRIGGERS};
 use super::thumbnail_bar::ThumbnailBar;
 
+mod timed_settings;
+
 const MICROS: f64 = 1_000_000.0;
 
 /// When the zoom level is shown: always, never, or only once the user has zoomed the picture.
@@ -599,6 +601,9 @@ mod imp {
         pub(super) seek_landing: Cell<Option<(i64, std::time::Instant)>>,
         /// Whether the last skip went forward.
         pub(super) seek_forward: Cell<bool>,
+        /// The settings the video shown has from set times on, and the time of the one applied last.
+        pub(super) timeline: RefCell<crate::media::timeline::Timeline>,
+        pub(super) timeline_applied: Cell<Option<i64>>,
         /// When the video was last skipped through, for the elements that show for a while after a skip.
         pub(super) changed_at: Cell<[Option<std::time::Instant>; TRIGGERS]>,
         /// What each change an element waits for last read, to tell when it changes, and until when a picture's zoom is
@@ -2896,6 +2901,16 @@ impl MediaViewer {
                     stream.set_speed(speed);
                     stream.set_framing(imp.framing.get());
                     stream.set_aspect(output_aspect);
+                    self.load_timeline(settings.as_ref());
+                    // The keyframe the video has reached applies as it plays or is skipped to.
+                    stream.connect_notify_local(Some("timestamp"), {
+                        let weak = self.downgrade();
+                        move |_, _| {
+                            if let Some(viewer) = weak.upgrade() {
+                                viewer.follow_timeline();
+                            }
+                        }
+                    });
                     if let Some(crop) = settings.as_ref().and_then(saved_crop) {
                         if let Some(crops) = VideoCrops::shared() {
                             let _ = crops.set(&path, crop);
