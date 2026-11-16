@@ -3180,10 +3180,15 @@ impl MediaViewer {
         let weak = self.downgrade();
         let path = path.to_path_buf();
         glib::spawn_future_local(async move {
-            let Some((pixels, upscaled)) = decode_picture(path, prefer_upscaled).await else { return };
+            let decoded = decode_picture(path, prefer_upscaled).await;
             let Some(viewer) = weak.upgrade() else { return };
-            if viewer.imp().index.get() == index && viewer.imp().media.borrow().is_none() {
-                viewer.set_picture(&pixels, upscaled, placement, orientation);
+            if viewer.imp().index.get() != index || viewer.imp().media.borrow().is_some() {
+                return;
+            }
+            match decoded {
+                Some((pixels, upscaled)) => viewer.set_picture(&pixels, upscaled, placement, orientation),
+                // A picture that cannot be read is waited on all the same, so a slideshow moves on from it rather than stopping.
+                None => viewer.arm_slideshow(),
             }
         });
     }
