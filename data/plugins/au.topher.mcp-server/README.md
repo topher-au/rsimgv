@@ -46,7 +46,7 @@ Open WebUI calls the server from its backend, so the model needs no access to yo
 arguments, and what is deliberately left out.
 
 - **Look:** `get_status` (start here), `view_info`, `view_screenshot` and `get_thumbnails` (images; `format`
-  png or jpeg, `quality`, `max_size`, and a fractional `crop` for screenshots), `get_file_info`, `get_file_state`.
+  png or jpeg, `quality`, `max_size`, and for screenshots a fractional `crop` and `info` to include `view_info`'s result), `get_file_info`, `get_file_state`.
 - **Browse:** `list_files` (paged, filterable), `open_folder`, `navigate`, `step_folder`, `select_file`,
   `open_item`, `close_viewer`, tabs and bookmarks.
 - **Viewer:** `viewer_navigate`, `image_view`, `transform_view`, `video_playback`, `video_view`, `slideshow`,

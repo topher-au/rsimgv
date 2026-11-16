@@ -283,15 +283,21 @@ def view_info(args):
 
 @tool("view_screenshot", "Capture the viewer",
       "Capture the picture or video frame the viewer shows, as an image. Use max_size to keep it small and crop "
-      "to look closely at one region.",
-      {"format": _FORMAT, "quality": _QUALITY, "max_size": _MAX_SIZE, "crop": _CROP}, read_only=True)
+      "to look closely at one region. With info, the text also holds what view_info reports for the item.",
+      {"format": _FORMAT, "quality": _QUALITY, "max_size": _MAX_SIZE, "crop": _CROP,
+       "info": {"type": "boolean", "default": False,
+                "description": "Also return view_info's result under the key info."}}, read_only=True)
 def view_screenshot(args):
+    want_info = _boolean(args, "info")
     result = host_call("view.screenshot", _pick(args, ("format", "quality", "max_size", "crop")))
     if not result.get("data"):
         raise _ToolError("the viewer has no picture to capture")
+    details = {key: result.get(key) for key in ("format", "width", "height", "source_width", "source_height")}
+    if want_info:
+        details["info"] = _try("view.info")
     return Blocks([
         {"type": "image", "data": result["data"], "mimeType": result.get("mime_type", "image/png")},
-        _text({key: result.get(key) for key in ("format", "width", "height", "source_width", "source_height")}),
+        _text(details),
     ])
 
 
