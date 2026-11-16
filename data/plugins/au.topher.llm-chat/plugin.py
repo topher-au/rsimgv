@@ -1535,9 +1535,11 @@ class Plugin:
         if container.get_size_request() != (width, height):
             container.set_size_request(width, height)
         if panel.anchored and "x" in want:
-            # A card cannot be smaller than its content, so keep what it needs inside, not what was asked for.
-            shown_w = max(width, container.measure(Gtk.Orientation.HORIZONTAL, -1)[0])
-            shown_h = max(height, container.measure(Gtk.Orientation.VERTICAL, shown_w)[0])
+            # A card cannot be smaller than its content, so keep the size it has inside, not only what was asked for.
+            # This is its allocation: measuring it would add its margins, which are its place, and the place would
+            # then move the limit it is held to.
+            shown_w = max(width, container.get_width())
+            shown_h = max(height, container.get_height())
             x = int(max(0, min(want["x"], room_w - shown_w)))
             y = int(max(0, min(want["y"], room_h - shown_h)))
             if container.get_margin_start() != x:
