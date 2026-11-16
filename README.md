@@ -9,150 +9,137 @@
 
 Written in Rust with GTK 4 and libadwaita.
 
-<p>
-  <a href="https://www.repostatus.org/#wip"><img src="https://www.repostatus.org/badges/latest/wip.svg" alt="Project status: work in progress"></a>
-  <a href="https://www.gnu.org/licenses/gpl-3.0.html"><img src="https://img.shields.io/badge/License-GPL--3.0--or--later-blue?style=for-the-badge" alt="License: GPL-3.0-or-later"></a>
-  <a href="https://www.rust-lang.org"><img src="https://img.shields.io/badge/Rust-stable-b7410e?style=for-the-badge&logo=rust&logoColor=white" alt="Rust"></a>
-  <a href="https://www.gtk.org"><img src="https://img.shields.io/badge/GTK-4.22+-4a86cf?style=for-the-badge&logo=gtk&logoColor=white" alt="GTK 4.22+"></a>
-  <a href="https://gnome.pages.gitlab.gnome.org/libadwaita/"><img src="https://img.shields.io/badge/libadwaita-1.9+-3584e4?style=for-the-badge" alt="libadwaita 1.9+"></a>
-  <a href="https://www.kernel.org"><img src="https://img.shields.io/badge/Linux-platform-fcc624?style=for-the-badge&logo=linux&logoColor=black" alt="Linux"></a>
-</p>
+[Website](https://topher-au.github.io/rsimgv/) · [Documentation](https://topher-au.github.io/rsimgv/docs/index.html) · [Releases](https://github.com/topher-au/rsimgv/releases) · [Plugins](docs/PLUGINS.md)
 
+[![Version](https://img.shields.io/github/v/release/topher-au/rsimgv?logo=github&style=for-the-badge&labelColor=24292f&color=0969da)](https://github.com/topher-au/rsimgv/releases/latest)
+[![License](https://img.shields.io/badge/License-GPL--3.0--or--later-0969da?style=for-the-badge&labelColor=24292f)](https://github.com/topher-au/rsimgv/blob/main/LICENSE)
+[![Status](https://img.shields.io/badge/Status-WIP-bf8700?style=for-the-badge&labelColor=24292f)](https://www.repostatus.org/#wip)
+
+[![Rust](https://img.shields.io/badge/Rust-stable-b7410e?style=for-the-badge&logo=rust&logoColor=white&labelColor=24292f)](https://www.rust-lang.org)
+[![GTK](https://img.shields.io/badge/GTK-4.22%2B-4a86cf?style=for-the-badge&logo=gtk&logoColor=white&labelColor=24292f)](https://www.gtk.org)
+[![libadwaita](https://img.shields.io/badge/libadwaita-1.9%2B-3584e4?style=for-the-badge&logo=gnome&logoColor=white&labelColor=24292f)](https://gnome.pages.gitlab.gnome.org/libadwaita/)
+[![Linux](https://img.shields.io/badge/Linux-platform-fcc624?style=for-the-badge&logo=linux&logoColor=black&labelColor=24292f)](https://www.kernel.org)
 </div>
 
-rsimgv puts a folder tree, a browse grid and a navigation history side by side, so you can move through a
-library of pictures and videos without leaving the window.
+rsimgv puts a folder tree, a thumbnail grid, a full picture and video viewer and a playlist in one window, so you
+can move through a large library of media without leaving it. Everything is an action you can bind to a key,
+script, or drive from another program.
 
-> **Status:** early development. The file explorer, media viewer and thumbnails are implemented, but the
-> project is still changing quickly.
+> **Status:** early development (version 0.1.0). Browsing, viewing, playlists, plugins and remote control work
+> today. General file operations such as copy and move are not built yet, and the project is still changing quickly.
 
 ![rsimgv showing the folder tree, the home folder, and the navigation and path bar](docs/screenshots/main-window.png)
 
 ## Contents
 
 - [Features](#features)
-- [Requirements](#requirements)
-- [Building and running](#building-and-running)
-- [Command line](#command-line)
-- [Settings](#settings)
-- [Plugins](#plugins)
+- [Installation](#installation)
+- [Usage](#usage)
+- [Configuration](#configuration)
+- [Plugins and automation](#plugins-and-automation)
+- [Development](#development)
 - [Project layout](#project-layout)
-- [Application ID](#application-id)
 - [License](#license)
 
 ## Features
 
-- **Folder tree** rooted at `/` or the home folder, picked by the buttons on its section header. Going to
-  a folder outside the root returns the tree to `/`. Folders expand on demand, and selecting one reveals
-  its path. Expansion can keep other folders open or collapse them, and a path is framed so the folder and
-  as many of its children as fit are on screen.
-- **Bookmarks** in a collapsible section above the tree. The bookmark of the folder shown is highlighted.
-  Drag a bookmark to reorder it, middle-click it to open a new tab, or right-click it to rename or remove it.
-- **Browse view** showing the current folder as a grid of files and folders. Folders come first, then
-  files, in natural name order. Item size is adjustable, names can be ellipsized or wrapped, and the info
-  line shows size and modification time.
-- **Selecting items**: a click selects one item. Ctrl-click adds or removes one item, and Shift-click marks the items from the anchor, the item the cursor last moved from by a plain click or move, to the one clicked. The arrow and Page keys move the cursor and select only the item it lands on. With Ctrl they move the cursor and keep the selection, with Shift they select every item from the anchor to the cursor, and Ctrl+Space adds or removes the item under the cursor.
-- **Media filter**: only pictures and videos are listed by default. Turn it off to see every file.
-- **Video previews**: while a video is the active item, its preview can play a sequence of captured frames or an embedded
-  player in the item's frame. The preview follows the video's locked crop, and fills the square when thumbnails are cropped
-  that way.
-- **Search** in the browse view: the search button in the header, or Ctrl+Shift+F, slides a bar down under the header. It filters the folder's items by name, by any attribute, or by one attribute such as size, modified time or type. With Subfolders on, the bar searches the whole folder tree under the folder shown, and the folders' matches are listed together.
-- **Path bar** in the header with clickable breadcrumbs. It starts at home when you are inside it, and at
-  `/` otherwise. Middle-click or Ctrl-click opens a new tab or window (currently both navigate in place).
-- **Navigation** with back, forward and up buttons. Long-pressing back or forward lists the history in
-  that direction.
-- **Manual location entry**: click the current folder in the path bar to type a path. A leading `~` means
-  your home folder.
-- **Settings** in a preferences dialog, saved as YAML and applied immediately. Metadata and the viewing history are kept in `media-index.sqlite3` in the user's data directory (`RSIMGV_DATA` overrides its folder).
-- **Hidden files** can be shown from the main menu.
-- **Viewing history**: how many times each picture or video has been viewed, and how long it has been watched, measured by an in-app timer so faster or slower playback counts the time actually spent. The viewer's status bar and overlays show the totals, the Viewing History item in the main menu lists recent files, and the History preferences choose what counts as a view (five seconds for a picture, and for a video either twenty seconds of it or a tenth of its length, by default). The counts can also be shown in the browse view's item info.
-- **Slideshow**: <kbd>N</kbd> in the viewer turns auto-advance on or off. With it on, the next item of the folder, or of the playlist, is shown when a video ends or a picture has been up for the slideshow delay (five seconds by default, set on the Viewer page). <kbd>Shift</kbd>+<kbd>N</kbd> turns slideshow shuffle on or off and says so over the window: the items come in a random order, each once before any comes round again. The time left before the slideshow moves on can be shown as a bar, a circle or text, by adding a **Slideshow countdown** element in the overlay editor, which sets its position, look and wording. A picture that cannot be read is skipped over, and closing the viewer ends the slideshow.
-- **Timed video settings**: <kbd>K</kbd> applies a video's turn, mirror, zoom, crop and speed from the current position on, and a later one replaces them from there. <kbd>J</kbd> and <kbd>L</kbd> skip to the previous and next of these points, <kbd>Shift</kbd>+<kbd>K</kbd> removes the settings at the position, and <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>K</kbd> clears them all. Zoom and pan are applied through mpv's crop filter.
-- **Playlist**: one list of pictures and videos from anywhere, in your own order, kept between runs and shared by the windows. Playing it leaves the folder you are browsing, and the item selected there, as they were. See [Playlist](#playlist).
-- **Scripts** are commands listed on the Scripts tab of the Integration page, with `%file%` standing for the item they run on. The Run Script action in the keybinding editor binds a key to one: it runs on the item under the cursor, or on the one the viewer shows. A script that waits to finish has the folder listed again when it ends.
-- **Plugins** extend the app with Python actions, keybindings, menus, events and sidebar panels. They are discovered from the XDG data directories, reload when their files change, and have their settings on the Plugins page. The bundled **LLM Screenshot** plugin sends the viewer's current picture or video frame to an OpenAI-compatible vision model and shows the description in an overlay notification. See [Plugins](#plugins).
-- **Messages** appear over the window: notifications that go away by themselves, and persistent messages that stay until dismissed. A script that fails reports it this way, and other programs can show their own through the remote control server (`messages.show`). F1 shows a list of the keybindings in force where you are, and hides it again. Skipping through a video shows a progress bar and the time over it, which the Overlay tab of the Viewer page sets up. With SVP on, skipping leaves it out until a moment after the last skip, and a new video starts without it, so neither waits for SVP to load; the SVP tab of the Videos page sets how long that is, or turns it off. V turns SVP on or off while watching. That tab also takes the folder of SVP's own plugin libraries, which replace the bundled open-svpflow ones. The Show Notification action in the keybinding editor binds a key to a notification: each binding sets its message, level and how many seconds it stays.
+**Browse**
 
-## Requirements
+- A folder tree rooted at `/` or home, with bookmarks, tabs and back, forward and up navigation with history.
+- A thumbnail grid with folders first in natural order, adjustable item size, and folder previews that cascade
+  the first pictures and videos inside each folder.
+- Search by name, any attribute, or one attribute such as size, modified time or type, optionally through every
+  folder below the current one.
+- A path bar with clickable breadcrumbs and manual location entry.
 
-Build-time:
+**View**
+
+- A picture viewer with fit modes, zoom, pan, rotate and mirror, a thumbnail bar and preloading of neighbouring
+  pictures.
+- Video playback with libmpv: crop, aspect ratio, a blurred backdrop, a seek display, per-file positions and
+  timed video settings, with optional SVP frame interpolation built from open-svpflow.
+- A slideshow, in order or shuffled, with a countdown you can place and style, and a configurable overlay.
+- Viewing history: how often and for how long each item has been viewed.
+
+**Organise**
+
+- A playlist from any folder, kept between runs, with shuffle and saved orders. It loads and saves M3U, M3U8,
+  PLS and XSPF, and it can be detached into its own window.
+- Scripts: shell commands run on the item under the cursor or the one being viewed.
+- Over 150 actions with keybindings in seven contexts, shown by <kbd>F1</kbd> and editable in the preferences.
+
+**Extend**
+
+- Python plugins add actions, keybindings, menus, events, sidebar panels and settings. They are off until each
+  is enabled. Bundled plugins describe pictures with a vision model, upscale them, chat about them, and serve
+  rsimgv over the Model Context Protocol.
+- A remote control interface over a Unix socket, TCP or HTTP, with an Open WebUI tool in
+  [`clients/open-webui`](clients/open-webui).
+
+See the [documentation](https://topher-au.github.io/rsimgv/docs/index.html) for each feature in detail.
+
+## Installation
+
+### Prebuilt packages
+
+AppImage and Flatpak builds are attached to each version on the
+[releases page](https://github.com/topher-au/rsimgv/releases). They are built without Python plugin support, so the
+plugins, including the MCP server, are only available in a build from source or the Arch package.
+
+### Arch Linux
+
+```sh
+scripts/dist.sh
+cd packaging/arch
+makepkg -si
+```
+
+### From source
+
+Build-time requirements:
 
 - Rust (stable) with `cargo`
 - A C compiler and `pkg-config`
 - Meson 1.2 or newer, and Ninja
-- GTK 4.22 or newer, with development headers (`gtk4`)
-- libadwaita 1.9 or newer (`libadwaita-1`)
-- OpenCV 4.5 or newer (`opencv`), with Clang (`clang`) for the Rust bindings to generate against it
+- GTK 4.22 or newer (`gtk4`) and libadwaita 1.9 or newer (`libadwaita-1`)
+- libmpv (`mpv`) and OpenCV 4.5 or newer (`opencv`), with Clang (`clang`) for the OpenCV bindings
 - `sassc`, to compile the stylesheets
 - `glib-compile-resources` and `glib-compile-schemas` (part of GLib)
-
-## Building and running
-
-For development, `dev.sh` sets up the build directory if needed, rebuilds, and runs the app from it:
+- Optional: `python3-embed` and `pygobject-3.0` for plugins. Configure with `-Dpython=auto` (the default),
+  `-Dpython=enabled` or `-Dpython=disabled`.
 
 ```sh
-./dev.sh              # rebuild and run rsimgv
-./dev.sh test         # rebuild and run the test suite
-./dev.sh cargo check  # run a Cargo command in the build environment
-```
-
-Tests need a display. On a machine without one, run them under `xvfb-run -a`.
-
-To build and install with Meson:
-
-```sh
+git clone --recurse-submodules https://github.com/topher-au/rsimgv.git
+cd rsimgv
 meson setup builddir --prefix=/usr/local
 meson compile -C builddir
 meson install -C builddir
 ```
 
-Installing copies the GSettings schema and the application icons into the system data directories. The
-program embeds its user interface, stylesheets and icons in a GResource bundle, so it does not need them
-installed separately.
+Installing copies the GSettings schema, the application icons, the desktop file and the bundled plugins into
+the system data directories. The program embeds its interface, stylesheets and icons, so it needs nothing else
+installed beside the libraries it links.
 
-## Command line
+## Usage
 
 ```sh
 rsimgv [FILE_OR_FOLDER...]
 ```
 
-Each argument opens in a new tab of the open window, or of a new window if none is open. A folder opens
-in its tab. A file opens in a tab on its folder with the file selected, and a picture or video also opens
-in the viewer. A running rsimgv takes the arguments of a second launch. `rsimgv --version` prints the version,
-and `rsimgv --verbose` prints the debug output.
+Each argument opens in a new tab of the open window, or of a new window if none is open. A folder opens in its
+tab, and a file opens in a tab on its folder with the file selected. A picture or video also opens in the viewer.
+A running rsimgv takes the arguments of a second launch. `rsimgv --version` prints the version, and
+`rsimgv --verbose` prints debug output.
 
-## Playlist
+Press <kbd>F1</kbd> for the keys in force where you are, <kbd>Ctrl</kbd>+<kbd>,</kbd> for the preferences,
+and <kbd>I</kbd> to add the item under the cursor to the [playlist](https://topher-au.github.io/rsimgv/docs/playlist.html).
 
-Items in the playlist have a line around them in the browse view. To add or remove them:
+## Configuration
 
-- press <kbd>I</kbd> on the item under the cursor, on the marked items, or in the viewer on the item it shows; pressing it again takes them off
-- right-click an item or folder and choose **Add to Playlist** or **Remove from Playlist**
-- drag files onto the playlist panel, or use the remove button on a row there
-
-A folder stands for the pictures and videos in it and in the folders under it. A file appears once, however many times it is added. Rows in the sidebar can be dragged into another order, and double-clicking one plays from it.
-
-| Key | Action |
-| --- | --- |
-| <kbd>Ctrl</kbd>+<kbd>P</kbd> | Show the playlist in the viewer, from the item it was left on |
-| <kbd>]</kbd> and <kbd>[</kbd> | Next and previous item, going round the ends. Pressed elsewhere, they show the playlist from the item it was left on |
-| <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>P</kbd> | Show or hide the playlist panel, on the right opposite the sidebar |
-
-These can all be rebound, and first item, last item, load, save and clear can be given keys, in the keybinding editor. While the viewer shows the playlist, its own previous and next keys, the thumbnail bar and the slideshow go through the playlist too. They stop at its ends, whatever the **folder-end** setting says.
-
-The panel's buttons load and save M3U and M3U8 (`.m3u`, `.m3u8`), PLS (`.pls`) and XSPF (`.xspf`) files, and XSPF is the default when a name has no extension. Saved files use absolute paths. Each item keeps its title, and its duration where it is known, in whatever the format holds. Loading into a playlist that has items asks whether to replace them or add to the end. Web addresses and files that are not pictures or videos are left out, and you are told how many. A file listed twice is kept once.
-
-The shuffle button plays the playlist in a random order, with the item shown first so it keeps playing. The order the items were made in is kept beside it: turning shuffle off goes back to that order, and moving items while shuffled changes only the shuffled order. Adding and removing change both. Saved playlist files keep the made order, the shuffled order too, which items have been played, and the item shown, in comments and extensions that other players ignore. Exporting a file keeps as much of that state as the format holds: XSPF lists the made order with each item's place in the shuffle, and the other formats write the order the panel shows.
-
-The panel's detach button takes it out into a window of its own, which keeps working with the playlist and its keys. Its button puts it back, and closing that window does the same. The panel shows beside the browse view on the right, opposite the sidebar.
-
-The playlist is kept as XSPF in `playlist.xspf` beside the settings file; an older `playlist.m3u8` is read and moved over the first time the playlist is loaded. Other programs can drive it with the `win.playlist-*` actions over the remote control server.
-
-## Settings
-
-Settings are stored as YAML in `~/.config/rsimgv/rsimgv.conf`. Set `RSIMGV_CONFIG` to use another file.
-
-The file is nested by each setting's GSettings key path below the schema's path, `/au/topher/rsimgv/`. Each setting holds
-its plain value, and its type comes from the schema:
+Settings are YAML in `~/.config/rsimgv/rsimgv.conf` (`RSIMGV_CONFIG` selects another file) and are applied the
+moment they change, whether from the preferences dialog, the menu or the file. Metadata and the viewing history are
+kept in `media-index.sqlite3` in the user's data directory (`RSIMGV_DATA` overrides its folder). A file that cannot
+be parsed makes the settings read-only until it is fixed, so it is never overwritten.
 
 ```yaml
 window:
@@ -166,37 +153,40 @@ browse:
       - modified
 ```
 
-A value that does not fit its setting's type is kept in the file as written and ignored, and the setting uses its default.
+The [settings reference](https://topher-au.github.io/rsimgv/docs/settings.html) lists every setting and its default.
 
-Settings are read and written through GSettings, using a backend the application creates and passes to
-`gio::Settings`. Changes made in the preferences dialog, from the menu, or by editing the file while the app runs all
-take effect straight away. A file that cannot be parsed makes the settings read-only until it is fixed and the app is
-restarted, so it is never overwritten. The schema is `data/au.topher.rsimgv.gschema.xml`.
+## Plugins and automation
 
-Each group is a child schema in the schema file, such as `au.topher.rsimgv.window.sidebar` at
-`/au/topher/rsimgv/window/sidebar/`. GSettings key names cannot contain `.`, so code names a setting by its dotted path
-through `settings::Settings`, as in `settings.int("window.sidebar.width")`, and that picks the child schema to use.
+Plugins are Python packages found in `~/.local/share/rsimgv/plugins` or any `$XDG_DATA_DIRS/rsimgv/plugins`. None
+runs until it is switched on in **Preferences → Plugins**, where each plugin's settings also live. Reloading
+plugins is opt-in, under the **Advanced** tab. See [docs/PLUGINS.md](docs/PLUGINS.md) for the manifest, the Python
+API and the IPC behaviour.
 
-## Plugins
+| Bundled plugin | What it does |
+| --- | --- |
+| **LLM Screenshot** | Sends the viewer's picture or video frame to an OpenAI-compatible vision model and shows the description. |
+| **AI Upscale** | Keeps upscaled copies of pictures, shown in the viewer, with a side-by-side comparison. |
+| **LLM Chat** | A chat about the current picture in the sidebar and viewer, with memories, viewer control and voice. |
+| **MCP Server** | Serves the Model Context Protocol so clients such as Claude Code or Open WebUI can drive rsimgv. |
 
-Python plugins can add actions, keybindings, menus, events and sidebar panels. They live in
-`~/.local/share/rsimgv/plugins` or any `$XDG_DATA_DIRS/rsimgv/plugins`; `RSIMGV_PLUGINS` overrides the
-search path while developing. The Plugins page under Integration lists them, exposes the settings each
-plugin declares, and reloads them. Python files and manifests are watched and reloaded when they change.
-See [docs/PLUGINS.md](docs/PLUGINS.md) for the manifest, the Python API and the IPC behavior.
+The remote control interface is off by default. Enable a Unix socket, TCP or HTTP transport under
+**General → Remote control**; the [remote control reference](https://topher-au.github.io/rsimgv/docs/remote-control.html)
+lists every method.
 
-Besides LLM Screenshot, the bundled **AI Upscale** plugin keeps upscaled copies of pictures and shows them in
-the viewer, and the bundled **LLM Chat** plugin adds a chat about the current picture to the sidebar and the
-viewer, with memories, viewer control and voice. Both are described in [docs/PLUGINS.md](docs/PLUGINS.md).
+## Development
 
-The bundled **LLM Screenshot** plugin sends the viewer's current picture or video frame to an
-OpenAI-compatible vision model. Open a picture or video and press `Ctrl+Alt+L`, or choose **Analyze with
-LLM** from the main menu. The description is shown in an overlay notification and in the sidebar panel.
-Set the endpoint, model and prompt on the Plugins page; the API key is read from the environment variable
-named there (by default `OPENAI_API_KEY`).
+`dev.sh` sets up the build directory if needed, rebuilds, and runs the app from it:
 
-Python plugin support is built by default when `python3-embed` and `pygobject-3.0` are available. Configure
-with `-Dpython=auto`, `-Dpython=enabled` or `-Dpython=disabled`.
+```sh
+./dev.sh              # rebuild and run rsimgv
+./dev.sh test         # rebuild and run the test suite
+./dev.sh cargo check  # run a Cargo command in the build environment
+```
+
+Tests need a display. On a machine without one, run them under `xvfb-run -a`.
+
+Pushing a `v*` tag builds the source archive, an AppImage and a Flatpak in separate GitHub workflows and attaches
+each to the release. The website in [`site/`](site) is a static site built by `python3 site/build.py`.
 
 ## Project layout
 
@@ -210,28 +200,27 @@ src/
   overlay/           on-screen overlay templates
   playlist/          the playlist and its file formats
   services/          IPC, the remote control server and user scripts
-  settings/          GSettings settings and YAML storage (store.rs)
+  settings/          GSettings settings and YAML storage
   storage/           atomic file writes, bookmarks, per-file settings, the metadata and viewing-history database
-  ui/                widgets: window, folder tree, browse view, path bar,
-                     navigation bar, header bar, preferences, split view
+  ui/                widgets: window, folder tree, browse view, path bar, navigation bar, preferences, split view
 native/              GObject subclass for GSettings (backend.c)
 data/
   ui/                GTK XML templates for every window and widget
   style/             SCSS, compiled to CSS at build time
   icons/             application and symbolic icons (hicolor theme layout)
+  plugins/           the bundled plugins
   *.gschema.xml      GSettings schema
   rsimgv.gresource.xml  bundle manifest
-build-aux/           build helper that runs cargo from Meson
+build-aux/           build helpers that run cargo from Meson
+clients/open-webui/  an Open WebUI tool that speaks the remote control interface
+packaging/           Arch, AppImage and Flatpak recipes
+site/                the website and documentation
 ```
 
-The GObject subclass that connects GSettings to the YAML file is written in C (`native/backend.c`),
-because the Rust bindings do not expose the trait needed to subclass `GSettingsBackend`.
-
-## Application ID
-
-The application ID is `au.topher.rsimgv`. The icons are currently named `au.topher.rsimgv`, so the app icon
-will not resolve until the two agree.
+The GObject subclass that connects GSettings to the YAML file is written in C (`native/backend.c`), because the
+Rust bindings do not expose the trait needed to subclass `GSettingsBackend`. The application ID is
+`au.topher.rsimgv`.
 
 ## License
 
-GPL-3.0-or-later.
+rsimgv is released under the [GPL-3.0-or-later](LICENSE).
