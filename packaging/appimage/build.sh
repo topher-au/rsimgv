@@ -41,12 +41,20 @@ export LINUXDEPLOY_OUTPUT_VERSION=$version
 ln -sf "$(command -v patchelf)" squashfs-root/usr/bin/patchelf
 ln -sf "$(command -v strip)" squashfs-root/usr/bin/strip
 
-squashfs-root/AppRun \
-  --appdir "$work/AppDir" \
-  --plugin gtk \
-  --desktop-file "$work/AppDir/usr/share/applications/au.topher.rsimgv.desktop" \
-  --icon-file "$root/data/icons/hicolor/256x256/apps/au.topher.rsimgv.png" \
-  --output appimage
+deploy_args=(
+  --appdir "$work/AppDir"
+  --desktop-file "$work/AppDir/usr/share/applications/au.topher.rsimgv.desktop"
+  --icon-file "$root/data/icons/hicolor/256x256/apps/au.topher.rsimgv.png"
+)
+squashfs-root/AppRun "${deploy_args[@]}" --plugin gtk
+
+# The GTK plugin copies the build machine's schemas into the bundle, replacing ours with any older copy installed
+# there (such as a distribution package of rsimgv). Put ours back and recompile before the AppImage is written.
+schemas=$work/AppDir/usr/share/glib-2.0/schemas
+install -m644 "$root/data/au.topher.rsimgv.gschema.xml" "$schemas/"
+glib-compile-schemas "$schemas"
+
+squashfs-root/AppRun "${deploy_args[@]}" --output appimage
 
 mv "rsimgv-$version-x86_64.AppImage" "$out/"
 echo "$out/rsimgv-$version-x86_64.AppImage"
