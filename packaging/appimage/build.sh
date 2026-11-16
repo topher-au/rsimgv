@@ -15,16 +15,22 @@ out=$(realpath -m "${1:-dist}")
 
 version=$(sed -n "s/^  version: '\(.*\)',$/\1/p" meson.build)
 work=$root/build-appimage
-rm -rf "$work"
+# The build directory and the downloaded tools are kept between runs, so that only what changed is rebuilt: the
+# Rust build alone, with the OpenCV bindings, takes minutes from scratch. Only the bundle is made afresh.
+rm -rf "$work/AppDir" "$work/tools/squashfs-root"
 mkdir -p "$work/tools" "$out"
 
-meson setup "$work/build" --prefix=/usr --buildtype=release -Dpython=disabled
+if [ -d "$work/build/meson-private" ]; then
+  meson setup "$work/build" --reconfigure --prefix=/usr --buildtype=release -Dpython=disabled
+else
+  meson setup "$work/build" --prefix=/usr --buildtype=release -Dpython=disabled
+fi
 meson compile -C "$work/build"
 DESTDIR="$work/AppDir" meson install -C "$work/build"
 
 cd "$work/tools"
-wget -q https://github.com/linuxdeploy/linuxdeploy/releases/download/1-alpha-20250213-2/linuxdeploy-x86_64.AppImage
-wget -q https://raw.githubusercontent.com/linuxdeploy/linuxdeploy-plugin-gtk/master/linuxdeploy-plugin-gtk.sh
+wget -nc -q https://github.com/linuxdeploy/linuxdeploy/releases/download/1-alpha-20250213-2/linuxdeploy-x86_64.AppImage
+wget -nc -q https://raw.githubusercontent.com/linuxdeploy/linuxdeploy-plugin-gtk/master/linuxdeploy-plugin-gtk.sh
 chmod +x linuxdeploy-x86_64.AppImage linuxdeploy-plugin-gtk.sh
 
 # The AppImage tools are run extracted, as CI containers have no FUSE.
@@ -47,6 +53,10 @@ deploy_args=(
   --icon-file "$root/data/icons/hicolor/256x256/apps/au.topher.rsimgv.png"
 )
 squashfs-root/AppRun "${deploy_args[@]}" --plugin gtk
+
+# The plugin's AppRun hook forces GTK_THEME, which makes GTK load its plain Adwaita theme instead of libadwaita's
+# stylesheet and so breaks the app's styling, and forces the X11 backend even on Wayland. Neither is wanted.
+sed -i '/^export GTK_THEME=/d; /^export GDK_BACKEND=/d' "$work/AppDir/apprun-hooks/linuxdeploy-plugin-gtk.sh"
 
 # The GTK plugin copies the build machine's schemas into the bundle, replacing ours with any older copy installed
 # there (such as a distribution package of rsimgv). Put ours back and recompile before the AppImage is written.

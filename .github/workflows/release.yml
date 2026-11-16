@@ -38,6 +38,14 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            build-appimage/build
+          key: appimage-${{ hashFiles('Cargo.lock', 'third_party/open-svpflow/Cargo.lock') }}
+          restore-keys: appimage-
       - run: packaging/appimage/build.sh dist
       - uses: actions/upload-artifact@v4
         with:
