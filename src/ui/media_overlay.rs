@@ -381,6 +381,17 @@ pub struct MediaOverlay {
     layout: RefCell<Layout>,
 }
 
+/// Makes `widget` and everything in it ignore the pointer, so clicks and hovers go to what lies under the overlay. A widget
+/// that cannot be targeted still lets its children be, so each one is turned off.
+fn pass_clicks_through(widget: &gtk::Widget) {
+    widget.set_can_target(false);
+    let mut child = widget.first_child();
+    while let Some(current) = child {
+        pass_clicks_through(&current);
+        child = current.next_sibling();
+    }
+}
+
 impl MediaOverlay {
     /// The overlay, over what `overlay` holds, with nothing in it.
     pub fn new(overlay: &gtk::Overlay) -> Self {
@@ -772,7 +783,7 @@ fn build(index: usize, element: &Element) -> Placed {
     revealer.set_child(Some(&card));
     revealer.set_opacity(element.style.opacity);
     revealer.set_halign(horizontal_align(align));
-    revealer.set_can_target(false);
+    pass_clicks_through(revealer.upcast_ref());
     let sheet = Sheet::new(&format!(
         "{} {} {}",
         style_css(&format!(".overlay-element.{class}"), &element.style),
