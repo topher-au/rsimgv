@@ -3,9 +3,9 @@
 Serves the [Model Context Protocol](https://modelcontextprotocol.io) from inside rsimgv so an MCP client
 can browse folders, drive the viewer, read what it shows and change settings.
 
-The endpoint is `http://127.0.0.1:8765/mcp` (streamable HTTP, JSON responses). It listens on the loopback
-interface only and rejects requests whose `Host` or `Origin` is not local. Plugins are trusted code and the
-tools can change settings and run any action, so set a token if other local users share the machine.
+The endpoint is `http://127.0.0.1:8765/mcp` (streamable HTTP, JSON responses). By default it listens on the
+loopback interface only and rejects requests whose `Host` or `Origin` is not local. The tools can change
+settings and run any action, so set a token if other local users share the machine.
 
 ## Connect Claude Code
 
@@ -20,7 +20,24 @@ With a token: add `--header "Authorization: Bearer <token>"`.
 | Setting | Default | Meaning |
 | --- | --- | --- |
 | `port` | 8765 | Listening port; applies after the plugin reloads. |
-| `token` | empty | When set, clients must send it as a Bearer token. |
+| `bind_address` | 127.0.0.1 | Address to listen on. `0.0.0.0` accepts connections from the network. |
+| `token` | empty | When set, clients must send it as a Bearer token. Required when `bind_address` is not loopback; the server refuses to start without one. |
+| `read_only` | off | Hides the tools that navigate, run actions or change settings. |
+
+The server speaks plain HTTP. Do not expose it beyond a trusted network without a TLS reverse proxy.
+
+## Open WebUI
+
+1. Set `bind_address` to an address Open WebUI can reach (`0.0.0.0` for all), set a `token`, and let the
+   plugin reload.
+2. In Open WebUI, open **Admin Settings → External Tools → Add**, choose type **MCP (Streamable HTTP)**, and
+   enter the URL, with auth **Bearer** and the token.
+   - Open WebUI in Docker on the same machine: `http://host.docker.internal:8765/mcp` (on Linux add
+     `--add-host=host.docker.internal:host-gateway`).
+   - Another machine: `http://<rsimgv-host>:8765/mcp`.
+3. Allow the port through the firewall if needed.
+
+Open WebUI calls the server from its backend, so the model needs no access to your browser.
 
 ## Tools
 

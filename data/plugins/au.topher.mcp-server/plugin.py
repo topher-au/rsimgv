@@ -6,6 +6,8 @@ IPC socket offers. HTTP requests are handled on worker threads; every host
 call is queued to the GTK main thread with ``rsimgv.ui.idle_add``.
 """
 
+import hmac
+import ipaddress
 import json
 import os
 import threading
@@ -18,7 +20,13 @@ PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
 CALL_TIMEOUT = 130  # a little over the host's 120 s wait for plugin actions
 MAX_BODY = 1_000_000
 LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
-DEFAULTS = {"port": 8765, "token": ""}
+DEFAULTS = {"port": 8765, "bind_address": "127.0.0.1", "token": "", "read_only": False}
+
+# Tools that change state or reach arbitrary host methods; hidden when read_only is on.
+WRITE_TOOLS = {"open_tab", "activate_tab", "close_tab", "select_file", "select_file_index", "navigate_to",
+               "navigate_back", "navigate_forward", "navigate_up", "next_folder", "previous_folder",
+               "next_media_folder", "previous_media_folder", "run_action", "show_message", "set_setting",
+               "call_method"}
 
 
 def _obj(properties=None, required=()):
@@ -91,10 +99,17 @@ class Plugin:
         self._server = None
         self._thread = None
         self._token = ""
+        self._read_only = False
 
     def activate(self, host):
         config = self._load_config()
         self._token = str(config["token"])
+        self._read_only = bool(config["read_only"])
+        bind = str(config["bind_address"]).strip() or DEFAULTS["bind_address"]
+        if not self._is_loopback(bind) and not self._token:
+            rsimgv.notify("MCP Server: set an access token before listening on "
+                          f"{bind}; the server is not running.", level="error", seconds=10)
+            return
         plugin = self
         port = int(config["port"])
 
@@ -123,14 +138,14 @@ class Plugin:
                     self.wfile.write(body)
 
         try:
-            self._server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+            self._server = ThreadingHTTPServer((bind, port), Handler)
         except OSError as exc:
-            rsimgv.notify(f"MCP Server: cannot listen on port {port}: {exc}", level="error", seconds=10)
+            rsimgv.notify(f"MCP Server: cannot listen on {bind}:{port}: {exc}", level="error", seconds=10)
             return
         self._server.daemon_threads = True
         self._thread = threading.Thread(target=self._server.serve_forever, name="rsimgv-mcp", daemon=True)
         self._thread.start()
-        rsimgv.host.log("info", f"MCP server listening on http://127.0.0.1:{port}/mcp")
+        rsimgv.host.log("info", f"MCP server listening on http://{bind}:{port}/mcp")
 
     def deactivate(self):
         server, self._server = self._server, None
@@ -178,16 +193,27 @@ class Plugin:
         handler._send(200, body, {"Content-Type": "application/json"})
 
     def _allowed(self, handler):
-        # Reject DNS-rebinding: the Host and any Origin must be local.
+        if self._token:
+            # The token authenticates the client, so Host and Origin need no check.
+            supplied = handler.headers.get("Authorization") or ""
+            return hmac.compare_digest(supplied.encode(), f"Bearer {self._token}".encode())
+        # Without a token the server is loopback-only; reject DNS rebinding.
         host = urlsplit("//" + (handler.headers.get("Host") or "")).hostname
         if host not in LOCAL_HOSTS:
             return False
         origin = handler.headers.get("Origin")
         if origin and (urlsplit(origin).hostname or "") not in ("127.0.0.1", "localhost", "::1"):
             return False
-        if self._token:
-            return handler.headers.get("Authorization") == f"Bearer {self._token}"
         return True
+
+    @staticmethod
+    def _is_loopback(address):
+        if address == "localhost":
+            return True
+        try:
+            return ipaddress.ip_address(address).is_loopback
+        except ValueError:
+            return False
 
     # JSON-RPC -------------------------------------------------------------
 
@@ -215,6 +241,7 @@ class Plugin:
                 result = {"tools": [
                     {"name": name, "description": spec[0], "inputSchema": spec[1]}
                     for name, spec in TOOLS.items()
+                    if not (self._read_only and name in WRITE_TOOLS)
                 ]}
             elif method == "tools/call":
                 result = self._call_tool(params.get("name"), params.get("arguments") or {})
@@ -227,7 +254,7 @@ class Plugin:
 
     def _call_tool(self, name, arguments):
         spec = TOOLS.get(name)
-        if spec is None:
+        if spec is None or (self._read_only and name in WRITE_TOOLS):
             raise ValueError(f"unknown tool {name}")
         if not isinstance(arguments, dict):
             raise ValueError("arguments must be an object")

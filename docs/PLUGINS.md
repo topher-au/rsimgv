@@ -249,7 +249,7 @@ plugin's README for settings.
 ## Bundled MCP Server plugin
 
 `au.topher.mcp-server` serves the Model Context Protocol on `http://127.0.0.1:8765/mcp`, so MCP clients such
-as Claude Code can drive the viewer, browse folders and change settings. An optional bearer token and the port
+as Claude Code can drive the viewer, browse folders and change settings. The listen address (use `0.0.0.0` for remote clients such as Open WebUI, with a token), bearer token, port and read-only mode
 are set on the Plugins page. See the plugin's README.
 
 ## Limits

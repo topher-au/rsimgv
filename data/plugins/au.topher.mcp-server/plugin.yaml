@@ -16,8 +16,18 @@ contributes:
       default: 8765
       min: 1024
       max: 65535
+    - key: bind_address
+      label: Listen address
+      description: 127.0.0.1 accepts this machine only. Use 0.0.0.0 (or a LAN address) for remote access, which needs a token.
+      kind: string
+      default: 127.0.0.1
     - key: token
       label: Access token
-      description: When set, clients must send it as a Bearer token. Leave empty to accept any local client.
+      description: When set, clients must send it as a Bearer token. Required for any non-loopback listen address.
       kind: string
       default: ""
+    - key: read_only
+      label: Read-only
+      description: Offer only the tools that look, not those that navigate, run actions or change settings.
+      kind: bool
+      default: false
