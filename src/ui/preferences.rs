@@ -134,8 +134,6 @@ mod imp {
         #[template_child]
         pub slideshow_delay_row: TemplateChild<adw::SpinRow>,
         #[template_child]
-        pub slideshow_countdown_row: TemplateChild<adw::ComboRow>,
-        #[template_child]
         pub remember_folder_sort_row: TemplateChild<adw::SwitchRow>,
         #[template_child]
         pub playlist_fetch_row: TemplateChild<adw::SwitchRow>,
@@ -955,14 +953,13 @@ fn bind_switches(settings: &Settings, imp: &imp::PreferencesDialog) {
 
 /// Binds each combo row to a string setting whose value is one of `choices`, by position in the row.
 fn bind_choices(settings: &Settings, imp: &imp::PreferencesDialog) {
-    let combos: [(&str, &glib::Object, &[&str]); 25] = [
+    let combos: [(&str, &glib::Object, &[&str]); 24] = [
         ("browse.tree-monitoring", imp.tree_monitoring_row.upcast_ref(), &["off", "expanded", "visible"]),
         ("browse.video-frame-previews", imp.video_frame_previews_row.upcast_ref(), &["none", "frames", "embedded"]),
         ("thumbnails.aggression", imp.thumbnail_aggression_row.upcast_ref(), &["low", "standard", "increased", "high", "extreme"]),
         ("video.crop.method", imp.video_crop_method_row.upcast_ref(), &["cropdetect", "edges", "static", "across"]),
         ("video.crop.ratio", imp.video_crop_ratio_row.upcast_ref(), &["auto", "4:3", "16:9", "9:16", "1:1", "3:2", "2:3", "21:9"]),
         ("viewer.folder-end", imp.folder_end_row.upcast_ref(), &["stop", "loop", "next-folder"]),
-        ("viewer.slideshow-countdown", imp.slideshow_countdown_row.upcast_ref(), &["none", "bar", "circle", "text"]),
         ("browse.sort.by", imp.default_sort_by_row.upcast_ref(), &["name", "modified", "size", "type"]),
         ("browse.sort.order", imp.default_sort_order_row.upcast_ref(), &["ascending", "descending"]),
         ("mouse.back", imp.back_button_row.upcast_ref(), &["back", "up", "previous", "next", "forward", "none"]),

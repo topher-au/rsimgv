@@ -36,6 +36,7 @@ pub const PROPERTIES: &[(&str, &str)] = &[
     ("file-size", "The size of the file"),
     ("views", "How many times the item has been viewed"),
     ("watch-time", "How long the item has been watched, such as 12m 05s"),
+    ("countdown", "The seconds left before the slideshow moves on from a picture"),
 ];
 
 /// `icon`, an emoji such as ▶️, as the plain character of the font, which the text variation selector asks for.
@@ -70,6 +71,7 @@ pub fn sample(name: &str) -> Option<String> {
         "file-size" => "48.2 MB",
         "views" => "3",
         "watch-time" => "12m 05s",
+        "countdown" => "3",
         _ => return None,
     };
     Some(value.to_owned())
@@ -132,6 +134,8 @@ pub enum Kind {
     Status,
     /// Where notification messages appear, and how they look.
     Messages,
+    /// The time left before the slideshow moves on from a picture, as a bar or a circle, and as text.
+    Countdown,
 }
 
 /// What an element that comes up for a while after a change is waiting for the change of.
@@ -148,8 +152,8 @@ pub enum Trigger {
 pub const TRIGGERS: usize = 5;
 
 impl Kind {
-    pub const ALL: [Kind; 8] =
-        [Kind::Seek, Kind::Volume, Kind::Speed, Kind::Rotation, Kind::Zoom, Kind::Status, Kind::Messages, Kind::Template];
+    pub const ALL: [Kind; 9] =
+        [Kind::Seek, Kind::Volume, Kind::Speed, Kind::Rotation, Kind::Zoom, Kind::Status, Kind::Messages, Kind::Countdown, Kind::Template];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -161,6 +165,7 @@ impl Kind {
             Kind::Zoom => "zoom",
             Kind::Status => "status",
             Kind::Messages => "messages",
+            Kind::Countdown => "countdown",
         }
     }
 
@@ -175,6 +180,7 @@ impl Kind {
             Kind::Zoom => "Zoom display",
             Kind::Status => "Media status",
             Kind::Messages => "Notification messages",
+            Kind::Countdown => "Slideshow countdown",
         }
     }
 
@@ -206,10 +212,47 @@ impl Kind {
             "zoom" => Kind::Zoom,
             "status" => Kind::Status,
             "messages" => Kind::Messages,
+            "countdown" => Kind::Countdown,
             _ => Kind::Template,
         }
     }
 }
+
+/// What a slideshow countdown draws besides its text.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum CountdownShape {
+    /// A bar that shrinks, or grows, as the time passes.
+    #[default]
+    Bar,
+    /// A ring that empties, or fills, as the time passes.
+    Circle,
+}
+
+impl CountdownShape {
+    pub const ALL: [CountdownShape; 2] = [CountdownShape::Bar, CountdownShape::Circle];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            CountdownShape::Bar => "bar",
+            CountdownShape::Circle => "circle",
+        }
+    }
+
+    pub fn title(self) -> &'static str {
+        match self {
+            CountdownShape::Bar => "Bar",
+            CountdownShape::Circle => "Circle",
+        }
+    }
+
+    fn from_name(name: &str) -> Self {
+        Self::ALL.into_iter().find(|shape| shape.name() == name).unwrap_or_default()
+    }
+}
+
+/// The size of a countdown's circle, and how thick its ring is, in pixels.
+pub const RING_SIZE_RANGE: (i32, i32) = (16, 400);
+pub const RING_WIDTH_RANGE: (i32, i32) = (1, 40);
 
 /// How the things in an element, such as a bar and its text, line up across the way they are stacked.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -555,6 +598,9 @@ pub enum Overflow {
 pub const DEFAULT_MAX_NOTIFICATIONS: i32 = 5;
 pub const MAX_NOTIFICATIONS_RANGE: (i32, i32) = (1, 20);
 
+/// What a slideshow countdown's text says unless the element says otherwise.
+pub const DEFAULT_COUNTDOWN_TEMPLATE: &str = "${countdown}s";
+
 /// How a seek display writes the time.
 pub const TIME_FORMATS: &[(&str, &str)] = &[
     ("elapsed-total", "Elapsed / total"),
@@ -603,6 +649,12 @@ pub struct Element {
     pub bar_vertical: bool,
     pub show_text: bool,
     pub text_position: TextPosition,
+    /// For a slideshow countdown: whether its graphic is a bar or a circle, how big the circle is and how thick its ring, and
+    /// whether the graphic fills up as the time passes rather than emptying.
+    pub countdown_shape: CountdownShape,
+    pub ring_size: i32,
+    pub ring_width: i32,
+    pub fill_up: bool,
     /// The space between the things in the element, such as a bar and its text or an icon and its text, in pixels, and how
     /// they line up across the way they are stacked.
     pub spacing: i32,
@@ -752,6 +804,10 @@ impl Element {
             bar_vertical: false,
             show_text: true,
             text_position: TextPosition::default(),
+            countdown_shape: CountdownShape::default(),
+            ring_size: 48,
+            ring_width: 5,
+            fill_up: false,
             spacing: 4,
             child_align: ChildAlign::default(),
             justify: Justify::default(),
@@ -802,6 +858,13 @@ impl Element {
             }
             Kind::Template => element.template = "${filename}".to_owned(),
             Kind::Messages => {}
+            Kind::Countdown => {
+                element.template = DEFAULT_COUNTDOWN_TEMPLATE.to_owned();
+                element.items = Items::Pictures;
+                element.bar_width = 200;
+                element.text_position = TextPosition::Right;
+                element.spacing = 8;
+            }
         }
         element
     }
@@ -839,6 +902,7 @@ impl Element {
                 format!("${{?loading:Loading...}}${{!loading:{}}}", pieces.join("  "))
             }
             Kind::Messages => String::new(),
+            Kind::Countdown => if self.show_text { self.template.clone() } else { String::new() },
         }
     }
 
@@ -861,6 +925,10 @@ impl Element {
             "bar-vertical": self.bar_vertical,
             "show-text": self.show_text,
             "text-position": self.text_position.name(),
+            "countdown-shape": self.countdown_shape.name(),
+            "ring-size": self.ring_size,
+            "ring-width": self.ring_width,
+            "fill-up": self.fill_up,
             "spacing": self.spacing,
             "child-align": self.child_align.name(),
             "justify": self.justify.name(),
@@ -948,6 +1016,12 @@ impl Element {
         if let Some(position) = text("text-position") {
             element.text_position = TextPosition::from_name(position);
         }
+        if let Some(shape) = text("countdown-shape") {
+            element.countdown_shape = CountdownShape::from_name(shape);
+        }
+        element.ring_size = whole("ring-size", element.ring_size, RING_SIZE_RANGE);
+        element.ring_width = whole("ring-width", element.ring_width, RING_WIDTH_RANGE);
+        element.fill_up = flag("fill-up", element.fill_up);
         // The first layouts hid a seek display's text with a time format of none.
         if text("time-format") == Some("none") {
             element.show_text = false;
@@ -1479,5 +1553,16 @@ mod tests {
         for format in ["elapsed-total", "remaining-total", "elapsed", "remaining"] {
             assert_eq!(template::Template::parse(time_template(format)).render(&unknown), "0:05");
         }
+    }
+
+    #[test]
+    fn a_countdown_keeps_its_shape_and_holds_its_sizes_in_range() {
+        let layout = Layout::from_json(r#"{"elements":[{"kind":"countdown","countdown-shape":"circle","ring-size":9999,"ring-width":0,"fill-up":true},{"kind":"countdown","show-text":false}]}"#).unwrap();
+        let element = &layout.elements[0];
+        assert_eq!((element.countdown_shape, element.ring_size, element.ring_width, element.fill_up), (CountdownShape::Circle, RING_SIZE_RANGE.1, RING_WIDTH_RANGE.0, true));
+        assert_eq!(element.text_template(), DEFAULT_COUNTDOWN_TEMPLATE);
+        assert_eq!(element.items, Items::Pictures, "a slideshow waits on pictures");
+        assert_eq!(layout.elements[1].text_template(), "", "without text there is none to write");
+        assert_eq!(Layout::from_json(&layout.to_json()), Some(layout));
     }
 }

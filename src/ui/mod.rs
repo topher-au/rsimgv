@@ -33,7 +33,6 @@ mod navigation_bar;
 mod preferences;
 mod properties;
 mod rotated_label;
-mod slideshow_countdown;
 mod tight_layout;
 mod window;
 

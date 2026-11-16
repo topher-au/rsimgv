@@ -30,7 +30,6 @@ use crate::mpv::framing::{CropRect, Framing};
 use super::backdrop::Backdrop;
 use super::media_overlay::{clock, fraction, Frame, MediaOverlay};
 use crate::overlay::{Layout, Trigger, TRIGGERS};
-use super::slideshow_countdown::{Countdown, Style as CountdownStyle};
 use super::thumbnail_bar::ThumbnailBar;
 
 mod timed_settings;
@@ -194,8 +193,6 @@ const BAR_BUFFER: f64 = 32.0;
 
 /// How long, in milliseconds, the thumbnail bar waits after the pointer moves away before it hides.
 const BAR_HIDE_MS: u64 = 2000;
-/// How often the slideshow's countdown is drawn again.
-const COUNTDOWN_TICK_MS: u64 = 50;
 
 /// How long, in milliseconds, the thumbnail bar slides in or out.
 const BAR_SLIDE_MS: u32 = 250;
@@ -553,10 +550,6 @@ mod imp {
         pub(super) slideshow_timer: RefCell<Option<glib::SourceId>>,
         /// When the wait to move on from the picture shown began.
         pub(super) slideshow_started: Cell<Option<std::time::Instant>>,
-        /// Draws the wait's countdown, while it is asked for.
-        pub(super) countdown: Countdown,
-        /// Redraws the countdown as the wait goes on.
-        pub(super) countdown_tick: RefCell<Option<glib::SourceId>>,
         /// What stepping past the first or last item does.
         pub(super) folder_end: Cell<FolderEnd>,
         /// Whether videos are played by libmpv rather than GTK's own media backend.
@@ -810,7 +803,6 @@ mod imp {
             self.bar_revealer.set_transition_duration(BAR_SLIDE_MS);
             self.bar_dock.set_transition_duration(BAR_SLIDE_MS);
             self.overlay.add_overlay(&self.bar_revealer);
-            self.overlay.add_overlay(self.countdown.widget());
             self.pin_button.connect_toggled({
                 let weak = weak.clone();
                 move |button| {
@@ -1380,10 +1372,21 @@ impl MediaViewer {
         self.arm_slideshow();
     }
 
+    /// How much of the wait before the slideshow moves on is left, from 0 to 1, and the whole seconds left, while it waits.
+    fn slideshow_left(&self) -> Option<(f64, u32)> {
+        let imp = self.imp();
+        let started = imp.slideshow_started.get()?;
+        let total = f64::from(imp.slideshow_delay.get().max(1));
+        let remaining = (total - started.elapsed().as_secs_f64()).clamp(0.0, total);
+        Some((remaining / total, remaining.ceil() as u32))
+    }
+
     /// Sets how long a picture stays up, in seconds, while a slideshow runs.
     pub fn set_slideshow_delay(&self, seconds: i32) {
-        self.imp().slideshow_delay.set(seconds.max(1) as u32);
-        self.arm_slideshow();
+        // Every viewer setting is applied again when one changes, so a wait is not restarted unless its length is.
+        if self.imp().slideshow_delay.replace(seconds.max(1) as u32) != seconds.max(1) as u32 {
+            self.arm_slideshow();
+        }
     }
 
     /// Stops the wait to move on from the picture shown.
@@ -1392,41 +1395,6 @@ impl MediaViewer {
             source.remove();
         }
         self.imp().slideshow_started.set(None);
-        self.sync_countdown();
-    }
-
-    /// Sets how the time left before the slideshow moves on is shown, if at all.
-    pub fn set_slideshow_countdown(&self, name: &str) {
-        self.imp().countdown.set_style(CountdownStyle::from_name(name));
-        self.sync_countdown();
-    }
-
-    /// Shows the time left in the wait that is running, and keeps it up to date, or hides it when there is no wait or no
-    /// countdown is asked for.
-    fn sync_countdown(&self) {
-        let imp = self.imp();
-        if let Some(source) = imp.countdown_tick.take() {
-            source.remove();
-        }
-        let running = imp.slideshow_started.get().is_some() && imp.countdown.style() != CountdownStyle::None;
-        if !running {
-            imp.countdown.set_wait(None);
-            return;
-        }
-        self.update_countdown();
-        let weak = self.downgrade();
-        let source = glib::timeout_add_local(std::time::Duration::from_millis(COUNTDOWN_TICK_MS), move || {
-            let Some(viewer) = weak.upgrade() else { return glib::ControlFlow::Break };
-            viewer.update_countdown();
-            glib::ControlFlow::Continue
-        });
-        imp.countdown_tick.replace(Some(source));
-    }
-
-    fn update_countdown(&self) {
-        let imp = self.imp();
-        let wait = imp.slideshow_started.get().map(|started| (started.elapsed().as_secs_f64(), f64::from(imp.slideshow_delay.get().max(1))));
-        imp.countdown.set_wait(wait);
     }
 
     /// Starts the wait to move on from the picture shown, over again, if a slideshow runs and a picture is up. A video
@@ -1444,12 +1412,10 @@ impl MediaViewer {
             let Some(viewer) = weak.upgrade() else { return };
             viewer.imp().slideshow_timer.take();
             viewer.imp().slideshow_started.set(None);
-            viewer.sync_countdown();
             viewer.step(true);
         });
         imp.slideshow_timer.replace(Some(source));
         imp.slideshow_started.set(Some(std::time::Instant::now()));
-        self.sync_countdown();
     }
 
     /// Keeps the controls and the title shown, or lets them hide again.
@@ -2195,6 +2161,9 @@ impl MediaViewer {
         let mut values = std::collections::HashMap::new();
         let Some(path) = self.shown_path() else { return values };
         values.insert("path", path.to_string_lossy().into_owned());
+        if let Some((_, seconds)) = self.slideshow_left() {
+            values.insert("countdown", seconds.to_string());
+        }
         values.insert("playlist-pos", (imp.index.get() + 1).to_string());
         values.insert("playlist-count", imp.paths.borrow().len().to_string());
         for (name, label) in [
@@ -2309,6 +2278,7 @@ impl MediaViewer {
             video_volume_tracked: remember.enabled && remember.volume,
             has_audio: media.as_ref().is_none_or(|media| media.has_audio()),
             since_change: imp.changed_at.get().map(|when| when.map(|when| when.elapsed())),
+            countdown: self.slideshow_left().map(|(left, _)| left),
         });
     }
 
