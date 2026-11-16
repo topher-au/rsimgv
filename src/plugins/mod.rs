@@ -936,7 +936,7 @@ fn dispatch_event(name: &str, data: &Value) {
 
 fn start_watcher(settings: Settings) {
     glib::timeout_add_seconds_local(1, move || {
-        if settings.boolean("plugins.auto-reload") {
+        if settings.boolean("plugins.allow-reloading") && settings.boolean("plugins.auto-reload") {
             watch_once();
         }
         glib::ControlFlow::Continue

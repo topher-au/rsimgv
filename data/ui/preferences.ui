@@ -1609,6 +1609,12 @@
                                 <property name="title">Reloading</property>
                                 <property name="description">Reloading re-imports a plugin's Python code in the running program, which is meant for developing plugins. It can leave old code behind, so avoid it otherwise.</property>
                                 <child>
+                                  <object class="AdwSwitchRow" id="plugin_allow_reload_row">
+                                    <property name="title">Allow reloading plugins</property>
+                                    <property name="subtitle">Turns on the two options below. Reloading can use more memory or crash the program.</property>
+                                  </object>
+                                </child>
+                                <child>
                                   <object class="AdwSwitchRow" id="plugin_auto_reload_row">
                                     <property name="title">Auto-reload Python plugins</property>
                                     <property name="subtitle">Watch plugin files and reload them when they change</property>
@@ -1617,7 +1623,7 @@
                                 <child>
                                   <object class="AdwSwitchRow" id="plugin_individual_reload_row">
                                     <property name="title">Allow reloading plugins individually</property>
-                                    <property name="subtitle">Adds a reload button to each plugin. Reloading can use more memory or crash the program.</property>
+                                    <property name="subtitle">Adds a reload button to each plugin</property>
                                   </object>
                                 </child>
                               </object>

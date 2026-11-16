@@ -312,6 +312,8 @@ mod imp {
         #[template_child]
         pub plugins_list: TemplateChild<gtk::ListBox>,
         #[template_child]
+        pub plugin_allow_reload_row: TemplateChild<adw::SwitchRow>,
+        #[template_child]
         pub plugin_auto_reload_row: TemplateChild<adw::SwitchRow>,
         #[template_child]
         pub plugin_individual_reload_row: TemplateChild<adw::SwitchRow>,
@@ -609,7 +611,10 @@ impl PreferencesDialog {
     fn bind_plugins(&self, settings: &Settings) {
         let imp = self.imp();
         settings.bind("plugins.auto-reload", &*imp.plugin_auto_reload_row, "active").build();
-        self.bind_individual_reload(settings);
+        settings.bind("plugins.allow-individual-reload", &*imp.plugin_individual_reload_row, "active").build();
+        settings.bind("plugins.allow-reloading", &*imp.plugin_auto_reload_row, "sensitive").get_only().build();
+        settings.bind("plugins.allow-reloading", &*imp.plugin_individual_reload_row, "sensitive").get_only().build();
+        self.bind_allow_reloading(settings);
 
         let list = imp.plugins_list.clone();
         list.remove_all();
@@ -619,18 +624,21 @@ impl PreferencesDialog {
         }
     }
 
-    /// Binds the switch that allows reloading plugins one by one. Turning it on asks first, because reloading a
-    /// running plugin has side effects; cancelling puts the switch back.
-    fn bind_individual_reload(&self, settings: &Settings) {
-        let row = self.imp().plugin_individual_reload_row.clone();
-        row.set_active(settings.boolean("plugins.allow-individual-reload"));
+    /// Binds the switch that allows reloading at all, which the auto-reload and per-plugin reload switches need.
+    /// Turning it on asks first, because reloading a running plugin has side effects; cancelling puts the switch
+    /// back. Turning it off also turns those two switches off.
+    fn bind_allow_reloading(&self, settings: &Settings) {
+        let row = self.imp().plugin_allow_reload_row.clone();
+        row.set_active(settings.boolean("plugins.allow-reloading"));
         let settings = settings.clone();
         let dialog = self.downgrade();
         row.connect_active_notify(move |row| {
-            if row.is_active() == settings.boolean("plugins.allow-individual-reload") {
+            if row.is_active() == settings.boolean("plugins.allow-reloading") {
                 return;
             }
             if !row.is_active() {
+                let _ = settings.set_boolean("plugins.allow-reloading", false);
+                let _ = settings.set_boolean("plugins.auto-reload", false);
                 let _ = settings.set_boolean("plugins.allow-individual-reload", false);
                 return;
             }
@@ -653,7 +661,7 @@ impl PreferencesDialog {
             let (settings, row) = (settings.clone(), row.clone());
             alert.connect_response(None, move |_, response| {
                 if response == "allow" {
-                    let _ = settings.set_boolean("plugins.allow-individual-reload", true);
+                    let _ = settings.set_boolean("plugins.allow-reloading", true);
                 } else {
                     row.set_active(false);
                 }

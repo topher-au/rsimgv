@@ -76,8 +76,7 @@ the viewer changes to. The reference sections below explain each part.
    Open **Preferences → Integration → Plugins**: Hello is listed there. Open a picture and press <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>G</kbd>. The key can be changed in the
    keybinding editor, where the action is named `plugin.com.example.hello.greet`.
 
-5. **Edit and reload.** Change the notification text and save. The plugin reloads on its own (unless
-   `plugins.auto-reload` is off), or send `plugins.reload` over the remote control server. A plugin action
+5. **Edit and reload.** Change the notification text and save. With reloading allowed and `plugins.auto-reload` on, the plugin reloads on its own; otherwise send `plugins.reload` over the remote control server. A plugin action
    that raises an error is reported as a window notification.
 
 From here:
@@ -104,9 +103,10 @@ Plugins are directories containing `plugin.yaml`. They are looked for in:
 A plugin is off until its id is in `plugins.enabled`: nothing runs until it is switched on. The switch on each row of the Plugins tab (under
 Plugins in the preferences) turns a plugin on or off at once and saves the choice there: a disabled plugin's code is
 stopped and its panels and menu items are removed, and its keybindings report that it is disabled. The button beside
-the switch opens the plugin's settings. Python plugin files and manifests are watched and reloaded when they change,
-unless `plugins.auto-reload` is off. Both are set on the Advanced tab, which also has `plugins.allow-individual-reload`
-(off by default): turning it on, after a warning, adds a reload button to each plugin row.
+the switch opens the plugin's settings. Reloading is off by default. The Advanced tab has `plugins.allow-reloading`, which asks for confirmation because
+reloading can leak memory or crash the program; only with it on can `plugins.auto-reload` (watch Python plugin files
+and manifests and reload when they change) and `plugins.allow-individual-reload` (a reload button on each plugin row)
+be turned on. Turning it off turns both off.
 
 ## Manifest
 

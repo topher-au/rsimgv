@@ -881,8 +881,12 @@
       <default>[]</default>
       <summary>Additional directories searched for plugins</summary>
     </key>
+    <key name="allow-reloading" type="b">
+      <default>false</default>
+      <summary>Allow plugins to be reloaded; auto-reload and the per-plugin reload button need this</summary>
+    </key>
     <key name="auto-reload" type="b">
-      <default>true</default>
+      <default>false</default>
       <summary>Watch Python plugin files and reload them when they change</summary>
     </key>
     <key name="allow-individual-reload" type="b">
