@@ -42,6 +42,20 @@ modules:
         url: https://github.com/opencv/opencv.git
         tag: 4.11.0
 
+  - name: libplacebo
+    buildsystem: meson
+    config-opts:
+      - -Ddemos=false
+      - -Dtests=false
+      - -Dvulkan=disabled
+      - -Dd3d11=disabled
+      - -Dglslang=disabled
+      - -Dshaderc=disabled
+    sources:
+      - type: git
+        url: https://code.videolan.org/videolan/libplacebo.git
+        tag: v7.349.0
+
   - name: mpv
     buildsystem: meson
     config-opts:
