@@ -78,6 +78,24 @@ modules:
         url: https://github.com/mpv-player/mpv.git
         tag: v0.40.0
 
+  - name: sassc
+    buildsystem: simple
+    build-commands:
+      - make -C libsass -j BUILD=static LIBSASS_VERSION=3.6.6
+      - make -C sassc -j BUILD=static SASS_LIBSASS_PATH=$PWD/libsass
+      - install -Dm755 sassc/bin/sassc /app/bin/sassc
+    cleanup:
+      - /bin/sassc
+    sources:
+      - type: git
+        url: https://github.com/sass/libsass.git
+        tag: 3.6.6
+        dest: libsass
+      - type: git
+        url: https://github.com/sass/sassc.git
+        tag: 3.6.2
+        dest: sassc
+
   - name: rsimgv
     buildsystem: meson
     config-opts:
