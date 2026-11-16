@@ -147,7 +147,7 @@ def layout(meta, body, root, current, extra_head="", sidebar="", toc_html="", pa
 <a class="skip" href="#main">Skip to content</a>
 <header class="site-header">
   <div class="wrap bar">
-    <a class="brand" href="{root}index.html"><img src="{root}assets/icon.png" width="32" height="32" alt="">rsimgv</a>
+    <a class="brand" href="{root}index.html" aria-label="rsimgv"><img class="logo-light" src="{root}assets/logo.svg" height="32" alt=""><img class="logo-dark" src="{root}assets/logo-dark.svg" height="32" alt=""></a>
     <button class="menu-toggle" aria-label="Menu" aria-expanded="false" aria-controls="site-nav">☰</button>
     <nav id="site-nav" aria-label="Main">
 {nav_links(root, current)}
