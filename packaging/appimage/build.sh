@@ -48,5 +48,5 @@ squashfs-root/AppRun \
   --icon-file "$root/data/icons/hicolor/256x256/apps/au.topher.rsimgv.png" \
   --output appimage
 
-mv ./*.AppImage "$out/rsimgv-$version-x86_64.AppImage"
+mv "rsimgv-$version-x86_64.AppImage" "$out/"
 echo "$out/rsimgv-$version-x86_64.AppImage"
