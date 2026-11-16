@@ -177,7 +177,7 @@ desc: Everything rsimgv does, with screenshots: browsing, searching, viewing, vi
 <div class="split flip">
   <div>
     <h3>Plugins</h3>
-    <p>Python plugins add actions, keybindings, menus, events, sidebar panels and their own settings. They reload when their files change, and the bundled plugins send the viewer's picture or frame to an OpenAI-compatible vision model, upscale pictures, and chat about what you are looking at, with memories and voice.</p>
+    <p>Python plugins add actions, keybindings, menus, events, sidebar panels and their own settings. Each is off until you switch it on, and reloading is opt-in. The bundled plugins send the viewer's picture or frame to an OpenAI-compatible vision model, upscale pictures, chat about what you are looking at, with memories and voice, and serve rsimgv to MCP clients such as Claude Code.</p>
     <p><a href="docs/plugins.html">Plugins →</a></p>
   </div>
   {{shot prefs-plugins "The Plugins page under Integration"}}
@@ -185,7 +185,7 @@ desc: Everything rsimgv does, with screenshots: browsing, searching, viewing, vi
 <div class="split">
   <div>
     <h3>Remote control</h3>
-    <p>A JSON interface served over a Unix socket, TCP or HTTP. Run any action, open tabs, select files, read the current item, take a screenshot, read file metadata and thumbnails, get and set file state, change settings, drive plugins, and show messages over the window.</p>
+    <p>A JSON interface served over a Unix socket, TCP or HTTP. Run any action, open tabs, select files, read the current item, take a screenshot, read file metadata and thumbnails, get and set file state, change settings, drive plugins, and show messages over the window. An Open WebUI tool and an MCP server build on it.</p>
     <p><a href="docs/remote-control.html">Remote control →</a></p>
   </div>
   {{shot prefs-remote-control "The Remote control tab of the general preferences"}}

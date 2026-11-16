@@ -1,9 +1,19 @@
 title: Getting started
 desc: Requirements, building and installing rsimgv, and what happens the first time you run it.
 ---
-<p class="lead">rsimgv is built from source with Meson, which runs Cargo for you. An Arch Linux package recipe is included for those who prefer a package.</p>
+<p class="lead">rsimgv is published as an AppImage and a Flatpak, and is built from source with Meson, which runs Cargo for you. An Arch Linux package recipe is included for those who prefer a package.</p>
 
-<h2>Requirements</h2>
+<h2 id="prebuilt">AppImage and Flatpak</h2>
+<p>Each version on the <a href="https://github.com/topher-au/rsimgv/releases">releases page</a> has an AppImage, a Flatpak bundle and a source archive. Separate workflows build them when a <code>v*</code> tag is pushed.</p>
+<pre><code>chmod +x rsimgv-*.AppImage
+./rsimgv-*.AppImage ~/Pictures
+
+flatpak install --user rsimgv.flatpak
+flatpak run au.topher.rsimgv ~/Pictures</code></pre>
+<p>The AppImage bundles GTK, libadwaita, mpv and OpenCV but not glibc, so it runs only on systems whose glibc is as new as the build environment's. The Flatpak uses the GNOME 50 runtime and can read the whole filesystem. <strong>Neither includes Python plugin support</strong>: to use plugins, build from source or install the Arch package.</p>
+
+
+<h2>Requirements for building</h2>
 <h3>Build time</h3>
 <ul>
   <li>Rust (stable) with <code>cargo</code></li>

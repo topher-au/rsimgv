@@ -205,7 +205,7 @@ SECTIONS = [
         "remote.tcp.enabled", "remote.tcp.port", "remote.http.enabled", "remote.http.port",
     ]),
     ("Scripts", ["scripts.list"]),
-    ("Plugins", ["plugins.disabled", "plugins.extra-directories", "plugins.auto-reload"]),
+    ("Plugins", ["plugins.enabled", "plugins.extra-directories", "plugins.allow-reloading", "plugins.auto-reload", "plugins.allow-individual-reload"]),
 ]
 
 

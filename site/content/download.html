@@ -1,16 +1,18 @@
 title: Download
-desc: Build and install rsimgv from source, or package it for Arch Linux.
+desc: Download an AppImage or Flatpak, package rsimgv for Arch Linux, or build it from source.
 ---
 <h1>Get rsimgv</h1>
-<p class="lead">rsimgv is in early development and is distributed as source. It builds with Meson, and an Arch Linux package recipe is included in the repository.</p>
+<p class="lead">rsimgv is in early development. Each version is published on GitHub with an AppImage, a Flatpak bundle and a source archive. It also builds with Meson, and an Arch Linux package recipe is included in the repository.</p>
 
 <div class="cards">
+  <div class="card"><h3>AppImage</h3><p>A single file that bundles GTK, libadwaita, mpv and OpenCV. It needs a system whose glibc is as new as the build's.</p><p><a class="more" href="https://github.com/topher-au/rsimgv/releases/latest">Latest release →</a></p></div>
+  <div class="card"><h3>Flatpak</h3><p>A bundle built on the GNOME 50 runtime, installed with <code>flatpak install --user rsimgv.flatpak</code>.</p><p><a class="more" href="https://github.com/topher-au/rsimgv/releases/latest">Latest release →</a></p></div>
   <div class="card"><h3>Source</h3><p>Clone the repository from GitHub.</p><p><a class="more" href="https://github.com/topher-au/rsimgv">github.com/topher-au/rsimgv →</a></p></div>
   <div class="card"><h3>Build and install</h3><p>Meson wraps the Rust build, compiles the stylesheets, builds the SVP plugins and installs the schema, icons and bundled plugins.</p><a class="more" href="docs/getting-started.html">Getting started →</a></div>
   <div class="card"><h3>Arch Linux</h3><p><code>packaging/arch/PKGBUILD</code> builds a package from a source archive that <code>scripts/dist.sh</code> writes.</p><a class="more" href="docs/getting-started.html#arch-linux">Package recipe →</a></div>
 </div>
 
-<h2>Quick start</h2>
+<h2>Build from source</h2>
 <ol class="steps">
   <li><strong>Install the build dependencies</strong><br>Rust with <code>cargo</code>, a C compiler and <code>pkg-config</code>, Meson 1.2+ and Ninja, GTK 4.22+, libadwaita 1.9+, libmpv, OpenCV 4.5+ with Clang, and <code>sassc</code>.</li>
   <li><strong>Build</strong>
@@ -21,6 +23,8 @@ meson compile -C builddir</code></pre></li>
   <li><strong>Run it</strong>
 <pre><code>rsimgv ~/Pictures</code></pre></li>
 </ol>
+
+<div class="callout"><strong>The AppImage and Flatpak have no plugins</strong><p>Both are built without Python plugin support, so the bundled plugins, including the MCP server, are only available in a build from source or the Arch package. Everything else, including the remote control interface, works in all of them.</p></div>
 
 <div class="callout warn"><strong>Early development</strong><p>Expect rough edges. General file operations such as copy and move are not built yet, apart from deleting a playlist item from disk, and the application is still changing quickly. Python plugins need <code>python3-embed</code> and <code>pygobject-3.0</code> at build time; without them the rest of rsimgv still works.</p></div>
 

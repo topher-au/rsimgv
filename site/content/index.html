@@ -29,8 +29,8 @@ layout: home
       <div class="card"><h3>A playlist from anywhere</h3><p>Collect items from any folder, shuffle and reorder them, save M3U, PLS or XSPF, and detach the panel into its own window.</p><a class="more" href="docs/playlist.html">The playlist →</a></div>
       <div class="card"><h3>Keybindings in contexts</h3><p>Over 150 actions, each bindable globally or only while browsing, viewing, looking at a picture, watching a video, in the playlist or in the tree. Press F1 to see what is bound where you are.</p><a class="more" href="docs/keybindings.html">Keybindings and mouse →</a></div>
       <div class="card"><h3>Tabs, bookmarks and history</h3><p>Open folders in tabs, bookmark the places you return to, long-press back or forward to list the history, and see what you have viewed.</p><a class="more" href="docs/navigation.html">Navigation →</a></div>
-      <div class="card"><h3>Plugins</h3><p>Python plugins add actions, menus, events, panels and settings. Bundled plugins describe what the viewer shows, upscale pictures and chat about them.</p><a class="more" href="docs/plugins.html">Plugins →</a></div>
-      <div class="card"><h3>Remote control</h3><p>A JSON interface over a Unix socket, TCP or HTTP lets other programs run actions, read metadata and thumbnails, change settings, and post messages.</p><a class="more" href="docs/remote-control.html">Remote control →</a></div>
+      <div class="card"><h3>Plugins</h3><p>Python plugins add actions, menus, events, panels and settings, and each stays off until you enable it. Bundled plugins describe what the viewer shows, upscale pictures, chat about them and serve rsimgv over MCP.</p><a class="more" href="docs/plugins.html">Plugins →</a></div>
+      <div class="card"><h3>Remote control and MCP</h3><p>A JSON interface over a Unix socket, TCP or HTTP lets other programs run actions, read metadata and thumbnails, change settings, and post messages. The MCP plugin and an Open WebUI tool put AI assistants in the driving seat.</p><a class="more" href="docs/remote-control.html">Remote control →</a></div>
     </div>
   </div>
 </section>
@@ -106,8 +106,12 @@ layout: home
 <section class="block alt">
   <div class="wrap">
     <h2>Install</h2>
-    <p class="sub">rsimgv is built from source. Meson drives the build, and an Arch package recipe is included.</p>
-<pre><code>git clone https://github.com/topher-au/rsimgv.git
+    <p class="sub">Download an AppImage or Flatpak, install the Arch package, or build from source with Meson.</p>
+    <div class="cards">
+      <div class="card"><h3>AppImage and Flatpak</h3><p>Each version on GitHub has both, plus a source archive. They are built without Python plugins.</p><a class="more" href="download.html">Download →</a></div>
+      <div class="card"><h3>Arch Linux</h3><p>A PKGBUILD in the repository builds a package with plugin support.</p><a class="more" href="docs/getting-started.html#arch-linux">Package recipe →</a></div>
+    </div>
+<pre><code>git clone --recurse-submodules https://github.com/topher-au/rsimgv.git
 cd rsimgv
 meson setup builddir --prefix=/usr/local
 meson compile -C builddir

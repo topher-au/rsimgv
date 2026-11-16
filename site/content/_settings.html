@@ -216,7 +216,9 @@
 <div class="table-wrap"><table>
 <thead><tr><th>Setting</th><th>Default</th><th>Values</th><th>What it does</th></tr></thead>
 <tbody>
-<tr><td><code>plugins.disabled</code><br><span class="muted">disabled</span></td><td><code>[]</code></td><td>list</td><td>Plugin ids that are not loaded</td></tr>
+<tr><td><code>plugins.enabled</code><br><span class="muted">enabled</span></td><td><code>[]</code></td><td>list</td><td>Plugin ids that are loaded; every other plugin is off until it is switched on</td></tr>
 <tr><td><code>plugins.extra-directories</code><br><span class="muted">extra-directories</span></td><td><code>[]</code></td><td>list</td><td>Additional directories searched for plugins</td></tr>
-<tr><td><code>plugins.auto-reload</code><br><span class="muted">auto-reload</span></td><td>on</td><td>on or off</td><td>Watch Python plugin files and reload them when they change</td></tr>
+<tr><td><code>plugins.allow-reloading</code><br><span class="muted">allow-reloading</span></td><td>off</td><td>on or off</td><td>Allow plugins to be reloaded; auto-reload and the per-plugin reload button need this</td></tr>
+<tr><td><code>plugins.auto-reload</code><br><span class="muted">auto-reload</span></td><td>off</td><td>on or off</td><td>Watch Python plugin files and reload them when they change</td></tr>
+<tr><td><code>plugins.allow-individual-reload</code><br><span class="muted">allow-individual-reload</span></td><td>off</td><td>on or off</td><td>Show a button on each plugin that reloads just that plugin</td></tr>
 </tbody></table></div>

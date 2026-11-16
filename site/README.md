@@ -30,7 +30,7 @@ python3 site/build.py --serve    # builds, then serves http://localhost:8000
 | `content/docs/*.html` | The documentation. The sidebar order is the `DOCS` list in `build.py` |
 | `content/_*.html` | Generated fragments (see below); not pages |
 | `static/` | `style.css` (light and dark themes) and `site.js` (theme, lightbox, docs search) |
-| `assets/` | Icon and `screenshots/*.webp` |
+| `assets/` | Icon, logo (light and dark) and `screenshots/*.webp` |
 | `tools/extract_reference.py` | Generates the keybinding and settings references from rsimgv's source |
 | `tools/screenshots/` | How the screenshots were made, with scripts for the demo media and a sandboxed launcher |
 

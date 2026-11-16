@@ -50,13 +50,16 @@ data/
   ui/                GTK XML templates for every window and widget
   style/             SCSS, compiled to CSS at build time
   icons/             application and symbolic icons (hicolor theme layout)
-  plugins/           the bundled LLM Screenshot plugin
+  plugins/           the bundled plugins: LLM Screenshot, AI Upscale, LLM Chat and MCP Server
   *.gschema.xml      GSettings schema
   rsimgv.gresource.xml  bundle manifest
 build-aux/           build helpers that run cargo and build open-svpflow from Meson
 clients/open-webui/  an Open WebUI tool that speaks the remote control interface
 scripts/             build, install, dist and test helpers
-packaging/arch/      PKGBUILD
+packaging/           arch/ (PKGBUILD), appimage/ and flatpak/ build recipes
+.github/workflows/   release builds and GitHub Pages
+.gitea/workflows/    site deployment and the GitHub mirror
+site/                this website and its build script
 third_party/         open-svpflow
 </code></pre>
 
@@ -77,5 +80,8 @@ scripts/test.sh   # the same, or only tests whose names contain an argument</cod
   <li><strong>Metadata is a searchable index.</strong> <code>ffprobe</code> output is stored as linked rows in SQLite, not as JSON or blobs, so any key at any depth can be searched across files.</li>
 </ul>
 
+<h2>Releases</h2>
+<p>Pushing a tag that starts with <code>v</code> runs three GitHub workflows in parallel: <code>release.yml</code> checks that the tag matches the <code>meson.build</code> version and builds the source archive, <code>release-appimage.yml</code> builds the AppImage in an Arch Linux container, and <code>release-flatpak.yml</code> builds the Flatpak on the GNOME 50 runtime. Each attaches its file to the release, and whichever finishes first creates it. <code>packaging/appimage/build.sh</code> runs the AppImage build locally. Both packages are built with <code>-Dpython=disabled</code>.</p>
+
 <h2>This website</h2>
-<p>This site is a separate repository. Its pages are HTML fragments that a small Python script wraps in the site layout; the keybinding and settings references are generated from rsimgv's own source, so they cannot drift from the code.</p>
+<p>This site lives in the <code>site/</code> directory. Its pages are HTML fragments that a small Python script wraps in the site layout; the keybinding and settings references are generated from rsimgv's own source, so they cannot drift from the code.</p>

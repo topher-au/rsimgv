@@ -3,6 +3,8 @@ desc: Drive a running rsimgv from other programs with its JSON interface over a 
 ---
 <p class="lead">A running rsimgv can be driven by other programs. Anything you can do with a key, you can do with a request: run an action, open a tab, select a file, ask what the viewer is showing, take a screenshot of it, read file metadata and thumbnails, change settings, or put a message on screen.</p>
 
+<p>Two ready-made clients sit on top of it. The bundled <a href="plugins.html#the-bundled-mcp-server-plugin">MCP Server plugin</a> exposes rsimgv as tools to MCP clients such as Claude Code, and <code>clients/open-webui/</code> in the repository holds an Open WebUI tool that browses, plays and captions media through the HTTP transport.</p>
+
 <h2>Turn it on</h2>
 <p>The interface is off by default. Enable one or more transports under <em>General → Remote control</em> in the preferences, and they start or stop straight away.</p>
 {{shot prefs-remote-control "The Remote control tab of the general preferences"}}

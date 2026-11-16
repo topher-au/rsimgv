@@ -1,11 +1,11 @@
 title: Plugins
 desc: Python plugins in rsimgv: discovery, the manifest, the Python API, actions, menus, events, panels, settings and the bundled LLM Screenshot plugin.
 ---
-<p class="lead">Plugins extend rsimgv with Python: they can add actions, keybindings, menus, events and sidebar panels, and declare their own settings. Three plugins are bundled: <strong>LLM Screenshot</strong> sends the viewer's picture or video frame to an OpenAI-compatible vision model, <strong>AI Upscale</strong> enlarges pictures, and <strong>LLM Chat</strong> is a chat about what you are looking at.</p>
+<p class="lead">Plugins extend rsimgv with Python: they can add actions, keybindings, menus, events and sidebar panels, and declare their own settings. Four plugins are bundled: <strong>LLM Screenshot</strong> sends the viewer's picture or video frame to an OpenAI-compatible vision model, <strong>AI Upscale</strong> enlarges pictures, <strong>LLM Chat</strong> is a chat about what you are looking at, and <strong>MCP Server</strong> lets MCP clients drive rsimgv. Every plugin is off until you switch it on.</p>
 
 {{shot prefs-plugins "The Plugins page under Integration"}}
 
-<div class="callout"><strong>Python support is a build option</strong><p>Python plugin support is built by default when <code>python3-embed</code> and <code>pygobject-3.0</code> are available. Configure with <code>-Dpython=auto</code>, <code>-Dpython=enabled</code> or <code>-Dpython=disabled</code>.</p></div>
+<div class="callout"><strong>Python support is a build option</strong><p>Python plugin support is built by default when <code>python3-embed</code> and <code>pygobject-3.0</code> are available. Configure with <code>-Dpython=auto</code>, <code>-Dpython=enabled</code> or <code>-Dpython=disabled</code>. The AppImage and Flatpak are built with it disabled, so they have no plugins.</p></div>
 
 <h2>Writing your first plugin</h2>
 <p>This builds a plugin that shows a notification naming the picture or video in the viewer, and logs each item the viewer changes to.</p>
@@ -55,8 +55,8 @@ class Plugin:
     def on_event(self, name, data):
         if name == "viewer.item_changed":
             rsimgv.host.log("info", f"Viewer moved to {data['path']}")</code></pre></li>
-  <li><strong>Run it.</strong> Start <code>rsimgv --verbose</code> from the shell where you set <code>RSIMGV_PLUGINS</code>. Hello is listed on the Plugins page. Open a picture and press <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>G</kbd>. The action is named <code>plugin.com.example.hello.greet</code> in the keybinding editor.</li>
-  <li><strong>Edit and reload.</strong> Change the notification text and save. The plugin reloads on its own, unless <code>plugins.auto-reload</code> is off, or send <code>plugins.reload</code> over the remote control. An action that raises an error is reported as a window notification.</li>
+  <li><strong>Run it.</strong> Start <code>rsimgv --verbose</code> from the shell where you set <code>RSIMGV_PLUGINS</code>. Hello is listed on the Plugins page. Switch it on with its switch there, open a picture and press <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>G</kbd>. The action is named <code>plugin.com.example.hello.greet</code> in the keybinding editor.</li>
+  <li><strong>Edit and reload.</strong> Change the notification text and save. With <code>plugins.allow-reloading</code> and <code>plugins.auto-reload</code> on, the plugin reloads on its own. Otherwise send <code>plugins.reload</code> over the remote control, or turn on the reload button on its row. An action that raises an error is reported as a window notification.</li>
 </ol>
 <p>From here, <code>rsimgv.host.call(method, params)</code> runs the same methods as the <a href="remote-control.html">remote control</a>, such as <code>view.info</code>, <code>view.screenshot</code>, <code>files.list</code> and <code>settings.get</code>. Add <code>contributes.settings</code> for options, read from the <code>config.json</code> beside <code>rsimgv.host.config_path()</code>, and <code>contributes.panels</code> with <code>create_panel</code> for a widget in the sidebar or over the viewer. Do slow work, such as network requests, on a thread, and return to the GTK main thread with <code>rsimgv.ui.idle_add</code>, because a plugin that blocks stalls the whole window. The bundled plugins are complete examples, and LLM Screenshot is the smallest.</p>
 
@@ -68,7 +68,9 @@ class Plugin:
   <li>each <code>$XDG_DATA_DIRS/rsimgv/plugins</code></li>
   <li>the directories in <code>plugins.extra-directories</code></li>
 </ol>
-<p>A plugin is enabled unless its id is in <code>plugins.disabled</code>. Python files and manifests are watched and reloaded when they change, unless <code>plugins.auto-reload</code> is off. The <em>Plugins</em> page lists what was found, shows each plugin's settings, and reloads them.</p>
+<p>A plugin is off until its id is in <code>plugins.enabled</code>, so nothing runs until you switch it on. The switch on each row of the <em>Plugins</em> tab turns a plugin on or off at once and saves the choice. A disabled plugin's code is stopped and its panels and menu items are removed, and its keybindings report that it is disabled. The button beside the switch opens the plugin's own settings.</p>
+<h3>Reloading</h3>
+<p>Reloading is off by default, because reloading Python plugins can leak memory or crash the program. The <em>Advanced</em> tab has <code>plugins.allow-reloading</code>, which asks for confirmation. Only with it on can <code>plugins.auto-reload</code> watch Python files and manifests and reload a plugin when they change, and <code>plugins.allow-individual-reload</code> show a reload button on each plugin row. Turning <code>allow-reloading</code> off turns both off. The <code>plugins.reload</code> remote control method is always available.</p>
 
 <h2>The manifest</h2>
 <pre><code>api: 1
@@ -177,6 +179,17 @@ rsimgv.action_done(result)</code></pre>
   <li>Messages show names and the picture that was sent, with hover actions to replay, regenerate or delete them, and a button to jump to the latest. The chat's width in the sidebar is <code>window.chat-width</code>.</li>
 </ul>
 <p>The plugin's README lists its settings.</p>
+
+<h2>The bundled MCP Server plugin</h2>
+<p><code>au.topher.mcp-server</code> serves the <a href="https://modelcontextprotocol.io">Model Context Protocol</a> on <code>http://127.0.0.1:8765/mcp</code> (streamable HTTP), so an MCP client can browse folders, drive the viewer, read what it shows and change settings. It offers 38 tools, each annotated as read-only or not, and rsimgv must be running with a window open.</p>
+<ul>
+  <li><strong>Look:</strong> <code>get_status</code> is the place to start, then <code>view_info</code>, <code>view_screenshot</code>, <code>get_thumbnails</code>, file information and state, the playlist and the marked files.</li>
+  <li><strong>Browse and view:</strong> list and search files, open folders, step through them, open items, and control the picture and video viewer, slideshow and playlist.</li>
+  <li><strong>Everything else:</strong> <code>list_actions</code> finds an action and <code>run_action</code> runs it. Actions that open dialogs, quit, need a pointer or depend on keyboard focus are refused, and settings under <code>plugins.</code> cannot be changed.</li>
+</ul>
+<p>Connect Claude Code with:</p>
+<pre><code>claude mcp add --transport http rsimgv http://127.0.0.1:8765/mcp</code></pre>
+<p>The plugin's settings, opened from the button on its row, set the port, the listen address, a bearer token and a read-only mode that hides every tool that changes anything. It listens on the loopback interface only by default. A non-loopback address, such as <code>0.0.0.0</code> for Open WebUI in a container, requires a token, and the server refuses to start without one. The tools can run actions and change settings, and the server speaks plain HTTP, so keep it off untrusted networks. In Open WebUI, add it under <em>Admin Settings → External Tools</em> as an MCP (Streamable HTTP) server with the token as a bearer credential. The plugin's README and <code>TOOLS.md</code> list every tool and its arguments.</p>
 
 <h2>Limits</h2>
 <ul>
