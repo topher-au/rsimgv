@@ -729,6 +729,21 @@
                                     </property>
                                   </object>
                                 </child>
+                                <child>
+                                  <object class="AdwSpinRow" id="slideshow_delay_row">
+                                    <property name="title">Slideshow delay</property>
+                                    <property name="subtitle">Seconds a picture stays up while auto-advance is on. Videos move on when they end</property>
+                                    <property name="digits">0</property>
+                                    <property name="adjustment">
+                                      <object class="GtkAdjustment">
+                                        <property name="lower">1</property>
+                                        <property name="upper">3600</property>
+                                        <property name="step-increment">1</property>
+                                        <property name="page-increment">10</property>
+                                      </object>
+                                    </property>
+                                  </object>
+                                </child>
                               </object>
                             </child>
                           </object>

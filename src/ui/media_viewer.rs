@@ -544,6 +544,10 @@ mod imp {
         /// Whether a video starts again when it ends, and whether the next item plays when it ends instead.
         pub(super) repeat: Cell<bool>,
         pub(super) auto_advance: Cell<bool>,
+        /// How long a picture stays up, in seconds, before auto-advance moves on from it.
+        pub(super) slideshow_delay: Cell<u32>,
+        /// The wait before auto-advance moves on from the picture shown.
+        pub(super) slideshow_timer: RefCell<Option<glib::SourceId>>,
         /// What stepping past the first or last item does.
         pub(super) folder_end: Cell<FolderEnd>,
         /// Whether videos are played by libmpv rather than GTK's own media backend.
@@ -1351,11 +1355,46 @@ impl MediaViewer {
         }
     }
 
-    /// Plays the next item when a video ends, or stops doing so.
+    /// Runs a slideshow, or stops it: the next item is shown when a video ends or a picture has been up for the slideshow
+    /// delay.
     pub fn toggle_auto_advance(&self) {
         let imp = self.imp();
         imp.auto_advance.set(!imp.auto_advance.get());
         imp.controls.set_auto_advance(imp.auto_advance.get());
+        // The controls with the button are hidden for a picture, so the change is said here too.
+        self.announce(if imp.auto_advance.get() { "Slideshow on" } else { "Slideshow off" }, false);
+        self.arm_slideshow();
+    }
+
+    /// Sets how long a picture stays up, in seconds, while a slideshow runs.
+    pub fn set_slideshow_delay(&self, seconds: i32) {
+        self.imp().slideshow_delay.set(seconds.max(1) as u32);
+        self.arm_slideshow();
+    }
+
+    /// Stops the wait to move on from the picture shown.
+    fn cancel_slideshow(&self) {
+        if let Some(source) = self.imp().slideshow_timer.take() {
+            source.remove();
+        }
+    }
+
+    /// Starts the wait to move on from the picture shown, over again, if a slideshow runs and a picture is up. A video
+    /// moves on when it ends, so it has no wait.
+    fn arm_slideshow(&self) {
+        let imp = self.imp();
+        self.cancel_slideshow();
+        let picture = imp.media.borrow().is_none() && imp.paths.borrow().get(imp.index.get()).is_some_and(|path| !is_video(path));
+        if !imp.auto_advance.get() || imp.suspended.get() || !picture {
+            return;
+        }
+        let weak = self.downgrade();
+        let source = glib::timeout_add_seconds_local_once(imp.slideshow_delay.get().max(1), move || {
+            let Some(viewer) = weak.upgrade() else { return };
+            viewer.imp().slideshow_timer.take();
+            viewer.step(true);
+        });
+        imp.slideshow_timer.replace(Some(source));
     }
 
     /// Keeps the controls and the title shown, or lets them hide again.
@@ -1729,6 +1768,7 @@ impl MediaViewer {
     pub fn suspend(&self) {
         let imp = self.imp();
         imp.suspended.set(true);
+        self.cancel_slideshow();
         let media = imp.media.borrow().clone();
         imp.resume_playing.set(media.as_ref().is_some_and(|media| media.is_playing()));
         if let Some(media) = media {
@@ -1741,6 +1781,7 @@ impl MediaViewer {
     pub fn resume(&self) {
         let imp = self.imp();
         imp.suspended.set(false);
+        self.arm_slideshow();
         if imp.resume_playing.take() {
             if let Some(media) = imp.media.borrow().clone() {
                 media.play();
@@ -3088,6 +3129,7 @@ impl MediaViewer {
         }
         self.update_zoom_indicator();
         self.begin_watch_session();
+        self.arm_slideshow();
     }
 
     /// Decodes the original of the upscaled picture shown, and puts it on the canvas beside the copy.
@@ -3148,6 +3190,7 @@ impl MediaViewer {
         if let Some(source) = imp.video_start.take() {
             source.remove();
         }
+        self.cancel_slideshow();
         self.finish_watch_session();
         imp.watch_hash.take();
         imp.watch_stored.set((0, 0.0));

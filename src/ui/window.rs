@@ -1121,6 +1121,7 @@ impl Window {
         let viewer = &self.imp().viewer;
         viewer.set_zoom_step(settings.int("image.zoom-step"));
         viewer.set_video_start_delay(settings.int("video.start-delay"));
+        viewer.set_slideshow_delay(settings.int("viewer.slideshow-delay"));
         viewer.set_expand_limit(settings.int("image.expand-up-to-factor"));
         viewer.set_keep_fit(settings.boolean("image.keep-fit"));
         viewer.set_original_focus(OriginalFocus::from_name(&settings.string("image.original-focus")));
@@ -3986,7 +3987,7 @@ const WHEEL_VOLUME_STEP: f64 = 5.0;
 const WHEEL_SEEK_STEP: f64 = 5.0;
 
 /// The settings the viewer and the window title are set from, applied again whenever one changes.
-const VIEWER_SETTINGS: [&str; 67] = [
+const VIEWER_SETTINGS: [&str; 68] = [
     "video.crop.enabled",
     "video.crop.method",
     "video.crop.trim",
@@ -4027,6 +4028,7 @@ const VIEWER_SETTINGS: [&str; 67] = [
     "video.seek-overlay.width",
     "video.seek-overlay.always",
     "viewer.folder-end",
+    "viewer.slideshow-delay",
     "image.original-focus",
     "image.unlock-minimum-zoom",
     "image.zoom-step",

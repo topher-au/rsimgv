@@ -89,7 +89,7 @@
         <child>
           <object class="GtkToggleButton" id="auto_advance_button">
             <property name="icon-name">media-playlist-consecutive-symbolic</property>
-            <property name="tooltip-text">Auto-advance to the next item when a video ends</property>
+            <property name="tooltip-text">Slideshow: go to the next item when a video ends or a picture has been up for the slideshow delay</property>
             <style><class name="flat"/></style>
           </object>
         </child>

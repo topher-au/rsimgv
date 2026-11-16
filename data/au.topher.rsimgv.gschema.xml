@@ -353,6 +353,11 @@
       <default>'stop'</default>
       <summary>What stepping past either end of a folder in the viewer does: stop, loop around the folder, or go on to the next folder with media</summary>
     </key>
+    <key name="slideshow-delay" type="i">
+      <range min="1" max="3600"/>
+      <default>5</default>
+      <summary>How long a picture stays up before the slideshow (auto-advance) moves to the next item, in seconds</summary>
+    </key>
   </schema>
   <schema id="au.topher.rsimgv.viewer.status-bar" path="/au/topher/rsimgv/viewer/status-bar/">
     <key name="shown" type="b">

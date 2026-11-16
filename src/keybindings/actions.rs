@@ -781,7 +781,7 @@ pub const ACTIONS: &[ActionInfo] = &[
         name: "video.repeat", description: "Play the video again from the start when it ends, or stop repeating it.", icon: "media-playlist-repeat-symbolic", label: "Toggle Repeat", defaults: &["r"],
     },
     ActionInfo {
-        name: "video.auto-advance", description: "When a video ends, show the next item in the folder or the playlist, or stop doing so.", icon: "media-skip-forward-symbolic", label: "Toggle Auto-Advance", defaults: &["n"],
+        name: "video.auto-advance", description: "Run a slideshow: show the next item in the folder or the playlist when a video ends or a picture has been up for the slideshow delay, or stop doing so.", icon: "media-skip-forward-symbolic", label: "Toggle Auto-Advance", defaults: &["n"],
     },
 ];
 
