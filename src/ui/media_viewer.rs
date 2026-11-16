@@ -1555,9 +1555,8 @@ impl MediaViewer {
             eprintln!("rsimgv: could not save the application volume: {err}");
         }
         self.set_app_volume(volume);
-        // The volume display comes up only when the video shown takes the new level, as it does at either end of the
-        // scale.
-        if !imp.audio_own.get() && imp.media.borrow().is_some() {
+        // The volume display comes up whether or not the video shown follows the application volume, as it shows both.
+        if imp.media.borrow().is_some() {
             self.note_change(Trigger::Volume);
         }
     }
