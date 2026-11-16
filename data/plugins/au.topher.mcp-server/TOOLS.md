@@ -1,7 +1,24 @@
-# MCP tool catalogue (working draft)
+# MCP tool catalogue
 
-Design notes for what the MCP Server plugin should expose. Nothing here is implemented beyond the
-"current" tools in `plugin.py`; this is the list to agree on before changing them.
+What the MCP Server plugin exposes and what it leaves out, and why.
+
+## Implementation status
+
+Everything below marked as plugin-side is implemented in `plugin.py` (35 tools, 13 of them read-only). These
+need host changes first and are **not** implemented: `get_playlist`, `search_files`, viewer state readback
+(paused, volume, zoom, rotation), marked items, and action metadata. Differences from the first draft of
+this list:
+
+- `slideshow` only has `toggle` and `toggle_shuffle`: the host cannot say whether a slideshow is running, so
+  start and stop cannot be separate commands.
+- `video_view` takes the ratio as `aspect` (`auto`, `4:3`, `16:9`, `9:16`, `1:1`, `3:2`, `2:3`, `21:9`).
+- `file_metadata` is `get_file_info`, and returns `{files: [...]}`.
+- `win.toggle-fullscreen` is allowed through `run_action`.
+- `viewer_navigate` and the other action wrappers return `{ran: <action>}`, not the new state, because the
+  window may not have updated when the action returns. Call `get_status` to see the result.
+- `call_method` exists but is hidden unless the `allow_raw_methods` setting is on.
+- Tool annotations (`readOnlyHint` and so on) are sent, and `read_only` mode hides every tool without
+  `readOnlyHint`.
 
 Source material: the host methods in `src/services/remote.rs` (about 45), the 153 keybound actions in
 `src/keybindings/actions.rs`, and the plugin actions (`au.topher.upscale`, `au.topher.llm-chat`).
@@ -102,8 +119,8 @@ and validates `value` against the action's range before calling `actions.run`.
 | `image_view` | `command: zoom_in\|zoom_out\|fit_window\|fit_width\|fit_height\|fill\|original\|pan_up\|pan_down\|pan_left\|pan_right`, `steps?: int` | `{}` | Zoom, fit and pan a picture. | W |
 | `transform_view` | `command: rotate_cw\|rotate_ccw\|set_rotation\|flip_h\|flip_v`, `degrees?: 0\|90\|180\|270` | `{}` | Rotation and mirroring for pictures and videos. | W |
 | `video_playback` | `command: play_pause\|seek\|frame_step\|set_speed\|repeat\|mute\|volume`, `value?: number`, `target?: video\|application` | `{}` | Seconds for `seek`, frames for `frame_step`, a multiple for `set_speed`, a percent change for `volume`. Add a `paused`/`position` readback once the host reports it. | W |
-| `video_view` | `command: zoom_in\|zoom_out\|zoom_reset\|pan_*\|set_aspect\|toggle_crop\|toggle_backdrop`, `value?: string` (aspect such as `16:9`) | `{}` | Framing of a video. | W |
-| `slideshow` | `state: start\|stop\|toggle`, `shuffle?` | `{}` | | W |
+| `video_view` | `command: zoom_in\|zoom_out\|zoom_reset\|pan_*\|set_aspect\|cycle_aspect\|toggle_crop\|toggle_backdrop\|toggle_svp`, `aspect?: auto\|4:3\|16:9\|...` | `{}` | Framing of a video. | W |
+| `slideshow` | `command: toggle\|toggle_shuffle` | `{ran}` | No state readback, so no separate start and stop. | W |
 
 ### Playlist
 
@@ -157,7 +174,7 @@ and validates `value` against the action's range before calling `actions.run`.
 | Dialogs that wait for a person | `win.settings`, `win.settings-keybindings`, `win.open-folder`, `win.edit-location`, `win.bookmark-folder`, `win.playlist-load`, `win.playlist-save`, `win.playlist-clear`, `browse.properties`, `win.toggle-keybinds` | They block on a human at the desktop. Use `open_folder`, `add_bookmark` and so on. |
 | Pointer-only | `image.zoom-in-at-pointer`, `image.zoom-out-at-pointer`, `browse.show-tooltip`, `video.edit-crop` | No pointer exists over MCP. |
 | Keyboard cursor and focus | `browse.cursor-*`, `browse.keep-*`, `browse.extend-*`, `browse.first/last`, `browse.select-all`, `browse.toggle-mark`, `tree.*`, `playlist.cursor-*`, `playlist.extend-*`, `playlist.select-all`, `playlist.move-*`, `playlist.*search`, `win.focus-*` | Fragile UI-state moves that depend on focus. `select_file` and `open_folder` are the reliable route. Revisit marking and playlist reordering if a use appears. |
-| Layout chrome | `win.toggle-sidebar`, `win.toggle-filesystem`, `win.toggle-bookmarks`, `win.toggle-playlist`, `win.playlist-detach`, `view.toggle-thumbnail-bar*`, `view.pin`, `view.toggle-status-bar`, `win.toggle-fullscreen` | Low value for a model; allow later if wanted. `win.toggle-fullscreen` is useful enough to reconsider. |
+| Layout chrome | `win.toggle-sidebar`, `win.toggle-filesystem`, `win.toggle-bookmarks`, `win.toggle-playlist`, `win.playlist-detach`, `view.toggle-thumbnail-bar*`, `view.pin`, `view.toggle-status-bar` | Low value for a model; allow later if wanted. `win.toggle-fullscreen` is allowed. |
 | Duplicate | `win.notify` | `show_message` replaces it. |
 
 Everything else (about 90 actions: viewer navigation, zoom/fit/pan, rotate/flip, playback, volume, speed,

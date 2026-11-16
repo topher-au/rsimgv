@@ -22,7 +22,8 @@ With a token: add `--header "Authorization: Bearer <token>"`.
 | `port` | 8765 | Listening port; applies after the plugin reloads. |
 | `bind_address` | 127.0.0.1 | Address to listen on. `0.0.0.0` accepts connections from the network. |
 | `token` | empty | When set, clients must send it as a Bearer token. Required when `bind_address` is not loopback; the server refuses to start without one. |
-| `read_only` | off | Hides the tools that navigate, run actions or change settings. |
+| `read_only` | off | Hides every tool that is not marked read-only: navigation, actions, settings changes. |
+| `allow_raw_methods` | off | Adds `call_method`, which reaches any host method and bypasses the limits below. |
 
 The server speaks plain HTTP. Do not expose it beyond a trusted network without a TLS reverse proxy.
 
@@ -41,9 +42,17 @@ Open WebUI calls the server from its backend, so the model needs no access to yo
 
 ## Tools
 
-Most tools map to one host method: `view_info`, `view_screenshot` and `get_thumbnails` (returned as images; both take `format` png or jpeg, `quality`, and `max_size`, and screenshots also take a fractional `crop`), `list_files`,
-`select_file`, `navigate_*`, `open_tab`, `file_metadata`, `show_message`, `get_setting`, `set_setting` and so on.
-`list_actions` and `run_action` reach every keybound action, such as zoom and playback, and `call_method`
-calls any method listed in `src/services/remote.rs`.
+35 tools, each with MCP annotations (`readOnlyHint`, `destructiveHint`, ...); `TOOLS.md` lists them with their
+arguments, and what is deliberately left out.
+
+- **Look:** `get_status` (start here), `view_info`, `view_screenshot` and `get_thumbnails` (images; `format`
+  png or jpeg, `quality`, `max_size`, and a fractional `crop` for screenshots), `get_file_info`, `get_file_state`.
+- **Browse:** `list_files` (paged, filterable), `open_folder`, `navigate`, `step_folder`, `select_file`,
+  `open_item`, `close_viewer`, tabs and bookmarks.
+- **Viewer:** `viewer_navigate`, `image_view`, `transform_view`, `video_playback`, `video_view`, `slideshow`,
+  `playlist_control`, `playlist_toggle_item`.
+- **Everything else:** `list_actions` finds an action by text and `run_action` runs it. Actions that open
+  dialogs, quit, need a pointer or depend on keyboard focus are refused, and settings under `plugins.` cannot
+  be changed.
 
 rsimgv must be running with a window open; calls made without one return an error.

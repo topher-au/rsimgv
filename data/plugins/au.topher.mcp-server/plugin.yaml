@@ -31,3 +31,8 @@ contributes:
       description: Offer only the tools that look, not those that navigate, run actions or change settings.
       kind: bool
       default: false
+    - key: allow_raw_methods
+      label: Allow raw host methods
+      description: Offer the call_method tool, which reaches any host method and bypasses the limits other tools apply.
+      kind: bool
+      default: false
