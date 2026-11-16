@@ -1,0 +1,30 @@
+name: release
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Check the tag matches the project version
+        run: |
+          version=$(sed -n "s/^  version: '\(.*\)',$/\1/p" meson.build)
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "error: tag $GITHUB_REF_NAME does not match meson.build version $version" >&2
+            exit 1
+          fi
+      - name: Pack the source archive
+        run: scripts/dist.sh dist
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/*.tar.gz \
+            --title "$GITHUB_REF_NAME" --generate-notes --verify-tag
