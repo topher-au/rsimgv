@@ -1,6 +1,9 @@
 <div align="center">
 
-# rsimgv
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/logo/logo-dark.svg">
+  <img src="docs/logo/logo-light.svg" alt="rsimgv" height="96">
+</picture>
 
 **An integrated file explorer and media viewer for GNOME.**
 
