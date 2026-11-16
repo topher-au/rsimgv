@@ -580,6 +580,16 @@ impl ImageCanvas {
         self.imp().fit.get().is_none()
     }
 
+    /// The fit mode the picture is in, or `None` once the user has zoomed it.
+    pub fn fit(&self) -> Option<Fit> {
+        self.imp().fit.get()
+    }
+
+    /// The scale the picture is drawn at, relative to its own size.
+    pub fn scale(&self) -> f64 {
+        self.imp().reported_scale.get()
+    }
+
     /// How the picture is zoomed and panned, if the user has zoomed or panned it.
     pub fn placement(&self) -> Option<Placement> {
         let imp = self.imp();

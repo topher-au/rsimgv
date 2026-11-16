@@ -62,6 +62,31 @@ pub struct ShownItem {
     pub width: i32,
     pub height: i32,
     pub playback: Option<Playback>,
+    pub state: ViewState,
+}
+
+/// How the viewer shows the item: its turn, mirror and zoom, and the modes that are on. A field is `None` when it does
+/// not apply to the item, such as the volume of a picture.
+pub struct ViewState {
+    /// A video that is playing, rather than paused or ended.
+    pub playing: Option<bool>,
+    /// The volume of the video, as a percentage of full: 100 is full and 200 is the loudest.
+    pub volume: Option<f64>,
+    pub muted: Option<bool>,
+    /// Whether the video plays again when it ends.
+    pub repeat: bool,
+    /// Whether the slideshow runs.
+    pub slideshow: bool,
+    /// The clockwise turn from how the file has it, in degrees.
+    pub rotation: u16,
+    /// Whether the picture is mirrored left to right before it is turned.
+    pub mirrored: bool,
+    /// How far a video is zoomed in: 1 shows all of it.
+    pub zoom: Option<f64>,
+    /// The fit mode of a picture; `None` once it is zoomed by hand, or for a video.
+    pub fit: Option<&'static str>,
+    /// The scale a picture is drawn at, relative to its own size.
+    pub scale: Option<f64>,
 }
 
 /// A video's playback, in seconds and frames per second. A value is `None` when it is not known.
@@ -2586,7 +2611,20 @@ impl MediaViewer {
         let Some(media) = media else {
             // A picture is drawn at its own size, so its texture is that size.
             let texture = imp.canvas.texture()?;
-            return Some(ShownItem { path, width: texture.width(), height: texture.height(), playback: None });
+            let orientation = imp.canvas.orientation();
+            let state = ViewState {
+                playing: None,
+                volume: None,
+                muted: None,
+                repeat: imp.repeat.get(),
+                slideshow: imp.auto_advance.get(),
+                rotation: orientation.degrees(),
+                mirrored: orientation.is_mirrored(),
+                zoom: None,
+                fit: imp.canvas.fit().map(Fit::name),
+                scale: Some(imp.canvas.scale()),
+            };
+            return Some(ShownItem { path, width: texture.width(), height: texture.height(), playback: None, state });
         };
         let duration = media.duration();
         let mpv = media.downcast_ref::<crate::mpv::MpvStream>();
@@ -2600,7 +2638,27 @@ impl MediaViewer {
                 None => Some(1.0),
             },
         };
-        Some(ShownItem { path, width: media.intrinsic_width(), height: media.intrinsic_height(), playback: Some(playback) })
+        let orientation = mpv.map(crate::mpv::MpvStream::orientation).unwrap_or_default();
+        let (volume, muted) = imp.controls.audio();
+        let state = ViewState {
+            playing: Some(media.is_playing()),
+            volume: Some(volume * 100.0),
+            muted: Some(muted),
+            repeat: imp.repeat.get(),
+            slideshow: imp.auto_advance.get(),
+            rotation: orientation.degrees(),
+            mirrored: orientation.is_mirrored(),
+            zoom: mpv.map(|stream| stream.zoom().level),
+            fit: None,
+            scale: None,
+        };
+        Some(ShownItem {
+            path,
+            width: media.intrinsic_width(),
+            height: media.intrinsic_height(),
+            playback: Some(playback),
+            state,
+        })
     }
 
     fn request_back(&self) {

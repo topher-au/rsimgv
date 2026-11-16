@@ -3361,6 +3361,11 @@ impl Window {
         browse.selected_name()
     }
 
+    /// The items marked in the selected tab's browse view.
+    pub fn marked_paths(&self) -> Vec<PathBuf> {
+        self.active_browse().map(|browse| browse.marked_paths()).unwrap_or_default()
+    }
+
     pub fn show_sidebar(&self) -> bool {
         self.imp().split.show_sidebar()
     }
