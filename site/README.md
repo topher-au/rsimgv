@@ -13,7 +13,14 @@ python3 build.py            # writes public/
 python3 build.py --serve    # builds, then serves http://localhost:8000
 ```
 
-`public/` is plain files; publish it with any static host.
+`public/` is plain files; publish it with any static host. All links are relative, so it works from a subpath such as
+`https://<user>.github.io/rsimgv-site/` as well as from a domain root.
+
+## Deployment
+
+- **Gitea:** `.gitea/workflows/deploy-site.yml` builds and rsyncs `public/` to the nginx web root.
+- **GitHub Pages:** `.github/workflows/pages.yml` builds and publishes `public/` on every push to `main`. In the GitHub
+  repository, set *Settings → Pages → Source* to *GitHub Actions* once.
 
 ## Layout
 
