@@ -14,8 +14,8 @@ use gtk::{gdk, glib};
 use super::media_overlay::{layout_from_settings, set_preview, Preview};
 use crate::overlay::template::Template;
 use crate::overlay::{
-    sample, Element, FilenameWrap, IconStyle, Items, Kind, Layout, Overflow, Slot, Visibility, BAR_WIDTH_RANGE, FADE_RANGE, FILENAME_CHARS_RANGE, MIN_SIZE_RANGE, TEXT_ROTATION_RANGE, FONT_SIZE_RANGE, MARGIN_RANGE, SHADOW_BLUR_RANGE, SHADOW_OFFSET_RANGE, STROKE_RANGE, MAX_NOTIFICATIONS_RANGE, PADDING_RANGE, PROPERTIES, RADIUS_RANGE,
-    SECONDS_RANGE, STATUS_PARTS, TIME_FORMATS, RotationFormat, SpeedFormat, TextPosition, ChildAlign, Justify, SPACING_RANGE,
+    sample, CountdownShape, Element, FilenameWrap, IconStyle, Items, Kind, Layout, Overflow, Slot, Visibility, BAR_WIDTH_RANGE, FADE_RANGE, FILENAME_CHARS_RANGE, MIN_SIZE_RANGE, TEXT_ROTATION_RANGE, FONT_SIZE_RANGE, MARGIN_RANGE, SHADOW_BLUR_RANGE, SHADOW_OFFSET_RANGE, STROKE_RANGE, MAX_NOTIFICATIONS_RANGE, PADDING_RANGE, PROPERTIES, RADIUS_RANGE,
+    SECONDS_RANGE, RING_SIZE_RANGE, RING_WIDTH_RANGE, STATUS_PARTS, TIME_FORMATS, RotationFormat, SpeedFormat, TextPosition, ChildAlign, Justify, SPACING_RANGE,
 };
 
 /// The element being edited, and where it goes back to.
@@ -213,6 +213,9 @@ impl Editor {
             }
             Kind::Zoom => {
                 tabs.add_titled_with_icon(&self.zoom_tab(), Some("content"), "Zoom", "zoom-in-symbolic");
+            }
+            Kind::Countdown => {
+                tabs.add_titled_with_icon(&self.countdown_tab(&element), Some("content"), "Countdown", "alarm-symbolic");
             }
             Kind::Messages => {}
         }
@@ -543,7 +546,7 @@ impl Editor {
     /// The groups for a display with a bar and text: each can be turned off, the bar can stand upright, and the text sits
     /// above, below or beside the bar.
     fn bar_groups(self: &Rc<Self>, element: &Element, update: Rc<dyn Fn()>) -> (adw::PreferencesGroup, adw::PreferencesGroup) {
-        let bar = adw::SwitchRow::builder().title("Show the bar").active(element.bar).build();
+        let bar = adw::SwitchRow::builder().title(if element.kind == Kind::Countdown { "Show the graphic" } else { "Show the bar" }).active(element.bar).build();
         let upright = adw::ComboRow::builder().title("Bar direction").model(&gtk::StringList::new(&["Horizontal", "Vertical"])).build();
         upright.set_selected(u32::from(element.bar_vertical));
         let length = adw::SpinRow::with_range(f64::from(BAR_WIDTH_RANGE.0), f64::from(BAR_WIDTH_RANGE.1), 10.0);
@@ -640,6 +643,71 @@ impl Editor {
         page.add(&bar);
         page.add(&text);
         page.add(&self.bar_layout_group(element));
+        page
+    }
+
+    /// The options of a slideshow countdown: a bar or a circle that empties, or fills, as the picture waits, and the time as text.
+    fn countdown_tab(self: &Rc<Self>, element: &Element) -> adw::PreferencesPage {
+        let page = adw::PreferencesPage::new();
+        let (preview, update) = self.preview_row();
+        page.add(&intro_group("The time left before the slideshow moves on from a picture. Turn the slideshow on with its key, and set the delay in the preferences' Navigation group.", &preview));
+        let (graphic, text) = self.bar_groups(element, update.clone());
+        graphic.set_title("Graphic");
+
+        let titles: Vec<&str> = CountdownShape::ALL.iter().map(|shape| shape.title()).collect();
+        let shape = adw::ComboRow::builder().title("Shape").model(&gtk::StringList::new(&titles)).build();
+        shape.set_selected(CountdownShape::ALL.iter().position(|candidate| *candidate == element.countdown_shape).unwrap_or(0) as u32);
+        shape.connect_selected_notify({
+            let editor = self.clone();
+            move |row| {
+                if let Some(&shape) = CountdownShape::ALL.get(row.selected() as usize) {
+                    editor.edit(|element| element.countdown_shape = shape);
+                }
+            }
+        });
+        graphic.add(&shape);
+
+        let size = adw::SpinRow::with_range(f64::from(RING_SIZE_RANGE.0), f64::from(RING_SIZE_RANGE.1), 2.0);
+        size.set_title("Circle size");
+        size.set_subtitle("The width of the circle, in pixels");
+        size.set_value(f64::from(element.ring_size));
+        size.connect_value_notify({
+            let editor = self.clone();
+            move |row| editor.edit(|element| element.ring_size = row.value() as i32)
+        });
+        graphic.add(&size);
+
+        let thickness = adw::SpinRow::with_range(f64::from(RING_WIDTH_RANGE.0), f64::from(RING_WIDTH_RANGE.1), 1.0);
+        thickness.set_title("Circle thickness");
+        thickness.set_subtitle("The width of its ring, in pixels");
+        thickness.set_value(f64::from(element.ring_width));
+        thickness.connect_value_notify({
+            let editor = self.clone();
+            move |row| editor.edit(|element| element.ring_width = row.value() as i32)
+        });
+        graphic.add(&thickness);
+
+        let fill = adw::SwitchRow::builder().title("Fill up").subtitle("Grows as the time passes, rather than emptying").active(element.fill_up).build();
+        fill.connect_active_notify({
+            let editor = self.clone();
+            move |row| editor.edit(|element| element.fill_up = row.is_active())
+        });
+        graphic.add(&fill);
+
+        let template = adw::EntryRow::builder().title("Text template").text(element.template.as_str()).build();
+        template.connect_changed({
+            let editor = self.clone();
+            move |row| {
+                let text = row.text().to_string();
+                editor.edit(|element| element.template = text);
+                update();
+            }
+        });
+        text.add(&template);
+        text.add(&reference());
+        page.add(&graphic);
+        page.add(&text);
+        page.add(&self.layout_group(element, Some("Space between graphic and text"), Some("Graphic and text alignment")));
         page
     }
 
@@ -892,8 +960,11 @@ impl Editor {
             let editor = self.clone();
             move |row| editor.edit(|element| element.seconds = row.value())
         });
-        group.add(&visibility);
-        group.add(&seconds);
+        // A countdown is up while the slideshow waits, whatever else is asked.
+        if element.kind != Kind::Countdown {
+            group.add(&visibility);
+            group.add(&seconds);
+        }
 
         let items = adw::ComboRow::builder().title("Show over").model(&gtk::StringList::new(&["Pictures and videos", "Videos", "Pictures"])).build();
         items.set_selected(match element.items {

@@ -4,7 +4,7 @@
 
 use crate::settings::Settings;
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -17,7 +17,7 @@ use super::media_viewer::MAX_VOLUME;
 use super::rotated_label::RotatedLabel;
 
 use crate::overlay::template::Template;
-use crate::overlay::{ChildAlign, TRIGGERS, DEFAULT_MARGIN, plain_icon, sample, Element, FilenameWrap, IconStyle, Items, Kind, Layout, Legacy, Slot, Style, TextAlign, Visibility};
+use crate::overlay::{ChildAlign, CountdownShape, TRIGGERS, DEFAULT_MARGIN, plain_icon, sample, Element, FilenameWrap, IconStyle, Items, Kind, Layout, Legacy, Slot, Style, TextAlign, Visibility};
 
 /// The space between one element and the next, in pixels.
 const SPACING: i32 = 6;
@@ -323,6 +323,8 @@ pub struct Frame<'a> {
     pub has_audio: bool,
     /// How long ago each change an element can wait for last happened, if it has since the item was shown.
     pub since_change: [Option<Duration>; TRIGGERS],
+    /// How much of the wait before the slideshow moves on is left, from 0 to 1, while there is one.
+    pub countdown: Option<f64>,
 }
 
 impl Element {
@@ -334,6 +336,8 @@ impl Element {
             Items::Pictures => !frame.is_video,
         };
         let when = match self.visibility {
+            // A countdown is up while the slideshow is waiting, and has nothing to wait for otherwise.
+            _ if self.kind == Kind::Countdown => frame.countdown.is_some(),
             Visibility::Always => true,
             Visibility::Seek => frame.since_change[self.kind.trigger() as usize].is_some_and(|since| since.as_secs_f64() < self.seconds),
             Visibility::Paused => frame.is_video && !frame.playing,
@@ -353,6 +357,8 @@ struct Placed {
     /// The text last given to the label, as the template made it.
     shown: RefCell<String>,
     bar: Option<gtk::ProgressBar>,
+    /// A countdown's ring, and how much of it is left.
+    ring: Option<(gtk::DrawingArea, Rc<Cell<f64>>)>,
     /// A volume bar's darker bar under `bar`, which shows the boost above full volume.
     boost_bar: Option<gtk::ProgressBar>,
     /// The application volume's bar, and the darker bar under it, while each video's volume is tracked.
@@ -463,6 +469,7 @@ impl MediaOverlay {
                 fraction: frame.fraction.max(0.28),
                 volume_fraction: frame.volume_fraction.max(0.8),
                 app_volume_fraction: frame.app_volume_fraction.max(0.6),
+                countdown: Some(frame.countdown.unwrap_or(0.6)),
                 ..*frame
             };
             fill(item, &shown);
@@ -561,12 +568,59 @@ fn fill(item: &Placed, frame: &Frame) -> bool {
             if let Some(widget) = &item.bar_widget {
                 widget.set_opacity(if frame.has_audio { 1.0 } else { DIMMED_OPACITY });
             }
+        } else if item.element.kind == Kind::Countdown {
+            bar.set_fraction(countdown_shown(frame.countdown.unwrap_or(0.0), item.element.fill_up));
         } else {
             bar.set_fraction(frame.fraction);
         }
     }
+    if let Some((area, left)) = &item.ring {
+        let shown = countdown_shown(frame.countdown.unwrap_or(0.0), item.element.fill_up);
+        if left.replace(shown) != shown {
+            area.queue_draw();
+        }
+    }
     // An element with nothing to show does not show its background either.
-    item.bar.is_some() || !text.trim().is_empty() || state_icon.is_some() || item.filename.as_ref().is_some_and(|label| !label.text().is_empty())
+    item.bar.is_some() || item.ring.is_some() || !text.trim().is_empty() || state_icon.is_some() || item.filename.as_ref().is_some_and(|label| !label.text().is_empty())
+}
+
+/// How much of a countdown's bar or ring is drawn when `left` of the wait is left: that, or the rest of it, for one that fills
+/// up as the time passes.
+fn countdown_shown(left: f64, fill_up: bool) -> f64 {
+    let left = left.clamp(0.0, 1.0);
+    if fill_up { 1.0 - left } else { left }
+}
+
+/// A ring that shows `shown` of a full turn from the top, clockwise, over a faint track, in the colour of the element's text.
+fn countdown_ring(element: &Element) -> (gtk::DrawingArea, Rc<Cell<f64>>) {
+    let area = gtk::DrawingArea::new();
+    area.set_content_width(element.ring_size);
+    area.set_content_height(element.ring_size);
+    area.set_halign(gtk::Align::Center);
+    area.set_valign(gtk::Align::Center);
+    let shown = Rc::new(Cell::new(0.0_f64));
+    let color = faded_color(&element.style.text_color, element.style.text_opacity).unwrap_or_else(|| gdk::RGBA::new(1.0, 1.0, 1.0, 1.0));
+    let line = f64::from(element.ring_width.min(element.ring_size / 2));
+    area.set_draw_func({
+        let shown = shown.clone();
+        move |_, cr, width, height| {
+            let (x, y) = (f64::from(width) / 2.0, f64::from(height) / 2.0);
+            let radius = (f64::from(width.min(height)) - line) / 2.0;
+            cr.set_line_width(line);
+            cr.set_source_rgba(f64::from(color.red()), f64::from(color.green()), f64::from(color.blue()), f64::from(color.alpha()) * 0.25);
+            cr.arc(x, y, radius, 0.0, std::f64::consts::TAU);
+            let _ = cr.stroke();
+            let turn = shown.get().clamp(0.0, 1.0);
+            if turn > 0.0 {
+                cr.set_line_cap(gtk::cairo::LineCap::Round);
+                cr.set_source_rgba(f64::from(color.red()), f64::from(color.green()), f64::from(color.blue()), f64::from(color.alpha()));
+                let top = -std::f64::consts::FRAC_PI_2;
+                cr.arc(x, y, radius, top, top + std::f64::consts::TAU * turn);
+                let _ = cr.stroke();
+            }
+        }
+    });
+    (area, shown)
 }
 
 /// How `label`, a filename, fits the room it has: on one line in full, over several lines, or cut short with an ellipsis
@@ -644,7 +698,7 @@ fn build(index: usize, element: &Element) -> Placed {
     card.add_css_class(&class);
     // A bar can stand upright, and its text sits above, below or beside it.
     let beside = element.text_position.is_beside();
-    if matches!(element.kind, Kind::Seek | Kind::Volume) && beside {
+    if matches!(element.kind, Kind::Seek | Kind::Volume | Kind::Countdown) && beside {
         card.set_orientation(gtk::Orientation::Horizontal);
     }
     let upright = element.bar_vertical;
@@ -662,7 +716,8 @@ fn build(index: usize, element: &Element) -> Placed {
         }
         bar
     };
-    let bar = (matches!(element.kind, Kind::Seek | Kind::Volume) && element.bar).then(make_bar);
+    let bar = ((matches!(element.kind, Kind::Seek | Kind::Volume) || (element.kind == Kind::Countdown && element.countdown_shape == CountdownShape::Bar)) && element.bar).then(make_bar);
+    let ring = (element.kind == Kind::Countdown && element.countdown_shape == CountdownShape::Circle && element.bar).then(|| countdown_ring(element));
     // A volume bar has a second one under it, in a darker colour, which only shows past full volume.
     let boost_bar = (element.kind == Kind::Volume && bar.is_some()).then(|| {
         let boost = make_bar();
@@ -700,6 +755,13 @@ fn build(index: usize, element: &Element) -> Placed {
             }
         }
     }
+    if let (Some((area, _)), Some(across)) = (&ring, across) {
+        if beside {
+            area.set_valign(across);
+        } else {
+            area.set_halign(across);
+        }
+    }
     let (bar_widget, app_volume, video_volume_icon): (Option<gtk::Widget>, Option<gtk::Widget>, Option<gtk::Widget>) =
         match (&bar, &boost_bar) {
             (Some(bar), Some(boost)) => {
@@ -720,6 +782,7 @@ fn build(index: usize, element: &Element) -> Placed {
             (Some(bar), None) => (Some(bar.clone().upcast()), None, None),
             _ => (None, None, None),
         };
+    let bar_widget = bar_widget.or_else(|| ring.as_ref().map(|(area, _)| area.clone().upcast()));
     let label = TextLabel::new(element);
     label.widget().add_css_class("overlay-text");
     match &label {
@@ -774,7 +837,7 @@ fn build(index: usize, element: &Element) -> Placed {
             grid.attach(filename, column, 1, 1, 1);
         }
         card.append(&grid);
-    } else if bar.is_none() {
+    } else if bar_widget.is_none() {
         card.append(&label.widget());
     }
 
@@ -798,6 +861,7 @@ fn build(index: usize, element: &Element) -> Placed {
         label,
         shown: RefCell::new(String::new()),
         bar,
+        ring,
         boost_bar,
         app_bar,
         app_boost_bar,
@@ -829,6 +893,7 @@ mod tests {
             playing: true,
             fullscreen: false,
             since_change: [None; TRIGGERS],
+            countdown: None,
         }
     }
 
@@ -880,5 +945,21 @@ mod tests {
 
         element.enabled = false;
         assert!(!element.is_up(&Frame { fullscreen: true, ..frame(&none) }));
+    }
+
+    #[test]
+    fn a_countdown_is_up_only_while_the_slideshow_waits() {
+        let none = |_: &str| None;
+        let countdown = Element::of_kind(Kind::Countdown, Slot::BOTTOM_MIDDLE);
+        assert!(!countdown.is_up(&Frame { is_video: false, ..frame(&none) }));
+        assert!(countdown.is_up(&Frame { is_video: false, countdown: Some(0.5), ..frame(&none) }));
+        assert!(!countdown.is_up(&Frame { is_video: true, countdown: Some(0.5), ..frame(&none) }), "it is for pictures unless set otherwise");
+    }
+
+    #[test]
+    fn a_countdown_empties_or_fills() {
+        assert_eq!(countdown_shown(0.25, false), 0.25);
+        assert_eq!(countdown_shown(0.25, true), 0.75);
+        assert_eq!(countdown_shown(2.0, true), 0.0);
     }
 }

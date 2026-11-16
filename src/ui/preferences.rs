@@ -132,6 +132,10 @@ mod imp {
         #[template_child]
         pub folder_end_row: TemplateChild<adw::ComboRow>,
         #[template_child]
+        pub slideshow_delay_row: TemplateChild<adw::SpinRow>,
+        #[template_child]
+        pub slideshow_shuffle_row: TemplateChild<adw::SwitchRow>,
+        #[template_child]
         pub remember_folder_sort_row: TemplateChild<adw::SwitchRow>,
         #[template_child]
         pub playlist_fetch_row: TemplateChild<adw::SwitchRow>,
@@ -466,6 +470,7 @@ impl PreferencesDialog {
         bind_port(settings, &imp.history_image_seconds_row, "history.image-seconds");
         bind_port(settings, &imp.history_video_seconds_row, "history.video-seconds");
         bind_port(settings, &imp.history_video_percent_row, "history.video-percent");
+        bind_port(settings, &imp.slideshow_delay_row, "viewer.slideshow-delay");
         // The history's options mean nothing while it is off, and each count's threshold means nothing while it is off.
         {
             let settings = settings.clone();
@@ -941,6 +946,7 @@ fn bind_switches(settings: &Settings, imp: &imp::PreferencesDialog) {
         ("history.images", &imp.history_images_row),
         ("history.videos", &imp.history_videos_row),
         ("history.count-paused", &imp.history_count_paused_row),
+        ("viewer.slideshow-shuffle", &imp.slideshow_shuffle_row),
         ("history.show-stats", &imp.history_show_stats_row),
     ];
     for (key, row) in switches {

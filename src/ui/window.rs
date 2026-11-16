@@ -1121,6 +1121,8 @@ impl Window {
         let viewer = &self.imp().viewer;
         viewer.set_zoom_step(settings.int("image.zoom-step"));
         viewer.set_video_start_delay(settings.int("video.start-delay"));
+        viewer.set_slideshow_delay(settings.int("viewer.slideshow-delay"));
+        viewer.set_slideshow_shuffle(settings.boolean("viewer.slideshow-shuffle"));
         viewer.set_expand_limit(settings.int("image.expand-up-to-factor"));
         viewer.set_keep_fit(settings.boolean("image.keep-fit"));
         viewer.set_original_focus(OriginalFocus::from_name(&settings.string("image.original-focus")));
@@ -1364,6 +1366,8 @@ impl Window {
         bound_action(&view, &weak, "close", Window::close_viewer);
         bound_action(&view, &weak, "pin", |window| window.imp().viewer.toggle_pinned());
         bound_action(&view, &weak, "toggle-thumbnail-bar", |window| window.toggle_setting("viewer.thumbnail-bar.shown"));
+        bound_action(&view, &weak, "toggle-slideshow", |window| window.imp().viewer.toggle_auto_advance());
+        bound_action(&view, &weak, "toggle-slideshow-shuffle", Window::toggle_slideshow_shuffle);
         bound_action(&view, &weak, "toggle-status-bar", |window| window.toggle_setting("viewer.status-bar.shown"));
         bound_action(&view, &weak, "rotate-clockwise", |window| window.imp().viewer.reorient(Orientation::rotated_clockwise));
         bound_action(&view, &weak, "rotate-counter-clockwise", |window| window.imp().viewer.reorient(Orientation::rotated_counter_clockwise));
@@ -1408,7 +1412,6 @@ impl Window {
         bound_action(&video, &weak, "timeline-next", |window| window.imp().viewer.timeline_seek(true));
         bound_action(&video, &weak, "set-thumbnail-frame", |window| window.imp().viewer.set_thumbnail_frame());
         bound_action(&video, &weak, "repeat", |window| window.imp().viewer.toggle_repeat());
-        bound_action(&video, &weak, "auto-advance", |window| window.imp().viewer.toggle_auto_advance());
         self.insert_action_group("video", Some(&video));
 
         let image = gio::SimpleActionGroup::new();
@@ -2897,6 +2900,14 @@ impl Window {
         }
     }
 
+    /// Has the slideshow show the items in a random order, or in order again, and says so over the window.
+    fn toggle_slideshow_shuffle(&self) {
+        let Some(settings) = self.imp().settings.get() else { return };
+        let on = !settings.boolean("viewer.slideshow-shuffle");
+        let _ = settings.set_boolean("viewer.slideshow-shuffle", on);
+        self.notify(if on { "Slideshow shuffle on" } else { "Slideshow shuffle off" });
+    }
+
     /// Turns crop detection on or off, and says so over the window.
     fn toggle_crop(&self) {
         let Some(settings) = self.imp().settings.get() else { return };
@@ -3986,7 +3997,7 @@ const WHEEL_VOLUME_STEP: f64 = 5.0;
 const WHEEL_SEEK_STEP: f64 = 5.0;
 
 /// The settings the viewer and the window title are set from, applied again whenever one changes.
-const VIEWER_SETTINGS: [&str; 67] = [
+const VIEWER_SETTINGS: [&str; 69] = [
     "video.crop.enabled",
     "video.crop.method",
     "video.crop.trim",
@@ -4027,6 +4038,8 @@ const VIEWER_SETTINGS: [&str; 67] = [
     "video.seek-overlay.width",
     "video.seek-overlay.always",
     "viewer.folder-end",
+    "viewer.slideshow-delay",
+    "viewer.slideshow-shuffle",
     "image.original-focus",
     "image.unlock-minimum-zoom",
     "image.zoom-step",
