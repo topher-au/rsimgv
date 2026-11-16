@@ -1089,6 +1089,7 @@ class Plugin:
         directory = os.path.dirname(config_path)
         self._history_path = os.path.join(directory, "history.json")
         self._layout_path = os.path.join(directory, "layout.json")
+        self._chat_shown = self._read_layout_file().get("shown") is not False
         self._config_file = os.path.join(directory, "config.json")
         self._memory_path = os.path.join(directory, "memory.json")
         self._config = self._load_config(config_path)
@@ -1558,21 +1559,39 @@ class Plugin:
         panel.anchored = False
         panel.want = {"w": CARD_SIZE[0], "h": CARD_SIZE[1]}
         panel.fitted = None
-        try:
-            os.remove(self._layout_path)
-        except FileNotFoundError:
-            pass
-        except OSError as exc:
-            rsimgv.notify(f"{NAME}: cannot reset the chat's place: {exc}", level="warning", seconds=6)
+        self._write_layout_file(x=None, y=None, w=None, h=None)
 
-    def _load_layout(self):
+    def _read_layout_file(self):
+        """The whole layout file: the card's place and size, and whether it is shown. Empty if there is none."""
         try:
             with open(self._layout_path, "r", encoding="utf-8") as file:
                 loaded = json.load(file)
         except (OSError, ValueError):
             return {}
-        if not isinstance(loaded, dict):
-            return {}
+        return loaded if isinstance(loaded, dict) else {}
+
+    def _write_layout_file(self, **changes):
+        """Sets the given entries of the layout file, and removes those given as None, leaving the rest.
+
+        The file is replaced whole, so a crash cannot leave half of it.
+        """
+        layout = self._read_layout_file()
+        for key, value in changes.items():
+            if value is None:
+                layout.pop(key, None)
+            else:
+                layout[key] = value
+        temporary = f"{self._layout_path}.tmp"
+        try:
+            os.makedirs(os.path.dirname(self._layout_path), exist_ok=True)
+            with open(temporary, "w", encoding="utf-8") as file:
+                json.dump(layout, file)
+            os.replace(temporary, self._layout_path)
+        except OSError as exc:
+            rsimgv.notify(f"{NAME}: cannot save the chat's layout: {exc}", level="warning", seconds=6)
+
+    def _load_layout(self):
+        loaded = self._read_layout_file()
         layout = {
             key: int(value)
             for key, value in loaded.items()
@@ -1585,7 +1604,7 @@ class Plugin:
         return layout
 
     def _save_layout(self, panel):
-        """Writes the wanted place and size. The file is replaced whole, so a crash cannot leave half of it."""
+        """Saves the card's place and size."""
         want = panel.want
         if not want or "x" not in want:
             return
@@ -1593,15 +1612,7 @@ class Plugin:
         container = panel.container
         width, height = container.get_size_request()
         want.update(x=container.get_margin_start(), y=container.get_margin_top(), w=width, h=height)
-        layout = {key: int(want[key]) for key in ("x", "y", "w", "h")}
-        temporary = f"{self._layout_path}.tmp"
-        try:
-            os.makedirs(os.path.dirname(self._layout_path), exist_ok=True)
-            with open(temporary, "w", encoding="utf-8") as file:
-                json.dump(layout, file)
-            os.replace(temporary, self._layout_path)
-        except OSError as exc:
-            rsimgv.notify(f"{NAME}: cannot save the chat's place: {exc}", level="warning", seconds=6)
+        self._write_layout_file(**{key: int(want[key]) for key in ("x", "y", "w", "h")})
 
     # -- the viewer card: fading ------------------------------------------
 
@@ -3150,6 +3161,7 @@ class Plugin:
                 panel.entry.grab_focus()
         if in_viewer:
             self._chat_shown = show
+            self._write_layout_file(shown=show)
         else:
             self._save_setting("chat_sidebar", show)
 
