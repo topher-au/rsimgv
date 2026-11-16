@@ -1,0 +1,63 @@
+# Flatpak manifest. Build and install locally with:
+#   flatpak-builder --user --install --force-clean build-flatpak packaging/flatpak/au.topher.rsimgv.yml
+#
+# The GNOME 50 runtime provides GTK 4.22 and libadwaita 1.9. mpv and OpenCV are built here. Python plugin
+# support is left out, and the build downloads crates, so this manifest is for GitHub releases, not Flathub.
+app-id: au.topher.rsimgv
+runtime: org.gnome.Platform
+runtime-version: '50'
+sdk: org.gnome.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+  - org.freedesktop.Sdk.Extension.llvm20
+command: rsimgv
+finish-args:
+  - --share=ipc
+  - --socket=fallback-x11
+  - --socket=wayland
+  - --device=dri
+  - --socket=pulseaudio
+  - --filesystem=host
+build-options:
+  append-path: /usr/lib/sdk/rust-stable/bin:/usr/lib/sdk/llvm20/bin
+  prepend-ld-library-path: /usr/lib/sdk/llvm20/lib
+  build-args:
+    - --share=network
+  env:
+    CARGO_HOME: /run/build/rsimgv/cargo
+modules:
+  - name: opencv
+    buildsystem: cmake-ninja
+    builddir: true
+    config-opts:
+      - -DCMAKE_BUILD_TYPE=Release
+      - -DBUILD_LIST=core,imgproc
+      - -DBUILD_TESTS=OFF
+      - -DBUILD_PERF_TESTS=OFF
+      - -DBUILD_EXAMPLES=OFF
+      - -DBUILD_opencv_apps=OFF
+      - -DBUILD_DOCS=OFF
+    sources:
+      - type: git
+        url: https://github.com/opencv/opencv.git
+        tag: 4.11.0
+
+  - name: mpv
+    buildsystem: meson
+    config-opts:
+      - -Dlibmpv=true
+      - -Dcplayer=false
+      - -Dtests=false
+      - -Dmanpage-build=disabled
+    sources:
+      - type: git
+        url: https://github.com/mpv-player/mpv.git
+        tag: v0.40.0
+
+  - name: rsimgv
+    buildsystem: meson
+    config-opts:
+      - -Dpython=disabled
+    sources:
+      - type: dir
+        path: ../..

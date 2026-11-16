@@ -7,7 +7,7 @@ permissions:
   contents: write
 
 jobs:
-  release:
+  source:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -20,11 +20,62 @@ jobs:
             echo "error: tag $GITHUB_REF_NAME does not match meson.build version $version" >&2
             exit 1
           fi
-      - name: Pack the source archive
-        run: scripts/dist.sh dist
+      - run: scripts/dist.sh dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: source
+          path: dist/*.tar.gz
+
+  appimage:
+    needs: source
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    steps:
+      - name: Install build dependencies
+        run: |
+          pacman -Syu --noconfirm base-devel git cargo clang meson ninja sassc pkgconf wget file patchelf \
+            desktop-file-utils squashfs-tools gtk4 libadwaita mpv opencv glib2 librsvg
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - run: packaging/appimage/build.sh dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: appimage
+          path: dist/*.AppImage
+
+  flatpak:
+    needs: source
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/flathub-infra/flatpak-github-actions:gnome-50
+      options: --privileged
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: flatpak/flatpak-github-actions/flatpak-builder@v6
+        with:
+          bundle: rsimgv.flatpak
+          manifest-path: packaging/flatpak/au.topher.rsimgv.yml
+          cache-key: flatpak-${{ github.sha }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: flatpak
+          path: rsimgv.flatpak
+
+  publish:
+    needs: [source, appimage, flatpak]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
-          gh release create "$GITHUB_REF_NAME" dist/*.tar.gz \
+          gh release create "$GITHUB_REF_NAME" dist/* \
             --title "$GITHUB_REF_NAME" --generate-notes --verify-tag
