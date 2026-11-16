@@ -10,6 +10,7 @@
 <tr><td><code>window.sidebar.filesystem-expanded</code><br><span class="muted">filesystem-expanded</span></td><td>on</td><td>on or off</td><td>Whether the sidebar&#x27;s filesystem section is expanded</td></tr>
 <tr><td><code>window.sidebar.animations</code><br><span class="muted">animations</span></td><td>on</td><td>on or off</td><td>Slide the sidebars and the thumbnail bar in and out, rather than showing and hiding them at once</td></tr>
 <tr><td><code>window.sidebar.animation-ms</code><br><span class="muted">animation-ms</span></td><td><code>250</code></td><td>0 to 2000</td><td>How long the sidebars and the thumbnail bar take to slide in and out, in milliseconds</td></tr>
+<tr><td><code>window.chat-width</code><br><span class="muted">chat-width</span></td><td><code>-1</code></td><td>whole number</td><td>Width of a plugin&#x27;s chat sidebar chosen by dragging, in pixels; -1 uses the default width</td></tr>
 <tr><td><code>start.location</code><br><span class="muted">location</span></td><td><code>last</code></td><td><code>last</code>, <code>root</code>, <code>home</code>, <code>specific</code></td><td>Where a new window starts: the last open folder, the root folder, the home folder, or start.directory</td></tr>
 <tr><td><code>start.directory</code><br><span class="muted">directory</span></td><td><span class="muted">empty</span></td><td>text</td><td>The folder a new window starts in when start.location is specific</td></tr>
 <tr><td><code>start.last-directory</code><br><span class="muted">last-directory</span></td><td><span class="muted">empty</span></td><td>text</td><td>The folder open when the last window closed, used when start.location is last</td></tr>
@@ -37,6 +38,7 @@
 <tr><td><code>browse.folder-previews.count</code><br><span class="muted">count</span></td><td><code>4</code></td><td>1 to 12</td><td>The most pictures and videos scattered over a folder&#x27;s icon</td></tr>
 <tr><td><code>browse.folder-previews.fit</code><br><span class="muted">fit</span></td><td>off</td><td>on or off</td><td>Fit as many previews to a folder&#x27;s icon as their pictures&#x27; dimensions allow, instead of a set number</td></tr>
 <tr><td><code>browse.folder-previews.cycle</code><br><span class="muted">cycle</span></td><td>off</td><td>on or off</td><td>Cycle a folder&#x27;s preview pictures through its media while it is under the pointer, or is the item last selected and the pointer is over none</td></tr>
+<tr><td><code>browse.tree-monitoring</code><br><span class="muted">tree-monitoring</span></td><td><code>expanded</code></td><td><code>off</code>, <code>expanded</code>, <code>visible</code></td><td>Which folders in the sidebar tree follow changes on disk: none, the expanded ones, or every one with a row</td></tr>
 </tbody></table></div>
 <h2 id="thumbnails">Thumbnails</h2>
 <div class="table-wrap"><table>
@@ -61,6 +63,8 @@
 <tr><td><code>viewer.blurred-background</code><br><span class="muted">blurred-background</span></td><td>off</td><td>on or off</td><td>Show a blurred, dimmed, cropped copy of the picture behind it in the viewer</td></tr>
 <tr><td><code>viewer.overlay-layout</code><br><span class="muted">overlay-layout</span></td><td><code>&quot;&quot;</code></td><td>text</td><td>The elements of the media overlay and where they sit, as JSON. While empty, the older seek overlay and status overlay settings make the layout</td></tr>
 <tr><td><code>viewer.folder-end</code><br><span class="muted">folder-end</span></td><td><code>stop</code></td><td><code>stop</code>, <code>loop</code>, <code>next-folder</code></td><td>What stepping past either end of a folder in the viewer does: stop, loop around the folder, or go on to the next folder with media</td></tr>
+<tr><td><code>viewer.slideshow-delay</code><br><span class="muted">slideshow-delay</span></td><td><code>5</code></td><td>1 to 3600</td><td>How long a picture stays up before the slideshow (auto-advance) moves to the next item, in seconds</td></tr>
+<tr><td><code>viewer.slideshow-shuffle</code><br><span class="muted">slideshow-shuffle</span></td><td>off</td><td>on or off</td><td>Have the slideshow show the items of the folder in a random order, each once before any comes round again</td></tr>
 <tr><td><code>viewer.status-bar.shown</code><br><span class="muted">shown</span></td><td>off</td><td>on or off</td><td>Show a status bar under the viewer&#x27;s item: its position, name, resolution, frame rate and file size</td></tr>
 <tr><td><code>viewer.status-bar.overlay-position</code><br><span class="muted">overlay-position</span></td><td><code>bottom-middle</code></td><td><code>top-left</code>, <code>top-middle</code>, <code>top-right</code>, <code>bottom-left</code>, <code>bottom-middle</code>, <code>bottom-right</code></td><td>Where the status bar floats over the viewer&#x27;s item in fullscreen</td></tr>
 <tr><td><code>viewer.thumbnail-bar.side</code><br><span class="muted">side</span></td><td><code>bottom</code></td><td><code>top</code>, <code>left</code>, <code>bottom</code>, <code>right</code></td><td>The side of the viewer the thumbnail bar is on</td></tr>
@@ -158,6 +162,7 @@
 <tr><td><code>history.videos</code><br><span class="muted">videos</span></td><td>on</td><td>on or off</td><td>Count videos in the viewing history</td></tr>
 <tr><td><code>history.video-seconds</code><br><span class="muted">video-seconds</span></td><td><code>20</code></td><td>0 to 3600</td><td>How long a video has to play before it counts as viewed, in seconds; 0 counts it once it starts</td></tr>
 <tr><td><code>history.video-percent</code><br><span class="muted">video-percent</span></td><td><code>10</code></td><td>1 to 100</td><td>How much of a video has to play, in the current playback, before it counts as viewed, as a percentage of its length; either this or the seconds below is enough</td></tr>
+<tr><td><code>history.count-paused</code><br><span class="muted">count-paused</span></td><td>on</td><td>on or off</td><td>Keep counting the time watched while a video is paused, as long as the window still has focus</td></tr>
 <tr><td><code>history.show-stats</code><br><span class="muted">show-stats</span></td><td>on</td><td>on or off</td><td>Show the views and time watched for the item shown in the viewer&#x27;s status bar and overlays</td></tr>
 </tbody></table></div>
 <h2 id="playlist">Playlist</h2>

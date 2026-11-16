@@ -136,7 +136,7 @@ SECTIONS = [
     ("Window and start-up", [
         "window.width", "window.height", "window.maximized",
         "window.sidebar.width", "window.sidebar.bookmarks-expanded", "window.sidebar.filesystem-expanded",
-        "window.sidebar.animations", "window.sidebar.animation-ms",
+        "window.sidebar.animations", "window.sidebar.animation-ms", "window.chat-width",
         "start.location", "start.directory", "start.last-directory", "start.last-file",
     ]),
     ("Browsing", [
@@ -146,7 +146,7 @@ SECTIONS = [
         "browse.info.layout", "browse.info.fields",
         "browse.sort.by", "browse.sort.order", "browse.sort.remember-per-folder",
         "browse.folder-previews.enabled", "browse.folder-previews.count", "browse.folder-previews.fit",
-        "browse.folder-previews.cycle",
+        "browse.folder-previews.cycle", "browse.tree-monitoring",
     ]),
     ("Thumbnails", [
         "thumbnails.threads", "thumbnails.cache", "thumbnails.aggression", "thumbnails.unload-offscreen",
@@ -155,6 +155,7 @@ SECTIONS = [
     ("Viewer", [
         "viewer.open-fullscreen", "viewer.auto-hide-cursor", "viewer.image-info-in-title",
         "viewer.blurred-background", "viewer.overlay-layout", "viewer.folder-end",
+        "viewer.slideshow-delay", "viewer.slideshow-shuffle",
         "viewer.status-bar.shown", "viewer.status-bar.overlay-position",
         "viewer.thumbnail-bar.side", "viewer.thumbnail-bar.shown", "viewer.thumbnail-bar.overlay",
         "viewer.thumbnail-bar.pinned", "viewer.thumbnail-bar.size",
@@ -187,7 +188,7 @@ SECTIONS = [
     ]),
     ("Viewing history", [
         "history.enabled", "history.images", "history.image-seconds", "history.videos",
-        "history.video-seconds", "history.video-percent", "history.show-stats",
+        "history.video-seconds", "history.video-percent", "history.count-paused", "history.show-stats",
     ]),
     ("Playlist", [
         "playlist.fetch-in-background", "playlist.repeat", "playlist.shown", "playlist.width",
