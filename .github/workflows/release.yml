@@ -1,4 +1,4 @@
-name: release
+name: release-source
 on:
   push:
     tags: ['v*']
@@ -25,65 +25,13 @@ jobs:
         with:
           name: source
           path: dist/*.tar.gz
-
-  appimage:
-    needs: source
-    runs-on: ubuntu-latest
-    container: archlinux:latest
-    steps:
-      - name: Install build dependencies
-        run: |
-          pacman -Syu --noconfirm base-devel git cargo clang meson ninja sassc pkgconf wget file patchelf \
-            desktop-file-utils squashfs-tools gtk4 libadwaita mpv opencv glib2 librsvg
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            build-appimage/build
-          key: appimage-${{ hashFiles('Cargo.lock', 'third_party/open-svpflow/Cargo.lock') }}
-          restore-keys: appimage-
-      - run: packaging/appimage/build.sh dist
-      - uses: actions/upload-artifact@v4
-        with:
-          name: appimage
-          path: dist/*.AppImage
-
-  flatpak:
-    needs: source
-    runs-on: ubuntu-latest
-    container:
-      image: ghcr.io/flathub-infra/flatpak-github-actions:gnome-50
-      options: --privileged
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-      - uses: flatpak/flatpak-github-actions/flatpak-builder@v6
-        with:
-          bundle: rsimgv.flatpak
-          manifest-path: packaging/flatpak/au.topher.rsimgv.yml
-          cache-key: flatpak-${{ github.sha }}
-      - uses: actions/upload-artifact@v4
-        with:
-          name: flatpak
-          path: rsimgv.flatpak
-
-  publish:
-    needs: [source, appimage, flatpak]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          path: dist
-          merge-multiple: true
-      - name: Publish the release
+      - name: Attach to the release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
-          gh release create "$GITHUB_REF_NAME" dist/* \
-            --title "$GITHUB_REF_NAME" --generate-notes --verify-tag
+          # The release workflows run in parallel; whichever finishes first creates the release.
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 \
+            || gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes --verify-tag \
+            || gh release view "$GITHUB_REF_NAME" >/dev/null
+          gh release upload "$GITHUB_REF_NAME" dist/*.tar.gz --clobber
