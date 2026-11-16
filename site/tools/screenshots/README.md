@@ -9,7 +9,7 @@ The images in `assets/screenshots/` were captured from a real rsimgv build, on s
 
    ```sh
    printf 'window:\n  width: 1280\n  height: 800\nbrowse:\n  item-size: 170\n  folder-previews:\n    enabled: true\nviewer:\n  thumbnail-bar:\n    pinned: true\n  status-bar:\n    shown: true\nremote:\n  socket:\n    enabled: true\n' > /tmp/seed.yaml
-   SEED=/tmp/seed.yaml ./launch.sh /tmp/demo/home ../../../rsimgv /tmp/state /home/demo/Pictures &
+   SEED=/tmp/seed.yaml ./launch.sh /tmp/demo/home ../../.. /tmp/state /home/demo/Pictures &
    ```
 
    The remote socket lets a screenshot session run actions such as `video.edit-crop`, and change

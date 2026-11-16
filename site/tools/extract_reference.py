@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Generate the keybinding and settings reference fragments from the rsimgv source.
 
-Usage: extract_reference.py [PATH_TO_RSIMGV]   (default: ../rsimgv)
+Usage: extract_reference.py [PATH_TO_RSIMGV]   (default: the repository containing site/)
 
 Reads src/keybindings/actions.rs and data/au.topher.rsimgv.gschema.xml and writes
 content/_keybindings.html and content/_settings.html, which the documentation pages include.
@@ -13,7 +13,7 @@ import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-root = Path(sys.argv[1] if len(sys.argv) > 1 else Path(__file__).resolve().parent.parent.parent / "rsimgv")
+root = Path(sys.argv[1] if len(sys.argv) > 1 else Path(__file__).resolve().parent.parent.parent)
 out = Path(__file__).resolve().parent.parent / "content"
 esc = html.escape
 

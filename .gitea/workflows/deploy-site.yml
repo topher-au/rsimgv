@@ -2,6 +2,7 @@ name: build-and-deploy
 on:
   push:
     branches: [main]
+    paths: ['site/**', 'src/keybindings/actions.rs', 'data/au.topher.rsimgv.gschema.xml', '.gitea/workflows/deploy-site.yml']
   workflow_dispatch:
 jobs:
   deploy:
@@ -14,7 +15,8 @@ jobs:
       - name: Build the site
         run: |
           set -eu
-          python3 build.py
+          python3 site/tools/extract_reference.py .
+          python3 site/build.py
 
       - name: Publish to the web root
         env:
@@ -22,6 +24,6 @@ jobs:
         run: |
           set -eu
           install -d "$DEST"
-          # --delete removes pages that no longer exist, so the web root mirrors public/ exactly.
-          rsync -a --delete --chmod=D755,F644 public/ "$DEST/"
+          # --delete removes pages that no longer exist, so the web root mirrors site/public/ exactly.
+          rsync -a --delete --chmod=D755,F644 site/public/ "$DEST/"
           echo "deployed $(git rev-parse --short HEAD) to $DEST"

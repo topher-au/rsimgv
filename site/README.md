@@ -1,7 +1,7 @@
 # rsimgv website
 
-The website and documentation for [rsimgv](https://git.topher.au/topher/rsimgv), an integrated file explorer and
-media viewer for GNOME.
+The website and documentation for rsimgv, an integrated file explorer and media viewer for GNOME. It lives in the
+`site/` directory of the [rsimgv repository](https://git.topher.au/topher/rsimgv).
 
 It is a static site: HTML fragments in `content/`, wrapped in a shared layout by `build.py` and written to `public/`.
 There are no dependencies beyond Python 3.
@@ -9,17 +9,17 @@ There are no dependencies beyond Python 3.
 ## Build and preview
 
 ```sh
-python3 build.py            # writes public/
-python3 build.py --serve    # builds, then serves http://localhost:8000
+python3 site/build.py            # writes site/public/
+python3 site/build.py --serve    # builds, then serves http://localhost:8000
 ```
 
-`public/` is plain files; publish it with any static host. All links are relative, so it works from a subpath such as
+`site/public/` is plain files; publish it with any static host. All links are relative, so it works from a subpath such as
 `https://<user>.github.io/rsimgv-site/` as well as from a domain root.
 
 ## Deployment
 
-- **Gitea:** `.gitea/workflows/deploy-site.yml` builds and rsyncs `public/` to the nginx web root.
-- **GitHub Pages:** `.github/workflows/pages.yml` builds and publishes `public/` on every push to `main`. In the GitHub
+- **Gitea:** `.gitea/workflows/deploy-site.yml` builds and rsyncs `site/public/` to the nginx web root.
+- **GitHub Pages:** `.github/workflows/pages.yml` builds and publishes `site/public/`. In the GitHub
   repository, set *Settings → Pages → Source* to *GitHub Actions* once.
 
 ## Layout
@@ -42,11 +42,11 @@ then HTML. Shortcodes: `{{include _file.html}}`, `{{shot name "Caption"}}` (a li
 ## Keeping the references in step with rsimgv
 
 The action table in *Keybindings and mouse* and the *Settings reference* are generated, so they match the code.
-After the app's actions or settings change, regenerate them from a checkout of rsimgv and rebuild:
+CI regenerates them on every deploy. To refresh the committed copies locally, run from the repository root:
 
 ```sh
-python3 tools/extract_reference.py ../rsimgv
-python3 build.py
+python3 site/tools/extract_reference.py
+python3 site/build.py
 ```
 
 It reads `src/keybindings/actions.rs` and `data/au.topher.rsimgv.gschema.xml`, and warns about any setting it has no
