@@ -873,9 +873,9 @@
     </key>
   </schema>
   <schema id="au.topher.rsimgv.plugins" path="/au/topher/rsimgv/plugins/">
-    <key name="disabled" type="as">
+    <key name="enabled" type="as">
       <default>[]</default>
-      <summary>Plugin ids that are not loaded</summary>
+      <summary>Plugin ids that are loaded; every other plugin is off until it is switched on</summary>
     </key>
     <key name="extra-directories" type="as">
       <default>[]</default>

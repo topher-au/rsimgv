@@ -101,7 +101,7 @@ Plugins are directories containing `plugin.yaml`. They are looked for in:
 3. each `$XDG_DATA_DIRS/rsimgv/plugins`
 4. directories in the `plugins.extra-directories` setting
 
-A plugin is enabled unless its id is in `plugins.disabled`. The switch on each row of the Plugins tab (under
+A plugin is off until its id is in `plugins.enabled`: nothing runs until it is switched on. The switch on each row of the Plugins tab (under
 Plugins in the preferences) turns a plugin on or off at once and saves the choice there: a disabled plugin's code is
 stopped and its panels and menu items are removed, and its keybindings report that it is disabled. The button beside
 the switch opens the plugin's settings. Python plugin files and manifests are watched and reloaded when they change,

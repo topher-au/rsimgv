@@ -135,7 +135,7 @@ pub fn search_dirs(settings: &Settings) -> Vec<PathBuf> {
 /// Reads every manifest and registers the actions they declare. This runs before the keybinding table is first
 /// used, so plugin defaults are part of it.
 pub fn discover(settings: &Settings) {
-    let disabled: Vec<String> = settings.strv("plugins.disabled").iter().map(|id| id.to_string()).collect();
+    let enabled_ids: Vec<String> = settings.strv("plugins.enabled").iter().map(|id| id.to_string()).collect();
     let mut seen = std::collections::HashSet::new();
     let mut found = Vec::new();
 
@@ -169,7 +169,7 @@ pub fn discover(settings: &Settings) {
                     &action.default_keys,
                 );
             }
-            let enabled = !disabled.contains(&manifest.id);
+            let enabled = enabled_ids.contains(&manifest.id);
             let modified = modified_time(&dir);
             found.push(Entry {
                 manifest,
@@ -762,7 +762,7 @@ fn reload_one(id: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Turns a plugin on or off and saves the choice to `plugins.disabled`. Turning a plugin off stops its code and
+/// Turns a plugin on or off and saves the choice to `plugins.enabled`. Turning a plugin off stops its code and
 /// removes its panels and menu items at once; turning it on loads it again where it needs loading.
 pub fn set_enabled(id: &str, enabled: bool, settings: &Settings) -> Result<(), String> {
     let index = MANAGER.with(|manager| manager.borrow().entries.iter().position(|entry| entry.manifest.id == id));
@@ -777,13 +777,13 @@ pub fn set_enabled(id: &str, enabled: bool, settings: &Settings) -> Result<(), S
         return Ok(());
     }
 
-    let mut disabled: Vec<String> = settings.strv("plugins.disabled").iter().map(|id| id.to_string()).collect();
-    disabled.retain(|other| other != id);
-    if !enabled {
-        disabled.push(id.to_owned());
+    let mut enabled_ids: Vec<String> = settings.strv("plugins.enabled").iter().map(|id| id.to_string()).collect();
+    enabled_ids.retain(|other| other != id);
+    if enabled {
+        enabled_ids.push(id.to_owned());
     }
     settings
-        .set_strv("plugins.disabled", disabled.as_slice())
+        .set_strv("plugins.enabled", enabled_ids.as_slice())
         .map_err(|err| format!("cannot save the plugin choice: {err}"))?;
 
     MANAGER.with(|manager| manager.borrow_mut().entries[index].enabled = enabled);
