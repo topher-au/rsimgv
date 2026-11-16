@@ -3111,10 +3111,10 @@ impl Window {
         self.messages().show(Message::notification(message).level(level).lasting(std::time::Duration::from_secs_f64(seconds)))
     }
 
-    /// Names `folder` over the window, as the viewer moves to it.
+    /// Tells over the window that the viewer changed to `folder`, naming it.
     fn announce_folder(&self, folder: &Path) {
         let name = folder.file_name().map_or_else(|| folder.display().to_string(), |name| name.to_string_lossy().into_owned());
-        self.messages().show(Message::notification(name));
+        self.messages().show(Message::notification(format!("Changed to \"{name}\"")));
     }
 
     /// Shows `text` over the window for a few seconds, as something that went wrong.
