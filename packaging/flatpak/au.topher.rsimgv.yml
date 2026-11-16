@@ -56,6 +56,16 @@ modules:
         url: https://code.videolan.org/videolan/libplacebo.git
         tag: v7.349.0
 
+  - name: libass
+    buildsystem: autotools
+    config-opts:
+      - --disable-static
+      - --disable-asm
+    sources:
+      - type: git
+        url: https://github.com/libass/libass.git
+        tag: 0.17.3
+
   - name: mpv
     buildsystem: meson
     config-opts:
