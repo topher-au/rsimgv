@@ -23,8 +23,7 @@ ROOT = Path(__file__).resolve().parent
 CONTENT = ROOT / "content"
 OUT = ROOT / "public"
 SITE = "rsimgv"
-REPO = "https://git.topher.au/topher/rsimgv"
-MIRROR = "https://github.com/topher-au/rsimgv"
+REPO = "https://github.com/topher-au/rsimgv"
 
 # The documentation, in reading order: (slug, sidebar title) grouped under a heading.
 DOCS = [
@@ -165,8 +164,8 @@ def layout(meta, body, root, current, extra_head="", sidebar="", toc_html="", pa
 {toc_html}
 <footer class="site-footer">
   <div class="wrap">
-    <p>rsimgv is free software, released under the <a href="{REPO}/src/branch/main/LICENSE">GPL-3.0-or-later</a> licence.
-    Source on <a href="{REPO}">git.topher.au</a> · mirror on <a href="{MIRROR}">GitHub</a>.</p>
+    <p>rsimgv is free software, released under the <a href="{REPO}/blob/main/LICENSE">GPL-3.0-or-later</a> licence.
+    Source on <a href="{REPO}">GitHub</a>.</p>
     <p class="muted">Screenshots show synthetic demo pictures and clips, not personal files.</p>
   </div>
 </footer>

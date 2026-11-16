@@ -25,7 +25,7 @@ desc: Requirements, building and installing rsimgv, and what happens the first t
 <p>The built program embeds its interface, stylesheets, icons and the SVP plugins in a GResource bundle, so it needs nothing beyond the shared libraries it links. Two optional tools improve video metadata and previews: <code>ffprobe</code> reads a video's duration, codecs and frame rate, and <code>ffmpeg</code> makes the frames a video shows when it is previewed.</p>
 
 <h2>Build and install with Meson</h2>
-<pre><code>git clone https://git.topher.au/topher/rsimgv.git
+<pre><code>git clone https://github.com/topher-au/rsimgv.git
 cd rsimgv
 meson setup builddir --prefix=/usr/local
 meson compile -C builddir

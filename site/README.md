@@ -1,7 +1,7 @@
 # rsimgv website
 
 The website and documentation for rsimgv, an integrated file explorer and media viewer for GNOME. It lives in the
-`site/` directory of the [rsimgv repository](https://git.topher.au/topher/rsimgv).
+`site/` directory of the [rsimgv repository](https://github.com/topher-au/rsimgv).
 
 It is a static site: HTML fragments in `content/`, wrapped in a shared layout by `build.py` and written to `public/`.
 There are no dependencies beyond Python 3.
@@ -14,7 +14,7 @@ python3 site/build.py --serve    # builds, then serves http://localhost:8000
 ```
 
 `site/public/` is plain files; publish it with any static host. All links are relative, so it works from a subpath such as
-`https://<user>.github.io/rsimgv-site/` as well as from a domain root.
+`https://topher-au.github.io/rsimgv/` as well as from a domain root.
 
 ## Deployment
 

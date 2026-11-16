@@ -1775,7 +1775,7 @@
                                     <child>
                                       <object class="GtkLinkButton">
                                         <property name="label">Website</property>
-                                        <property name="uri">https://topher.au</property>
+                                        <property name="uri">https://topher-au.github.io/rsimgv/</property>
                                       </object>
                                     </child>
                                     <child>

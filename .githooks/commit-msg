@@ -1,3 +1,0 @@
-#!/bin/sh
-# Points Gitea links in commit messages at the GitHub repository, as the messages are committed.
-sed -i 's#git\.topher\.au/topher/#github.com/topher-au/#g' "$1"
