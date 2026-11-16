@@ -1031,6 +1031,13 @@ class Panel:
         self.ticking = False
         # Whether the viewer card is placed by margins from the top left rather than by the host's corner.
         self.anchored = False
+        # The place and size the user chose for the viewer card: x, y (once placed), w and h.
+        self.want = None
+        # The player's size the card was last fitted to, to fit it again when the window changes.
+        self.fitted = None
+        # Whether the viewer card is shown or on its way to be, and the callback fading it.
+        self.shown = True
+        self.fade = None
 
 
 class Plugin:
@@ -1305,6 +1312,7 @@ class Plugin:
             container.add_css_class("llm-chat-card")
             self._place_card(panel, header, corners)
             container.set_visible(self._chat_shown)
+            panel.shown = self._chat_shown
             # Room round the content, so the corner handles are not over its buttons.
             for child in (header, scroll_area, footer, row):
                 child.set_margin_start(CORNER_SIZE)
@@ -1339,15 +1347,22 @@ class Plugin:
     # -- the viewer card: moving and resizing ----------------------------
 
     def _place_card(self, panel, header, corners):
-        """Sets the card's saved size and place, and lets its header move it and any of its corners resize it."""
+        """Sets the card's saved size and place, and lets its header move it and any of its corners resize it.
+
+        The geometry the user chose is kept in ``panel.want``. What is on screen is that geometry fitted to the
+        player's current size by ``_fit_card``, so a small window does not lose the saved place.
+        """
         container = panel.container
         layout = self._load_layout()
-        width, height = layout.get("w", CARD_SIZE[0]), layout.get("h", CARD_SIZE[1])
-        container.set_size_request(max(CARD_MIN[0], width), max(CARD_MIN[1], height))
+        panel.want = {
+            "w": max(CARD_MIN[0], layout.get("w", CARD_SIZE[0])),
+            "h": max(CARD_MIN[1], layout.get("h", CARD_SIZE[1])),
+        }
+        container.set_size_request(panel.want["w"], panel.want["h"])
         if "x" in layout and "y" in layout:
+            panel.want["x"], panel.want["y"] = layout["x"], layout["y"]
             self._anchor(panel, layout["x"], layout["y"])
-            # The overlay's size is known once it is shown, so keep the card inside it then.
-            rsimgv.ui.idle_add(lambda: self._clamp_card(panel))
+            # The player's size is not known until it is shown. _watch fits the card then, and when the size changes.
 
         header.set_cursor_from_name("move")
         move = Gtk.GestureDrag()
@@ -1355,28 +1370,35 @@ class Plugin:
         state = {}
 
         def move_begin(gesture, x, y):
+            state.clear()
             overlay = container.get_parent()
-            if overlay is None:
-                return
-            self._anchor_here(panel)
-            state["start"] = (container.get_margin_start(), container.get_margin_top())
-            state["local"] = (x, y)
-            state["pointer"] = self._in_overlay(header, overlay, x, y)
+            if overlay is not None:
+                state["local"] = (x, y)
+                state["pointer"] = self._in_overlay(header, overlay, x, y)
 
         def move_update(gesture, dx, dy):
             overlay = container.get_parent()
-            if overlay is None or "start" not in state:
+            if overlay is None or "pointer" not in state:
                 return
+            if "start" not in state:
+                # Anchored on the first movement, so a click that does not drag changes nothing.
+                self._anchor_here(panel)
+                state["start"] = (panel.want["x"], panel.want["y"])
             px, py = self._in_overlay(header, overlay, state["local"][0] + dx, state["local"][1] + dy)
-            self._move_card(
-                panel,
-                state["start"][0] + px - state["pointer"][0],
-                state["start"][1] + py - state["pointer"][1],
-            )
+            panel.want["x"] = state["start"][0] + px - state["pointer"][0]
+            panel.want["y"] = state["start"][1] + py - state["pointer"][1]
+            self._fit_card(panel)
+            # What is shown is the wanted place fitted to the player, which is what the card is dropped at.
+            panel.want["x"], panel.want["y"] = container.get_margin_start(), container.get_margin_top()
+
+        def move_end(gesture, dx, dy):
+            if "start" in state:
+                self._save_layout(panel)
+            state.clear()
 
         rsimgv.ui.connect(move, "drag-begin", move_begin)
         rsimgv.ui.connect(move, "drag-update", move_update)
-        rsimgv.ui.connect(move, "drag-end", lambda *_: self._save_layout(panel))
+        rsimgv.ui.connect(move, "drag-end", move_end)
         header.add_controller(move)
 
         # A double click puts the card back in its corner at its first size.
@@ -1398,19 +1420,20 @@ class Plugin:
         state = {}
 
         def begin(gesture, x, y):
+            state.clear()
             overlay = container.get_parent()
-            if overlay is None:
-                return
-            self._anchor_here(panel)
-            state["origin"] = (container.get_margin_start(), container.get_margin_top())
-            state["size"] = (container.get_width(), container.get_height())
-            state["local"] = (x, y)
-            state["pointer"] = self._in_overlay(corner, overlay, x, y)
+            if overlay is not None:
+                state["local"] = (x, y)
+                state["pointer"] = self._in_overlay(corner, overlay, x, y)
 
         def update(gesture, dx, dy):
             overlay = container.get_parent()
-            if overlay is None or "size" not in state:
+            if overlay is None or "pointer" not in state:
                 return
+            if "origin" not in state:
+                self._anchor_here(panel)
+                state["origin"] = (panel.want["x"], panel.want["y"])
+                state["size"] = (panel.want["w"], panel.want["h"])
             px, py = self._in_overlay(corner, overlay, state["local"][0] + dx, state["local"][1] + dy)
             moved_x, moved_y = px - state["pointer"][0], py - state["pointer"][1]
             x0, y0 = state["origin"]
@@ -1427,13 +1450,17 @@ class Plugin:
             else:
                 height = max(CARD_MIN[1], min(h0 + moved_y, overlay.get_height() - y0))
                 y = y0
-            container.set_margin_start(int(x))
-            container.set_margin_top(int(y))
-            container.set_size_request(int(width), int(height))
+            panel.want.update(x=int(x), y=int(y), w=int(width), h=int(height))
+            self._fit_card(panel)
+
+        def end(gesture, dx, dy):
+            if "origin" in state:
+                self._save_layout(panel)
+            state.clear()
 
         rsimgv.ui.connect(resize, "drag-begin", begin)
         rsimgv.ui.connect(resize, "drag-update", update)
-        rsimgv.ui.connect(resize, "drag-end", lambda *_: self._save_layout(panel))
+        rsimgv.ui.connect(resize, "drag-end", end)
         corner.add_controller(resize)
 
     @staticmethod
@@ -1463,19 +1490,42 @@ class Plugin:
         x, y = self._in_overlay(container, overlay, 0, 0) if overlay is not None else (12, 12)
         width, height = container.get_width(), container.get_height()
         self._anchor(panel, x, y)
-        container.set_size_request(max(CARD_MIN[0], width), max(CARD_MIN[1], height))
+        panel.want.update(
+            x=int(x), y=int(y),
+            w=max(CARD_MIN[0], width or panel.want["w"]), h=max(CARD_MIN[1], height or panel.want["h"]),
+        )
+        container.set_size_request(panel.want["w"], panel.want["h"])
 
-    def _move_card(self, panel, x, y):
-        container, overlay = panel.container, panel.container.get_parent()
-        if overlay is not None:
-            x = min(x, overlay.get_width() - container.get_width())
-            y = min(y, overlay.get_height() - container.get_height())
-        container.set_margin_start(int(max(0, x)))
-        container.set_margin_top(int(max(0, y)))
+    def _fit_card(self, panel):
+        """Shows the card's wanted size and place inside the player, which it never leaves.
 
-    def _clamp_card(self, panel):
-        if panel.anchored and panel.container is not None and panel.container.get_parent() is not None:
-            self._move_card(panel, panel.container.get_margin_start(), panel.container.get_margin_top())
+        Nothing is done until the player has a size. The wanted geometry itself is not changed, so a card pushed in
+        by a small window goes back to its place when the window grows again.
+        """
+        container, want = panel.container, panel.want
+        overlay = container.get_parent()
+        if overlay is None or want is None:
+            return
+        room_w, room_h = overlay.get_width(), overlay.get_height()
+        if room_w <= 0 or room_h <= 0:
+            return
+        # The default corner leaves its margin all round; a placed card has none.
+        margin = 0 if panel.anchored else 12
+        width = max(1, min(max(CARD_MIN[0], want["w"]), room_w - 2 * margin))
+        height = max(1, min(max(CARD_MIN[1], want["h"]), room_h - 2 * margin))
+        if container.get_size_request() != (width, height):
+            container.set_size_request(width, height)
+        if panel.anchored and "x" in want:
+            # A card cannot be smaller than its content, so keep what it needs inside, not what was asked for.
+            shown_w = max(width, container.measure(Gtk.Orientation.HORIZONTAL, -1)[0])
+            shown_h = max(height, container.measure(Gtk.Orientation.VERTICAL, shown_w)[0])
+            x = int(max(0, min(want["x"], room_w - shown_w)))
+            y = int(max(0, min(want["y"], room_h - shown_h)))
+            if container.get_margin_start() != x:
+                container.set_margin_start(x)
+            if container.get_margin_top() != y:
+                container.set_margin_top(y)
+        panel.fitted = (room_w, room_h)
 
     def _reset_card(self, panel):
         container = panel.container
@@ -1485,6 +1535,8 @@ class Plugin:
             getattr(container, f"set_margin_{margin}")(12)
         container.set_size_request(*CARD_SIZE)
         panel.anchored = False
+        panel.want = {"w": CARD_SIZE[0], "h": CARD_SIZE[1]}
+        panel.fitted = None
         try:
             os.remove(self._layout_path)
         except FileNotFoundError:
@@ -1500,26 +1552,85 @@ class Plugin:
             return {}
         if not isinstance(loaded, dict):
             return {}
-        return {
+        layout = {
             key: int(value)
             for key, value in loaded.items()
-            if key in ("x", "y", "w", "h") and isinstance(value, (int, float))
+            if key in ("x", "y", "w", "h") and isinstance(value, (int, float)) and not isinstance(value, bool)
+            and math.isfinite(value)
         }
+        # A place without a usable size, or off the top left, is not trusted.
+        if "x" in layout and "y" in layout and (layout["x"] < 0 or layout["y"] < 0):
+            layout.pop("x"), layout.pop("y")
+        return layout
 
     def _save_layout(self, panel):
-        container = panel.container
-        layout = {
-            "x": container.get_margin_start(),
-            "y": container.get_margin_top(),
-            "w": container.get_size_request()[0],
-            "h": container.get_size_request()[1],
-        }
+        """Writes the wanted place and size. The file is replaced whole, so a crash cannot leave half of it."""
+        want = panel.want
+        if not want or "x" not in want:
+            return
+        layout = {key: int(want[key]) for key in ("x", "y", "w", "h")}
+        temporary = f"{self._layout_path}.tmp"
         try:
             os.makedirs(os.path.dirname(self._layout_path), exist_ok=True)
-            with open(self._layout_path, "w", encoding="utf-8") as file:
+            with open(temporary, "w", encoding="utf-8") as file:
                 json.dump(layout, file)
+            os.replace(temporary, self._layout_path)
         except OSError as exc:
             rsimgv.notify(f"{NAME}: cannot save the chat's place: {exc}", level="warning", seconds=6)
+
+    # -- the viewer card: fading ------------------------------------------
+
+    def _fade_ms(self):
+        """How long the card takes to fade, or 0 while the window's transitions are off."""
+        try:
+            if not rsimgv.host.call("settings.get", {"key": "window.sidebar.animations"}).get("value"):
+                return 0
+            return max(0, int(rsimgv.host.call("settings.get", {"key": "window.sidebar.animation-ms"}).get("value")))
+        except Exception as exc:
+            if DEBUG:
+                rsimgv.host.log("debug", f"chat card: cannot read the transition settings: {exc}")
+            return 0
+
+    def _show_card(self, panel, show):
+        """Shows or hides the viewer card, fading it when the window's transitions are on."""
+        container = panel.container
+        if panel.fade is not None:
+            container.remove_tick_callback(panel.fade)
+            panel.fade = None
+        panel.shown = show
+        duration = self._fade_ms()
+        start = container.get_opacity() if container.get_visible() else 0.0
+        target = 1.0 if show else 0.0
+
+        def finish():
+            container.set_opacity(1.0)
+            container.set_can_target(True)
+            container.set_visible(show)
+
+        if duration <= 0 or start == target:
+            finish()
+            return
+        if show:
+            container.set_opacity(start)
+            container.set_visible(True)
+        else:
+            # Still on screen while it fades, but no longer something to click.
+            container.set_can_target(False)
+        begin = {}
+
+        def tick(widget, clock):
+            now = clock.get_frame_time()
+            begin.setdefault("at", now)
+            progress = min(1.0, (now - begin["at"]) / (duration * 1000))
+            eased = progress * progress * (3 - 2 * progress)
+            widget.set_opacity(start + (target - start) * eased)
+            if progress < 1.0:
+                return GLib.SOURCE_CONTINUE
+            panel.fade = None
+            finish()
+            return GLib.SOURCE_REMOVE
+
+        panel.fade = container.add_tick_callback(tick)
 
     # -- following new messages ------------------------------------------
 
@@ -1558,6 +1669,10 @@ class Plugin:
         """Measures the log again a few times a second while it is shown, so its scroll range cannot stay out of date."""
         if panel.key not in self._panels:
             return False
+        if panel.in_viewer:
+            overlay = panel.container.get_parent()
+            if overlay is not None and panel.fitted != (overlay.get_width(), overlay.get_height()):
+                self._fit_card(panel)
         if panel.scroll.get_mapped():
             panel.log.queue_resize()
             self._follow_now(panel)
@@ -2999,9 +3114,13 @@ class Plugin:
         if not targets:
             return
         # Judged by what is on screen, since the sidebar can also be closed from outside the plugin.
-        show = not any(panel.container.get_visible() for panel in targets)
+        # A viewer card that is fading out is still visible, so it is judged by where it is going.
+        show = not any(panel.shown if in_viewer else panel.container.get_visible() for panel in targets)
         for panel in targets:
-            panel.container.set_visible(show)
+            if in_viewer:
+                self._show_card(panel, show)
+            else:
+                panel.container.set_visible(show)
             if show:
                 panel.entry.grab_focus()
         if in_viewer:
