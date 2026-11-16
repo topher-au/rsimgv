@@ -13,6 +13,7 @@ desc: How rsimgv counts views and watch time for pictures and videos, where it k
   <dt>Switching off</dt><dd><em>Count pictures</em> and <em>Count videos</em> choose which media is recorded, and <em>Track viewing history</em> (<code>history.enabled</code>) turns the whole feature off.</dd>
 </dl>
 <p>A record is kept even for a file that was not watched long enough to count as a view, as long as some time was spent on it, so the watch time adds up across short looks.</p>
+<p>While a video is paused and the window still has focus, the time keeps counting, so a long look at a paused frame is watch time too. Turn off <em>Count paused time</em> (<code>history.count-paused</code>) to count only while it plays.</p>
 
 <h2>Where the totals show</h2>
 <ul>

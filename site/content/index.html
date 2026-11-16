@@ -27,9 +27,9 @@ layout: home
       <div class="card"><h3>A viewer for pictures</h3><p>Fit to window, width, height or fill; zoom, pan, rotate and mirror; bicubic and sharpened scaling made by OpenCV.</p><a class="more" href="docs/viewer.html">The picture viewer →</a></div>
       <div class="card"><h3>Video with libmpv</h3><p>Playback by libmpv or GStreamer, crop and aspect ratio, a blurred backdrop, a seek display, and positions remembered per file even if you move it.</p><a class="more" href="docs/video.html">Playing video →</a></div>
       <div class="card"><h3>A playlist from anywhere</h3><p>Collect items from any folder, shuffle and reorder them, save M3U, PLS or XSPF, and detach the panel into its own window.</p><a class="more" href="docs/playlist.html">The playlist →</a></div>
-      <div class="card"><h3>Keybindings in contexts</h3><p>Over 120 actions, each bindable globally or only while browsing, viewing, looking at a picture, watching a video, in the playlist or in the tree. Press F1 to see what is bound where you are.</p><a class="more" href="docs/keybindings.html">Keybindings and mouse →</a></div>
+      <div class="card"><h3>Keybindings in contexts</h3><p>Over 150 actions, each bindable globally or only while browsing, viewing, looking at a picture, watching a video, in the playlist or in the tree. Press F1 to see what is bound where you are.</p><a class="more" href="docs/keybindings.html">Keybindings and mouse →</a></div>
       <div class="card"><h3>Tabs, bookmarks and history</h3><p>Open folders in tabs, bookmark the places you return to, long-press back or forward to list the history, and see what you have viewed.</p><a class="more" href="docs/navigation.html">Navigation →</a></div>
-      <div class="card"><h3>Plugins</h3><p>Python plugins add actions, menus, events, panels and settings. The bundled LLM Screenshot plugin describes what the viewer shows.</p><a class="more" href="docs/plugins.html">Plugins →</a></div>
+      <div class="card"><h3>Plugins</h3><p>Python plugins add actions, menus, events, panels and settings. Bundled plugins describe what the viewer shows, upscale pictures and chat about them.</p><a class="more" href="docs/plugins.html">Plugins →</a></div>
       <div class="card"><h3>Remote control</h3><p>A JSON interface over a Unix socket, TCP or HTTP lets other programs run actions, read metadata and thumbnails, change settings, and post messages.</p><a class="more" href="docs/remote-control.html">Remote control →</a></div>
     </div>
   </div>
@@ -58,6 +58,7 @@ layout: home
           <li>Fit modes, a zoom step you choose, one-to-one focus on the centre, top or pointer</li>
           <li>A blurred copy of the picture can fill the space around it</li>
           <li>Turn and mirror a picture without changing the file</li>
+          <li>Run a slideshow, in order or shuffled, with a countdown you can place and style</li>
         </ul>
       </div>
       {{shot viewer-zoom "Zoomed in with the thumbnail bar and status bar showing"}}
@@ -67,7 +68,7 @@ layout: home
         <h3>Smooth video, if you want it</h3>
         <p>Skip through a video and a progress bar and the time appear over it. For playback that looks as fluid as it can, rsimgv can interpolate frames with SVP's VapourSynth plugins, built and embedded so SVP itself need not be installed.</p>
         <ul>
-          <li>Speed, volume, mute, repeat and auto-advance are all actions you can bind</li>
+          <li>Speed, volume, mute, repeat and the slideshow are all actions you can bind</li>
           <li>Crop black bars or a blurred backdrop, and set an output aspect ratio</li>
           <li>The overlay's elements, places and styling are settings</li>
         </ul>

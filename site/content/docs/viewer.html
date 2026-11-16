@@ -25,7 +25,15 @@ desc: Opening, fitting, zooming, rotating and panning pictures in rsimgv, plus t
   <dt><code>loop</code></dt><dd>Wrap around to the other end of the folder.</dd>
   <dt><code>next-folder</code></dt><dd>Go on to the next folder that has pictures or videos. The viewer names the folder it moves to.</dd>
 </dl>
-<p>While the viewer shows the playlist, its previous and next keys, the thumbnail bar and auto-advance go through the playlist instead, and stop at its ends whatever <code>viewer.folder-end</code> says.</p>
+<p>While the viewer shows the playlist, its previous and next keys, the thumbnail bar and the slideshow go through the playlist instead, and stop at its ends whatever <code>viewer.folder-end</code> says.</p>
+
+<h2>Slideshow</h2>
+<p><kbd>N</kbd> turns the slideshow on or off, on pictures and videos alike (<code>view.toggle-slideshow</code>). While it runs, the next item of the folder, or of the playlist, is shown when a video ends or a picture has been up for the <em>Slideshow delay</em> (<code>viewer.slideshow-delay</code>, 5 seconds by default, 1 to 3600). What happens at the last item is the <em>When reaching the end</em> setting above.</p>
+<ul>
+  <li><kbd>Shift</kbd>+<kbd>N</kbd> turns <strong>shuffle</strong> on or off (<code>view.toggle-slideshow-shuffle</code>) and says so over the window. With it on, the folder's items come in a random order, each once before any comes round again. It is also the <em>Shuffle slideshow</em> setting (<code>viewer.slideshow-shuffle</code>).</li>
+  <li>A <strong>countdown</strong> shows the time left before the slideshow moves on. Add a <em>Slideshow countdown</em> element in the <a href="overlay.html">overlay editor</a> and set it to a bar, a circle or text, and choose where it sits and how it looks.</li>
+  <li>A picture that cannot be read is skipped over, and closing the viewer ends the slideshow.</li>
+</ul>
 
 <h2>Fit modes</h2>
 <p>When a picture opens it is sized by the <em>Default fit</em> (<code>image.fit</code>). You can switch at any time, and <kbd>F</kbd> cycles through them in this order:</p>

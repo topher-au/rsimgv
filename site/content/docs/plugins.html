@@ -1,11 +1,64 @@
 title: Plugins
 desc: Python plugins in rsimgv: discovery, the manifest, the Python API, actions, menus, events, panels, settings and the bundled LLM Screenshot plugin.
 ---
-<p class="lead">Plugins extend rsimgv with Python: they can add actions, keybindings, menus, events and sidebar panels, and declare their own settings. The bundled <strong>LLM Screenshot</strong> plugin sends the viewer's picture or video frame to an OpenAI-compatible vision model.</p>
+<p class="lead">Plugins extend rsimgv with Python: they can add actions, keybindings, menus, events and sidebar panels, and declare their own settings. Three plugins are bundled: <strong>LLM Screenshot</strong> sends the viewer's picture or video frame to an OpenAI-compatible vision model, <strong>AI Upscale</strong> enlarges pictures, and <strong>LLM Chat</strong> is a chat about what you are looking at.</p>
 
 {{shot prefs-plugins "The Plugins page under Integration"}}
 
 <div class="callout"><strong>Python support is a build option</strong><p>Python plugin support is built by default when <code>python3-embed</code> and <code>pygobject-3.0</code> are available. Configure with <code>-Dpython=auto</code>, <code>-Dpython=enabled</code> or <code>-Dpython=disabled</code>.</p></div>
+
+<h2>Writing your first plugin</h2>
+<p>This builds a plugin that shows a notification naming the picture or video in the viewer, and logs each item the viewer changes to.</p>
+<ol>
+  <li><strong>Make a plugin directory</strong> and point rsimgv at its parent while you develop:
+<pre><code>mkdir -p ~/dev/plugins/com.example.hello
+export RSIMGV_PLUGINS=~/dev/plugins</code></pre></li>
+  <li><strong>Write the manifest</strong>, <code>plugin.yaml</code>, in that directory. <code>scope</code> says where the key works: <code>global</code>, <code>browse</code>, <code>view</code>, <code>image</code>, <code>video</code>, <code>playlist</code> or <code>tree</code>.
+<pre><code>api: 1
+id: com.example.hello
+name: Hello
+version: 0.1.0
+runtime: python
+entry: plugin.py
+startup: on-demand
+
+events: [viewer.item_changed]
+
+contributes:
+  actions:
+    - id: greet
+      label: Greet
+      description: Say which item the viewer shows.
+      scope: view
+      default_keys: [ctrl+alt+g]</code></pre></li>
+  <li><strong>Write the plugin</strong>, <code>plugin.py</code>:
+<pre><code>import rsimgv
+
+
+class Plugin:
+    def activate(self, host):
+        rsimgv.host.log("info", "Hello plugin active")
+
+    def deactivate(self):
+        pass
+
+    def invoke_action(self, action, context):
+        if action != "greet":
+            return
+        try:
+            info = rsimgv.host.call("view.info")
+        except Exception as exc:
+            rsimgv.notify(f"Hello: {exc}", level="error")
+            return
+        rsimgv.notify(f"Viewing {info.get('filename') or 'nothing'}")
+
+    def on_event(self, name, data):
+        if name == "viewer.item_changed":
+            rsimgv.host.log("info", f"Viewer moved to {data['path']}")</code></pre></li>
+  <li><strong>Run it.</strong> Start <code>rsimgv --verbose</code> from the shell where you set <code>RSIMGV_PLUGINS</code>. Hello is listed on the Plugins page. Open a picture and press <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>G</kbd>. The action is named <code>plugin.com.example.hello.greet</code> in the keybinding editor.</li>
+  <li><strong>Edit and reload.</strong> Change the notification text and save. The plugin reloads on its own, unless <code>plugins.auto-reload</code> is off, or send <code>plugins.reload</code> over the remote control. An action that raises an error is reported as a window notification.</li>
+</ol>
+<p>From here, <code>rsimgv.host.call(method, params)</code> runs the same methods as the <a href="remote-control.html">remote control</a>, such as <code>view.info</code>, <code>view.screenshot</code>, <code>files.list</code> and <code>settings.get</code>. Add <code>contributes.settings</code> for options, read from the <code>config.json</code> beside <code>rsimgv.host.config_path()</code>, and <code>contributes.panels</code> with <code>create_panel</code> for a widget in the sidebar or over the viewer. Do slow work, such as network requests, on a thread, and return to the GTK main thread with <code>rsimgv.ui.idle_add</code>, because a plugin that blocks stalls the whole window. The bundled plugins are complete examples, and LLM Screenshot is the smallest.</p>
 
 <h2>Where plugins live</h2>
 <p>A plugin is a directory containing <code>plugin.yaml</code>. They are looked for in:</p>
@@ -51,7 +104,11 @@ contributes:
 <ul>
   <li><code>api</code> must be <code>1</code>. Plugin ids may contain lowercase letters, digits, dots and hyphens.</li>
   <li>Action names become <code>plugin.&lt;id&gt;.&lt;action&gt;</code> and can be bound in the keybinding editor.</li>
-  <li>Panel slots are <code>sidebar.bottom</code>, <code>browse.header</code>, <code>viewer.overlay</code> and <code>preferences.plugins</code>.</li>
+  <li>Panel slots are <code>sidebar.bottom</code>, <code>browse.sidebar</code>, <code>browse.header</code>, <code>viewer.overlay</code> and <code>preferences.plugins</code>. Only <code>sidebar.bottom</code>, <code>browse.sidebar</code> and <code>viewer.overlay</code> are built so far.
+    <ul>
+      <li>A <code>browse.sidebar</code> panel is in a sidebar on the right of the browse view, outside the playlist's, and its width can be dragged. The sidebar is open while a panel in it is shown, so a plugin shows or hides its panel with <code>container.set_visible</code>.</li>
+      <li>A <code>viewer.overlay</code> panel is a card over the viewer's picture, in the corner given by <code>position</code> (<code>top-left</code>, <code>top-right</code>, <code>bottom-left</code> or <code>bottom-right</code>; <code>top-right</code> by default). The plugin sizes it and can hide it with <code>container.set_visible</code>.</li>
+    </ul></li>
   <li>Setting kinds are <code>string</code>, <code>text</code>, <code>int</code>, <code>bool</code> and <code>choice</code>. Settings are written to the plugin's own <code>config.json</code> and shown on the Plugins page. A <code>choice</code> setting takes <code>choices</code>; an <code>int</code> setting can take <code>min</code> and <code>max</code>.</li>
 </ul>
 
@@ -108,6 +165,18 @@ rsimgv.action_done(result)</code></pre>
   "api_key_env": "OPENAI_API_KEY"
 }</code></pre>
 <p>The API key is read from the environment variable named by <code>api_key_env</code>; it is never stored in the config file.</p>
+
+<h2>The bundled AI Upscale plugin</h2>
+<p><code>au.topher.upscale</code> runs an ncnn/Vulkan upscaler (<code>upscayl-bin</code> or <code>realesrgan-ncnn-vulkan</code>) on the viewed or selected picture and keeps the result in rsimgv's data folder, where the viewer shows it in place of the original. Press <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>U</kbd> or choose <strong>Upscale picture</strong> from the main menu. In the viewer, <kbd>U</kbd> switches between the original and the upscaled copy, and <kbd>Shift</kbd>+<kbd>U</kbd> compares them either side of a draggable divider. The plugin's README lists its requirements and settings.</p>
+
+<h2>The bundled LLM Chat plugin</h2>
+<p><code>au.topher.llm-chat</code> adds a persistent chat to a sidebar beside the browse view, and over the picture in the viewer; <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>C</kbd> shows or hides it. Each message goes to an OpenAI-compatible vision model along with the viewer's current picture or frame, its file name and its metadata, and the picture is shrunk to 768 pixels and sent as a JPEG. Replies are shown as markdown with the model's reasoning, and can be read aloud.</p>
+<ul>
+  <li>The model can use tools to keep and forget memories between chats, and to control the viewer: zoom, next and previous, play and pause.</li>
+  <li>Voice input and spoken replies can use an HTTP endpoint or a local program such as <code>whisper-cli</code> or <code>piper</code>. <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>V</kbd> starts a hands-free conversation that listens for speech, sends it and speaks the reply.</li>
+  <li>Messages show names and the picture that was sent, with hover actions to replay, regenerate or delete them, and a button to jump to the latest. The chat's width in the sidebar is <code>window.chat-width</code>.</li>
+</ul>
+<p>The plugin's README lists its settings.</p>
 
 <h2>Limits</h2>
 <ul>

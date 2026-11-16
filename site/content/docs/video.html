@@ -6,7 +6,7 @@ desc: Video playback in rsimgv with libmpv or GStreamer: controls, seeking, spee
 {{shot video-viewer "A video playing, with the seek display and the controls"}}
 
 <h2>Controls</h2>
-<p>Move the pointer toward the bottom of the viewer and the video's controls appear: previous, play or pause, stop, next, a position slider with the elapsed and remaining time, fullscreen, auto-advance, and a mute button with a volume slider. <kbd>P</kbd> pins the controls so they stay shown.</p>
+<p>Move the pointer toward the bottom of the viewer and the video's controls appear: previous, play or pause, stop, next, a position slider with the elapsed and remaining time, fullscreen, the slideshow, and a mute button with a volume slider. <kbd>P</kbd> pins the controls so they stay shown.</p>
 <p>The controls are locked in place by default. Turn off <em>Videos → Playback → Lock the video controls</em> (<code>video.controls.locked</code>) and they can be dragged to a new place over the video, and their left or right edge dragged to change their width. The place and width are remembered.</p>
 
 <table>
@@ -18,7 +18,7 @@ desc: Video playback in rsimgv with libmpv or GStreamer: controls, seeking, spee
 <tr><td>Mute</td><td><kbd>M</kbd></td><td>Mutes the sound, or unmutes it.</td></tr>
 <tr><td>Toggle SVP</td><td><kbd>V</kbd></td><td>Turns frame interpolation on or off while watching.</td></tr>
 <tr><td>Toggle Repeat</td><td><kbd>R</kbd></td><td>Plays the video again from the start when it ends.</td></tr>
-<tr><td>Toggle Auto-Advance</td><td><kbd>N</kbd></td><td>When a video ends, shows the next item in the folder or the playlist.</td></tr>
+<tr><td>Toggle Slideshow</td><td><kbd>N</kbd></td><td>When a video ends, or a picture has been up for the slideshow delay, shows the next item in the folder or the playlist. See <a href="viewer.html#slideshow">the slideshow</a>.</td></tr>
 </tbody>
 </table>
 
@@ -64,6 +64,15 @@ desc: Video playback in rsimgv with libmpv or GStreamer: controls, seeking, spee
 
 <h2>Remembered position and speed</h2>
 <p>rsimgv can remember where you left a video, the speed you were playing it at, its volume and mute state, its output aspect ratio, and how it was turned or mirrored. <em>Remembered → File settings</em> chooses which. A video left within two seconds of the start or the end starts from the beginning instead. The memory is keyed by the file's contents rather than its name, so it survives moving or renaming; see <a href="files.html#per-file-settings">per-file settings</a>.</p>
+
+<h2>Settings that change as a video plays</h2>
+<p>A video's turn, mirror, zoom, crop and speed can be set to change at points in its timeline. Position the video, set it up as you want it from there on, and press <kbd>K</kbd> (<code>video.timeline-set</code>). Those settings then apply from that position, in place of any set for about the same place, and the ones before it hold until it.</p>
+<ul>
+  <li><kbd>J</kbd> and <kbd>L</kbd> skip to the previous and next time the settings change (<code>video.timeline-previous</code>, <code>video.timeline-next</code>).</li>
+  <li><kbd>Shift</kbd>+<kbd>K</kbd> removes the settings that apply at the position, so the earlier ones hold again (<code>video.timeline-remove</code>).</li>
+  <li><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>K</kbd> removes every timed setting from the video (<code>video.timeline-clear</code>).</li>
+</ul>
+<p>Zooming and panning a video, <kbd>0</kbd> to show all of it again, is done with an mpv crop filter, and is applied after the crop and the turn.</p>
 
 <h2>Previews in the browse grid</h2>
 <p>In the browse grid a video's thumbnail is a frame a tenth of the way in. While it is the active item, its preview can play a strip of frames spread through the video, made with <code>ffmpeg</code>, or an embedded player in the item's frame. <em>Browsing → Items → Thumbnails → Video previews</em> chooses which, or none.</p>
