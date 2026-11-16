@@ -1153,6 +1153,7 @@ impl Window {
             videos: settings.boolean("history.videos"),
             video_seconds: settings.int("history.video-seconds"),
             video_percent: settings.int("history.video-percent"),
+            count_paused: settings.boolean("history.count-paused"),
             show_stats: settings.boolean("history.show-stats"),
         });
         let crop_method = crate::mpv::framing::CropMethod::from_name(&settings.string("video.crop.method"));
@@ -3985,7 +3986,7 @@ const WHEEL_VOLUME_STEP: f64 = 5.0;
 const WHEEL_SEEK_STEP: f64 = 5.0;
 
 /// The settings the viewer and the window title are set from, applied again whenever one changes.
-const VIEWER_SETTINGS: [&str; 66] = [
+const VIEWER_SETTINGS: [&str; 67] = [
     "video.crop.enabled",
     "video.crop.method",
     "video.crop.trim",
@@ -4008,6 +4009,7 @@ const VIEWER_SETTINGS: [&str; 66] = [
     "history.videos",
     "history.video-seconds",
     "history.video-percent",
+    "history.count-paused",
     "history.show-stats",
     "window.sidebar.animations",
     "window.sidebar.animation-ms",

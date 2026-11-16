@@ -253,6 +253,8 @@ pub struct HistorySettings {
     pub videos: bool,
     pub video_seconds: i32,
     pub video_percent: i32,
+    /// Whether a paused video keeps adding to its watch time while the window has focus.
+    pub count_paused: bool,
     /// Whether the views and time watched for the item shown are shown in the status bar and overlays.
     pub show_stats: bool,
 }
@@ -266,6 +268,7 @@ impl Default for HistorySettings {
             videos: true,
             video_seconds: 20,
             video_percent: 10,
+            count_paused: true,
             show_stats: true,
         }
     }
@@ -2561,7 +2564,13 @@ impl MediaViewer {
                     return;
                 }
                 let position = media.timestamp() as f64 / MICROS;
-                if media.is_playing() {
+                let playing = media.is_playing();
+                // A paused video only counts while the window has focus, so one left open behind other windows does
+                // not keep adding time.
+                if !playing && settings.count_paused && self.window_has_focus() {
+                    session.seconds += delta;
+                }
+                if playing {
                     session.seconds += delta;
                     // Only the part that played counts, not a jump made by seeking.
                     if let Some(last) = session.last_position {
@@ -2596,6 +2605,11 @@ impl MediaViewer {
         }
         imp.watch_session.set(session);
         self.refresh_watch_stats();
+    }
+
+    /// Whether the window the viewer is in is the one with focus.
+    fn window_has_focus(&self) -> bool {
+        self.root().and_downcast::<gtk::Window>().is_some_and(|window| window.is_active())
     }
 
     /// Marks the item shown as viewed, as a video that has reached its end is, whatever part of it was watched.

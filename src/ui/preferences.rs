@@ -244,6 +244,8 @@ mod imp {
         #[template_child]
         pub history_video_percent_row: TemplateChild<adw::SpinRow>,
         #[template_child]
+        pub history_count_paused_row: TemplateChild<adw::SwitchRow>,
+        #[template_child]
         pub history_show_stats_row: TemplateChild<adw::SwitchRow>,
         #[template_child]
         pub controls_locked_row: TemplateChild<adw::SwitchRow>,
@@ -471,6 +473,7 @@ impl PreferencesDialog {
             let (images, image_seconds) = (imp.history_images_row.clone(), imp.history_image_seconds_row.clone());
             let (videos, video_seconds) = (imp.history_videos_row.clone(), imp.history_video_seconds_row.clone());
             let video_percent = imp.history_video_percent_row.clone();
+            let count_paused = imp.history_count_paused_row.clone();
             let show_stats = imp.history_show_stats_row.clone();
             let update = move || {
                 let enabled = watch_settings.boolean("history.enabled");
@@ -481,6 +484,7 @@ impl PreferencesDialog {
                 image_seconds.set_sensitive(enabled && watch_settings.boolean("history.images"));
                 video_seconds.set_sensitive(videos_enabled);
                 video_percent.set_sensitive(videos_enabled);
+                count_paused.set_sensitive(videos_enabled);
             };
             update();
             for key in ["history.enabled", "history.images", "history.videos"] {
@@ -936,6 +940,7 @@ fn bind_switches(settings: &Settings, imp: &imp::PreferencesDialog) {
         ("history.enabled", &imp.history_enabled_row),
         ("history.images", &imp.history_images_row),
         ("history.videos", &imp.history_videos_row),
+        ("history.count-paused", &imp.history_count_paused_row),
         ("history.show-stats", &imp.history_show_stats_row),
     ];
     for (key, row) in switches {

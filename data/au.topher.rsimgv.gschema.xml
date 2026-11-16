@@ -753,6 +753,10 @@
       <default>10</default>
       <summary>How much of a video has to play, in the current playback, before it counts as viewed, as a percentage of its length; either this or the seconds below is enough</summary>
     </key>
+    <key name="count-paused" type="b">
+      <default>true</default>
+      <summary>Keep counting the time watched while a video is paused, as long as the window still has focus</summary>
+    </key>
     <key name="show-stats" type="b">
       <default>true</default>
       <summary>Show the views and time watched for the item shown in the viewer's status bar and overlays</summary>
