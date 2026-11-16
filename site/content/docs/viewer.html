@@ -1,0 +1,105 @@
+title: The picture viewer
+desc: Opening, fitting, zooming, rotating and panning pictures in rsimgv, plus the thumbnail bar, status bar, overlay and folder-end behaviour.
+---
+<p class="lead">Open a picture and the browse grid gives way to the viewer. It fits the picture to the window, lets you zoom, rotate and pan, and steps through the folder with a key.</p>
+
+{{shot viewer-image "The viewer with the thumbnail bar and status bar"}}
+
+<h2>Opening and closing</h2>
+<p>Double-click a picture, or select it and press <kbd>Enter</kbd> or <kbd>E</kbd>. Press <kbd>Q</kbd> or <kbd>Esc</kbd> to close the viewer and return to the grid. Passing a picture on the <a href="command-line.html">command line</a> opens it straight in the viewer.</p>
+<p><kbd>B</kbd> toggles the viewer and the browse view without changing the item shown or selected, so you can compare the grid with a full-size look. <code>win.focus-viewer</code> moves the keyboard focus to the viewer while it is open, or else to the browse view; <kbd>F6</kbd> and <kbd>Shift</kbd>+<kbd>F6</kbd> cycle the focus between the tree, the viewer and the playlist.</p>
+<p>To open in fullscreen, turn on <em>Open in fullscreen</em> (<code>viewer.open-fullscreen</code>); the window leaves fullscreen when the viewer closes. <kbd>F11</kbd> toggles fullscreen at any time.</p>
+
+<h2>Stepping through a folder</h2>
+<table>
+<thead><tr><th>To</th><th>Press</th></tr></thead>
+<tbody>
+<tr><td>Show the previous or next item</td><td><kbd>,</kbd> and <kbd>.</kbd></td></tr>
+<tr><td>Show the first or last item</td><td><kbd>Shift</kbd>+<kbd>,</kbd> and <kbd>Shift</kbd>+<kbd>.</kbd></td></tr>
+</tbody>
+</table>
+<p>The viewer steps through pictures and videos alike, in the order the grid shows them, or through the playlist while it is showing that. The header shows the item's name and its position as <em>3 / 12</em>. While the viewer is on a picture, the next and previous pictures are <strong>preloaded</strong> in the background so stepping feels instant. That can be turned off under <em>Performance → Images</em> (<code>image.preloading</code>) to save memory.</p>
+<p>What happens when you step past the first or last item is up to you, under <em>Viewer → Display → Navigation → When reaching the end</em>:</p>
+<dl>
+  <dt><code>stop</code> (default)</dt><dd>Stay on the last item.</dd>
+  <dt><code>loop</code></dt><dd>Wrap around to the other end of the folder.</dd>
+  <dt><code>next-folder</code></dt><dd>Go on to the next folder that has pictures or videos. The viewer names the folder it moves to.</dd>
+</dl>
+<p>While the viewer shows the playlist, its previous and next keys, the thumbnail bar and the slideshow go through the playlist instead, and stop at its ends whatever <code>viewer.folder-end</code> says.</p>
+
+<h2>Slideshow</h2>
+<p><kbd>N</kbd> turns the slideshow on or off, on pictures and videos alike (<code>view.toggle-slideshow</code>). While it runs, the next item of the folder, or of the playlist, is shown when a video ends or a picture has been up for the <em>Slideshow delay</em> (<code>viewer.slideshow-delay</code>, 5 seconds by default, 1 to 3600). What happens at the last item is the <em>When reaching the end</em> setting above.</p>
+<ul>
+  <li><kbd>Shift</kbd>+<kbd>N</kbd> turns <strong>shuffle</strong> on or off (<code>view.toggle-slideshow-shuffle</code>) and says so over the window. With it on, the folder's items come in a random order, each once before any comes round again. It is also the <em>Shuffle slideshow</em> setting (<code>viewer.slideshow-shuffle</code>).</li>
+  <li>A <strong>countdown</strong> shows the time left before the slideshow moves on. Add a <em>Slideshow countdown</em> element in the <a href="overlay.html">overlay editor</a> and set it to a bar, a circle or text, and choose where it sits and how it looks.</li>
+  <li>A picture that cannot be read is skipped over, and closing the viewer ends the slideshow.</li>
+</ul>
+
+<h2>Fit modes</h2>
+<p>When a picture opens it is sized by the <em>Default fit</em> (<code>image.fit</code>). You can switch at any time, and <kbd>F</kbd> cycles through them in this order:</p>
+<table>
+<thead><tr><th>Mode</th><th>Key</th><th>The picture is…</th></tr></thead>
+<tbody>
+<tr><td><code>window</code></td><td><kbd>1</kbd></td><td>scaled to fit entirely inside the window.</td></tr>
+<tr><td><code>width</code></td><td><kbd>2</kbd></td><td>scaled to the width of the window.</td></tr>
+<tr><td><code>height</code></td><td><kbd>3</kbd></td><td>scaled to the height of the window.</td></tr>
+<tr><td><code>fill</code></td><td><kbd>5</kbd></td><td>scaled to cover the window, cropping what overhangs.</td></tr>
+<tr><td><code>original</code></td><td><kbd>4</kbd></td><td>shown at its own size, one picture pixel to one screen pixel.</td></tr>
+</tbody>
+</table>
+<p>With <em>Maintain fit mode when switching images</em> (<code>image.keep-fit</code>, on by default), the mode you chose carries over to the next picture. Otherwise each picture opens in the default fit and its zoom is reset.</p>
+<p><em>Expand images up to</em> (<code>image.expand-up-to-factor</code>) limits how far a small picture is enlarged when it is fitted, as a multiple of its own size; 0 has no limit.</p>
+{{shot prefs-images "Images preferences: fit and zoom"}}
+
+<h2>Zoom and pan</h2>
+<ul>
+  <li><kbd>=</kbd> and <kbd>-</kbd> zoom in and out. Each step enlarges or shrinks the picture by the <em>Zoom step</em> (<code>image.zoom-step</code>), 25% by default.</li>
+  <li>The wheel zooms with <kbd>Ctrl</kbd> held by default. <em>Controls → Mouse</em> can make it zoom without Ctrl, step between items, or do nothing. Two more actions, <code>image.zoom-in-at-pointer</code> and <code>image.zoom-out-at-pointer</code>, keep the point under the pointer in place and can be bound to keys.</li>
+  <li>The arrow keys pan the picture within the window.</li>
+  <li>The zoom level appears in the header (as in <em>156%</em>) according to <em>Zoom indicator</em>: always, never, or <code>auto</code> to show it only when the picture is zoomed.</li>
+  <li>Zooming and panning are animated. Turn off <em>Animate zoom and pan</em> (<code>image.smooth-scrolling</code>) to jump to the new view.</li>
+</ul>
+{{shot viewer-zoom "A picture zoomed in, with the zoom level in the header"}}
+<p>Zooming out stops at 100% by default, so small pictures are not shrunk past their own size. <em>Unlock minimum zoom</em> (<code>image.unlock-minimum-zoom</code>) lets it go lower. When you show a picture at its own size, <em>One-to-one focus</em> (<code>image.original-focus</code>) decides where it sits: its <code>top</code> at the top of the window, its <code>center</code> in the middle, or the point under the <code>cursor</code> kept in place.</p>
+
+<h2>Rotation and mirroring</h2>
+<p>Pictures and videos can be turned and mirrored while you look at them: <code>view.rotate-clockwise</code>, <code>view.rotate-counter-clockwise</code>, <code>view.flip-vertical</code> and <code>view.flip-horizontal</code>. <code>view.set-rotation</code> turns the item to the angle bound to the key, clockwise from how the file has it: 0, 90, 180 or 270 degrees. None has a default key; bind them in the editor.</p>
+<p>Whether a turn and mirror are kept for the file is <em>Remembered → View → Rotation and mirroring</em> (<code>remember.rotation</code>). Turning a picture never changes the file on disk.</p>
+
+<h2>Scaling quality</h2>
+<p>When a picture is drawn at a size other than its own, it is resampled. <em>Scaling filter</em> (<code>image.scaling-filter</code>) chooses how:</p>
+<dl>
+  <dt><code>nearest</code></dt><dd>Keeps pixels sharp. Good for pixel art.</dd>
+  <dt><code>linear</code></dt><dd>Smooths them. This is the default and is done by GTK.</dd>
+  <dt><code>cubic</code></dt><dd>Smooths them with more detail. Done by OpenCV.</dd>
+  <dt><code>linear-sharp</code>, <code>cubic-sharp</code></dt><dd>As above, then sharpened with an unsharp mask.</dd>
+</dl>
+<p>When a picture is enlarged, <em>Smooth upscaling</em> (<code>image.smooth-upscaling</code>) chooses between smoothing the pixels and drawing them as blocks, which uses nearest.</p>
+
+<h2>Thumbnail bar</h2>
+<p>The thumbnail bar shows the folder's items as a strip, with the current one highlighted and the hovered one tinted. Click one to jump to it. It can be toggled with <kbd>T</kbd>.</p>
+<ul>
+  <li><strong>Position</strong>: top, bottom, left or right. You can also drag the bar to any edge of the viewer.</li>
+  <li><strong>Float over the picture</strong> slides the bar over the picture's edge instead of sitting beside it.</li>
+  <li><strong>Keep a floating bar shown</strong> keeps it visible; otherwise it appears only while the pointer is near its edge. The pin button on the bar does the same.</li>
+  <li><strong>Size</strong>: thumbnails in the bar are 48 to 256 pixels, 80 by default.</li>
+  <li>The bar keeps its scroll position and fits its thumbnails to the space; a horizontal bar scrolls with the wheel rather than passing the wheel to the viewer.</li>
+</ul>
+{{shot prefs-viewer "Viewer preferences, including the thumbnail bar"}}
+
+<h2>Status bar and overlay</h2>
+<p>Turn on <em>Status bar</em> (<code>viewer.status-bar.shown</code>, toggled by the <code>view.toggle-status-bar</code> action) to show the item's position in the folder, name, resolution, frame rate and file size under the picture, as at the bottom of the screenshots on this page. In fullscreen it floats over the picture at the corner you choose with <em>Status overlay position</em>.</p>
+<p>The configurable <a href="overlay.html">media overlay</a> draws the seek display, volume, speed, rotation and zoom displays, the media status and notifications over the picture or video. The status bar can also show how many times the item has been viewed and how long it has been watched, as <a href="history.html">Viewing history</a> explains.</p>
+
+<h2>Window title and cursor</h2>
+<ul>
+  <li><em>Image info in window title</em> puts the file name in the window title, with the application name.</li>
+  <li><em>Hide the cursor when idle</em> (on by default) hides the pointer after a moment without movement.</li>
+  <li><kbd>P</kbd> pins the viewer's header above the picture in fullscreen, and keeps a video's controls shown.</li>
+</ul>
+
+<h2>Blurred background</h2>
+<p>With <em>Blurred background</em> (<code>viewer.blurred-background</code>), a blurred, dimmed, cropped copy of the picture fills the space around it, instead of plain black bars.</p>
+
+<h2>Remembered per file</h2>
+<p>The viewer can keep a picture's fit mode, zoom and pan, and a video's position, speed, volume, aspect ratio, turn and mirror, in a small YAML file per media file. <em>Remembered → File settings</em> chooses which of these are kept. The file is found by its <strong>content hash</strong>, a 32-digit fingerprint of its size, its first and last 64 KiB and samples from its middle, rather than by its path, so the settings follow a file that is moved or renamed. See <a href="files.html#per-file-settings">Files and folders</a>.</p>

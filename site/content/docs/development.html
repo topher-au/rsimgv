@@ -1,0 +1,82 @@
+title: Development
+desc: Source layout, building, testing and the technology behind rsimgv.
+---
+<p class="lead">rsimgv is written in Rust with GTK 4 and libadwaita. It is free software under the GPL-3.0-or-later, and its source is on git.topher.au.</p>
+
+<h2>Source</h2>
+<ul>
+  <li><a href="https://git.topher.au/topher/rsimgv">git.topher.au/topher/rsimgv</a>, the main repository.</li>
+  <li><a href="https://github.com/topher-au/rsimgv">github.com/topher-au/rsimgv</a>, a mirror of the main branch.</li>
+</ul>
+
+<h2>Technology</h2>
+<table>
+<thead><tr><th>Part</th><th>Used for</th></tr></thead>
+<tbody>
+<tr><td>Rust, <code>gtk4</code> 0.11 and <code>libadwaita</code> 0.9</td><td>The application and its interface.</td></tr>
+<tr><td>Meson</td><td>The build, which runs Cargo, compiles the stylesheets with <code>sassc</code>, builds the GResource bundle and installs everything.</td></tr>
+<tr><td>GSettings with a custom backend</td><td>Settings, stored as YAML. The backend is a GObject subclass in C (<code>native/backend.c</code>) because the Rust bindings do not expose what is needed to subclass <code>GSettingsBackend</code>.</td></tr>
+<tr><td>libmpv</td><td>Video playback, rendered in software or with OpenGL into memory for GTK to show.</td></tr>
+<tr><td>OpenCV</td><td>Bicubic resampling and sharpening of pictures.</td></tr>
+<tr><td><code>rusqlite</code></td><td>The metadata index and viewing history in one SQLite database.</td></tr>
+<tr><td><code>xxhash-rust</code></td><td>Content hashes that identify a file for its settings and history, and names for the caches.</td></tr>
+<tr><td><code>serde_yaml_ng</code>, <code>serde_json</code></td><td>The YAML files and the JSON interface.</td></tr>
+<tr><td>PyO3 and PyGObject</td><td>The optional Python plugin runtime.</td></tr>
+<tr><td>VapourSynth and the open-svpflow plugins</td><td>Optional frame interpolation, built from <code>third_party/open-svpflow</code> and embedded.</td></tr>
+</tbody>
+</table>
+
+<h2>Project layout</h2>
+<pre><code>src/
+  main.rs            application startup, actions, icon theme registration
+  fs/                directory entries, lazy tree nodes, natural sort, folder sorting,
+                     metadata, thumbnails
+  hash.rs            hashes for cache names
+  keybindings/       the action catalogue, chords and the binding table
+  media/             picture orientation and resampling
+  mpv/               libmpv wrapper, framing (crop and backdrop) and SVP
+  overlay/           the media overlay's layout and text templates
+  playlist/          the playlist and its file formats
+  plugins/           discovery, manifests and the Python runtime
+  search/            search query parsing and matching
+  services/          IPC, the remote control server and user scripts
+  settings/          GSettings settings and YAML storage (storage.rs, tree.rs)
+  storage/           atomic writes, bookmarks, per-file settings, the metadata index,
+                     viewing history, video crops
+  ui/                widgets: window, folder tree, browse view, item grid, path bar,
+                     navigation bar, viewer, thumbnail bar, playlist, preferences,
+                     overlays and dialogs
+native/              GObject subclass for GSettings (backend.c)
+data/
+  ui/                GTK XML templates for every window and widget
+  style/             SCSS, compiled to CSS at build time
+  icons/             application and symbolic icons (hicolor theme layout)
+  plugins/           the bundled LLM Screenshot plugin
+  *.gschema.xml      GSettings schema
+  rsimgv.gresource.xml  bundle manifest
+build-aux/           build helpers that run cargo and build open-svpflow from Meson
+clients/open-webui/  an Open WebUI tool that speaks the remote control interface
+scripts/             build, install, dist and test helpers
+packaging/arch/      PKGBUILD
+third_party/         open-svpflow
+</code></pre>
+
+<h2>Building and testing</h2>
+<pre><code>./dev.sh          # rebuild and run rsimgv
+./dev.sh test     # rebuild and run the test suite
+./dev.sh cargo check  # run a Cargo command in the build environment
+scripts/test.sh   # the same, or only tests whose names contain an argument</code></pre>
+<p>The tests need a display. On a machine without one, <code>scripts/test.sh</code> runs them under <code>xvfb-run -a</code>. They run on a single thread, because GTK runs on one.</p>
+
+<h2>Design notes</h2>
+<ul>
+  <li><strong>The browse grid is its own widget.</strong> Only the items on screen have widgets, rows are filled left to right and the block of rows is centred, so folders with many files stay responsive.</li>
+  <li><strong>Thumbnails are demand-driven.</strong> A few are made at a time, and a request that nothing on screen wants any more is dropped before it runs.</li>
+  <li><strong>Everything is an action.</strong> The keybinding table, scripts, notifications, plugins and the remote control interface all resolve to the same catalogue of named actions.</li>
+  <li><strong>Settings apply live.</strong> The YAML file is watched, and a change made in the file, the dialog or the menu has the same effect at once.</li>
+  <li><strong>A file is identified by its contents.</strong> Per-file settings and viewing history are keyed by a content hash rather than a path, so they follow a file that is moved or renamed. The metadata and thumbnail caches are keyed by path and are rebuilt when they miss.</li>
+  <li><strong>Metadata is a searchable index.</strong> <code>ffprobe</code> output is stored as linked rows in SQLite, not as JSON or blobs, so any key at any depth can be searched across files.</li>
+</ul>
+
+<h2>This website</h2>
+<p>This site is a separate repository. Its pages are HTML fragments that a small Python script wraps in the site layout; the keybinding and settings references are generated from rsimgv's own source, so they cannot drift from the code.</p>

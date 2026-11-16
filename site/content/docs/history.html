@@ -1,0 +1,30 @@
+title: Viewing history
+desc: How rsimgv counts views and watch time for pictures and videos, where it keeps them, and how to show and clear them.
+---
+<p class="lead">rsimgv can remember how many times each picture or video has been viewed, and how long it has been watched. The totals appear in the viewer and the browse grid, and the Viewing History dialog lists recent files.</p>
+
+{{shot history-dialog "The Viewing History dialog"}}
+
+<h2>What counts as a view</h2>
+<p>The viewer measures the time actually spent with an item with its own timer, so faster or slower playback counts the time actually spent: a video played at twice the normal speed adds half the time a normal-speed play of the same length would.</p>
+<dl>
+  <dt>Pictures</dt><dd>A picture counts as viewed after it has been on screen for <em>Picture view time</em> (<code>history.image-seconds</code>, 5 seconds by default). 0 counts it at once.</dd>
+  <dt>Videos</dt><dd>A video counts as viewed when either <em>Video watch time</em> (<code>history.video-seconds</code>, 20 seconds by default) or <em>Video watch percentage</em> (<code>history.video-percent</code>, 10% by default) is reached in the current play. Either one is enough.</dd>
+  <dt>Switching off</dt><dd><em>Count pictures</em> and <em>Count videos</em> choose which media is recorded, and <em>Track viewing history</em> (<code>history.enabled</code>) turns the whole feature off.</dd>
+</dl>
+<p>A record is kept even for a file that was not watched long enough to count as a view, as long as some time was spent on it, so the watch time adds up across short looks.</p>
+<p>While a video is paused and the window still has focus, the time keeps counting, so a long look at a paused frame is watch time too. Turn off <em>Count paused time</em> (<code>history.count-paused</code>) to count only while it plays.</p>
+
+<h2>Where the totals show</h2>
+<ul>
+  <li>The viewer's status bar and the media overlay can show the item's views and watch time, when <em>Show views and watch time</em> (<code>history.show-stats</code>) is on.</li>
+  <li>The browse view's item info can include <em>Views</em> and <em>Watched</em> fields, which start on a line of their own in the inline layout. See <a href="browsing.html#item-appearance">Item appearance</a>.</li>
+  <li><strong>Viewing History</strong> in the main menu lists the most recently viewed files, newest first, with each one's views and watch time. Activating a row opens it in the viewer, and the trash button clears the history after asking.</li>
+</ul>
+
+<h2>Where it is kept</h2>
+<p>The history is a table in <code>media-index.sqlite3</code>, the same SQLite database that holds the metadata index, in <code>~/.local/share/rsimgv</code> (or <code>RSIMGV_DATA</code>). Every window shares it. A file is known by its content hash, so its history follows it when it is moved or renamed; the last path it was viewed at is kept for the list.</p>
+<p>Clearing the history forgets the views and watch time but leaves your settings and the metadata index's cache of file details. To remove both, delete the database while rsimgv is not running. See <a href="files.html">Files and folders</a>.</p>
+
+<h2>Settings</h2>
+<p>See the <a href="settings.html#viewing-history">Viewing history section of the settings reference</a> for every option and its default.</p>

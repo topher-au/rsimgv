@@ -1,0 +1,47 @@
+title: Scripts and messages
+desc: Run your own commands on files from rsimgv, and show notifications and persistent messages over the window.
+---
+<p class="lead">Scripts turn rsimgv into a launcher for whatever you do with files: send one to an editor, copy its path, upload it, rate it. Messages are how rsimgv, and the programs that drive it, tell you what happened. For features that need more than a command, see <a href="plugins.html">Plugins</a>.</p>
+
+<h2>Scripts</h2>
+<p>A script is a name, a command and a flag. They live on the <em>Scripts</em> page of the preferences, where <strong>Add</strong>, <strong>Edit</strong> and <strong>Remove</strong> manage the list.</p>
+{{shot prefs-scripts "The Scripts page of the preferences"}}
+<dl>
+  <dt>Name</dt><dd>What the script is called in the list, in the keybinding editor and in the playlist's Open with menu.</dd>
+  <dt>Command</dt><dd>Run by your shell. <code>%file%</code> stands for the path of the item it is run on, and is safe to use with spaces and other awkward characters in the path, because it is passed to the shell as an argument rather than pasted into the command line.</dd>
+  <dt>Wait</dt><dd>Whether rsimgv waits for the command to finish. If it waits, the folder is listed again when the script ends, so a script that renames, converts or deletes files shows its result in the grid.</dd>
+</dl>
+
+<h3>Examples</h3>
+<pre><code>gimp %file%
+exiftool %file% | wl-copy
+convert %file% -resize 50% %file%.small.jpg
+notify-send "Rated" "%file%"</code></pre>
+
+<h3>Running a script from a key</h3>
+<p>In the keybinding editor, the <strong>Run Script</strong> action binds a key to one of your scripts. Each binding picks its script, so one action serves any number of keys. It runs on the item under the cursor while browsing, or on the item the viewer shows. In the playlist, a script appears under <em>Open with</em> for the row's file.</p>
+<p>A script that fails reports it with a message over the window.</p>
+<p>Scripts are saved in the <code>scripts.list</code> setting, a list of JSON objects with <code>name</code>, <code>command</code> and <code>wait</code>.</p>
+
+<h2>Messages</h2>
+<p>Messages appear over the window, where the notification element of the <a href="overlay.html#notifications">media overlay</a> places them, and are styled by it. There are two kinds:</p>
+<ul>
+  <li><strong>Notifications</strong> go away by themselves after a few seconds (4 by default).</li>
+  <li><strong>Persistent messages</strong> stay until they are dismissed, and have a close button unless asked otherwise.</li>
+</ul>
+<p>Each has a <strong>level</strong>, which sets how it looks: <code>info</code>, <code>success</code>, <code>warning</code>, <code>error</code>, or <code>plain</code> for bare text. Notifications stack, the newest nearest the edge, up to the number the element sets; when the stack is full the oldest is pushed out, or the new one waits.</p>
+
+<h3>From a key</h3>
+<p>The <strong>Show Notification</strong> action binds a key to a notification. Each binding sets its message, its level and how many seconds it stays, up to 600. It is handy as feedback for another binding or a script.</p>
+
+<h3>From another program</h3>
+<p>Through the <a href="remote-control.html#messages">remote control interface</a>, a program can show a message with <code>messages.show</code> (choosing its position, whether it persists, and whether it can be dismissed), change its text with <code>messages.update</code>, and take it down with <code>messages.dismiss</code>. That makes it possible to show progress of a long job from a script:</p>
+<p>With the HTTP interface switched on:</p>
+<pre><code>curl -s localhost:9780/ipc -H 'Content-Type: application/json' -d \
+  '{"id":1,"method":"messages.show","params":{"text":"Uploading…","persistent":true,"level":"info"}}'</code></pre>
+
+<h2>Other overlays</h2>
+<ul>
+  <li><kbd>F1</kbd> lists the keybindings in force where you are, and hides the list again.</li>
+  <li>Skipping through a video shows the seek display; changing the volume, speed, rotation or zoom shows theirs. See <a href="overlay.html">Overlays and notifications</a>.</li>
+</ul>
