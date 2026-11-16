@@ -31,6 +31,8 @@ chmod +x linuxdeploy-x86_64.AppImage linuxdeploy-plugin-gtk.sh
 export APPIMAGE_EXTRACT_AND_RUN=1
 export PATH="$work/tools:$PATH"
 export DEPLOY_GTK_VERSION=4
+# linuxdeploy's bundled strip is too old to read the RELR relocations in current Arch libraries.
+export NO_STRIP=1
 export ARCH=x86_64
 export VERSION=$version
 export LINUXDEPLOY_OUTPUT_VERSION=$version
