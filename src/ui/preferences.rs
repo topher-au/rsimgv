@@ -7,7 +7,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use adw::prelude::{
-    ActionRowExt, AdwDialogExt, ComboRowExt, EntryRowExt, ExpanderRowExt, PreferencesGroupExt, PreferencesPageExt,
+    ActionRowExt, AdwDialogExt, AlertDialogExt, ComboRowExt, EntryRowExt, PreferencesGroupExt, PreferencesPageExt,
     PreferencesRowExt,
 };
 use adw::subclass::prelude::*;
@@ -314,6 +314,8 @@ mod imp {
         #[template_child]
         pub plugin_auto_reload_row: TemplateChild<adw::SwitchRow>,
         #[template_child]
+        pub plugin_individual_reload_row: TemplateChild<adw::SwitchRow>,
+        #[template_child]
         pub add_script_button: TemplateChild<gtk::Button>,
         #[template_child]
         pub edit_script_button: TemplateChild<gtk::Button>,
@@ -601,29 +603,76 @@ impl PreferencesDialog {
 }
 
 impl PreferencesDialog {
-    /// Lists the plugins. Each row has a switch that turns the plugin on or off at once, a reload button and the
-    /// settings the plugin exposes. Also binds the auto-reload switch.
+    /// Lists the plugins, and binds the switches on the Advanced tab. Each plugin row has a switch that turns the
+    /// plugin on or off at once, a button for the settings the plugin exposes, and a reload button that shows only
+    /// while reloading plugins one by one is allowed.
     fn bind_plugins(&self, settings: &Settings) {
-        settings.bind("plugins.auto-reload", &*self.imp().plugin_auto_reload_row, "active").build();
+        let imp = self.imp();
+        settings.bind("plugins.auto-reload", &*imp.plugin_auto_reload_row, "active").build();
+        self.bind_individual_reload(settings);
 
-        let list = self.imp().plugins_list.clone();
+        let list = imp.plugins_list.clone();
         list.remove_all();
         let value = crate::plugins::list();
         for plugin in value["plugins"].as_array().into_iter().flatten() {
-            list.append(&Self::plugin_row(plugin, settings));
+            list.append(&Self::plugin_row(plugin, settings, self));
         }
     }
 
-    /// The row for one plugin: its name and status, a switch that enables it, a reload button, and the settings it
-    /// exposes. Turning it on or off applies at once and refreshes the row's status.
-    fn plugin_row(plugin: &serde_json::Value, settings: &Settings) -> adw::ExpanderRow {
+    /// Binds the switch that allows reloading plugins one by one. Turning it on asks first, because reloading a
+    /// running plugin has side effects; cancelling puts the switch back.
+    fn bind_individual_reload(&self, settings: &Settings) {
+        let row = self.imp().plugin_individual_reload_row.clone();
+        row.set_active(settings.boolean("plugins.allow-individual-reload"));
+        let settings = settings.clone();
+        let dialog = self.downgrade();
+        row.connect_active_notify(move |row| {
+            if row.is_active() == settings.boolean("plugins.allow-individual-reload") {
+                return;
+            }
+            if !row.is_active() {
+                let _ = settings.set_boolean("plugins.allow-individual-reload", false);
+                return;
+            }
+            let Some(parent) = dialog.upgrade() else { return };
+            let alert = adw::AlertDialog::builder()
+                .heading("Allow reloading plugins?")
+                .body(
+                    "Reloading a plugin re-imports its Python code inside the running program. Anything the plugin kept in \
+                     memory is lost, and extension modules and GObject types it registered stay loaded until rsimgv \
+                     restarts, so a plugin that is reloaded many times can use more memory, behave oddly or crash the \
+                     program. A plugin that is stuck in a loop freezes the window. Restart rsimgv if a plugin misbehaves \
+                     after a reload.",
+                )
+                .build();
+            alert.add_response("cancel", "Cancel");
+            alert.add_response("allow", "Allow reloading");
+            alert.set_response_appearance("allow", adw::ResponseAppearance::Destructive);
+            alert.set_default_response(Some("cancel"));
+            alert.set_close_response("cancel");
+            let (settings, row) = (settings.clone(), row.clone());
+            alert.connect_response(None, move |_, response| {
+                if response == "allow" {
+                    let _ = settings.set_boolean("plugins.allow-individual-reload", true);
+                } else {
+                    row.set_active(false);
+                }
+            });
+            alert.present(Some(&parent));
+        });
+    }
+
+    /// The row for one plugin: its name and status, a switch that enables it, a button that opens the settings it
+    /// exposes in a dialog, and a reload button. Turning it on or off applies at once and refreshes the row's status.
+    fn plugin_row(plugin: &serde_json::Value, settings: &Settings, parent: &PreferencesDialog) -> adw::ActionRow {
         let id = plugin["id"].as_str().unwrap_or_default().to_owned();
         let name = plugin["name"].as_str().unwrap_or("Plugin");
         let enabled = plugin["enabled"].as_bool().unwrap_or(true);
 
-        let row = adw::ExpanderRow::builder().title(name).subtitle(Self::plugin_subtitle(plugin)).build();
+        let row = adw::ActionRow::builder().title(name).subtitle(Self::plugin_subtitle(plugin)).build();
         let declared = crate::plugins::plugin_settings(&id);
-        row.set_enable_expansion(!declared.is_empty());
+        let group = adw::PreferencesGroup::new();
+        let has_settings = !declared.is_empty();
         let values = crate::plugins::plugin_config(&id);
         for setting in declared {
             let current = values.get(&setting.key).cloned().unwrap_or(setting.default.clone());
@@ -705,7 +754,7 @@ impl PreferencesDialog {
                     widget.upcast()
                 }
             };
-            row.add_row(&widget);
+            group.add(&widget);
         }
 
         let reload = gtk::Button::from_icon_name("view-refresh-symbolic");
@@ -713,6 +762,7 @@ impl PreferencesDialog {
         reload.set_valign(gtk::Align::Center);
         reload.add_css_class("flat");
         reload.set_sensitive(enabled);
+        settings.bind("plugins.allow-individual-reload", &reload, "visible").flags(gio::SettingsBindFlags::GET).build();
         let reload_id = id.clone();
         reload.connect_clicked(move |_| {
             if let Err(err) = crate::plugins::reload(Some(&reload_id)) {
@@ -749,8 +799,29 @@ impl PreferencesDialog {
             }
         });
 
-        row.add_suffix(&switch);
+        let configure = gtk::Button::from_icon_name("emblem-system-symbolic");
+        configure.set_tooltip_text(Some(if has_settings { "Plugin settings" } else { "This plugin has no settings" }));
+        configure.set_valign(gtk::Align::Center);
+        configure.add_css_class("flat");
+        configure.set_sensitive(has_settings);
+        if has_settings {
+            let page = adw::PreferencesPage::new();
+            page.add(&group);
+            let view = adw::ToolbarView::new();
+            view.add_top_bar(&adw::HeaderBar::new());
+            view.set_content(Some(&page));
+            let modal = adw::Dialog::builder().title(format!("{name} settings")).content_width(480).content_height(480).child(&view).build();
+            let parent = parent.downgrade();
+            configure.connect_clicked(move |_| {
+                if let Some(parent) = parent.upgrade() {
+                    modal.present(Some(&parent));
+                }
+            });
+        }
+
+        row.add_suffix(&configure);
         row.add_suffix(&reload);
+        row.add_suffix(&switch);
         row
     }
 
@@ -1261,7 +1332,7 @@ pub(crate) mod tests {
 }
 
 /// The sections in the sidebar, in the order of the stack's pages: name, title and icon.
-const SECTIONS: [(&str, &str, &str); 9] = [
+const SECTIONS: [(&str, &str, &str); 10] = [
     ("general", "General", "preferences-system-symbolic"),
     ("browsing", "Browsing", "folder-symbolic"),
     ("viewer", "Viewer", "applications-multimedia-symbolic"),
@@ -1269,6 +1340,7 @@ const SECTIONS: [(&str, &str, &str); 9] = [
     ("videos", "Videos", "video-x-generic-symbolic"),
     ("keybindings", "Controls", "input-keyboard-symbolic"),
     ("integration", "Integration", "utilities-terminal-symbolic"),
+    ("plugins", "Plugins", "application-x-addon-symbolic"),
     ("performance", "Performance", "applications-engineering-symbolic"),
     ("about", "About", "help-about-symbolic"),
 ];

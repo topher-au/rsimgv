@@ -1511,32 +1511,6 @@
                           </object>
                         </child>
                         <child>
-                          <object class="AdwPreferencesPage" id="plugins_page">
-                            <property name="title">Plugins</property>
-                            <property name="icon-name">application-x-addon-symbolic</property>
-                            <child>
-                              <object class="AdwPreferencesGroup">
-                                <property name="title">Installed plugins</property>
-                                <property name="description">Plugins extend rsimgv with actions, menus, keybindings and sidebar panels. Switching a plugin off or on takes effect at once. Python plugins reload when their files change, unless Auto-reload is off.</property>
-                                <child>
-                                  <object class="AdwSwitchRow" id="plugin_auto_reload_row">
-                                    <property name="title">Auto-reload Python plugins</property>
-                                    <property name="subtitle">Watch plugin files and reload them when they change</property>
-                                  </object>
-                                </child>
-                                <child>
-                                  <object class="GtkListBox" id="plugins_list">
-                                    <property name="selection-mode">none</property>
-                                    <style>
-                                      <class name="boxed-list"/>
-                                    </style>
-                                  </object>
-                                </child>
-                              </object>
-                            </child>
-                          </object>
-                        </child>
-                        <child>
                           <object class="AdwPreferencesPage">
                             <property name="title">Remote control</property>
                             <property name="icon-name">network-server-symbolic</property>
@@ -1595,6 +1569,55 @@
                                   <object class="AdwSwitchRow" id="ipc_external_row">
                                     <property name="title">Allow other machines to control rsimgv</property>
                                     <property name="subtitle">Applies to the TCP and HTTP ports, which otherwise accept only localhost. Anyone who can reach them can control rsimgv.</property>
+                                  </object>
+                                </child>
+                              </object>
+                            </child>
+                          </object>
+                        </child>
+                      </object>
+                    </child>
+                    <child>
+                      <object class="AdwViewStack">
+                        <property name="vexpand">true</property>
+                        <child>
+                          <object class="AdwPreferencesPage" id="plugins_page">
+                            <property name="title">Plugins</property>
+                            <property name="icon-name">application-x-addon-symbolic</property>
+                            <child>
+                              <object class="AdwPreferencesGroup">
+                                <property name="title">Installed plugins</property>
+                                <property name="description">Plugins extend rsimgv with actions, menus, keybindings and sidebar panels. Switching a plugin off or on takes effect at once.</property>
+                                <child>
+                                  <object class="GtkListBox" id="plugins_list">
+                                    <property name="selection-mode">none</property>
+                                    <style>
+                                      <class name="boxed-list"/>
+                                    </style>
+                                  </object>
+                                </child>
+                              </object>
+                            </child>
+                          </object>
+                        </child>
+                        <child>
+                          <object class="AdwPreferencesPage">
+                            <property name="title">Advanced</property>
+                            <property name="icon-name">preferences-other-symbolic</property>
+                            <child>
+                              <object class="AdwPreferencesGroup">
+                                <property name="title">Reloading</property>
+                                <property name="description">Reloading re-imports a plugin's Python code in the running program, which is meant for developing plugins. It can leave old code behind, so avoid it otherwise.</property>
+                                <child>
+                                  <object class="AdwSwitchRow" id="plugin_auto_reload_row">
+                                    <property name="title">Auto-reload Python plugins</property>
+                                    <property name="subtitle">Watch plugin files and reload them when they change</property>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="AdwSwitchRow" id="plugin_individual_reload_row">
+                                    <property name="title">Allow reloading plugins individually</property>
+                                    <property name="subtitle">Adds a reload button to each plugin. Reloading can use more memory or crash the program.</property>
                                   </object>
                                 </child>
                               </object>

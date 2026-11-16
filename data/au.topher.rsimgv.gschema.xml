@@ -885,5 +885,9 @@
       <default>true</default>
       <summary>Watch Python plugin files and reload them when they change</summary>
     </key>
+    <key name="allow-individual-reload" type="b">
+      <default>false</default>
+      <summary>Show a button on each plugin that reloads just that plugin</summary>
+    </key>
   </schema>
 </schemalist>
