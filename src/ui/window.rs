@@ -1367,7 +1367,7 @@ impl Window {
         bound_action(&view, &weak, "pin", |window| window.imp().viewer.toggle_pinned());
         bound_action(&view, &weak, "toggle-thumbnail-bar", |window| window.toggle_setting("viewer.thumbnail-bar.shown"));
         bound_action(&view, &weak, "toggle-slideshow", |window| window.imp().viewer.toggle_auto_advance());
-        bound_action(&view, &weak, "toggle-slideshow-shuffle", |window| window.toggle_setting("viewer.slideshow-shuffle"));
+        bound_action(&view, &weak, "toggle-slideshow-shuffle", Window::toggle_slideshow_shuffle);
         bound_action(&view, &weak, "toggle-status-bar", |window| window.toggle_setting("viewer.status-bar.shown"));
         bound_action(&view, &weak, "rotate-clockwise", |window| window.imp().viewer.reorient(Orientation::rotated_clockwise));
         bound_action(&view, &weak, "rotate-counter-clockwise", |window| window.imp().viewer.reorient(Orientation::rotated_counter_clockwise));
@@ -2898,6 +2898,14 @@ impl Window {
             // The keys are in the schema, so the write cannot fail.
             let _ = settings.set_boolean(key, !settings.boolean(key));
         }
+    }
+
+    /// Has the slideshow show the items in a random order, or in order again, and says so over the window.
+    fn toggle_slideshow_shuffle(&self) {
+        let Some(settings) = self.imp().settings.get() else { return };
+        let on = !settings.boolean("viewer.slideshow-shuffle");
+        let _ = settings.set_boolean("viewer.slideshow-shuffle", on);
+        self.notify(if on { "Slideshow shuffle on" } else { "Slideshow shuffle off" });
     }
 
     /// Turns crop detection on or off, and says so over the window.
