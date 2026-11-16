@@ -1,6 +1,10 @@
 //! The IPC methods, run on the GTK thread against the window. Each takes JSON parameters and returns JSON.
 //!
-//!   actions.list    {}                       -> {"actions": [{"name", "label", "description", "scope", "contexts", "icon", "defaults"}, ...]}
+//!   actions.list    {}                       -> {"actions": [{"name", "label", "description", "scope", "contexts", "icon", "defaults",
+//!                                                "value", "target"}, ...]}
+//!                   value is null unless the action takes a number from actions.run: {"label", "unit", "min", "max",
+//!                   "step", "default"}, with the unit seconds, percent, times, degrees or frames. target is null unless
+//!                   it takes a target: {"label", "default", "choices": [{"name", "label"}, ...]}.
 //!   actions.run     {"name", "value"?, "target"?} -> {}   value and target are passed to an action that takes them
 //!                   win.notify takes {"message", "level"?, "seconds"?} instead: it shows the message over the window
 //!                   (level is info, success, warning, error or plain; seconds is 4 by default).
@@ -30,10 +34,28 @@
 //!   files.select    {"file"}                 -> {"selected": name}   in the selected tab
 //!   files.select_index {"index"}             -> {"selected": name}   negative counts from the end
 //!   files.selected  {}                       -> {"name", "index"}   of the selected tab; null when nothing is selected
-//!   view.screenshot {}                       -> {"format": "png", "width", "height", "data"}
-//!                   The picture or video frame the viewer shows, at its own size, as base64-encoded PNG.
+//!   files.marked    {}                       -> {"paths": [...]}   the items marked in the selected tab, in tab order
+//!   files.search    {"query", "path"?, "recursive"?, "limit"?}
+//!                                            -> {"path", "total", "files": [{"name", "path", "is_dir", "size", "modified"}, ...],
+//!                                                "truncated", "metadata_pending"}
+//!                   Finds the items of a folder (the one shown, by default; with its subfolders if recursive) that
+//!                   match the search bar's query: keywords, "phrases", and comparisons such as size>10M,
+//!                   duration>1:30, width>=1920 or type=video/mp4. total counts all matches and files holds the
+//!                   first limit (100 by default, at most 1000), sorted by path. Hidden files are left out. Width,
+//!                   height, fps and duration are known only for files whose metadata rsimgv has read: the others
+//!                   are asked for and counted in metadata_pending, and match again when the search is repeated.
+//!                   The search stops after 20000 items and says so in truncated.
+//!   playlist.get    {}                       -> {"total", "current", "shuffled", "items": [{"path", "title", "played", "duration"}, ...]}
+//!                   The playlist in the order it plays in. current is the position of the item it is on, or null.
+//!   view.screenshot {"format"?, "quality"?, "max_size"?, "crop"?}
+//!                                            -> {"format", "mime_type", "width", "height", "source_width", "source_height", "data"}
+//!                   The picture or video frame the viewer shows, as base64-encoded PNG at its own size unless asked
+//!                   otherwise. format is png or jpeg; quality (1 to 100, 85 by default) applies to jpeg; max_size limits the longest side, never enlarging; crop is {"x", "y", "width", "height"}
+//!                   as fractions (0 to 1) of the full picture, made before max_size. width and height are those of
+//!                   the result and source_width and source_height those of the picture before cropping.
 //!   view.info       {}                       -> {"directory", "filename", "position", "duration", "width", "height",
-//!                                                "fps", "speed", "mime_type"}
+//!                                                "fps", "speed", "mime_type", "playing", "volume", "muted", "repeat",
+//!                                                "slideshow", "rotation", "mirrored", "zoom", "fit", "scale"}
 //!                   The item the viewer shows, at its own size in pixels. position and duration are in seconds,
 //!                   fps is frames per second, and speed is a multiple of normal. The playback values are null for
 //!                   a picture; duration, fps and speed are null when a video does not report them yet.
@@ -46,8 +68,10 @@
 //!                   which a persistent message has unless it is false.
 //!   messages.update {"id", "text"}           -> {}   changes the text of a message still up
 //!   messages.dismiss {"id"}                  -> {}   takes a message down; with no id, every message
-//!   thumbnails.get {"paths", "max_size"?}   -> {"thumbnails": [{"path", "size", "format", "data"}, ...]}
-//!                   The still thumbnail of each file, as base64-encoded PNG, from the thumbnails rsimgv has
+//!   thumbnails.get {"paths", "max_size"?, "format"?, "quality"?}
+//!                                            -> {"thumbnails": [{"path", "size", "format", "mime_type", "width", "height", "data"}, ...]}
+//!                   The still thumbnail of each file, as base64-encoded PNG unless format (png or jpeg) and
+//!                   quality (1 to 100) say otherwise, from the thumbnails rsimgv has
 //!                   already made for it: the largest at most max_size pixels across (default 256).
 //!                   "size" is the pixels of the thumbnail given. "data" is null for a file with no thumbnail yet,
 //!                   which the window makes when it shows the file. The thumbnails are read from the disk cache,
@@ -91,8 +115,11 @@ use crate::fs::thumbnail;
 use crate::settings::{app_settings, Settings};
 use crate::storage::bookmarks;
 use crate::storage::file_settings::FileSettings;
+use crate::services::image_encode::{self, Options};
 use crate::services::ipc::Error;
-use crate::keybindings::actions::{all, find, target_info, DEFAULT_NOTIFICATION_SECONDS, NOTIFICATION_LEVELS};
+use crate::keybindings::actions::{all, find, target_info, value_info, DEFAULT_NOTIFICATION_SECONDS, NOTIFICATION_LEVELS};
+use crate::keybindings::actions::Unit;
+use crate::search::query::{self, Facts};
 use crate::ui::{Level, Message, Window};
 use crate::ui::message_overlay::Position;
 
@@ -110,6 +137,19 @@ pub fn handle(window: &Window, method: &str, params: &Value) -> Result<Value, Er
                         "contexts": action.contexts().iter().map(|scope| scope.id()).collect::<Vec<_>>(),
                         "icon": action.icon,
                         "defaults": action.defaults,
+                        "value": value_info(action.name).map(|info| json!({
+                            "label": info.label,
+                            "unit": unit_name(info.unit),
+                            "min": info.min,
+                            "max": info.max,
+                            "step": info.step,
+                            "default": info.default,
+                        })),
+                        "target": target_info(action.name).map(|info| json!({
+                            "label": info.label,
+                            "default": info.default,
+                            "choices": info.choices.iter().map(|(name, label)| json!({"name": name, "label": label})).collect::<Vec<_>>(),
+                        })),
                     })
                 })
                 .collect();
@@ -173,18 +213,33 @@ pub fn handle(window: &Window, method: &str, params: &Value) -> Result<Value, Er
                 "fps": playback.and_then(|playback| playback.fps),
                 "speed": playback.and_then(|playback| playback.speed),
                 "mime_type": mime_type(&item.path),
+                "playing": item.state.playing,
+                "volume": item.state.volume,
+                "muted": item.state.muted,
+                "repeat": item.state.repeat,
+                "slideshow": item.state.slideshow,
+                "rotation": item.state.rotation,
+                "mirrored": item.state.mirrored,
+                "zoom": item.state.zoom,
+                "fit": item.state.fit,
+                "scale": item.state.scale,
             }))
         }
         "view.screenshot" => {
+            let options = Options::from_params(params)?;
             let Some(texture) = window.viewer_screenshot() else {
                 return Err(Error::new("no_media", "the viewer is not showing a picture or a video frame"));
             };
             let png = texture.save_to_png_bytes();
+            let picture = image_encode::transcode(&png, &options)?;
             Ok(json!({
-                "format": "png",
-                "width": texture.width(),
-                "height": texture.height(),
-                "data": glib::base64_encode(&png).as_str(),
+                "format": picture.format.name(),
+                "mime_type": picture.format.mime_type(),
+                "width": picture.width,
+                "height": picture.height,
+                "source_width": texture.width(),
+                "source_height": texture.height(),
+                "data": glib::base64_encode(&picture.bytes).as_str(),
             }))
         }
         "upscaled.path" => {
@@ -211,18 +266,28 @@ pub fn handle(window: &Window, method: &str, params: &Value) -> Result<Value, Er
                     .filter(|size| (1..=2048).contains(size))
                     .ok_or_else(|| Error::new("invalid_params", "the parameter max_size must be a whole number from 1 to 2048"))?,
             };
-            let thumbnails: Vec<Value> = path_list_param(params)?
+            let options = Options::from_params(&json!({
+                "format": params.get("format"),
+                "quality": params.get("quality"),
+            }))?;
+            let thumbnails = path_list_param(params)?
                 .into_iter()
                 .map(|path| match thumbnail::cached_still_png(Path::new(path), size as i32) {
-                    Some((pixels, png)) => json!({
-                        "path": path,
-                        "size": pixels,
-                        "format": "png",
-                        "data": glib::base64_encode(&png).as_str(),
-                    }),
-                    None => json!({"path": path, "data": null}),
+                    Some((pixels, png)) => {
+                        let picture = image_encode::transcode(&png, &options)?;
+                        Ok(json!({
+                            "path": path,
+                            "size": pixels,
+                            "format": picture.format.name(),
+                            "mime_type": picture.format.mime_type(),
+                            "width": picture.width,
+                            "height": picture.height,
+                            "data": glib::base64_encode(&picture.bytes).as_str(),
+                        }))
+                    }
+                    None => Ok(json!({"path": path, "data": null})),
                 })
-                .collect();
+                .collect::<Result<Vec<Value>, Error>>()?;
             Ok(json!({"thumbnails": thumbnails}))
         }
         "metadata.get" => {
@@ -472,6 +537,31 @@ pub fn handle(window: &Window, method: &str, params: &Value) -> Result<Value, Er
         "files.selected" => Ok(json!({
             "name": window.selected_file(),
             "index": window.selected_position(),
+        })),
+        "files.marked" => {
+            let paths: Vec<String> = window.marked_paths().iter().map(|path| path.to_string_lossy().into_owned()).collect();
+            Ok(json!({"paths": paths}))
+        }
+        "files.search" => search_files(window, params),
+        "playlist.get" => Ok(crate::playlist::with(|playlist| {
+            let items: Vec<Value> = playlist
+                .order()
+                .iter()
+                .map(|path| {
+                    json!({
+                        "path": path.to_string_lossy(),
+                        "title": playlist.title(path),
+                        "played": playlist.is_played(path),
+                        "duration": playlist.duration(path),
+                    })
+                })
+                .collect();
+            json!({
+                "total": items.len(),
+                "current": playlist.current(),
+                "shuffled": playlist.is_shuffled(),
+                "items": items,
+            })
         })),
         "files.select_index" => {
             let index = params
@@ -927,6 +1017,118 @@ fn file_info(path: &Path) -> Value {
         .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
         .map(|since| since.as_secs_f64());
     json!({"path": path.to_string_lossy(), "is_dir": is_dir, "size": size, "modified": modified})
+}
+
+/// The most items a search looks at, because it runs on the window's thread.
+const SEARCH_SCAN_LIMIT: usize = 20_000;
+const SEARCH_DEFAULT_LIMIT: usize = 100;
+const SEARCH_MAX_LIMIT: usize = 1000;
+
+fn unit_name(unit: Unit) -> &'static str {
+    match unit {
+        Unit::Seconds => "seconds",
+        Unit::Percent => "percent",
+        Unit::Times => "times",
+        Unit::Degrees => "degrees",
+        Unit::Frames => "frames",
+    }
+}
+
+/// `files.search`: the items under a folder that match a search bar query.
+fn search_files(window: &Window, params: &Value) -> Result<Value, Error> {
+    let text = text_param(params, "query")?;
+    let tokens = query::parse(text);
+    if tokens.is_empty() {
+        return Err(Error::new("invalid_params", "the parameter query must not be empty"));
+    }
+    let recursive = optional_bool(params, "recursive")?.unwrap_or(false);
+    let limit = match params.get("limit").filter(|limit| !limit.is_null()) {
+        None => SEARCH_DEFAULT_LIMIT,
+        Some(limit) => limit
+            .as_u64()
+            .filter(|limit| (1..=SEARCH_MAX_LIMIT as u64).contains(limit))
+            .ok_or_else(|| Error::new("invalid_params", format!("the parameter limit must be a whole number from 1 to {SEARCH_MAX_LIMIT}")))?
+            as usize,
+    };
+    let root = match optional_text(params, "path")? {
+        Some(path) => PathBuf::from(path),
+        None => window.current_path().ok_or_else(|| Error::new("no_folder", "no folder is shown"))?,
+    };
+    if !root.is_dir() {
+        return Err(Error::new("not_a_folder", format!("{} is not a folder", root.display())));
+    }
+
+    let needs_metadata = tokens.iter().any(query::Token::needs_metadata);
+    let media_info = MediaInfo::shared();
+    let mut pending = 0usize;
+    let mut scanned = 0usize;
+    let mut truncated = false;
+    let mut matches: Vec<PathBuf> = Vec::new();
+    let mut folders = vec![root.clone()];
+    'walk: while let Some(folder) = folders.pop() {
+        let Ok(read) = std::fs::read_dir(&folder) else { continue };
+        for entry in read.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with('.') {
+                continue;
+            }
+            scanned += 1;
+            if scanned > SEARCH_SCAN_LIMIT {
+                truncated = true;
+                break 'walk;
+            }
+            let path = entry.path();
+            let Ok(metadata) = std::fs::metadata(&path) else { continue };
+            if metadata.is_dir() && recursive {
+                folders.push(path.clone());
+            }
+            let modified = metadata.modified().ok().and_then(|time| time.duration_since(UNIX_EPOCH).ok()).map_or(0, |since| since.as_secs() as i64);
+            let mime = mime_type(&path).unwrap_or_default();
+            let mut facts = Facts {
+                name,
+                content_type: mime.clone(),
+                size: if metadata.is_dir() { 0 } else { metadata.len() },
+                modified,
+                ..Facts::default()
+            };
+            let picture_or_video = mime.starts_with("image/") || mime.starts_with("video/");
+            if needs_metadata && !metadata.is_dir() && picture_or_video {
+                match media_info.get(&path, modified, metadata.len()) {
+                    Some(read) => {
+                        facts.width = read.width;
+                        facts.height = read.height;
+                        facts.fps = read.frame_rate;
+                        facts.duration = read.duration;
+                    }
+                    None => {
+                        media_info.request(&path, modified, metadata.len(), || true, || {});
+                        pending += 1;
+                    }
+                }
+            }
+            if query::matches_all(&tokens, &facts) {
+                matches.push(path);
+            }
+        }
+    }
+    matches.sort();
+    let total = matches.len();
+    let files: Vec<Value> = matches
+        .iter()
+        .take(limit)
+        .map(|path| {
+            let mut info = file_info(path);
+            info["name"] = json!(path.file_name().map(|name| name.to_string_lossy().into_owned()));
+            info
+        })
+        .collect();
+    Ok(json!({
+        "path": root.to_string_lossy(),
+        "total": total,
+        "files": files,
+        "truncated": truncated,
+        "metadata_pending": pending,
+    }))
 }
 
 fn no_tab(id: u64) -> Error {
