@@ -1119,6 +1119,10 @@ impl MediaViewer {
     /// Calls `callback` with the path of a file dropped on the viewer.
     pub fn connect_file_dropped<F: Fn(&Self, &Path) + 'static>(&self, callback: F) -> glib::SignalHandlerId {
         self.connect_local("file-dropped", false, move |values| {
+        // Closing the viewer ends the slideshow, so opening it again shows a picture that stays.
+        if self.imp().auto_advance.replace(false) {
+            self.imp().controls.set_auto_advance(false);
+        }
             let viewer = values[0].get::<MediaViewer>().expect("viewer argument");
             let path = values[1].get::<String>().expect("path argument");
             callback(&viewer, Path::new(&path));
