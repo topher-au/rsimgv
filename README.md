@@ -63,6 +63,8 @@ library of pictures and videos without leaving the window.
 - **Settings** in a preferences dialog, saved as YAML and applied immediately. Metadata and the viewing history are kept in `media-index.sqlite3` in the user's data directory (`RSIMGV_DATA` overrides its folder).
 - **Hidden files** can be shown from the main menu.
 - **Viewing history**: how many times each picture or video has been viewed, and how long it has been watched, measured by an in-app timer so faster or slower playback counts the time actually spent. The viewer's status bar and overlays show the totals, the Viewing History item in the main menu lists recent files, and the History preferences choose what counts as a view (five seconds for a picture, and for a video either twenty seconds of it or a tenth of its length, by default). The counts can also be shown in the browse view's item info.
+- **Slideshow**: <kbd>N</kbd> in the viewer turns auto-advance on or off. With it on, the next item of the folder, or of the playlist, is shown when a video ends or a picture has been up for the slideshow delay (five seconds by default, set on the Viewer page). <kbd>Shift</kbd>+<kbd>N</kbd> turns slideshow shuffle on or off and says so over the window: the items come in a random order, each once before any comes round again. The time left before the slideshow moves on can be shown as a bar, a circle or text, by adding a **Slideshow countdown** element in the overlay editor, which sets its position, look and wording. A picture that cannot be read is skipped over, and closing the viewer ends the slideshow.
+- **Timed video settings**: <kbd>K</kbd> applies a video's turn, mirror, zoom, crop and speed from the current position on, and a later one replaces them from there. <kbd>J</kbd> and <kbd>L</kbd> skip to the previous and next of these points, <kbd>Shift</kbd>+<kbd>K</kbd> removes the settings at the position, and <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>K</kbd> clears them all. Zoom and pan are applied through mpv's crop filter.
 - **Playlist**: one list of pictures and videos from anywhere, in your own order, kept between runs and shared by the windows. Playing it leaves the folder you are browsing, and the item selected there, as they were. See [Playlist](#playlist).
 - **Scripts** are commands listed on the Scripts tab of the Integration page, with `%file%` standing for the item they run on. The Run Script action in the keybinding editor binds a key to one: it runs on the item under the cursor, or on the one the viewer shows. A script that waits to finish has the folder listed again when it ends.
 - **Plugins** extend the app with Python actions, keybindings, menus, events and sidebar panels. They are discovered from the XDG data directories, reload when their files change, and have their settings on the Plugins page. The bundled **LLM Screenshot** plugin sends the viewer's current picture or video frame to an OpenAI-compatible vision model and shows the description in an overlay notification. See [Plugins](#plugins).
@@ -132,7 +134,7 @@ A folder stands for the pictures and videos in it and in the folders under it. A
 | <kbd>]</kbd> and <kbd>[</kbd> | Next and previous item, going round the ends. Pressed elsewhere, they show the playlist from the item it was left on |
 | <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>P</kbd> | Show or hide the playlist panel, on the right opposite the sidebar |
 
-These can all be rebound, and first item, last item, load, save and clear can be given keys, in the keybinding editor. While the viewer shows the playlist, its own previous and next keys, the thumbnail bar and auto-advance go through the playlist too. They stop at its ends, whatever the **folder-end** setting says.
+These can all be rebound, and first item, last item, load, save and clear can be given keys, in the keybinding editor. While the viewer shows the playlist, its own previous and next keys, the thumbnail bar and the slideshow go through the playlist too. They stop at its ends, whatever the **folder-end** setting says.
 
 The panel's buttons load and save M3U and M3U8 (`.m3u`, `.m3u8`), PLS (`.pls`) and XSPF (`.xspf`) files, and XSPF is the default when a name has no extension. Saved files use absolute paths. Each item keeps its title, and its duration where it is known, in whatever the format holds. Loading into a playlist that has items asks whether to replace them or add to the end. Web addresses and files that are not pictures or videos are left out, and you are told how many. A file listed twice is kept once.
 
@@ -179,6 +181,10 @@ Python plugins can add actions, keybindings, menus, events and sidebar panels. T
 search path while developing. The Plugins page under Integration lists them, exposes the settings each
 plugin declares, and reloads them. Python files and manifests are watched and reloaded when they change.
 See [docs/PLUGINS.md](docs/PLUGINS.md) for the manifest, the Python API and the IPC behavior.
+
+Besides LLM Screenshot, the bundled **AI Upscale** plugin keeps upscaled copies of pictures and shows them in
+the viewer, and the bundled **LLM Chat** plugin adds a chat about the current picture to the sidebar and the
+viewer, with memories, viewer control and voice. Both are described in [docs/PLUGINS.md](docs/PLUGINS.md).
 
 The bundled **LLM Screenshot** plugin sends the viewer's current picture or video frame to an
 OpenAI-compatible vision model. Open a picture or video and press `Ctrl+Alt+L`, or choose **Analyze with
