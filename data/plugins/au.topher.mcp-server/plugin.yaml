@@ -1,0 +1,23 @@
+api: 1
+id: au.topher.mcp-server
+name: MCP Server
+version: 0.1.0
+description: Let MCP clients such as Claude control rsimgv over a local HTTP endpoint.
+runtime: python
+entry: plugin.py
+startup: always
+
+contributes:
+  settings:
+    - key: port
+      label: Port
+      description: The local port the MCP endpoint listens on. Changes apply after the plugin reloads.
+      kind: int
+      default: 8765
+      min: 1024
+      max: 65535
+    - key: token
+      label: Access token
+      description: When set, clients must send it as a Bearer token. Leave empty to accept any local client.
+      kind: string
+      default: ""
